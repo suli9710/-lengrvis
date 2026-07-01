@@ -43,7 +43,7 @@ from app.security.native_confirmation import (
 )
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import guardian_scheduler, mobile_pairing_service, scheduler_service, wakeup_service
-from app.services.approval_event_service import publish_approval_created
+from app.services.approval_event_service import get_approval_event_bus, publish_approval_created
 from app.services.guardian_scheduler import GuardianScheduler
 from app.services.scheduler_service import Scheduler, _utc_now
 from app.services.settings_service import update_settings
@@ -527,10 +527,10 @@ def test_mobile_wakeup_payload_redacts_sensitive_fields(monkeypatch, tmp_path: P
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup", device_name="Wakeup Phone")
     token = issue_mobile_token(device_id="mobile_wakeup", device_name="Wakeup Phone")
     wakeup = Wakeup(
-        title="Scheduled task token=title-secret-1234567890",
-        body="Run Authorization Bearer body-secret-1234567890",
-        goal="Use api_key=goal-secret-1234567890",
-        error="password=error-secret-1234567890",
+        title="Scheduled task token=title-secret-1234567890 for C:/Users/Suli/private/payroll.xlsx",
+        body="Run Authorization Bearer body-secret-1234567890 against private-plan.md",
+        goal="Use api_key=goal-secret-1234567890 on C:/Users/Suli/private/goal.txt",
+        error="password=error-secret-1234567890 while reading notes.txt",
         allowed_device_ids=["mobile_wakeup"],
     )
     db.upsert_model("wakeups", wakeup)
@@ -554,6 +554,10 @@ def test_mobile_wakeup_payload_redacts_sensitive_fields(monkeypatch, tmp_path: P
     assert "body-secret-1234567890" not in payload_text
     assert "goal-secret-1234567890" not in payload_text
     assert "error-secret-1234567890" not in payload_text
+    assert "C:/Users/Suli/private/payroll.xlsx" not in payload_text
+    assert "private-plan.md" not in payload_text
+    assert "C:/Users/Suli/private/goal.txt" not in payload_text
+    assert "notes.txt" not in payload_text
     assert "[REDACTED]" in payload_text
 
 
@@ -1232,7 +1236,10 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
             return None
 
         async def post(self, *args, **kwargs):  # noqa: ANN001, ANN002
-            raise httpx.ConnectError("runtime continue disconnected token=transport-secret-1234567890")
+            raise httpx.ConnectError(
+                "runtime continue disconnected token=transport-secret-1234567890 "
+                "at C:/Users/Suli/private/approval.xlsx"
+            )
 
     async def fake_wake_transient(*args, **kwargs):  # noqa: ANN001, ANN002
         return None
@@ -1254,6 +1261,8 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
     assert "runtime continue disconnected" in response.json()["detail"]["error"]
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert "transport-secret-1234567890" not in payload_text
+    assert "C:/Users/Suli/private/approval.xlsx" not in payload_text
+    assert "approval.xlsx" not in payload_text
     assert "[REDACTED]" in response.json()["detail"]["error"]
     stored = db.fetch_one("approvals", approval.id)
     assert stored is not None
@@ -1307,7 +1316,10 @@ def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failu
             return None
 
         async def post(self, *args, **kwargs):  # noqa: ANN001, ANN002
-            raise httpx.ConnectError("mobile runtime continue disconnected token=mobile-transport-secret-1234567890")
+            raise httpx.ConnectError(
+                "mobile runtime continue disconnected token=mobile-transport-secret-1234567890 "
+                "at C:/Users/Suli/private/mobile-approval.txt"
+            )
 
     async def fake_wake_transient(*args, **kwargs):  # noqa: ANN001, ANN002
         return None
@@ -1330,6 +1342,8 @@ def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failu
     assert "mobile runtime continue disconnected" in response.json()["detail"]["error"]
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert "mobile-transport-secret-1234567890" not in payload_text
+    assert "C:/Users/Suli/private/mobile-approval.txt" not in payload_text
+    assert "mobile-approval.txt" not in payload_text
     assert "[REDACTED]" in response.json()["detail"]["error"]
     stored = db.fetch_one("approvals", approval.id)
     assert stored is not None
@@ -1450,9 +1464,15 @@ def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(mon
         def json(self):
             return {
                 "detail": {
-                    "message": "Backend failed with token=backend-secret-1234567890",
+                    "message": (
+                        "Backend failed with token=backend-secret-1234567890 "
+                        "after reading C:/Users/Suli/private/backend-detail.xlsx"
+                    ),
                     "api_key": "sk-backend-secret-1234567890",
-                    "nested": {"authorization": "Bearer backendbearersecret1234567890"},
+                    "nested": {
+                        "authorization": "Bearer backendbearersecret1234567890",
+                        "path": "C:/Users/Suli/private/backend-nested.txt",
+                    },
                 }
             }
 
@@ -1487,6 +1507,10 @@ def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(mon
     assert response.json()["detail"]["backend_detail"]["nested"]["authorization"] == "***"
     assert "backend-secret-1234567890" not in payload_text
     assert "backendbearersecret1234567890" not in payload_text
+    assert "C:/Users/Suli/private/backend-detail.xlsx" not in payload_text
+    assert "backend-detail.xlsx" not in payload_text
+    assert "C:/Users/Suli/private/backend-nested.txt" not in payload_text
+    assert "backend-nested.txt" not in payload_text
 
 
 def test_guardian_approval_redacts_nested_backend_approval_preview(monkeypatch, tmp_path: Path):
@@ -2019,6 +2043,43 @@ def test_guardian_mobile_websocket_streams_grant_events_and_closes_on_revoke(mon
 
     assert revoked_device["status"] == "revoked"
     assert exc_info.value.code == 1008
+
+
+def test_guardian_mobile_websocket_sanitizes_unknown_events(monkeypatch, tmp_path: Path):
+    _enable_lan_tls(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    guardian_scheduler._scheduler = None
+    db.init_db()
+
+    with TestClient(create_guardian_app()) as client:
+        pairing = client.post("/api/pair/code").json()
+        pair = client.post(
+            "/api/pair",
+            json={
+                "code": pairing["code"],
+                "claim_secret": pairing["claim_secret"],
+                "device_name": "Guardian Phone",
+            },
+        )
+        token = pair.json()["token"]
+
+        with client.websocket_connect(
+            "/ws/mobile/approvals",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "connected"
+
+            get_approval_event_bus().publish(
+                {
+                    "type": "future_internal_event",
+                    "token": "secret-mobile-ws-token-1234567890",
+                    "path": "C:/Users/example/private.txt",
+                    "nested": {"api_key": "secret-mobile-ws-api-key-1234567890"},
+                }
+            )
+            event = websocket.receive_json()
+
+    assert event == {"type": "future_internal_event"}
 
 
 def test_guardian_mobile_websocket_closes_after_token_expires(monkeypatch, tmp_path: Path):

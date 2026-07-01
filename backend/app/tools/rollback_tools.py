@@ -21,6 +21,7 @@ from app.core.schemas import Approval, ApprovalStatus, ToolResult, now_iso
 from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
+from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe,
@@ -319,9 +320,9 @@ def _move_back(
         source = _authorize_rollback_path(src, allowed)
         target = _authorize_rollback_path(dst, allowed)
     except SecurityError as exc:
-        return {"ok": False, "action": "move_back", "detail": str(exc)}
+        return {"ok": False, "action": "move_back", "detail": _safe_rollback_detail(exc)}
     if not source.exists():
-        return {"ok": False, "action": "move_back", "detail": f"source path missing: {source}"}
+        return {"ok": False, "action": "move_back", "detail": _safe_rollback_detail(f"source path missing: {source}")}
     try:
         raise_if_tool_aborted(context)
         safe_move_file(source, target, allowed or [], context)
@@ -329,7 +330,7 @@ def _move_back(
     except ToolAbortedError:
         raise
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "action": "move_back", "detail": str(exc)}
+        return {"ok": False, "action": "move_back", "detail": _safe_rollback_detail(exc)}
 
 
 def _trash(
@@ -340,7 +341,7 @@ def _trash(
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
-        return {"ok": False, "action": "trash", "detail": str(exc)}
+        return {"ok": False, "action": "trash", "detail": _safe_rollback_detail(exc)}
     if not path.exists():
         return {"ok": True, "action": "trash", "detail": "already absent", "path": str(path)}
     if send2trash is None:
@@ -353,7 +354,7 @@ def _trash(
     except ToolAbortedError:
         raise
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "action": "trash", "detail": str(exc)}
+        return {"ok": False, "action": "trash", "detail": _safe_rollback_detail(exc)}
 
 
 def _delete_if_empty(
@@ -364,7 +365,7 @@ def _delete_if_empty(
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
-        return {"ok": False, "action": "delete_folder_if_empty", "detail": str(exc)}
+        return {"ok": False, "action": "delete_folder_if_empty", "detail": _safe_rollback_detail(exc)}
     if not path.exists():
         return {"ok": True, "action": "delete_folder_if_empty", "detail": "already absent"}
     if not path.is_dir():
@@ -379,7 +380,7 @@ def _delete_if_empty(
     except ToolAbortedError:
         raise
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "action": "delete_folder_if_empty", "detail": str(exc)}
+        return {"ok": False, "action": "delete_folder_if_empty", "detail": _safe_rollback_detail(exc)}
 
 
 def _restore_backup(
@@ -391,7 +392,7 @@ def _restore_backup(
     try:
         backup, original = _resolve_backup_restore_paths(backup_spec, allowed)
     except (SecurityError, ValueError) as exc:
-        return {"ok": False, "action": "restore_backup", "detail": str(exc)}
+        return {"ok": False, "action": "restore_backup", "detail": _safe_rollback_detail(exc)}
     if not backup.exists():
         return {"ok": False, "action": "restore_backup", "detail": "backup missing"}
     if not backup.is_file():
@@ -408,7 +409,11 @@ def _restore_backup(
     except ToolAbortedError:
         raise
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "action": "restore_backup", "detail": str(exc)}
+        return {"ok": False, "action": "restore_backup", "detail": _safe_rollback_detail(exc)}
+
+
+def _safe_rollback_detail(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or ""))
 
 
 def _resolve_backup_restore_paths(backup_spec: Any, allowed: list[str] | None) -> tuple[Path, Path]:

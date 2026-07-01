@@ -17,6 +17,7 @@ an explicit environment-provided secret instead of relying on that fallback.
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 import os
 import secrets
@@ -34,12 +35,36 @@ _LOCAL_SECRET_FILE_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 
 
+def _dpapi_exception_types() -> tuple[type[BaseException], ...]:
+    error_types: tuple[type[BaseException], ...] = (
+        ImportError,
+        OSError,
+        ValueError,
+        UnicodeDecodeError,
+        binascii.Error,
+    )
+    try:
+        import pywintypes  # type: ignore[import-not-found]
+    except ImportError:
+        return error_types
+    return (*error_types, pywintypes.error)
+
+
+def _keyring_exception_types() -> tuple[type[BaseException], ...]:
+    error_types: tuple[type[BaseException], ...] = (ImportError, OSError, RuntimeError)
+    try:
+        import keyring.errors  # type: ignore[import-not-found]
+    except ImportError:
+        return error_types
+    return (*error_types, keyring.errors.KeyringError)
+
+
 def dpapi_available() -> bool:
     if os.name != "nt":
         return False
     try:
         import win32crypt  # type: ignore[import-not-found]  # noqa: F401
-    except Exception:  # noqa: BLE001 - optional dependency probe.
+    except ImportError:
         return False
     return True
 
@@ -51,7 +76,7 @@ def keyring_available() -> bool:
         import keyring  # type: ignore[import-not-found]
 
         backend = keyring.get_keyring()
-    except Exception:  # noqa: BLE001 - optional dependency/backend probe.
+    except _keyring_exception_types():
         return False
     backend_module = backend.__class__.__module__.lower()
     return "keyring.backends.fail" not in backend_module
@@ -93,7 +118,7 @@ def _keyring_store(path: Path, value: str) -> str:
 
         account = _keyring_account(path)
         keyring.set_password(_KEYRING_SERVICE, account, value)
-    except Exception as exc:  # noqa: BLE001 - backends vary by platform.
+    except _keyring_exception_types() as exc:
         raise RuntimeError("System keyring is unavailable for local secret storage.") from exc
     return LOCAL_SECRET_KEYRING_PREFIX + account
 
@@ -106,7 +131,7 @@ def _keyring_read(stored: str) -> str:
         import keyring  # type: ignore[import-not-found]
 
         value = keyring.get_password(_KEYRING_SERVICE, account)
-    except Exception as exc:  # noqa: BLE001 - backends vary by platform.
+    except _keyring_exception_types() as exc:
         raise RuntimeError("System keyring is unavailable for local secret storage.") from exc
     if not value:
         raise RuntimeError("Local secret is missing from the system keyring.")
@@ -183,7 +208,7 @@ def read_local_secret(path: Path) -> str:
     if stored.startswith(LOCAL_SECRET_DPAPI_PREFIX):
         try:
             return _dpapi_unprotect(stored)
-        except Exception as exc:  # noqa: BLE001 - callers need a clear config failure.
+        except _dpapi_exception_types() as exc:
             raise RuntimeError(f"Failed to decrypt local secret at {path} with Windows DPAPI.") from exc
     if stored.startswith(LOCAL_SECRET_KEYRING_PREFIX):
         return _keyring_read(stored)
@@ -213,12 +238,12 @@ def _load_or_create_local_secret_locked(path: Path, *, unavailable_message: str)
             if stored.startswith(LOCAL_SECRET_DPAPI_PREFIX):
                 try:
                     return _dpapi_unprotect(stored)
-                except Exception as exc:  # noqa: BLE001
+                except _dpapi_exception_types() as exc:
                     raise RuntimeError(unavailable_message) from exc
             if stored.startswith(LOCAL_SECRET_KEYRING_PREFIX):
                 try:
                     return _keyring_read(stored)
-                except Exception as exc:  # noqa: BLE001
+                except RuntimeError as exc:
                     raise RuntimeError(unavailable_message) from exc
             if stored:
                 if _secure_storage_available():

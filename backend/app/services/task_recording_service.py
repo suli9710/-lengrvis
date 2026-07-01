@@ -14,6 +14,7 @@ from app.core import db
 from app.core.schemas import now_iso
 from app.llm.registry import get_effective_settings
 from app.observability.best_effort import log_best_effort_failure
+from app.policy.redaction import redact_public_text, redact_value
 
 RECORDING_KIND = "step_screenshot"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -74,7 +75,7 @@ def capture_step_screenshot(
             step_id=step_id,
             phase=phase,
         )
-        return _failed_frame(task_id, step_id, phase, captured_at, file_name, str(exc))
+        return _failed_frame(task_id, step_id, phase, captured_at, file_name, _safe_recording_error(exc))
 
 
 def recording_enabled() -> bool:
@@ -237,6 +238,10 @@ def _failed_frame(
         "height": 0,
         "error": error,
     }
+
+
+def _safe_recording_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or ""))
 
 
 def _safe_name(value: str) -> str:

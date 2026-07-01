@@ -223,7 +223,7 @@ def _material_reusable(cert_path: Path, key_path: Path, names: dict[str, list[ob
         context.load_cert_chain(str(cert_path), str(key_path))
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-    except Exception:  # noqa: BLE001 - invalid local material should be replaced.
+    except (OSError, ValueError, ssl.SSLError, x509.ExtensionNotFound):
         return False
 
     now = datetime.now(UTC)

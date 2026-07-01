@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.core import db
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_audit_storage_payload
 
 if TYPE_CHECKING:
     from app.core.schemas import AuditEvent
 
 
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    redacted = redact_value(payload)
+    redacted = redact_audit_storage_payload(payload)
     return redacted if isinstance(redacted, dict) else {}
 
 
@@ -23,7 +23,7 @@ def record(
         task_id=task_id,
         event_type=event_type,
         actor=actor,
-        payload=sanitize_payload(payload or {}),
+        payload=dict(payload or {}),
     )
     return AuditEvent.model_validate(db.insert_audit_event(event))
 

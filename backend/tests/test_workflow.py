@@ -85,6 +85,50 @@ async def test_runtime_reports_unknown_handler_as_failed_execution():
     assert "No workflow handler" in result.errors[0]
 
 
+@pytest.mark.asyncio
+async def test_runtime_redacts_handler_exception_errors():
+    private_path = "C:/Users/Suli/private/workflow/.env"
+    secret_token = "workflow-secret-1234567890"
+    workflow = Workflow(id="wf", steps=[WorkflowStep(id="step", action="explode")])
+
+    def handler(_step: WorkflowStep) -> dict:
+        raise RuntimeError(f"failed reading {private_path} token={secret_token}")
+
+    result = await WorkflowRuntime().run(workflow, {"explode": handler})
+
+    assert result.ok is False
+    error = result.step_results["step"]["error"]
+    assert "failed reading" in error
+    assert "[REDACTED_LOCAL_PATH]" in error
+    assert private_path not in error
+    assert secret_token not in error
+    assert result.errors == [error]
+
+
+@pytest.mark.asyncio
+async def test_runtime_redacts_failed_handler_result_details():
+    private_file = "workflow-output.log"
+    api_key = "sk-workflow-secret"
+    workflow = Workflow(id="wf", steps=[WorkflowStep(id="step", action="fail")])
+
+    def handler(_step: WorkflowStep) -> dict:
+        return {
+            "ok": False,
+            "error": f"tool failed at {private_file} api_key={api_key}",
+            "details": {"path": "C:/Users/Suli/private/workflow/result.json"},
+        }
+
+    result = await WorkflowRuntime().run(workflow, {"fail": handler})
+
+    assert result.ok is False
+    step_result = result.step_results["step"]
+    assert "tool failed" in step_result["error"]
+    assert private_file not in step_result["error"]
+    assert api_key not in step_result["error"]
+    assert step_result["details"]["path"] == "[REDACTED_LOCAL_PATH]"
+    assert result.errors == [step_result["error"]]
+
+
 def test_topological_order_raises_workflow_error_for_raw_cycle():
     a = WorkflowStep(id="a", action="one", depends_on=["b"])
     b = WorkflowStep(id="b", action="two", depends_on=["a"])

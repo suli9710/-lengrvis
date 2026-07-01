@@ -20,6 +20,7 @@ DEFAULT_MAX_CHUNKS = 18
 DEFAULT_QA_TOP_K = 4
 SUMMARY_CHUNK_LIMIT = 2600
 REPORT_CONTENT_LIMIT = 30000
+DEFAULT_LLM_TIMEOUT_SECONDS = 45.0
 
 
 @dataclass(frozen=True)
@@ -33,14 +34,26 @@ class RetrievedChunk:
         return f"[chunk {self.index + 1}]"
 
 
-def _run_async(coro) -> Any:
+async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+
+
+def _run_async(coro, *, timeout_seconds: float | None = DEFAULT_LLM_TIMEOUT_SECONDS) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(asyncio.run, coro)
-        return future.result()
+        return asyncio.run(_with_timeout(coro, timeout_seconds))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds))
+    try:
+        guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
+        return future.result(timeout=guard_timeout)
+    finally:
+        if not future.done():
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _provider(task: str = "subagent"):
@@ -63,13 +76,14 @@ def _call_chat(
     task: str = "subagent",
     temperature: float = 0.2,
     provider_resolver: ProviderResolver | None = None,
+    timeout_seconds: float | None = DEFAULT_LLM_TIMEOUT_SECONDS,
 ) -> str | None:
     resolver = provider_resolver or _provider
     provider = resolver(task)
     if provider is None or _is_mock_provider(provider):
         return None
     try:
-        result = _run_async(provider.chat(messages, temperature=temperature))
+        result = _run_async(provider.chat(messages, temperature=temperature), timeout_seconds=timeout_seconds)
     except Exception:  # noqa: BLE001
         return None
     result_text = str(result or "").strip()

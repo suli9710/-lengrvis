@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from app.core import db
 from app.indexer.file_watcher import FileWatcher
 from app.orchestration.dispatcher import EventDispatcher
+from app.perception import environment_stream as environment_stream_module
 from app.perception import storage as perception_storage
 from app.perception.environment_stream import (
     EnvironmentEvent,
@@ -164,6 +167,49 @@ def test_environment_stream_continues_after_dispatcher_handler_error():
         assert seen == [event]
 
     asyncio.run(run())
+
+
+def test_environment_stream_times_out_slow_sink_and_continues_dispatch(monkeypatch):
+    async def run() -> None:
+        received: list[EnvironmentEvent] = []
+        dispatcher = EventDispatcher()
+        dispatcher.register("environment.event", lambda event: received.append(event))
+        stream = EnvironmentStream(dispatcher=dispatcher, rule_engine=EnvironmentRuleEngine([]))
+
+        async def slow_sink(_event: EnvironmentEvent) -> None:
+            await asyncio.sleep(1.0)
+
+        stream.subscribe(slow_sink)
+        monkeypatch.setattr(environment_stream_module, "DEFAULT_SINK_TIMEOUT_SECONDS", 0.01)
+        event = EnvironmentEvent(environment_type=EnvironmentEventType.SCREEN_CHANGED, summary_text="desktop changed")
+
+        started = time.monotonic()
+        await stream.emit(event)
+
+        assert time.monotonic() - started < 0.5
+        assert received == [event]
+
+    asyncio.run(run())
+
+
+def test_environment_stream_submit_schedules_background_without_blocking(monkeypatch):
+    received = threading.Event()
+    dispatcher = EventDispatcher()
+    dispatcher.register("environment.event", lambda _event: received.set())
+    stream = EnvironmentStream(dispatcher=dispatcher, rule_engine=EnvironmentRuleEngine([]))
+
+    async def slow_sink(_event: EnvironmentEvent) -> None:
+        await asyncio.sleep(0.2)
+
+    stream.subscribe(slow_sink)
+    monkeypatch.setattr(environment_stream_module, "DEFAULT_SINK_TIMEOUT_SECONDS", 1.0)
+    event = EnvironmentEvent(environment_type=EnvironmentEventType.SCREEN_CHANGED, summary_text="desktop changed")
+
+    started = time.monotonic()
+    stream.submit(event)
+
+    assert time.monotonic() - started < 0.1
+    assert received.wait(timeout=1.0)
 
 
 def test_environment_rules_can_load_from_settings():

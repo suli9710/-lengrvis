@@ -18,8 +18,8 @@ def _public_audit_events(events: list[dict]) -> list[dict]:
         item = dict(event)
         payload = item.get("payload")
         if isinstance(payload, dict):
-            # Read-path scrub also removes local absolute paths / file names that
-            # the write-path sanitizer (redact_value) intentionally leaves intact.
+            # Keep export-time redaction as a defense-in-depth pass for legacy
+            # rows and any externally inserted audit payloads.
             item["payload"] = redact_audit_payload(payload)
         result.append(item)
     return result

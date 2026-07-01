@@ -16,6 +16,7 @@ from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.core.subprocess_output import decode_process_output
 from app.llm.registry import get_effective_settings
+from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import raise_if_tool_aborted
@@ -507,6 +508,10 @@ def _truncate_process_output(text: str, limit: int = 2000) -> str:
     return text[:limit] + "..."
 
 
+def _safe_process_output(text: str) -> str:
+    return redact_public_text(str(redact_value(_truncate_process_output(text)) or ""))
+
+
 def _run_uninstall_command(
     command_args: list[str],
     *,
@@ -524,14 +529,14 @@ def _run_uninstall_command(
         )
         return {
             "returncode": completed.returncode,
-            "stdout": _truncate_process_output(decode_process_output(completed.stdout)),
-            "stderr": _truncate_process_output(decode_process_output(completed.stderr)),
+            "stdout": _safe_process_output(decode_process_output(completed.stdout)),
+            "stderr": _safe_process_output(decode_process_output(completed.stderr)),
             "timed_out": False,
         }
     except subprocess.TimeoutExpired:
         return {"returncode": -1, "stdout": "", "stderr": "Uninstaller timed out.", "timed_out": True}
     except OSError as exc:
-        return {"returncode": -1, "stdout": "", "stderr": str(exc), "timed_out": False}
+        return {"returncode": -1, "stdout": "", "stderr": _safe_process_output(str(exc)), "timed_out": False}
 
 
 def _validate_winget_id(winget_id: str) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,17 @@ class _StubProvider:
             raise RuntimeError("provider unavailable")
         index = min(len(self.calls) - 1, len(self.replies) - 1)
         return self.replies[index]
+
+
+class _SlowProvider:
+    name = "slow"
+
+    def __init__(self, delay_seconds: float = 1.0) -> None:
+        self.delay_seconds = delay_seconds
+
+    async def chat(self, messages, model=None, temperature=None, tools=None) -> str:  # noqa: ANN001, ARG002
+        await asyncio.sleep(self.delay_seconds)
+        return "<<LATE RESPONSE>>"
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +112,34 @@ def test_summarize_falls_back_when_provider_raises(monkeypatch, sample_text, con
 
     assert result["note"] == "extractive_fallback"
     assert "Payment must be completed" in result["summary"]
+
+
+def test_document_chat_times_out_to_fallback():
+    started = time.monotonic()
+
+    result = document_service._call_chat(
+        [{"role": "user", "content": "summarize this"}],
+        provider_resolver=lambda task="subagent": _SlowProvider(delay_seconds=1.0),
+        timeout_seconds=0.01,
+    )
+
+    assert result is None
+    assert time.monotonic() - started < 0.5
+
+
+def test_document_chat_timeout_returns_from_running_event_loop():
+    async def invoke() -> str | None:
+        return document_service._call_chat(
+            [{"role": "user", "content": "summarize this"}],
+            provider_resolver=lambda task="subagent": _SlowProvider(delay_seconds=1.0),
+            timeout_seconds=0.01,
+        )
+
+    started = time.monotonic()
+    result = asyncio.run(invoke())
+
+    assert result is None
+    assert time.monotonic() - started < 0.5
 
 
 def test_summarize_falls_back_with_mock_provider(monkeypatch, sample_text, context):

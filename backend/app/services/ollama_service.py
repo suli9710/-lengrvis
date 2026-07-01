@@ -16,7 +16,7 @@ import httpx
 
 try:
     import psutil
-except Exception:  # pragma: no cover - optional in stripped-down test envs  # noqa: BLE001
+except (ImportError, OSError):  # pragma: no cover - optional in stripped-down test envs
     psutil = None  # type: ignore[assignment]
 
 from app.config import get_env
@@ -407,7 +407,7 @@ async def is_running() -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(f"{OLLAMA_API}/api/tags")
             return resp.status_code == 200
-    except Exception:  # noqa: BLE001
+    except (httpx.HTTPError, OSError):
         return False
 
 
@@ -420,7 +420,7 @@ async def list_models() -> list[str]:
                 return []
             data = resp.json()
             return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
-    except Exception:  # noqa: BLE001
+    except (httpx.HTTPError, OSError, ValueError):
         return []
 
 
@@ -476,7 +476,7 @@ async def install() -> dict[str, Any]:
         )
     except TimeoutError:
         return _ollama_action_error("Installation timed out after 120 seconds.", "install_runtime")
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError) as exc:
         return _ollama_action_error(str(exc), "install_runtime")
 
 
@@ -500,7 +500,7 @@ def stop_spawned_server() -> bool:
             proc.kill()
         record("ollama.stop", "OllamaService", {"ok": True, "spawned_by_backend": True})
         return True
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError) as exc:
         record("ollama.stop", "OllamaService", {"ok": False, "error": _public_text(exc)})
         return False
 
@@ -536,7 +536,7 @@ async def start_server() -> dict[str, Any]:
             "models_dir": "",
             "models_dir_configured": bool(models_dir),
         }
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError) as exc:
         record("ollama.start", "OllamaService", {"ok": False, "error": _public_text(exc)})
         return _ollama_action_error(str(exc), "start_runtime")
 
@@ -670,7 +670,7 @@ def _ollama_bundle_manifest_summary() -> dict[str, Any]:
         return {"present": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         return {"present": True, "valid": False, "path": "", "error": _public_text(exc)}
     runtime_summary = data.get("runtime", {}).get("summary", {}) if isinstance(data, dict) else {}
     models_payload = data.get("models", {}) if isinstance(data, dict) else {}
@@ -703,7 +703,7 @@ def _same_path(left: Path | None, right: Path | None) -> bool:
         return False
     try:
         return left.expanduser().resolve() == right.expanduser().resolve()
-    except Exception:  # noqa: BLE001
+    except (OSError, RuntimeError):
         return str(left.expanduser()).lower() == str(right.expanduser()).lower()
 
 
@@ -1218,7 +1218,7 @@ def _total_memory_bytes() -> int:
         return 0
     try:
         return int(psutil.virtual_memory().total)
-    except Exception:  # noqa: BLE001
+    except (OSError, RuntimeError):
         return 0
 
 
@@ -1232,7 +1232,7 @@ def _ollama_disk_free_bytes() -> int:
                 break
             existing = parent
         return int(shutil.disk_usage(existing or os.path.expanduser("~")).free)
-    except Exception:  # noqa: BLE001
+    except (OSError, RuntimeError):
         return 0
 
 
@@ -1247,7 +1247,7 @@ def _gpu_summary() -> str:
             timeout=0.75,
             check=False,
         )
-    except Exception:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError):
         return ""
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip() and line.strip().lower() != "name"]
     return ", ".join(lines[:3])
@@ -1279,7 +1279,7 @@ async def pull_model(model: str | None = None) -> dict[str, Any]:
                 record("ollama.pull_complete", "OllamaService", {"model": target})
                 return {"ok": True, "model": target, "message": f"Model {target} pulled successfully."}
             return _ollama_action_error(f"Pull failed with status {resp.status_code}", "download_model", model=target)
-    except Exception as exc:  # noqa: BLE001
+    except (httpx.HTTPError, OSError) as exc:
         return _ollama_action_error(str(exc), "download_model", model=target)
 
 
@@ -1323,7 +1323,7 @@ async def pull_model_streaming(model: str | None = None):
                         continue
         record("ollama.pull_complete", "OllamaService", {"model": target})
         yield {"status": "success", "model": target}
-    except Exception as exc:  # noqa: BLE001
+    except (httpx.HTTPError, OSError) as exc:
         yield _ollama_action_error(str(exc), "download_model", model=target)
 
 

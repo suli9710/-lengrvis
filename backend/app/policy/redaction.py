@@ -130,10 +130,19 @@ def redact_audit_payload(value: Any) -> Any:
 
     Same as :func:`redact_value` but additionally scrubs local absolute paths,
     punctuated public file names, and prompt-injection text from string leaves
-    (via :func:`redact_public_text`) so the ``/api/audit`` surface cannot leak
-    them. Applied on read only; the hash-chained stored payload is untouched.
+    (via :func:`redact_public_text`) so audit export surfaces cannot leak them.
     """
     return _redact_value(value, scrub_local_paths=True)
+
+
+def redact_audit_storage_payload(value: Any) -> Any:
+    """Storage redaction for hash-chained audit payloads.
+
+    Audit rows are an internal evidence source, so path values remain useful for
+    diagnostics. Sensitive keys and inline secret patterns are still redacted
+    before the row is hashed and persisted.
+    """
+    return _redact_audit_storage_value(value)
 
 
 def redact_run_payload(value: Any) -> Any:
@@ -183,6 +192,37 @@ def _redact_run_keyed_value(key: str, value: Any, *, in_form: bool = False) -> A
         return REDACTED
     child_in_form = in_form or _is_form_container_key(key)
     return _redact_run_value(value, key=key, in_form=child_in_form)
+
+
+def _redact_audit_storage_value(value: Any, *, key: str = "", in_form: bool = False) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(item_key): _redact_audit_storage_keyed_value(str(item_key), item, in_form=in_form)
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_audit_storage_value(item, key=key, in_form=in_form) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_audit_storage_value(item, key=key, in_form=in_form) for item in value]
+    if isinstance(value, set):
+        return [_redact_audit_storage_value(item, key=key, in_form=in_form) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        if in_form or _is_form_value_key(key):
+            return REDACTED
+        redact_generic_tokens = not _is_path_value_key(key, value)
+        return redact_text(value, redact_generic_tokens=redact_generic_tokens)
+    if in_form and value is not None:
+        return REDACTED
+    return value
+
+
+def _redact_audit_storage_keyed_value(key: str, value: Any, *, in_form: bool = False) -> Any:
+    if contains_sensitive_key(key):
+        if isinstance(value, dict | list | tuple | set):
+            return _redact_audit_storage_value(value)
+        return REDACTED
+    child_in_form = in_form or _is_form_container_key(key)
+    return _redact_audit_storage_value(value, key=key, in_form=child_in_form)
 
 
 def redact(value: Any) -> Any:

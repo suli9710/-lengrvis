@@ -178,6 +178,44 @@ def test_runtime_direct_observe_result_is_sanitized_without_dropping_text() -> N
     assert "secret-token-value" not in serialized_result
 
 
+def test_runtime_adapter_exception_error_is_redacted_across_surfaces() -> None:
+    private_path = "C:/Users/Suli/private/browser/.env"
+    private_file = "browser-error.log"
+    secret_token = "browser-runtime-secret-1234567890"
+
+    class FailingAdapter(FakeBrowserAdapter):
+        def perform(self, session, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
+            raise RuntimeError(f"browser failed at {private_path} {private_file} token={secret_token}")
+
+    runtime = BrowserActivityRuntime(adapter=FailingAdapter())
+    started = runtime.session_start({"task_id": "task-browser-error"}, _context())
+
+    result = runtime.observe({"session_id": started["session"]["id"]}, _context())
+    events = runtime.events({"session_id": started["session"]["id"]})["events"]
+    audit_events = db.fetch_many("audit_events", "task_id = ?", ("task-browser-error",), limit=10)
+
+    assert result["ok"] is False
+    serialized_surfaces = str({"result": result, "events": events, "audit_events": audit_events})
+    assert "browser failed" in result["error"]
+    assert "[REDACTED_LOCAL_PATH]" in serialized_surfaces
+    assert "[REDACTED_FILE_NAME]" in serialized_surfaces
+    assert private_path not in serialized_surfaces
+    assert private_file not in serialized_surfaces
+    assert secret_token not in serialized_surfaces
+
+
+def test_runtime_session_lookup_errors_redact_token_like_ids() -> None:
+    runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
+    secret_session_id = "browser_session_secret_1234567890abcdefghijklmnopqrstuvwxyz"
+
+    result = runtime.session_info({"session_id": secret_session_id})
+
+    assert result["ok"] is False
+    assert "Unknown browser session" in result["error"]
+    assert secret_session_id not in result["error"]
+    assert "[REDACTED_TOKEN]" in result["error"]
+
+
 def test_write_action_dry_run_preview_is_redacted_and_does_not_execute() -> None:
     adapter = FakeBrowserAdapter()
     runtime = BrowserActivityRuntime(adapter=adapter)

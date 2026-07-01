@@ -163,6 +163,32 @@ def test_read_local_secret_missing_file_returns_empty(tmp_path: Path):
     assert read_local_secret(tmp_path / "missing.secret") == ""
 
 
+def test_read_local_secret_reports_corrupt_dpapi_payload(monkeypatch, tmp_path: Path):
+    secret_path = tmp_path / "unit.secret"
+    secret_path.write_text(f"{LOCAL_SECRET_DPAPI_PREFIX}corrupt", encoding="utf-8")
+
+    def fail_unprotect(stored: str) -> str:
+        raise ValueError(f"bad payload: {stored}")
+
+    monkeypatch.setattr(local_secret, "_dpapi_unprotect", fail_unprotect)
+
+    with pytest.raises(RuntimeError, match="Failed to decrypt local secret"):
+        read_local_secret(secret_path)
+
+
+def test_load_or_create_reports_corrupt_dpapi_payload(monkeypatch, tmp_path: Path):
+    secret_path = tmp_path / "unit.secret"
+    secret_path.write_text(f"{LOCAL_SECRET_DPAPI_PREFIX}corrupt", encoding="utf-8")
+
+    def fail_unprotect(stored: str) -> str:
+        raise ValueError(f"bad payload: {stored}")
+
+    monkeypatch.setattr(local_secret, "_dpapi_unprotect", fail_unprotect)
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+
+
 def test_write_leaves_no_temp_file_and_survives_stale_temp(tmp_path: Path):
     secret_path = tmp_path / "unit.secret"
     stale = tmp_path / "unit.secret.tmp"

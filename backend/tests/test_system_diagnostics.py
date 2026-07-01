@@ -469,6 +469,9 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
     camel_task_body = "camel task body marker: reconcile private invoices"
     camel_user_goal = "camel user goal marker: open private compensation sheet"
     machine_id = "machine-id-secret-1234567890"
+    network_interface = "Suli iPhone Secret Hotspot"
+    network_ip = "192.168.77.42"
+    network_mac = "aa:bb:cc:dd:ee:ff"
     update_token = "update-token-secret-1234567890"  # noqa: S105 - seeded fake secret for redaction tests.
     crash_report_id = "crash-report-secret-1234567890"
     bare_recording_filename = "recording-secret-frame.png"
@@ -493,7 +496,12 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         lambda: {
             "info": {"memory_total": 2048, "memory_available": 1024},
             "disks": [{"mountpoint": str(data_dir), "note": f"org folder {data_dir}"}],
-            "network": {},
+            "network": {
+                network_interface: [
+                    {"family": "AF_INET", "address": network_ip, "netmask": "255.255.255.0"},
+                    {"family": "AF_LINK", "address": network_mac},
+                ]
+            },
             "battery": None,
             "top_processes": [
                 {
@@ -632,6 +640,9 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         camel_task_body,
         camel_user_goal,
         machine_id,
+        network_interface,
+        network_ip,
+        network_mac,
         update_token,
         crash_report_id,
         bare_recording_filename,
@@ -654,6 +665,12 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         assert secret not in package_text
     assert diagnostics["support_debug"]["artifacts"]["latestFile"] == "[redacted:task_recording_artifact]"
     assert diagnostics["support_debug"]["artifacts"]["thumbnail"]["status_only"] is True
+    assert diagnostics["network"] == {
+        "redacted": True,
+        "status_only": True,
+        "interface_count": 1,
+        "address_count": 2,
+    }
     assert "[path_label:app_data_dir]/[redacted:relative_path]" in package_text
     assert "[redacted:local_user]" in package_text
     assert "[REDACTED" in package_text or "[redacted:" in package_text
@@ -674,13 +691,21 @@ def test_system_diagnostics_get_redacts_seeded_sensitive_evidence(monkeypatch, t
     grant_id = "grant-get-secret-1234567890"
     pairing_code = "pair-get-secret-1234567890"
     host_name = "SULI-WORKSTATION-GET-SECRET"
+    network_interface = "Suli Secret Ethernet"
+    network_ip = "10.42.0.5"
+    network_mac = "11:22:33:44:55:66"
     monkeypatch.setattr(
         system_service,
         "diagnostics",
         lambda: {
             "info": {"memory_total": 2048, "memory_available": 1024},
             "disks": [{"mountpoint": str(data_dir), "note": f"org folder {data_dir}"}],
-            "network": {},
+            "network": {
+                network_interface: [
+                    {"family": "AF_INET", "address": network_ip, "netmask": "255.255.0.0"},
+                    {"family": "AF_LINK", "address": network_mac},
+                ]
+            },
             "battery": None,
             "top_processes": [
                 {
@@ -723,6 +748,12 @@ def test_system_diagnostics_get_redacts_seeded_sensitive_evidence(monkeypatch, t
     assert payload["support_debug"]["model_path"] == "[redacted:sensitive_field]"
     assert payload["support_debug"]["hostname"] == "[redacted:sensitive_field]"
     assert payload["top_processes"][0]["username"] == "[redacted:local_user]"
+    assert payload["network"] == {
+        "redacted": True,
+        "status_only": True,
+        "interface_count": 1,
+        "address_count": 2,
+    }
 
     payload_text = json.dumps(
         {key: value for key, value in payload.items() if key != "local_paths"},
@@ -736,6 +767,9 @@ def test_system_diagnostics_get_redacts_seeded_sensitive_evidence(monkeypatch, t
         grant_id,
         pairing_code,
         host_name,
+        network_interface,
+        network_ip,
+        network_mac,
         str(model_path),
         "Acme Research Models",
     ):

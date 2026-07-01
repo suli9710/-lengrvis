@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import logging
@@ -29,6 +30,29 @@ from app.perception.storage import is_sensitive_context, sanitize_for_storage, s
 logger = logging.getLogger(__name__)
 
 DEFAULT_TRIGGERED_SIGNATURE_LIMIT = 1000
+DEFAULT_SINK_TIMEOUT_SECONDS = 10.0
+_BACKGROUND_LOOP: asyncio.AbstractEventLoop | None = None
+_BACKGROUND_LOOP_LOCK = threading.Lock()
+
+
+def _ensure_background_loop() -> asyncio.AbstractEventLoop:
+    global _BACKGROUND_LOOP
+    with _BACKGROUND_LOOP_LOCK:
+        loop = _BACKGROUND_LOOP
+        if loop is not None and not loop.is_closed():
+            return loop
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _drive() -> None:
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        threading.Thread(target=_drive, name="lengrvis-environment-stream-loop", daemon=True).start()
+        ready.wait()
+        _BACKGROUND_LOOP = loop
+        return loop
 
 
 class EnvironmentEventType(StrEnum):
@@ -278,6 +302,8 @@ class EnvironmentStream:
         # The event loop only keeps weak refs to tasks; hold scheduled
         # fire-and-forget tasks until done so they can't be GC'd mid-run.
         self._pending_tasks: set[asyncio.Task] = set()
+        self._background_futures: set[concurrent.futures.Future] = set()
+        self._background_futures_lock = threading.RLock()
 
     @property
     def started(self) -> bool:
@@ -303,6 +329,12 @@ class EnvironmentStream:
 
     async def stop(self) -> None:
         self._started = False
+        with self._background_futures_lock:
+            futures = list(self._background_futures)
+            self._background_futures.clear()
+        for future in futures:
+            if not future.done():
+                future.cancel()
         if self._app_context_task is not None:
             self._app_context_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -351,7 +383,16 @@ class EnvironmentStream:
             try:
                 result = sink(event)
                 if inspect.isawaitable(result):
-                    await result
+                    if DEFAULT_SINK_TIMEOUT_SECONDS <= 0:
+                        await result
+                    else:
+                        await asyncio.wait_for(result, timeout=DEFAULT_SINK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "Environment stream sink timed out for %s after %.1fs",
+                    event.environment_type,
+                    DEFAULT_SINK_TIMEOUT_SECONDS,
+                )
             except Exception:
                 logger.exception("Environment stream sink failed for %s", event.environment_type)
 
@@ -378,6 +419,23 @@ class EnvironmentStream:
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
 
+    def _submit_background(self, coroutine: Any) -> None:
+        future = asyncio.run_coroutine_threadsafe(coroutine, _ensure_background_loop())
+        with self._background_futures_lock:
+            self._background_futures.add(future)
+
+        def _forget(done: concurrent.futures.Future) -> None:
+            with self._background_futures_lock:
+                self._background_futures.discard(done)
+            try:
+                done.result()
+            except concurrent.futures.CancelledError:
+                return
+            except Exception:
+                logger.exception("Environment stream background task failed")
+
+        future.add_done_callback(_forget)
+
     def _schedule(self, coroutine: Any) -> None:
         loop = self._loop
         if loop is not None and loop.is_running():
@@ -386,7 +444,7 @@ class EnvironmentStream:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(coroutine)
+            self._submit_background(coroutine)
         else:
             self._spawn_tracked(coroutine)
 

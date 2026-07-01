@@ -11,12 +11,15 @@ import http.server
 import json
 import socketserver
 import threading
+import time
+from typing import Any
 
 import pytest
 
 from app.config import AppSettings
 from app.core.outbound_url import PinnedOutboundRequest
 from app.mcp import MCPClient, MCPRegistry, MCPServerConfig
+from app.mcp.registry import _build_executor
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
@@ -211,6 +214,52 @@ def test_mcp_registry_adapts_to_tool_definitions(mcp_server):
         assert definition.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         assert definition.trust_tier == "third_party"
         assert definition.fast_path_eligible is False
+
+
+def test_mcp_executor_times_out_slow_tool_call():
+    class SlowClient:
+        timeout = 0.01
+        config = MCPServerConfig(name="slow", url="https://mcp.example")
+
+        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return {"ok": True}
+
+    registry = MCPRegistry()
+    registry.clients["slow"] = SlowClient()  # type: ignore[assignment]
+    execute = _build_executor(registry, "slow", "hang")
+
+    started = time.monotonic()
+    result = execute({}, {})
+
+    assert result["ok"] is False
+    assert "timed out" in result["error"]
+    assert result["server"] == "slow"
+    assert time.monotonic() - started < 0.5
+
+
+def test_mcp_executor_timeout_returns_from_running_event_loop():
+    class SlowClient:
+        timeout = 0.01
+        config = MCPServerConfig(name="slow", url="https://mcp.example")
+
+        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return {"ok": True}
+
+    registry = MCPRegistry()
+    registry.clients["slow"] = SlowClient()  # type: ignore[assignment]
+    execute = _build_executor(registry, "slow", "hang")
+
+    async def invoke() -> dict[str, Any]:
+        return execute({}, {})
+
+    started = time.monotonic()
+    result = asyncio.run(invoke())
+
+    assert result["ok"] is False
+    assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
 
 
 def test_mcp_registry_skips_disabled_servers():

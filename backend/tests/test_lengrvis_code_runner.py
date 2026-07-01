@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 import pytest
@@ -10,6 +11,7 @@ from app.orchestration.execution_models import RunPhase, RunState
 from app.orchestration.lengrvis_code_config import LengrvisCodeConfig
 from app.orchestration.lengrvis_code_runner import (
     LengrvisCodeProcessRegistry,
+    LengrvisCodeStreamSummary,
     classify_lengrvis_code_error,
     lengrvis_code_summary_to_turn_result,
     parse_lengrvis_code_ndjson_lines,
@@ -257,6 +259,48 @@ def test_bad_ndjson_summary_is_classified_as_error() -> None:
 
     assert classify_lengrvis_code_error(summary) == "bad_ndjson"
     assert summary.is_error is True
+
+
+def test_lengrvis_code_public_failure_payload_redacts_diagnostics() -> None:
+    raw_path = "C:/Users/Suli/private/project/.env"
+    raw_file = "leaky-output.log"
+    secret_token = "lengrvis-code-secret-1234567890"
+    api_key = "sk-lengrvis-code-secret"
+    summary = LengrvisCodeStreamSummary(
+        launch_error=f"failed to spawn {raw_path} token={secret_token}",
+        stderr=f"stderr references {raw_file} api_key={api_key}",
+        invalid_lines=[f"not-json from {raw_path} token={secret_token}"],
+        result={
+            "is_error": True,
+            "subtype": "error_during_execution",
+            "result": f"failed near {raw_path}",
+            "errors": [f"tool failed at {raw_file} token={secret_token}"],
+            "permission_denials": [{"tool_name": "Write", "reason": f"policy blocked {raw_path}"}],
+        },
+    )
+    state = RunState(run_id="devrun_private_failure", engine="developer", phase=RunPhase.RUNNING, goal="classify")
+
+    result = lengrvis_code_summary_to_turn_result(state, summary)
+    payload = result.outputs["lengrvis_code"]
+    serialized = json.dumps(
+        {
+            "message": result.message,
+            "transition_reason": result.state.transition_reason,
+            "payload": payload,
+        },
+        sort_keys=True,
+    )
+
+    assert result.state.phase == RunPhase.FAILED
+    assert "failed to spawn" in result.state.transition_reason
+    assert "[REDACTED_LOCAL_PATH]" in serialized
+    assert raw_path not in serialized
+    assert raw_file not in serialized
+    assert secret_token not in serialized
+    assert api_key not in serialized
+    assert payload["launch_error"] == result.state.transition_reason.removeprefix("Lengrvis Code launch failure: ")
+    assert payload["stderr_diagnostics"] == ["stderr references [REDACTED_FILE_NAME] api_key=[REDACTED]"]
+    assert payload["invalid_lines"] == ["not-json from [REDACTED_LOCAL_PATH] token=[REDACTED]"]
 
 
 @pytest.mark.asyncio

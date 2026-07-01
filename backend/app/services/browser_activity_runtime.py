@@ -144,7 +144,7 @@ class LocalBrowserActivityAdapter:
             final_url = _validate_final_url(final_url)
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "httpx"
-            data["playwright_error"] = str(exc)
+            data["playwright_error"] = _safe_browser_error(exc)
             if response_truncated:
                 data["response_truncated"] = True
         return data
@@ -172,7 +172,7 @@ class LocalBrowserActivityAdapter:
                 final_url = _validate_final_url(page.url)
                 browser.close()
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"Playwright screenshot failed: {exc}"}
+            return {"ok": False, "error": f"Playwright screenshot failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
     def _wait(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -193,7 +193,7 @@ class LocalBrowserActivityAdapter:
                 final_url = _validate_final_url(page.url)
                 browser.close()
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"wait_for failed: {exc}"}
+            return {"ok": False, "error": f"wait_for failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
     def _write_like(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +232,7 @@ class LocalBrowserActivityAdapter:
                 title = page.title()
                 browser.close()
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"{kind} failed: {exc}"}
+            return {"ok": False, "error": f"{kind} failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
 
 
@@ -310,7 +310,7 @@ class BrowserActivityRuntime:
         try:
             session = self._require_session(str(args.get("session_id") or ""))
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": _safe_browser_error(exc)}
         session.status = "closed"
         session.updated_at = now_iso()
         event = self._append_event(
@@ -328,7 +328,7 @@ class BrowserActivityRuntime:
         try:
             session = self._require_session(str(args.get("session_id") or ""))
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": _safe_browser_error(exc)}
         return {"ok": True, "session": self._session_dict(session)}
 
     def sessions(self, args: dict[str, Any] | None = None, context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -363,7 +363,7 @@ class BrowserActivityRuntime:
         try:
             session = self._session_for_action(args, action, context)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": _safe_browser_error(exc)}
         kind = str(action.get("kind") or "").lower()
         dry_run = bool(action.get("dry_run", args.get("dry_run", kind in WRITE_ACTION_KINDS)))
         action["dry_run"] = dry_run
@@ -437,7 +437,7 @@ class BrowserActivityRuntime:
         try:
             result = self.adapter.perform(session, action, context)
         except Exception as exc:  # noqa: BLE001
-            result = {"ok": False, "error": str(exc)}
+            result = {"ok": False, "error": _safe_browser_error(exc)}
         ok = bool(result.get("ok"))
         self._update_session_from_result(session, result)
         event = self._append_event(
@@ -465,7 +465,7 @@ class BrowserActivityRuntime:
         try:
             session = self._require_session(session_id)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": _safe_browser_error(exc)}
         events = self.events({"session_id": session_id, "limit": int(args.get("limit") or 1000)})["events"]
         return {
             "ok": True,
@@ -1062,6 +1062,10 @@ def _safe_metadata_label_value(value: Any) -> Any:
 
 def _safe_text(text: str) -> str:
     return redact_public_text(text) if text else ""
+
+
+def _safe_browser_error(value: Any) -> str:
+    return _safe_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
 
 
 def _parse_iso(value: str) -> datetime | None:

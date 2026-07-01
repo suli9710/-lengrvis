@@ -163,6 +163,35 @@ def test_rollback_fails_closed_without_authorized_directories(tmp_path: Path):
     assert moved.exists()
 
 
+def test_rollback_failure_detail_redacts_paths_and_secrets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    original = tmp_path / "from.txt"
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-redacted-failure",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
+    )
+
+    def fake_move_file(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise OSError(
+            "move failed for C:/Users/Suli/private/private-rollback.xlsx "
+            "token=rollback-secret-1234567890"
+        )
+
+    monkeypatch.setattr(rollback_tools, "safe_move_file", fake_move_file)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["action"] == "move_back"
+    assert "move failed" in outcome["detail"]
+    assert "rollback-secret-1234567890" not in outcome["detail"]
+    assert "C:/Users/Suli/private/private-rollback.xlsx" not in outcome["detail"]
+    assert "private-rollback.xlsx" not in outcome["detail"]
+    assert "[REDACTED]" in outcome["detail"]
+
+
 def test_cleanup_rollback_preview_fails_closed_without_authorized_directories(tmp_path: Path):
     with pytest.raises(SecurityError, match="No authorized directories configured"):
         rollback_tools.rollback_cleanup_result(

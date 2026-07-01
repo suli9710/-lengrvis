@@ -35,6 +35,7 @@ DEFAULT_MAX_PDF_OCR_IMAGES = 64
 DEFAULT_MAX_PDF_OCR_IMAGE_BYTES = 12 * 1024 * 1024
 DEFAULT_MAX_PADDLE_OCR_PAGES = 32
 DEFAULT_MAX_PADDLE_OCR_LINES = 512
+DEFAULT_PROVIDER_OCR_TIMEOUT_SECONDS = 45.0
 
 logger = logging.getLogger(__name__)
 
@@ -275,10 +276,17 @@ def accelerated_ocr_health(settings: AppSettings | None = None) -> dict[str, Any
     return detect_accelerated_ocr(settings=settings)
 
 
-def provider_ocr_image(image_path: Path, *, settings: AppSettings | None = None) -> OCRResult:
+def provider_ocr_image(
+    image_path: Path,
+    *,
+    settings: AppSettings | None = None,
+    timeout_seconds: float | None = DEFAULT_PROVIDER_OCR_TIMEOUT_SECONDS,
+) -> OCRResult:
     try:
         provider = get_provider(settings=settings, task="ocr")
-        text = str(_run_async(provider.ocr(str(image_path))) or "").strip()
+        text = str(_run_async(provider.ocr(str(image_path)), timeout_seconds=timeout_seconds) or "").strip()
+    except TimeoutError:
+        return OCRResult(ok=False, source="vision_provider", error="Provider OCR timed out.")
     except NotImplementedError:
         return OCRResult(ok=False, source="vision_provider", error="Provider OCR is not configured.")
     except LocalBackendUnavailable as exc:
@@ -635,14 +643,26 @@ def _has_module(name: str) -> bool:
         return False
 
 
-def _run_async(coro) -> Any:
+async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+
+
+def _run_async(coro, *, timeout_seconds: float | None = DEFAULT_PROVIDER_OCR_TIMEOUT_SECONDS) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(asyncio.run, coro)
-        return future.result()
+        return asyncio.run(_with_timeout(coro, timeout_seconds))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds))
+    try:
+        guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
+        return future.result(timeout=guard_timeout)
+    finally:
+        if not future.done():
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def guess_language(text: str) -> str:

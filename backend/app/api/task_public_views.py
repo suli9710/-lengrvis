@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.context.agent_message_projection import llm_safe_agent_message
 from app.core import db
 from app.core.schemas import AgentMessage, Task
 from app.policy.redaction import redact_public_text, redact_value
@@ -126,7 +127,7 @@ PUBLIC_STATUS_ALIASES = {
 
 def openai_agent_messages(task_id: str) -> list[dict]:
     return [
-        AgentMessage.model_validate(item).to_openai_dict()
+        llm_safe_agent_message(AgentMessage.model_validate(item))
         for item in db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
     ]
 
@@ -137,8 +138,7 @@ def public_agent_messages(task_id: str) -> list[dict]:
 
 def public_agent_message(item: dict) -> dict:
     model = AgentMessage.model_validate(item)
-    message = model.to_openai_dict()
-    safe = dict(message)
+    safe = llm_safe_agent_message(model, include_legacy=True, redact_user_content=True)
     safe["content"] = public_agent_message_content(model)
     for key in ("metadata", "structured_payload", "tool_calls"):
         if key in safe:

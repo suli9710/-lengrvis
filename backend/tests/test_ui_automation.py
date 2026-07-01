@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from app.core import db
@@ -128,6 +131,35 @@ class FakeAutomation:
 
     def CreateTrueCondition(self):
         return object()
+
+
+def test_ui_automation_bridge_times_out_slow_call() -> None:
+    async def slow_call() -> dict:
+        await asyncio.sleep(1.0)
+        return {"ok": True}
+
+    started = time.monotonic()
+    result = ui_automation_tools._run_ui_automation(slow_call(), "slow", timeout_seconds=0.01)
+
+    assert result["ok"] is False
+    assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
+
+
+def test_ui_automation_bridge_timeout_returns_from_running_event_loop() -> None:
+    async def slow_call() -> dict:
+        await asyncio.sleep(1.0)
+        return {"ok": True}
+
+    async def invoke() -> dict:
+        return ui_automation_tools._run_ui_automation(slow_call(), "slow", timeout_seconds=0.01)
+
+    started = time.monotonic()
+    result = asyncio.run(invoke())
+
+    assert result["ok"] is False
+    assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
 
 
 @pytest.mark.asyncio

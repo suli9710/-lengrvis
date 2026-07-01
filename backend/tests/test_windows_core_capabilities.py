@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import http.server
+import json
 import socketserver
+import sys
 import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -149,6 +152,44 @@ def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_pat
     assert result["verified_removed"] is True
     assert result["returncode"] == 0
     assert runs[0]["command"] == ["MsiExec.exe", "/X", "{ABC-123}"]
+
+
+def test_uninstall_app_redacts_process_output(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    call_count = 0
+
+    def registry_scan():
+        nonlocal call_count
+        call_count += 1
+        return _registry_product_apps() if call_count == 1 else []
+
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", registry_scan)
+
+    def fake_run(*args, **kwargs):  # noqa: ANN001, ANN002
+        class _Completed:
+            returncode = 1
+            stdout = b"removed C:/Users/Suli/private/app-output.log token=app-stdout-secret-1234567890"
+            stderr = b"failed C:/Users/Suli/private/app-error.txt api_key=app-stderr-secret-1234567890"
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
+    result_text = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is False
+    assert result["returncode"] == 1
+    assert "app-stdout-secret-1234567890" not in result_text
+    assert "app-stderr-secret-1234567890" not in result_text
+    assert "C:/Users/Suli/private/app-output.log" not in result_text
+    assert "C:/Users/Suli/private/app-error.txt" not in result_text
+    assert "app-output.log" not in result_text
+    assert "app-error.txt" not in result_text
+    assert "[REDACTED]" in result_text
 
 
 def test_uninstall_app_aborts_before_uninstaller_process(monkeypatch, tmp_path):
@@ -533,6 +574,38 @@ def test_system_diagnostics_startup_and_settings_dry_run(monkeypatch):
     assert diagnostics["local_ai"]["probe_mode"] == "summary_only"
     assert isinstance(startup["startup_items"], list)
     assert settings == {"ok": True, "dry_run": True, "uri": "ms-settings:display"}
+
+
+def test_system_diagnostics_redacts_best_effort_errors(monkeypatch):
+    sensitive_error = "failed at C:\\Users\\Suli\\Desktop\\secrets\\.env with sk-system-secret-1234567890"
+
+    fake_psutil = types.SimpleNamespace()
+    fake_psutil.cpu_count = lambda: (_ for _ in ()).throw(RuntimeError(sensitive_error))
+    fake_psutil.virtual_memory = lambda: types.SimpleNamespace(total=0, available=0)
+    fake_psutil.disk_partitions = lambda all=False: [  # noqa: A002 - mirrors psutil signature.
+        types.SimpleNamespace(mountpoint="C:\\", device="C:", fstype="NTFS", opts="")
+    ]
+    fake_psutil.disk_usage = lambda _mountpoint: (_ for _ in ()).throw(RuntimeError(sensitive_error))
+    fake_psutil.net_if_addrs = lambda: (_ for _ in ()).throw(RuntimeError(sensitive_error))
+    fake_psutil.sensors_battery = lambda: (_ for _ in ()).throw(RuntimeError(sensitive_error))
+    fake_psutil.process_iter = lambda _attrs: (_ for _ in ()).throw(RuntimeError(sensitive_error))
+    fake_psutil.NoSuchProcess = RuntimeError
+    fake_psutil.AccessDenied = PermissionError
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    payload = {
+        "info": system_tools.get_info({}, {}),
+        "disks": system_tools.get_disks({}, {}),
+        "network": system_tools.get_network({}, {}),
+        "battery": system_tools.get_battery({}, {}),
+        "processes": system_tools.get_processes({}, {}),
+    }
+    serialized = str(payload)
+
+    assert "C:\\Users\\Suli" not in serialized
+    assert "sk-system-secret-1234567890" not in serialized
+    assert "[REDACTED_LOCAL_PATH]" in serialized
+    assert "[REDACTED_API_KEY]" in serialized
 
 
 def test_system_open_settings_aborts_before_startfile(monkeypatch):

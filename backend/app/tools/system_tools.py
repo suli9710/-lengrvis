@@ -9,7 +9,7 @@ from typing import Any
 from app.config import get_env
 from app.core.audit import record
 from app.core.paths import resolve_authorized
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import raise_if_tool_aborted
@@ -20,6 +20,11 @@ LOCAL_AI_PATH_RE = re.compile(
     r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)"
 )
 LOCAL_AI_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+
+
+def _safe_diagnostic_error(error: Exception | str) -> str:
+    text = str(error or "")
+    return redact_public_text(text) if text else ""
 
 
 def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -42,7 +47,7 @@ def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             }
         )
     except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
-        data["psutil_error"] = str(exc)
+        data["psutil_error"] = _safe_diagnostic_error(exc)
     return data
 
 
@@ -60,7 +65,7 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             try:
                 usage = psutil.disk_usage(partition.mountpoint)._asdict()
             except Exception as exc:  # noqa: BLE001 - diagnostics must stay best-effort.
-                errors.append({"mountpoint": str(partition.mountpoint), "error": str(exc)})
+                errors.append({"mountpoint": str(partition.mountpoint), "error": _safe_diagnostic_error(exc)})
                 continue
             disks.append(
                 {
@@ -72,7 +77,7 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             )
         return {"disks": disks, "skipped": skipped[:8], "errors": errors[:8]}
     except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
-        return {"error": str(exc), "disks": []}
+        return {"error": _safe_diagnostic_error(exc), "disks": []}
 
 
 def _skip_disk_partition(partition: Any) -> bool:
@@ -99,7 +104,7 @@ def get_network(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 
         return {"network": {name: [addr._asdict() for addr in addrs] for name, addrs in psutil.net_if_addrs().items()}}
     except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
-        return {"error": str(exc), "network": {}}
+        return {"error": _safe_diagnostic_error(exc), "network": {}}
 
 
 def get_battery(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -109,7 +114,7 @@ def get_battery(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         battery = psutil.sensors_battery()
         return {"battery": battery._asdict() if battery else None}
     except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
-        return {"error": str(exc), "battery": None}
+        return {"error": _safe_diagnostic_error(exc), "battery": None}
 
 
 def get_startup_items(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -322,7 +327,7 @@ def get_processes(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
         processes.sort(key=lambda item: int(item.get("memory_bytes") or 0), reverse=True)
         return {"processes": processes[:limit], "count": len(processes)}
     except Exception as exc:  # noqa: BLE001 - process diagnostics are best-effort.
-        return {"error": str(exc), "processes": []}
+        return {"error": _safe_diagnostic_error(exc), "processes": []}
 
 
 def local_ai_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

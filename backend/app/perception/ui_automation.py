@@ -4,11 +4,14 @@ import asyncio
 import ctypes
 import hmac
 import logging
+import sqlite3
 import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import ValidationError
 
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
@@ -820,13 +823,13 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return "UIAutomation live execution requires a valid approved approval_id."
         try:
             data = db.fetch_one("approvals", approval_id)
-        except Exception as exc:  # noqa: BLE001 - storage may be unavailable in low-level adapters/tests.
+        except (sqlite3.Error, db.SensitiveRecordIntegrityError) as exc:
             return f"UIAutomation approval storage lookup failed: {exc}"
         if not data:
             return "UIAutomation approval id was not found in the approval database."
         try:
             approval = Approval.model_validate(data)
-        except Exception as exc:  # noqa: BLE001
+        except ValidationError as exc:
             return f"UIAutomation approval record is invalid: {exc}"
         binding_error = _ui_automation_approval_binding_error(
             approval,
@@ -842,11 +845,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return binding_error
         try:
             claimed = db.claim_approval_for_execution(approval.id, now_iso())
-        except Exception as exc:  # noqa: BLE001
+        except (sqlite3.Error, db.SensitiveRecordIntegrityError) as exc:
             return f"UIAutomation approval claim failed: {exc}"
         if not claimed:
             return "UIAutomation approval has already been consumed or is no longer approved."
-        claimed_approval = Approval.model_validate(claimed)
+        try:
+            claimed_approval = Approval.model_validate(claimed)
+        except ValidationError as exc:
+            return f"UIAutomation claimed approval record is invalid: {exc}"
         return _ui_automation_approval_binding_error(
             claimed_approval,
             tool_name,
@@ -1184,7 +1190,7 @@ def _send_mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> 
     button = _normalize_mouse_button(button)
     try:
         import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:
+    except (ImportError, OSError) as exc:
         if sys.platform != "win32":
             raise UIAutomationUnavailable(
                 "pyautogui is required for coordinate click fallback outside Windows."
@@ -1198,7 +1204,7 @@ def _send_mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int, duratio
     button = _normalize_mouse_button(button)
     try:
         import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:
+    except (ImportError, OSError) as exc:
         if sys.platform != "win32":
             raise UIAutomationUnavailable("pyautogui is required for mouse drag fallback outside Windows.") from exc
         _ctypes_mouse_drag(start_x, start_y, end_x, end_y, duration, button)
@@ -1214,7 +1220,7 @@ def _send_text(text: str) -> None:
         return
     try:
         import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:
+    except (ImportError, OSError) as exc:
         raise UIAutomationUnavailable("pyautogui is required for text input fallback.") from exc
     pyautogui.write(text)
 
@@ -1223,7 +1229,7 @@ def _press_key(key: str) -> None:
     key = _normalize_key(key)
     try:
         import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:
+    except (ImportError, OSError) as exc:
         if sys.platform != "win32":
             raise UIAutomationUnavailable("pyautogui is required for key press fallback outside Windows.") from exc
         _ctypes_press_key(key)
@@ -1235,7 +1241,7 @@ def _send_hotkey(keys: list[str]) -> None:
     normalized = [_normalize_key(key) for key in keys if _normalize_key(key)]
     try:
         import pyautogui  # type: ignore[import-not-found]
-    except Exception as exc:
+    except (ImportError, OSError) as exc:
         if sys.platform != "win32":
             raise UIAutomationUnavailable("pyautogui is required for hotkey fallback outside Windows.") from exc
         _ctypes_hotkey(normalized)
@@ -1275,7 +1281,7 @@ def _rect_payload(rect: Any) -> dict[str, int] | None:
     if isinstance(rect, dict):
         try:
             return Rect.model_validate(rect).model_dump()
-        except Exception:  # noqa: BLE001
+        except ValidationError:
             return None
     left = getattr(rect, "left", None)
     top = getattr(rect, "top", None)

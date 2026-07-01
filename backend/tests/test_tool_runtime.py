@@ -100,6 +100,76 @@ def test_tool_runtime_validation_failure_blocks_execution():
     assert task.status == TaskStatus.FAILED
 
 
+def test_tool_runtime_validation_failure_redacts_error_details():
+    private_path = "C:/Users/Suli/private/runtime/.env"
+    secret_token = "runtime-validation-secret-1234567890"
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        return {"ok": True}
+
+    def validate(args, context):  # noqa: ANN001, ANN202, ARG001
+        raise ValueError(f"missing config {private_path} token={secret_token}")
+
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.runtime_validate_redacted")
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="runtime validate redacted",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        validate_input=validate,
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    outcome = asyncio.run(ToolRuntime(orchestrator).review_and_maybe_prepare_approval(task, step, tool, runtime))
+
+    assert outcome.kind == "fatal_failed"
+    assert outcome.result is not None
+    assert "missing config" in outcome.result.error
+    assert "[REDACTED_LOCAL_PATH]" in outcome.result.error
+    assert private_path not in outcome.result.error
+    assert secret_token not in outcome.result.error
+
+
+def test_tool_runtime_permission_policy_exception_redacts_error_details():
+    private_file = "permission-output.log"
+    api_key = "sk-runtime-permission-secret"
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        return {"ok": True}
+
+    def permission_policy(args, context):  # noqa: ANN001, ANN202, ARG001
+        raise RuntimeError(f"policy failed at {private_file} api_key={api_key}")
+
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.runtime_permission_redacted")
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="runtime permission redacted",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        permission_policy=permission_policy,
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    error = ToolRuntime(orchestrator)._check_permission(tool, step.args, runtime)
+
+    assert "policy failed" in error
+    assert "[REDACTED_FILE_NAME]" in error
+    assert private_file not in error
+    assert api_key not in error
+
+
 def test_tool_runtime_enforces_user_deny_rule_even_when_safety_review_allows():
     """P0-18 convergence guard: user PermissionStore deny rules must hold at
     the execution boundary itself, not only inside the safety review rail."""
@@ -483,6 +553,8 @@ def test_file_trash_blocks_path_outside_allowed_directories(tmp_path: Path):
         tool, {"path": str(outside)}, {"allowed_directories": [str(workspace)]}
     )
     assert "file.trash path argument 'path' is not authorized" in error
+    assert str(outside) not in error
+    assert "Path is outside authorized directories" in error
 
 
 def test_file_edit_text_requires_prior_read_state(tmp_path: Path):
@@ -1507,3 +1579,18 @@ def test_low_information_tool_errors_are_enriched():
     assert typed.startswith("TypeError:")
     assert "file.search_by_name" in typed
     assert not _is_low_information_failure(ToolResult(tool_call_id="t", ok=False, error=typed))
+
+
+def test_unexpected_tool_exception_errors_are_redacted():
+    from app.orchestration.tool_runtime import _exception_error_text
+
+    _, _, step = _task_plan_step("file.search_by_name", {"query": "report"})
+    private_path = "C:/Users/Suli/private/runtime/exception.txt"
+    secret_token = "runtime-exception-secret-1234567890"
+
+    error = _exception_error_text(RuntimeError(f"failed at {private_path} token={secret_token}"), step)
+
+    assert error.startswith("RuntimeError:")
+    assert "[REDACTED_LOCAL_PATH]" in error
+    assert private_path not in error
+    assert secret_token not in error

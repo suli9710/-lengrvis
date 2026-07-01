@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 DEVELOPER_TOOL_NAME = "developer.lengrvis_code"
+DEFAULT_DEVELOPER_RUN_TIMEOUT_SECONDS = 300.0
 
 
 class DeveloperExecutionEngine(ExecutionEngine):
@@ -595,8 +597,11 @@ def _run_lengrvis_code_sync(
     run_id: str,
     abort_event: threading.Event | None,
 ) -> LengrvisCodeStreamSummary:
+    timeout_seconds = _developer_run_timeout(settings)
+
     async def _runner() -> LengrvisCodeStreamSummary:
         cancel_task: asyncio.Task[None] | None = None
+        run_task: asyncio.Task[LengrvisCodeStreamSummary] | None = None
 
         async def _poll_abort() -> None:
             if abort_event is None:
@@ -608,19 +613,89 @@ def _run_lengrvis_code_sync(
         if abort_event is not None:
             cancel_task = asyncio.create_task(_poll_abort())
         try:
-            return await run_lengrvis_code(
-                prompt,
-                cwd=cwd,
-                settings=settings,
-                config=config,
-                run_id=run_id,
+            run_task = asyncio.create_task(
+                run_lengrvis_code(
+                    prompt,
+                    cwd=cwd,
+                    settings=settings,
+                    config=config,
+                    run_id=run_id,
+                )
             )
+            if timeout_seconds is None or timeout_seconds <= 0:
+                return await run_task
+            try:
+                return await asyncio.wait_for(asyncio.shield(run_task), timeout=timeout_seconds)
+            except TimeoutError:
+                cancelled_external = False
+                if run_id:
+                    cancelled_external = await cancel_lengrvis_code_run(run_id)
+                if not cancelled_external:
+                    run_task.cancel()
+                    await asyncio.gather(run_task, return_exceptions=True)
+                    return _developer_timeout_summary(timeout_seconds)
+                try:
+                    await asyncio.wait_for(asyncio.shield(run_task), timeout=2.0)
+                except TimeoutError:
+                    run_task.cancel()
+                    await asyncio.gather(run_task, return_exceptions=True)
+                else:
+                    await asyncio.gather(run_task, return_exceptions=True)
+                return _developer_timeout_summary(timeout_seconds)
         finally:
             if cancel_task is not None:
                 cancel_task.cancel()
                 await asyncio.gather(cancel_task, return_exceptions=True)
 
-    return asyncio.run(_runner())
+    return _run_developer_coro_sync(_runner(), timeout_seconds=timeout_seconds)
+
+
+def _run_developer_coro_sync(
+    coro,
+    *,
+    timeout_seconds: float | None = DEFAULT_DEVELOPER_RUN_TIMEOUT_SECONDS,
+) -> LengrvisCodeStreamSummary:
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
+            guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 3
+            return future.result(timeout=guard_timeout)
+        finally:
+            if not future.done():
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+    except TimeoutError:
+        return _developer_timeout_summary(timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 - tool body failures should be reported inline.
+        return LengrvisCodeStreamSummary(
+            launch_error=f"{LENGRVIS_CODE_DISPLAY_NAME} run failed: {exc}",
+            result={"is_error": True, "result": str(exc)},
+        )
+
+
+def _developer_run_timeout(settings: AppSettings) -> float:
+    configured = getattr(settings, "tool_timeout_seconds", None)
+    try:
+        timeout = float(configured) if configured is not None else DEFAULT_DEVELOPER_RUN_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        timeout = DEFAULT_DEVELOPER_RUN_TIMEOUT_SECONDS
+    return timeout
+
+
+def _developer_timeout_summary(timeout_seconds: float | None) -> LengrvisCodeStreamSummary:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        message = f"{LENGRVIS_CODE_DISPLAY_NAME} run timed out."
+    else:
+        message = f"{LENGRVIS_CODE_DISPLAY_NAME} run timed out after {timeout_seconds:.0f}s."
+    return LengrvisCodeStreamSummary(
+        launch_error=message,
+        result={"is_error": True, "result": message},
+    )
 
 
 def _developer_summary_output(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:

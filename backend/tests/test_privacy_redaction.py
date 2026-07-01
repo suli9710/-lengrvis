@@ -3,19 +3,107 @@ from __future__ import annotations
 import pytest
 from conftest import load_json_fixture
 
-from app.policy.redaction import redact_audit_payload, redact_public_text, redact_text, redact_value
+from app.policy.redaction import (
+    redact_audit_payload,
+    redact_audit_storage_payload,
+    redact_public_text,
+    redact_text,
+    redact_value,
+)
 
 
 def test_redact_audit_payload_scrubs_local_paths_in_free_text():
-    # SEC-003 regression: the audit read-path must scrub local absolute paths
-    # that the generic write-path sanitizer (redact_value) leaves intact.
+    # SEC-003 regression: audit payload redaction must scrub local absolute paths
+    # that the generic secret sanitizer (redact_value) leaves intact.
     payload = {"note": "saved to C:\\Users\\alice\\Documents\\report.docx", "status": "ok"}
     scrubbed = redact_audit_payload(payload)
     assert "C:\\Users\\alice" not in str(scrubbed)
     assert "[REDACTED_LOCAL_PATH]" in scrubbed["note"]
     assert scrubbed["status"] == "ok"
-    # Baseline redact_value still leaves the path (documents the gap this closes).
+    # Baseline redact_value still leaves the path, so audit storage must use the
+    # stricter public-safe audit redactor on export/read surfaces.
     assert "C:\\Users\\alice" in redact_value(payload)["note"]
+
+
+def test_audit_record_stores_secret_safe_payload(monkeypatch, tmp_path):
+    from app.core import db
+    from app.core.audit import record
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    payload = {
+        "note": "saved to C:\\Users\\alice\\Documents\\private-payroll-2026.xlsx",
+        "token": "sk-test-1234567890abcdef",
+        "status": "ok",
+    }
+
+    event = record("test.audit_storage_redaction", "pytest", payload)
+    rows = db.fetch_many("audit_events", "id = ?", (event.id,), limit=1)
+    stored_text = str(rows[0]["payload"])
+
+    assert "sk-test-1234567890abcdef" not in stored_text
+    assert rows[0]["payload"]["status"] == "ok"
+    assert rows[0]["payload"]["note"].startswith("saved to C:\\Users\\alice")
+
+
+def test_direct_audit_insert_stores_secret_safe_payload(monkeypatch, tmp_path):
+    from app.core import db
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    inserted = db.insert_audit_event(
+        {
+            "event_type": "test.direct_audit_insert_redaction",
+            "actor": "pytest",
+            "payload": {
+                "path": "C:\\Users\\alice\\Documents\\private-note.md",
+                "authorization": "Bearer direct-insert-secret",
+                "ok": True,
+            },
+        }
+    )
+    stored = db.fetch_many("audit_events", "id = ?", (inserted["id"],), limit=1)[0]
+    stored_text = str(stored["payload"])
+
+    assert "direct-insert-secret" not in stored_text
+    assert stored["payload"]["ok"] is True
+    assert stored["payload"]["path"].startswith("C:\\Users\\alice")
+
+
+def test_audit_storage_redaction_scrubs_generic_identifiers_by_default():
+    payload = {
+        "approval_id": "approval_1234567890abcdef1234567890abcdef",
+        "note": "opaque token abcdef1234567890abcdef1234567890",
+        "authorization": "Bearer storage-secret-token",
+    }
+
+    redacted = redact_audit_storage_payload(payload)
+
+    assert redacted["approval_id"] == "[REDACTED_TOKEN]"
+    assert "abcdef1234567890abcdef1234567890" not in redacted["note"]
+    assert redacted["authorization"] == "***"
+
+
+def test_remote_input_approval_audit_insert_preserves_binding_fallback_ids(monkeypatch, tmp_path):
+    from app.core import db
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    inserted = db.insert_audit_event(
+        {
+            "event_type": "remote.input.approval_requested",
+            "actor": "pytest",
+            "payload": {
+                "approval_id": "approval_1234567890abcdef1234567890abcdef",
+                "device_id": "mobile_1234567890abcdef1234567890abcdef",
+                "grant_id": "rig_1234567890abcdef12345678",
+                "authorization": "Bearer direct-insert-secret",
+            },
+        }
+    )
+    stored = db.fetch_many("audit_events", "id = ?", (inserted["id"],), limit=1)[0]
+
+    assert stored["payload"]["approval_id"] == "approval_1234567890abcdef1234567890abcdef"
+    assert stored["payload"]["device_id"] == "mobile_1234567890abcdef1234567890abcdef"
+    assert stored["payload"]["grant_id"] == "rig_1234567890abcdef12345678"
+    assert stored["payload"]["authorization"] == "***"
 
 
 @pytest.fixture

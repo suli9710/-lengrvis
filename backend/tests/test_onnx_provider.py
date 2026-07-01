@@ -679,6 +679,63 @@ def test_settings_onnx_test_generate_route_returns_unavailable_without_runtime(m
     assert "error" in payload
 
 
+def test_onnx_warmup_redacts_native_runtime_failures(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "Users" / "Suli" / "private-models" / "model")
+    private_file = model / "adapter-secret.onnx"
+    _mock_onnx_modules(monkeypatch)
+
+    def fail_ensure_model(self):  # noqa: ANN001
+        raise RuntimeError(f"failed loading {private_file} token=onnx-warmup-secret-1234567890")
+
+    monkeypatch.setattr(onnx_provider.OnnxProvider, "_ensure_genai_model", fail_ensure_model)
+
+    result = onnx_provider.warmup(AppSettings(onnx_model_path=str(model)))
+
+    assert result["ok"] is False
+    assert "failed loading" in result["error"]
+    assert "onnx-warmup-secret-1234567890" not in result["error"]
+    assert str(private_file) not in result["error"]
+    assert "adapter-secret.onnx" not in result["error"]
+    assert result["errors"] == [result["error"]]
+
+
+def test_onnx_test_generate_redacts_generation_failures(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "Users" / "Suli" / "private-models" / "model")
+    private_file = model / "generation-secret.log"
+    _mock_onnx_modules(monkeypatch)
+
+    async def fail_chat(self, messages, model=None, temperature=None, tools=None):  # noqa: ANN001, ARG001
+        raise RuntimeError(f"generation failed at {private_file} api_key=sk-onnx-generation-secret")
+
+    monkeypatch.setattr(onnx_provider.OnnxProvider, "chat", fail_chat)
+
+    result = asyncio.run(onnx_provider.test_generate(AppSettings(onnx_model_path=str(model)), prompt="hello"))
+
+    assert result["ok"] is False
+    assert "generation failed" in result["error"]
+    assert "sk-onnx-generation-secret" not in result["error"]
+    assert str(private_file) not in result["error"]
+    assert "generation-secret.log" not in result["error"]
+    assert result["errors"] == [result["error"]]
+
+
+def test_onnx_runtime_snapshot_redacts_import_failures(monkeypatch, tmp_path: Path):
+    private_file = tmp_path / "Users" / "Suli" / "private-runtime" / "genai-secret.dll"
+
+    def fail_import(_name: str):
+        raise ImportError(f"unable to import {private_file} token=onnx-runtime-secret-1234567890")
+
+    monkeypatch.setattr(onnx_provider.importlib, "import_module", fail_import)
+
+    status = onnx_provider._runtime_package_snapshot("onnxruntime_genai")
+
+    assert status["available"] is False
+    assert "unable to import" in status["error"]
+    assert "onnx-runtime-secret-1234567890" not in status["error"]
+    assert str(private_file) not in status["error"]
+    assert "genai-secret.dll" not in status["error"]
+
+
 def test_settings_onnx_status_includes_embedding_ocr_and_image_sections(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 

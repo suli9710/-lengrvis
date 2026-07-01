@@ -42,3 +42,21 @@ def test_ensure_lan_tls_material_reuses_existing_valid_material(tmp_path: Path) 
     assert second.created is False
     assert second.origin == "https://192.168.56.10:9443"
     assert second.fingerprint_sha256 == first.fingerprint_sha256
+
+
+def test_ensure_lan_tls_material_replaces_invalid_existing_material(tmp_path: Path) -> None:
+    material_dir = tmp_path / "lan-tls"
+    material_dir.mkdir()
+    (material_dir / "lengrvis-lan.crt").write_text("not a certificate", encoding="utf-8")
+    (material_dir / "lengrvis-lan.key").write_text("not a key", encoding="utf-8")
+
+    material = ensure_lan_tls_material(
+        data_dir=tmp_path,
+        host="192.168.56.10",
+        port=9443,
+    )
+
+    assert material.created is True
+    decoded = ssl._ssl._test_decode_cert(str(material.cert_file))  # type: ignore[attr-defined]
+    san = set(decoded["subjectAltName"])
+    assert ("IP Address", "192.168.56.10") in san

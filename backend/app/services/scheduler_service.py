@@ -9,6 +9,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import ScheduledTask, now_iso
 from app.observability.best_effort import log_best_effort_failure
+from app.policy.redaction import redact_public_text, redact_value
 
 try:
     from croniter import croniter as _Croniter
@@ -154,7 +155,7 @@ class Scheduler:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001
                 log_best_effort_failure(logger, "scheduler.run.tick", exc)
-                record("scheduler.tick_failed", "Scheduler", {"error": str(exc)})
+                record("scheduler.tick_failed", "Scheduler", {"error": _safe_scheduler_error(exc)})
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.tick_seconds)
             except TimeoutError:
@@ -204,9 +205,15 @@ class Scheduler:
                 task_id = task.id
             last_task_id = str(task_id or "")
         except Exception as exc:  # noqa: BLE001
-            last_status = f"failed: {exc}"
+            safe_error = _safe_scheduler_error(exc)
+            last_status = f"failed: {safe_error}"
             log_best_effort_failure(logger, "scheduler.execute", exc, schedule_id=schedule.id)
-            record("scheduler.execute_failed", "Scheduler", {"id": schedule.id, "error": str(exc)}, task_id=schedule.id)
+            record(
+                "scheduler.execute_failed",
+                "Scheduler",
+                {"id": schedule.id, "error": safe_error},
+                task_id=schedule.id,
+            )
         finally:
             persisted = db.complete_scheduled_task_run(
                 schedule.id,
@@ -236,7 +243,7 @@ class Scheduler:
             record(
                 "scheduler.notification_failed",
                 "Scheduler",
-                {"id": schedule.id, "error": str(exc)},
+                {"id": schedule.id, "error": _safe_scheduler_error(exc)},
                 task_id=schedule.id,
             )
 
@@ -261,3 +268,7 @@ def get_scheduler() -> Scheduler:
 
 def status() -> dict[str, Any]:
     return get_scheduler().status()
+
+
+def _safe_scheduler_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__

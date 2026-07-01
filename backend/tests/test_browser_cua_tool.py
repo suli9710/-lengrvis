@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -237,6 +238,73 @@ def test_cua_run_forces_provider_call_to_browser_environment(monkeypatch: pytest
             "environment": "browser",
         }
     ]
+
+
+def test_cua_run_sync_times_out_slow_provider(monkeypatch: pytest.MonkeyPatch):
+    class SlowCUAProvider(CUAProvider):
+        def __init__(self, settings: AppSettings) -> None:
+            super().__init__(settings, model="test-cua", source="test")
+
+        async def run_step(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return {"ok": True, "status": "completed"}
+
+    async def resolve(*args: Any, **kwargs: Any):  # noqa: ARG001
+        return SlowCUAProvider(_context()["settings"])
+
+    monkeypatch.setattr(browser_tools, "resolve_cua_provider", resolve)
+    monkeypatch.setattr(browser_tools, "DEFAULT_CUA_RUN_TIMEOUT_SECONDS", 0.01)
+
+    started = time.monotonic()
+    result = browser_tools.cua_run(
+        {
+            "instruction": "Click the safe demo button.",
+            "dry_run": False,
+            "approved": True,
+            "approval_id": "approval_test",
+        },
+        _context(),
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "timeout"
+    assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
+
+
+def test_cua_run_sync_timeout_returns_from_running_event_loop(monkeypatch: pytest.MonkeyPatch):
+    class SlowCUAProvider(CUAProvider):
+        def __init__(self, settings: AppSettings) -> None:
+            super().__init__(settings, model="test-cua", source="test")
+
+        async def run_step(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return {"ok": True, "status": "completed"}
+
+    async def resolve(*args: Any, **kwargs: Any):  # noqa: ARG001
+        return SlowCUAProvider(_context()["settings"])
+
+    monkeypatch.setattr(browser_tools, "resolve_cua_provider", resolve)
+    monkeypatch.setattr(browser_tools, "DEFAULT_CUA_RUN_TIMEOUT_SECONDS", 0.01)
+
+    async def invoke() -> dict[str, Any]:
+        return browser_tools.cua_run(
+            {
+                "instruction": "Click the safe demo button.",
+                "dry_run": False,
+                "approved": True,
+                "approval_id": "approval_test",
+            },
+            _context(),
+        )
+
+    started = time.monotonic()
+    result = asyncio.run(invoke())
+
+    assert result["ok"] is False
+    assert result["status"] == "timeout"
+    assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
 
 
 def test_cua_run_rejects_unsafe_screenshot_before_activity_record(monkeypatch: pytest.MonkeyPatch):

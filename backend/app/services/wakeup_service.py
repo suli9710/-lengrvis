@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from app.core import db
 from app.core.schemas import Wakeup, WakeupStatus, now_iso
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.security.mobile_jwt import TOKEN_SCOPE, mobile_token_scopes
 from app.services import notification_service
 from app.services.mobile_pairing_service import is_mobile_device_active
@@ -171,11 +171,15 @@ def safe_wakeup_payload(
 ) -> dict[str, Any]:
     payload = wakeup.model_dump(mode="json") if isinstance(wakeup, Wakeup) else dict(wakeup)
     for key in ("title", "body", "goal", "error"):
-        payload[key] = redact_value(payload.get(key) or "")
+        payload[key] = _safe_wakeup_text(payload.get(key) or "")
     if claims is not None:
         for key in ("source_device_id", "source_grant_id", "allowed_device_ids"):
             payload.pop(key, None)
     return payload
+
+
+def _safe_wakeup_text(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or ""))
 
 
 def _active_mobile_device_ids() -> list[str]:

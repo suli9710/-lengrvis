@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import AppSettings
+from app.context.agent_message_projection import llm_safe_agent_message
 from app.context.management import (
     compact_boundary_view,
     count_messages_tokens,
@@ -229,7 +230,7 @@ def compact_task_context(
 def load_task_messages(task_id: str, *, bus: AgentBus | None = None) -> list[dict[str, Any]]:
     task_bus = bus or AgentBus()
     messages = sorted(task_bus.get_messages(task_id), key=lambda message: (message.created_at, message.id))
-    return [message.to_openai_dict(include_legacy=False) for message in messages]
+    return [llm_safe_agent_message(message) for message in messages]
 
 
 def persist_compact_boundary(

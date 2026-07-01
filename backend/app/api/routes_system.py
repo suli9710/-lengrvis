@@ -114,6 +114,7 @@ SUPPORT_PACKAGE_TASK_RECORDING_STATUS_KEYS = frozenset(
 SUPPORT_PACKAGE_TASK_RECORDING_EXPORT_STATUS_KEYS = frozenset(
     {"status_only", "contains_images", "contains_image_paths", "contains_recording_file_names"}
 )
+SUPPORT_PACKAGE_NETWORK_KEYS = frozenset({"network", "net_if_addrs", "network_interfaces"})
 SUPPORT_PACKAGE_INLINE_SENSITIVE_PATTERN = re.compile(
     r"(?i)\b("
     r"computer[_ -]?name"
@@ -398,8 +399,12 @@ def _sanitize_support_package_value(
 ) -> Any:
     if _support_package_task_recording_status_value(value):
         return value
+    if _support_package_network_status_value(value):
+        return value
     if _support_package_task_recording_artifact_context(value, key, key_path):
         return _support_package_task_recording_status_only(value)
+    if _support_package_network_context(value, key, key_path):
+        return _support_package_network_status_only(value)
     if isinstance(value, dict):
         return {
             item_key: _sanitize_support_package_value(
@@ -430,6 +435,42 @@ def _sanitize_support_package_value(
         text = _redact_support_package_local_paths(text)
         return text
     return value
+
+
+def _support_package_network_context(value: Any, key: str, key_path: tuple[str, ...]) -> bool:
+    if not isinstance(value, dict):
+        return False
+    normalized = _normalized_support_package_key(key)
+    if normalized in SUPPORT_PACKAGE_NETWORK_KEYS:
+        return True
+    normalized_path = tuple(_normalized_support_package_key(item) for item in key_path)
+    return any(item in SUPPORT_PACKAGE_NETWORK_KEYS for item in normalized_path)
+
+
+def _support_package_network_status_value(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value).issubset({"redacted", "status_only", "interface_count", "address_count"})
+        and value.get("redacted") is True
+        and value.get("status_only") is True
+    )
+
+
+def _support_package_network_status_only(value: Any) -> dict[str, Any]:
+    interface_count = len(value) if isinstance(value, dict) else 0
+    address_count = 0
+    if isinstance(value, dict):
+        for addresses in value.values():
+            if isinstance(addresses, list | tuple | set):
+                address_count += len(addresses)
+            elif addresses:
+                address_count += 1
+    return {
+        "redacted": True,
+        "status_only": True,
+        "interface_count": interface_count,
+        "address_count": address_count,
+    }
 
 
 def _support_package_task_recording_artifact_context(value: Any, key: str, key_path: tuple[str, ...]) -> bool:

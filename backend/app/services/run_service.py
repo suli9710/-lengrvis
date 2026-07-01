@@ -6,6 +6,8 @@ import logging
 import threading
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.agents.delegation_metadata import merge_run_task_metadata
 from app.config import AppSettings
 from app.core import db
@@ -81,6 +83,7 @@ ENGINE_TERMINAL_PHASES = {
 _RUN_ENGINE_ROUTERS: dict[str, EngineRouter] = {}
 _RUN_ENGINE_ROUTERS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
+_PERSISTED_MODEL_ERRORS = (ValidationError, TypeError, ValueError, AttributeError)
 logger = logging.getLogger(__name__)
 
 
@@ -295,7 +298,7 @@ def recover_interrupted_runs() -> list[str]:
     for row in rows:
         try:
             run = Run.model_validate(row)
-        except Exception as exc:  # noqa: BLE001 - skip corrupt rows but surface diagnostics.
+        except _PERSISTED_MODEL_ERRORS as exc:
             row_id = row.get("id") if isinstance(row, dict) else ""
             log_best_effort_failure(logger, "recover_interrupted_runs.validate_row", exc, run_id=row_id)
             continue
@@ -405,7 +408,7 @@ def _schedule_resume(run: Run) -> Run:
     router = _engine_router(settings)
     try:
         state = _state_from_run(run)
-    except Exception as exc:  # noqa: BLE001
+    except _PERSISTED_MODEL_ERRORS as exc:
         error = _redacted_error(exc)
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run.id, "run.failed", {"error": error, "task_id": run.task_id})
@@ -773,7 +776,7 @@ def _agent_message(raw: dict[str, Any]) -> Any | None:
         from app.core.schemas import AgentMessage
 
         return AgentMessage.model_validate(raw)
-    except Exception as exc:  # noqa: BLE001 - invalid historical messages are skipped during replay.
+    except _PERSISTED_MODEL_ERRORS as exc:
         message_id = raw.get("id") if isinstance(raw, dict) else ""
         logger.debug(
             "invalid agent message skipped while bridging run messages (message_id=%s): %s",
@@ -878,7 +881,7 @@ def _is_approval_continuation(run: Run) -> bool:
         return False
     try:
         state = RunState.model_validate(_run_state_payload(run.state or {}))
-    except Exception as exc:  # noqa: BLE001 - invalid runtime state simply cannot be resumed as a continuation.
+    except _PERSISTED_MODEL_ERRORS as exc:
         log_best_effort_failure(logger, "is_approval_continuation.parse_state", exc, run_id=run.id)
         return False
     return state.continuation_kind == "approval_remaining_steps"
@@ -889,7 +892,7 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
         return
     try:
         state = RunState.model_validate(_run_state_payload(run.state))
-    except Exception as exc:  # noqa: BLE001 - persisted state sync is best effort.
+    except _PERSISTED_MODEL_ERRORS as exc:
         log_best_effort_failure(logger, "sync_persisted_state_phase.parse_state", exc, run_id=run.id, phase=phase.value)
         return
     continuation_kind: str = ""
@@ -911,7 +914,7 @@ def _cancel_persisted_state(run: Run) -> None:
     runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
     try:
         state = _state_from_run(run)
-    except Exception as exc:  # noqa: BLE001 - run cancellation still persists the outer run phase.
+    except _PERSISTED_MODEL_ERRORS as exc:
         log_best_effort_failure(logger, "cancel_persisted_state.parse_state", exc, run_id=run.id)
         return
     if isinstance(runtime, dict) and runtime:
@@ -990,7 +993,7 @@ def _latest_plan_for_task(task_id: str) -> Plan | None:
         return None
     try:
         return Plan.model_validate(rows[0])
-    except Exception as exc:  # noqa: BLE001 - invalid historical plan rows should not block run reads.
+    except _PERSISTED_MODEL_ERRORS as exc:
         log_best_effort_failure(logger, "latest_plan_for_task.validate_row", exc, task_id=task_id)
         return None
 

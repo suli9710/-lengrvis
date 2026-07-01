@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,7 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.orchestration import developer_engine as developer_engine_module
 from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
@@ -184,6 +187,56 @@ async def test_developer_engine_run_turn_goes_through_tool_runtime(tmp_path, mon
     assert any(review["target_type"] == "tool_call" for review in reviews)
     assert tool_calls and tool_calls[0]["tool_name"] == "developer.lengrvis_code"
     assert any(item["tool_call_id"] == tool_calls[0]["id"] for item in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_lengrvis_code_sync_bridge_returns_from_running_event_loop(tmp_path, monkeypatch) -> None:
+    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(result={"is_error": False, "result": "ok"}, assistant_text=["done"])
+
+    monkeypatch.setattr(developer_engine_module, "run_lengrvis_code", spy_run_lengrvis_code)
+
+    summary = developer_engine_module._run_lengrvis_code_sync(
+        "inspect repository",
+        cwd=str(tmp_path),
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        run_id="devrun_sync_bridge",
+        abort_event=None,
+    )
+
+    assert summary.final_text == "ok"
+    assert summary.is_error is False
+
+
+def test_lengrvis_code_sync_bridge_times_out_slow_adapter(tmp_path, monkeypatch) -> None:
+    async def slow_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        await asyncio.sleep(1.0)
+        return LengrvisCodeStreamSummary(result={"is_error": False, "result": "late"})
+
+    monkeypatch.setattr(developer_engine_module, "run_lengrvis_code", slow_run_lengrvis_code)
+
+    started = time.monotonic()
+    summary = developer_engine_module._run_lengrvis_code_sync(
+        "inspect repository",
+        cwd=str(tmp_path),
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+            tool_timeout_seconds=0.01,
+        ),
+        config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        run_id="devrun_timeout",
+        abort_event=None,
+    )
+
+    assert summary.is_error is True
+    assert "timed out" in summary.launch_error
+    assert time.monotonic() - started < 0.5
 
 
 @pytest.mark.asyncio

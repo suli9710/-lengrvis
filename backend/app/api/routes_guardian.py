@@ -24,7 +24,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup, WakeupStatus, now_iso
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.security.desktop_api import (
     DESKTOP_API_TOKEN_HEADER,
     DESKTOP_API_WS_PROTOCOL_PREFIX,
@@ -425,24 +425,15 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
             if not _guardian_mobile_event_allowed(event, claims):
                 continue
             if event.get("type") == "mobile_device_revoked":
-                await websocket.send_json(event)
+                await websocket.send_json(_safe_guardian_mobile_event(event, claims=claims))
                 await websocket.close(code=1008)
                 return
             if await _close_if_mobile_claims_inactive(websocket, claims):
                 return
-            if event.get("type") in {"approval_created", "approval_decided"}:
-                approval = event.get("approval")
-                if isinstance(approval, dict):
-                    seen.add(str(approval.get("id") or ""))
-                payload_type = (
-                    "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
-                )
-                safe_approval = (
-                    mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
-                )
-                await websocket.send_json({"type": payload_type, "approval": safe_approval})
-            else:
-                await websocket.send_json(event)
+            approval = event.get("approval")
+            if event.get("type") in {"approval_created", "approval_decided"} and isinstance(approval, dict):
+                seen.add(str(approval.get("id") or ""))
+            await websocket.send_json(_safe_guardian_mobile_event(event, claims=claims))
     except WebSocketDisconnect:
         return
     finally:
@@ -474,6 +465,54 @@ def _guardian_mobile_event_allowed(event: dict[str, Any], claims: dict[str, Any]
     if not isinstance(approval, dict):
         return True
     return mobile_pairing_service.mobile_claims_can_access_approval(approval, claims)
+
+
+def _safe_guardian_mobile_event(event: dict[str, Any], *, claims: dict[str, Any] | None = None) -> dict[str, Any]:
+    event_type = str(event.get("type") or "")
+    if event_type in {"approval_created", "approval_decided"}:
+        approval = event.get("approval")
+        safe_approval = (
+            mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+        )
+        return {
+            "type": "approval_notification" if event_type == "approval_created" else event_type,
+            "approval": safe_approval,
+        }
+    if event_type in {"remote_input_grant_created", "remote_input_grant_revoked"}:
+        return {
+            "type": event_type,
+            "device_id": str(event.get("device_id") or ""),
+            "grant": _safe_guardian_remote_input_grant_event(event.get("grant")),
+        }
+    if event_type == "mobile_device_revoked":
+        device = event.get("device") if isinstance(event.get("device"), dict) else {}
+        return {
+            "type": event_type,
+            "device_id": str(event.get("device_id") or device.get("device_id") or ""),
+            "device": {
+                "device_id": str(device.get("device_id") or event.get("device_id") or ""),
+                "device_name": str(device.get("device_name") or "Android device"),
+                "status": str(device.get("status") or "revoked"),
+                "revoked_at": str(device.get("revoked_at") or ""),
+                "updated_at": str(device.get("updated_at") or ""),
+            },
+        }
+    if event_type == "heartbeat":
+        return {"type": "heartbeat"}
+    return {"type": event_type or "event"}
+
+
+def _safe_guardian_remote_input_grant_event(value: Any) -> dict[str, Any]:
+    grant = value if isinstance(value, dict) else {}
+    return {
+        "id": str(grant.get("id") or grant.get("grant_id") or ""),
+        "status": str(grant.get("status") or "active"),
+        "scope": str(grant.get("scope") or "remote:input"),
+        "created_at": str(grant.get("created_at") or ""),
+        "expires_at": str(grant.get("expires_at") or ""),
+        "revoked_at": str(grant.get("revoked_at") or ""),
+        "binding_ref": str(grant.get("binding_ref") or ""),
+    }
 
 
 @ws_router.websocket("/{path:path}")
@@ -568,7 +607,7 @@ def _approval_continue_unavailable_detail(approval: Approval, exc: Exception) ->
         "message": "Full backend is not ready to continue the approval.",
         "approval_id": approval.id,
         "approval": mobile_pairing_service.safe_approval_payload(data or approval),
-        "error": redact_value(str(exc)),
+        "error": _safe_backend_detail_scalar(str(exc)),
     }
 
 
@@ -581,7 +620,7 @@ def _approval_continue_response_error_detail(approval: Approval, response: Any) 
         message = detail
     data = db.fetch_one("approvals", approval.id)
     payload: dict[str, Any] = {
-        "message": redact_value(message),
+        "message": _safe_backend_detail_scalar(message),
         "approval_id": approval.id,
         "approval": mobile_pairing_service.safe_approval_payload(data or approval),
     }
@@ -599,7 +638,9 @@ def _safe_backend_detail(value: Any) -> Any:
                 result[text_key] = _safe_backend_approval_payload(item)
             elif text_key == "approvals" and isinstance(item, list):
                 result[text_key] = [
-                    _safe_backend_approval_payload(approval) if isinstance(approval, dict) else redact_value(approval)
+                    _safe_backend_approval_payload(approval)
+                    if isinstance(approval, dict)
+                    else _safe_backend_detail_scalar(approval)
                     for approval in item
                 ]
             else:
@@ -607,14 +648,20 @@ def _safe_backend_detail(value: Any) -> Any:
         return result
     if isinstance(value, list):
         return [_safe_backend_detail(item) for item in value]
-    return redact_value(value)
+    return _safe_backend_detail_scalar(value)
 
 
 def _safe_backend_detail_value(key: str, value: Any) -> Any:
     if isinstance(value, dict | list | tuple | set):
         return _safe_backend_detail(value)
     redacted = redact_value({key: value})
-    return redacted.get(key) if isinstance(redacted, dict) else redact_value(value)
+    return _safe_backend_detail_scalar(redacted.get(key) if isinstance(redacted, dict) else value)
+
+
+def _safe_backend_detail_scalar(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_public_text(str(redact_value(value) or ""))
+    return redact_value(value)
 
 
 def _safe_backend_approval_payload(value: dict[str, Any]) -> dict[str, Any]:

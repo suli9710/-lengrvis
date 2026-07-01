@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -160,6 +162,58 @@ def test_cloud_vision_provider_is_fallback_when_local_ocr_has_no_text(
     assert result.text == "CLOUD OCR FALLBACK TEXT"
     assert result.source == "vision_provider"
     assert result.fallback_used is True
+
+
+def test_provider_ocr_times_out_to_failed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "plain.png"
+    _write_metadata_png(image_path, "")
+
+    class SlowOCRProvider:
+        name = "slow-ocr"
+
+        async def ocr(self, image_path: str) -> str:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return "late text"
+
+    monkeypatch.setattr(ocr_service, "get_provider", lambda settings=None, task="ocr": SlowOCRProvider())
+
+    started = time.monotonic()
+    result = ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01)
+
+    assert result.ok is False
+    assert result.source == "vision_provider"
+    assert "timed out" in result.error
+    assert time.monotonic() - started < 0.5
+
+
+def test_provider_ocr_timeout_returns_from_running_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "plain.png"
+    _write_metadata_png(image_path, "")
+
+    class SlowOCRProvider:
+        name = "slow-ocr"
+
+        async def ocr(self, image_path: str) -> str:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return "late text"
+
+    monkeypatch.setattr(ocr_service, "get_provider", lambda settings=None, task="ocr": SlowOCRProvider())
+
+    async def invoke() -> ocr_service.OCRResult:
+        return ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01)
+
+    started = time.monotonic()
+    result = asyncio.run(invoke())
+
+    assert result.ok is False
+    assert "timed out" in result.error
+    assert time.monotonic() - started < 0.5
 
 
 def test_image_pdf_extract_text_uses_ocr_fallback(image_pdf: Path) -> None:

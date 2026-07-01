@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import AppSettings
+from app.context.agent_message_projection import llm_safe_agent_message
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType, RunEvent, now_iso
 from app.policy.redaction import redact_run_payload
@@ -61,7 +62,7 @@ class RunEventBus:
             "run_id": run_id,
             "name": name,
             "sequence": sequence or 0,
-            "payload": dict(payload or {}),
+            "payload": _storage_safe_run_payload(payload or {}),
             "created_at": created_at or now_iso(),
         }
         if event_id:
@@ -72,7 +73,8 @@ class RunEventBus:
 
     def publish_event(self, event: RunEvent) -> RunEvent:
         db.init_db()
-        stored = RunEvent.model_validate(db.insert_run_event(event))
+        safe_event = event.model_copy(update={"payload": _storage_safe_run_payload(event.payload)})
+        stored = RunEvent.model_validate(db.insert_run_event(safe_event))
         self._publish_to_subscribers(stored)
         return stored
 
@@ -143,23 +145,28 @@ def task_message_to_run_event(message: AgentMessage, *, run_id: str) -> tuple[st
         message.message_type.value if isinstance(message.message_type, MessageType) else str(message.message_type)
     )
 
+    safe_message = llm_safe_agent_message(message, include_legacy=True, redact_user_content=True)
+    safe_metadata = safe_message.get("metadata") if isinstance(safe_message.get("metadata"), dict) else {}
+    safe_payload = (
+        safe_message.get("structured_payload") if isinstance(safe_message.get("structured_payload"), dict) else {}
+    )
     base_payload: dict[str, Any] = {
         "task_id": message.task_id,
         "message_id": message.id,
         "step_id": message.step_id,
         "from_agent": message.from_agent,
         "to_agent": message.to_agent,
-        "content": message.content,
+        "content": safe_message.get("content") or "",
         "message_type": message_type,
-        "metadata": metadata,
-        "structured_payload": payload,
+        "metadata": safe_metadata,
+        "structured_payload": safe_payload,
         "created_at": message.created_at,
     }
 
     if event_type == "tool.progress" or payload.get("kind") == "tool_progress":
         return "tool.progress", base_payload
     if message.tool_calls:
-        base_payload["tool_calls"] = message.tool_calls
+        base_payload["tool_calls"] = safe_message.get("tool_calls") or []
         return "tool.proposed", base_payload
     if message.tool_call_id and message.role.value == "tool":
         return "tool.result", base_payload
@@ -175,3 +182,8 @@ def task_message_to_run_event(message: AgentMessage, *, run_id: str) -> tuple[st
 
 
 run_event_bus = RunEventBus()
+
+
+def _storage_safe_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    redacted = redact_run_payload(dict(payload or {}))
+    return redacted if isinstance(redacted, dict) else {}

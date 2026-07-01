@@ -165,6 +165,33 @@ def test_prior_step_read_visible_to_later_write_step_with_include_prior_steps() 
     rs.clear_task_read_states("task_seq")
 
 
+def test_file_rename_candidate_paths_include_destination(tmp_path: Path) -> None:
+    source = tmp_path / "before.txt"
+    source.write_text("data", encoding="utf-8")
+    tool = SimpleNamespace(name="file.rename")
+
+    paths = rs.candidate_resource_paths(
+        tool,
+        {"source": str(source), "new_name": "after.txt"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert paths == [source.resolve(), (tmp_path / "after.txt").resolve()]
+
+
+def test_file_rename_candidate_paths_skip_unauthorized_destination(tmp_path: Path) -> None:
+    source = tmp_path.parent / "outside.txt"
+    tool = SimpleNamespace(name="file.rename")
+
+    paths = rs.candidate_resource_paths(
+        tool,
+        {"source": str(source), "new_name": "after.txt"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert paths == []
+
+
 @pytest.mark.asyncio
 async def test_os_engine_parallel_steps_receive_isolated_context_dicts() -> None:
     contexts_seen: list[tuple[str, dict[str, Any]]] = []

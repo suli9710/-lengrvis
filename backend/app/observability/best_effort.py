@@ -4,7 +4,7 @@ import logging
 import traceback
 from typing import Any
 
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 
 
 def log_best_effort_failure(
@@ -15,7 +15,7 @@ def log_best_effort_failure(
 ) -> None:
     context_text = ""
     if context:
-        safe_context = ", ".join(f"{key}={redact_value(value)}" for key, value in sorted(context.items()))
+        safe_context = ", ".join(f"{key}={_redacted_text(value)}" for key, value in sorted(context.items()))
         context_text = f" ({safe_context})"
     logger.warning(
         "Best-effort operation failed during %s%s: %s\n%s",
@@ -27,8 +27,12 @@ def log_best_effort_failure(
 
 
 def _redacted_error(error: BaseException | str) -> str:
-    return str(redact_value(str(error)))
+    return _redacted_text(error)
 
 
 def _redacted_traceback(error: BaseException) -> str:
-    return str(redact_value("".join(traceback.format_exception(type(error), error, error.__traceback__))))
+    return _redacted_text("".join(traceback.format_exception(type(error), error, error.__traceback__)))
+
+
+def _redacted_text(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or ""))

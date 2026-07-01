@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -9,13 +11,15 @@ from app.context_compaction import (
     MANUAL_COMPACT_BOUNDARY,
     compact_session_context,
     compact_task_context,
+    load_task_messages,
     manual_compact_messages,
 )
 from app.context_management import project_messages_for_llm
 from app.core import db
-from app.core.schemas import MessageType
+from app.core.schemas import MessageType, Task, TaskStatus
 from app.core.session_context import SessionContextStore
 from app.orchestration.agent_bus import AgentBus
+from app.orchestration.handlers.completion_handler import CompletionHandler
 
 
 def _settings(**overrides) -> AppSettings:
@@ -200,6 +204,70 @@ def test_compact_task_context_persists_boundary_and_agent_bus_projection(monkeyp
     assert any(message.get("metadata", {}).get("context_boundary") == MANUAL_COMPACT_BOUNDARY for message in projected)
     assert any("Keep current TODOs." in str(message.get("content") or "") for message in projected)
     assert any("message 7" in str(content or "") for content in contents)
+
+
+def test_load_task_messages_uses_llm_safe_agent_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    task_id = "task_compact_safe_history"
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-compact-history-secret-value"
+
+    message = bus.publish_text(
+        task_id,
+        "PlannerAgent",
+        f"Tool failed while reading {local_path} token={secret}",
+        message_type=MessageType.OBSERVATION,
+        structured_payload={"path": local_path, "api_key": secret},
+        metadata={"error": f"raw error {local_path} token={secret}"},
+        tool_calls=[
+            {
+                "id": "call_compact_history",
+                "type": "function",
+                "function": {"name": "file.read_text", "arguments": {"path": local_path, "api_key": secret}},
+            }
+        ],
+    )
+
+    persisted = next(item for item in bus.get_messages(task_id, limit=10) if item.id == message.id)
+    assert local_path in persisted.content
+    assert secret in persisted.content
+
+    loaded = load_task_messages(task_id, bus=bus)
+    dumped = str(loaded)
+    assert local_path not in dumped
+    assert secret not in dumped
+    assert "[REDACTED_LOCAL_PATH]" in dumped
+    assert "***" in dumped
+
+
+def test_completion_session_summary_uses_llm_safe_agent_history(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    store = SessionContextStore(session_id="session_safe_completion_summary")
+    task = Task(user_goal="runtime", status=TaskStatus.COMPLETED)
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-session-summary-secret-value"
+    message = bus.publish_text(
+        task.id,
+        "PlannerAgent",
+        f"Read {local_path} token={secret}",
+        message_type=MessageType.OBSERVATION,
+        structured_payload={"path": local_path, "api_key": secret},
+    )
+
+    CompletionHandler(SimpleNamespace(bus=bus, session_context_store=store))._update_session_summary(task)
+
+    persisted = next(item for item in bus.get_messages(task.id, limit=10) if item.id == message.id)
+    assert local_path in persisted.content
+    assert secret in persisted.content
+    summary = store.load().conversation_summary
+    assert summary
+    assert local_path not in summary
+    assert secret not in summary
+    assert "[REDACTED_LOCAL_PATH]" in summary
 
 
 def test_context_compact_route_can_persist_task_boundary(monkeypatch, tmp_path):

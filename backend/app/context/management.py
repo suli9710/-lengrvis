@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from app.config import AppSettings
+from app.context.agent_message_projection import llm_safe_agent_message
 from app.context.tokens import (
     ATTACHMENT_BLOCK_TYPES as ATTACHMENT_BLOCK_TYPES,
 )
@@ -1697,7 +1698,7 @@ def _expand_tool_pair_message_ids(messages: list[dict[str, Any]], ids: set[str])
 
 
 def _message_to_llm_dict(message: AgentMessage) -> dict[str, Any]:
-    payload = message.to_openai_dict(include_legacy=False)
+    payload = llm_safe_agent_message(message)
     metadata = dict(payload.get("metadata") or {})
     metadata.setdefault("from_agent", message.from_agent)
     metadata.setdefault("message_type", message.message_type.value)

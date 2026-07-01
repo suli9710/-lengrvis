@@ -288,16 +288,25 @@ def test_capture_step_screenshot_logs_capture_failures(monkeypatch: pytest.Monke
     caplog.set_level(logging.WARNING, logger="app.services.task_recording_service")
 
     def grab_screen():
-        raise RuntimeError("screen capture unavailable")
+        raise RuntimeError(
+            "screen capture unavailable for C:/Users/Suli/private/capture-frame.png "
+            "token=recording-secret-1234567890"
+        )
 
     monkeypatch.setattr(task_recording_service, "_grab_screen", grab_screen)
 
     frame = task_recording_service.capture_step_screenshot("task_failed_capture", "step_capture", "before")
 
     assert frame["ok"] is False
-    assert frame["error"] == "screen capture unavailable"
+    assert "screen capture unavailable" in frame["error"]
+    assert "recording-secret-1234567890" not in frame["error"]
+    assert "C:/Users/Suli/private/capture-frame.png" not in frame["error"]
+    assert "capture-frame.png" not in frame["error"]
     assert "task_recording.capture_step_screenshot" in caplog.text
     assert "step_id=step_capture" in caplog.text
+    assert "recording-secret-1234567890" not in caplog.text
+    assert "C:/Users/Suli/private/capture-frame.png" not in caplog.text
+    assert "capture-frame.png" not in caplog.text
 
 
 def test_perception_capture_does_not_write_task_recordings(monkeypatch: pytest.MonkeyPatch):

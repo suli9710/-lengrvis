@@ -66,7 +66,10 @@ def test_parse_advanced_logs_unexpected_parser_failures(
     path.write_text("Executive summary", encoding="utf-8")
 
     def _failed_parser(_path: Path):
-        raise RuntimeError("parser failed token=supersecrettokenvalue1234567890")
+        raise RuntimeError(
+            "parser failed token=supersecrettokenvalue1234567890 "
+            "while reading C:/Users/Suli/private/parser-input.xlsx and parser-notes.md"
+        )
 
     monkeypatch.setattr(svc, "_parse_with_docling", _failed_parser)
     caplog.set_level(logging.WARNING, logger="app.services.document_intelligence_service")
@@ -75,9 +78,16 @@ def test_parse_advanced_logs_unexpected_parser_failures(
 
     assert ir.parse_engine == "builtin"
     assert any("docling parser failed" in warning for warning in ir.warnings)
-    assert "supersecrettokenvalue" not in "\n".join(ir.warnings)
+    warnings_text = "\n".join(ir.warnings)
+    assert "supersecrettokenvalue" not in warnings_text
+    assert "C:/Users/Suli/private/parser-input.xlsx" not in warnings_text
+    assert "parser-input.xlsx" not in warnings_text
+    assert "parser-notes.md" not in warnings_text
     assert "document_intelligence.advanced_parser" in caplog.text
     assert "supersecrettokenvalue" not in caplog.text
+    assert "C:/Users/Suli/private/parser-input.xlsx" not in caplog.text
+    assert "parser-input.xlsx" not in caplog.text
+    assert "parser-notes.md" not in caplog.text
 
 
 def test_extract_tables_from_csv(tmp_path: Path):

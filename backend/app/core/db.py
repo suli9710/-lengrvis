@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hmac
 import json
-import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator
@@ -10,16 +8,42 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
-from app.core.db_diagnostics import build_local_product_diagnostics
 from app.core.db_schema import initialize_schema
+from app.core.db_tables import (
+    _ENSURE_COLUMNS_TABLES,
+    _SAFE_COLUMN_DEFINITION_RE,
+    _SAFE_COLUMN_NAME_RE,
+)
+from app.core.db_tables import (
+    DATA_TABLES as DATA_TABLES,
+)
+from app.core.db_tables import (
+    UNSAFE_WHERE_TOKENS as UNSAFE_WHERE_TOKENS,
+)
+from app.core.db_tables import (
+    WHERE_ALLOWED_COLUMNS as WHERE_ALLOWED_COLUMNS,
+)
+from app.core.db_tables import (
+    WHERE_COMPARISON_RE as WHERE_COMPARISON_RE,
+)
+from app.core.db_tables import (
+    WHERE_CONDITION_JOINER_RE as WHERE_CONDITION_JOINER_RE,
+)
+from app.core.db_tables import (
+    WHERE_IN_RE as WHERE_IN_RE,
+)
+from app.core.db_tables import (
+    WHERE_NULL_RE as WHERE_NULL_RE,
+)
+from app.core.db_tables import (
+    WHERE_OR_RE as WHERE_OR_RE,
+)
 
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
@@ -80,109 +104,16 @@ def reset_audit_caches() -> None:
         _AUDIT_CHAIN_HEADS.clear()
 
 
-# Settings invalidation hooks (dependency inversion for core->llm): instead of
-# db deferred-importing app.llm.registry, interested modules register a
-# callback here at import time and db notifies them when settings change.
-_SETTINGS_HOOK_LOCK = threading.Lock()
-_SETTINGS_INVALIDATION_HOOKS: list[Callable[[], None]] = []
-
-
 def register_settings_invalidation_hook(fn: Callable[[], None]) -> None:
-    with _SETTINGS_HOOK_LOCK:
-        if fn not in _SETTINGS_INVALIDATION_HOOKS:
-            _SETTINGS_INVALIDATION_HOOKS.append(fn)
+    from app.core.db_settings import register_settings_invalidation_hook as _register_hook
+
+    _register_hook(fn)
 
 
 def _notify_settings_invalidated() -> None:
-    with _SETTINGS_HOOK_LOCK:
-        hooks = tuple(_SETTINGS_INVALIDATION_HOOKS)
-    for hook in hooks:
-        hook()
+    from app.core.db_settings import notify_settings_invalidated
 
-
-DATA_TABLES = frozenset(
-    {
-        "approvals",
-        "agent_messages",
-        "audit_events",
-        "audit_chain_heads",
-        "chat_messages",
-        "document_chunks",
-        "goals",
-        "indexed_files",
-        "llm_usage_events",
-        "memories",
-        "mobile_devices",
-        "mobile_pairings",
-        "perception_observations",
-        "perception_suggestions",
-        "permission_policies",
-        "plans",
-        "run_events",
-        "runs",
-        "safety_reviews",
-        "scheduled_tasks",
-        "session_contexts",
-        "task_recordings",
-        "tasks",
-        "tool_calls",
-        "tool_results",
-        "wakeups",
-    }
-)
-UNSAFE_WHERE_TOKENS = (";", "--", "/*", "*/", "\x00")
-WHERE_CONDITION_JOINER_RE = re.compile(r"\s+AND\s+", re.IGNORECASE)
-WHERE_OR_RE = re.compile(r"\bOR\b", re.IGNORECASE)
-WHERE_COMPARISON_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(=|>=|>|<=|<)\s*(\?|[0-9]+)$", re.IGNORECASE)
-WHERE_IN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(\s*\?(?:\s*,\s*\?)*\s*\)$", re.IGNORECASE)
-WHERE_NULL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+(?:NOT\s+)?NULL$", re.IGNORECASE)
-WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
-    "approvals": frozenset({"id", "task_id", "step_id", "status", "created_at"}),
-    "agent_messages": frozenset({"id", "task_id", "step_id", "created_at"}),
-    "audit_events": frozenset({"id", "task_id", "event_type", "actor", "sequence", "created_at"}),
-    "chat_messages": frozenset({"id", "created_at"}),
-    "document_chunks": frozenset({"id", "file_id", "chunk_index"}),
-    "goals": frozenset({"id", "scope", "parent_goal_id", "status", "depth", "created_at", "updated_at"}),
-    "indexed_files": frozenset(
-        {"id", "normalized_path", "sha256", "name", "extension", "size", "modified_at", "indexed_at"}
-    ),
-    "llm_usage_events": frozenset({"id", "provider", "model", "mode", "task", "purpose", "created_at"}),
-    "memories": frozenset({"id", "kind", "task_id", "created_at", "last_used_at"}),
-    "mobile_devices": frozenset({"id", "created_at", "updated_at"}),
-    "mobile_pairings": frozenset({"id", "status", "created_at", "expires_at", "used_at", "updated_at"}),
-    "perception_observations": frozenset({"id", "task_id", "event_id", "event_type", "suppressed", "created_at"}),
-    "perception_suggestions": frozenset(
-        {"id", "task_id", "suggestion_id", "status", "severity", "suppressed", "created_at"}
-    ),
-    "permission_policies": frozenset({"id", "updated_at"}),
-    "plans": frozenset({"id", "task_id", "created_at"}),
-    "run_events": frozenset({"id", "run_id", "name", "sequence", "created_at"}),
-    "runs": frozenset({"id", "task_id", "engine", "phase", "created_at", "updated_at"}),
-    "safety_reviews": frozenset({"id", "task_id", "step_id", "created_at"}),
-    "scheduled_tasks": frozenset({"id", "enabled", "next_run_at", "last_run_at", "created_at", "updated_at"}),
-    "session_contexts": frozenset({"id", "created_at", "updated_at"}),
-    "task_recordings": frozenset({"id", "task_id", "step_id", "phase", "captured_at", "created_at"}),
-    "tasks": frozenset({"id", "created_at", "updated_at"}),
-    "tool_calls": frozenset({"id", "task_id", "step_id", "created_at"}),
-    "tool_results": frozenset({"id", "tool_call_id", "created_at"}),
-    "wakeups": frozenset({"id", "source", "source_id", "status", "due_at", "created_at", "updated_at"}),
-}
-
-# P1-6 fix: Validate column names in _ensure_columns to prevent SQL injection.
-# ALTER TABLE ... ADD COLUMN does not support parameterized identifiers in SQLite.
-# We validate the column name and definition against strict whitelists instead.
-_ENSURE_COLUMNS_TABLES = frozenset(
-    {
-        "audit_events",
-        "llm_usage_events",
-        "perception_suggestions",
-    }
-)
-_SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SAFE_COLUMN_DEFINITION_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('(?:[^']|'')*'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$",
-    re.IGNORECASE,
-)
+    notify_settings_invalidated()
 
 
 def _now_iso() -> str:
@@ -291,10 +222,6 @@ def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
-def _model_json(model: BaseModel) -> str:
-    return model.model_dump_json()
-
-
 _INIT_DB_LOCK = threading.Lock()
 _INITIALIZED_DB_PATHS: set[str] = set()
 
@@ -324,291 +251,26 @@ def _init_db_schema() -> None:
         initialize_schema(conn, _ensure_columns)
         _ensure_sensitive_record_integrity_schema(conn)
 
-
-def _upsert_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO tasks (id, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-        """,
-        (data["id"], _json(data), data.get("created_at", now), now),
-    )
-
-
-def _upsert_chat_messages(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO chat_messages (id, data, created_at) VALUES (?, ?, ?)",
-        (data["id"], _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_plans(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO plans (id, task_id, data, created_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            data=excluded.data,
-            task_id=excluded.task_id
-        """,
-        (data["id"], data["task_id"], _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_goals(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO goals (id, scope, parent_goal_id, status, depth, task_ids, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            scope=excluded.scope,
-            parent_goal_id=excluded.parent_goal_id,
-            status=excluded.status,
-            depth=excluded.depth,
-            task_ids=excluded.task_ids,
-            data=excluded.data,
-            updated_at=excluded.updated_at
-        """,
-        (
-            data["id"],
-            data.get("scope", "default"),
-            data.get("parent_goal_id") or None,
-            data.get("status", "active"),
-            int(data.get("depth") or 0),
-            _json(data.get("related_task_ids") or data.get("task_ids") or []),
-            _json(data),
-            data.get("created_at", now),
-            now,
-        ),
-    )
-
-
-def _upsert_agent_messages(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO agent_messages (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-        (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_runs(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO runs (id, task_id, engine, phase, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            task_id=excluded.task_id,
-            engine=excluded.engine,
-            phase=excluded.phase,
-            data=excluded.data,
-            updated_at=excluded.updated_at
-        """,
-        (
-            data["id"],
-            data.get("task_id") or None,
-            data.get("engine", "auto"),
-            data.get("phase", "created"),
-            _json(data),
-            data.get("created_at", now),
-            data.get("updated_at", now),
-        ),
-    )
-
-
-def _upsert_safety_reviews(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO safety_reviews (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-        (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_tool_calls(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO tool_calls (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-        (data["id"], data["task_id"], data["step_id"], _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_tool_results(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO tool_results (id, tool_call_id, data, created_at) VALUES (?, ?, ?, ?)",
-        (data["id"], data["tool_call_id"], _json(data), data.get("created_at", now)),
-    )
-
-
-def _upsert_approvals(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO approvals (id, task_id, step_id, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            data["id"],
-            data["task_id"],
-            data.get("step_id"),
-            _json(data),
-            status or data.get("status", "pending"),
-            data.get("created_at", now),
-        ),
-    )
-    _store_sensitive_record_integrity(conn, "approvals", data["id"], _json(data))
-
-
-def _upsert_scheduled_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO scheduled_tasks (
-            id, cron, goal, mode, enabled, next_run_at, last_run_at,
-            data, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            cron=excluded.cron,
-            goal=excluded.goal,
-            mode=excluded.mode,
-            enabled=excluded.enabled,
-            next_run_at=excluded.next_run_at,
-            last_run_at=excluded.last_run_at,
-            data=excluded.data,
-            updated_at=excluded.updated_at
-        """,
-        (
-            data["id"],
-            data["cron"],
-            data["goal"],
-            data.get("mode", "efficiency"),
-            1 if data.get("enabled", True) else 0,
-            data.get("next_run_at") or None,
-            data.get("last_run_at") or None,
-            _json(data),
-            data.get("created_at", now),
-            now,
-        ),
-    )
-
-
-def _upsert_wakeups(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO wakeups (id, source, source_id, status, due_at, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            source=excluded.source,
-            source_id=excluded.source_id,
-            status=excluded.status,
-            due_at=excluded.due_at,
-            data=excluded.data,
-            updated_at=excluded.updated_at
-        """,
-        (
-            data["id"],
-            data.get("source", "schedule"),
-            data.get("source_id") or "",
-            data.get("status", "pending"),
-            data.get("due_at") or data.get("created_at", now),
-            _json(data),
-            data.get("created_at", now),
-            now,
-        ),
-    )
-
-
-def _upsert_memories(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO memories (id, kind, content, tags, task_id, embedding, data, created_at, last_used_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            data["id"],
-            data.get("kind", "fact"),
-            data.get("content", ""),
-            ",".join(data.get("tags") or []),
-            data.get("task_id") or "",
-            data.pop("embedding_blob", None)
-            if isinstance(data.get("embedding_blob", None), bytes | bytearray)
-            else None,
-            _json(data),
-            data.get("created_at", now),
-            data.get("last_used_at") or None,
-        ),
-    )
-
-
-def _upsert_session_contexts(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
-    conn.execute(
-        """
-        INSERT INTO session_contexts (id, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-        """,
-        (data["id"], _json(data), data.get("created_at", now), now),
-    )
-
-
-# Table-driven dispatch for upsert_model. Each handler runs inside one
-# `connect()` transaction; audit_events and run_events stay outside because
-# they manage their own serialized write transactions (R4-C2).
-_UPSERT_HANDLERS: dict[str, Callable[[sqlite3.Connection, dict[str, Any], str, str | None], None]] = {
-    "tasks": _upsert_tasks,
-    "chat_messages": _upsert_chat_messages,
-    "plans": _upsert_plans,
-    "goals": _upsert_goals,
-    "agent_messages": _upsert_agent_messages,
-    "runs": _upsert_runs,
-    "safety_reviews": _upsert_safety_reviews,
-    "tool_calls": _upsert_tool_calls,
-    "tool_results": _upsert_tool_results,
-    "approvals": _upsert_approvals,
-    "scheduled_tasks": _upsert_scheduled_tasks,
-    "wakeups": _upsert_wakeups,
-    "memories": _upsert_memories,
-    "session_contexts": _upsert_session_contexts,
-}
-
-
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
-    data = json.loads(model.model_dump_json())
-    now = data.get("updated_at") or data.get("created_at") or _now_iso()
-    if table == "audit_events":
-        _insert_audit_event_record(data)
-        return
-    if table == "run_events":
-        # Route through the serialized writer so the BEGIN IMMEDIATE txn is
-        # held (and committed) entirely under _EVENT_WRITE_LOCK.
-        _insert_run_event_record(data)
-        return
-    handler = _UPSERT_HANDLERS.get(table)
-    if handler is None:
-        raise ValueError(f"Unsupported table: {table}")
-    with connect() as conn:
-        if table in SENSITIVE_RECORD_INTEGRITY_KINDS:
-            _begin_immediate_transaction(conn)
-        handler(conn, data, now, status)
+    from app.core.db_upserts import upsert_model as _upsert_model
 
-
-# Read barriers: tables whose writes are deferred to a background writer
-# (currently agent_messages via AgentBus) register a flush callable here so
-# every reader—services, routes, and tests alike—keeps read-your-writes
-# semantics without knowing about the writer thread.
-_READ_BARRIERS: dict[str, Callable[[], None]] = {}
-
+    _upsert_model(table, model, task_id=task_id, status=status)
 
 def register_read_barrier(table: str, barrier: Callable[[], None]) -> None:
-    _READ_BARRIERS[_data_table_name(table)] = barrier
+    from app.core.db_queries import register_read_barrier as _register_read_barrier
 
+    _register_read_barrier(table, barrier)
 
 def _apply_read_barrier(table_name: str) -> None:
-    barrier = _READ_BARRIERS.get(table_name)
-    if barrier is not None:
-        barrier()
+    from app.core.db_queries import apply_read_barrier
+
+    apply_read_barrier(table_name)
 
 
 def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
-    table_name = _data_table_name(table)
-    _apply_read_barrier(table_name)
-    with connect() as conn:
-        row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()  # noqa: S608
-        if row and table_name in SENSITIVE_RECORD_INTEGRITY_KINDS:
-            _require_sensitive_record_integrity(conn, table_name, record_id, row["data"])
-    return json.loads(row["data"]) if row else None
+    from app.core.db_queries import fetch_one as _fetch_one
+
+    return _fetch_one(table, record_id)
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -633,29 +295,17 @@ def fetch_many_by_fields(
     *,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    table_name = _data_table_name(table)
-    clauses: list[str] = []
-    args: list[Any] = []
-    for column, value in dict(filters or {}).items():
-        column_name = _where_column(table_name, column)
-        if value is None:
-            clauses.append(f"{column_name} IS NULL")
-        else:
-            clauses.append(f"{column_name} = ?")
-            args.append(value)
-    return _fetch_many_data(table_name, " AND ".join(clauses), tuple(args), limit)
+    from app.core.db_queries import fetch_many_by_fields as _fetch_many_by_fields
+
+    return _fetch_many_by_fields(table, filters, limit=limit)
 
 
 def fetch_many_in(
     table: str, column: str, values: list[Any] | tuple[Any, ...], *, limit: int = 200
 ) -> list[dict[str, Any]]:
-    table_name = _data_table_name(table)
-    column_name = _where_column(table_name, column)
-    args = tuple(values)
-    if not args:
-        return []
-    placeholders = ", ".join("?" for _ in args)
-    return _fetch_many_data(table_name, f"{column_name} IN ({placeholders})", args, limit)
+    from app.core.db_queries import fetch_many_in as _fetch_many_in
+
+    return _fetch_many_in(table, column, values, limit=limit)
 
 
 def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
@@ -664,90 +314,53 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     Prefer ``fetch_many_by_fields`` and ``fetch_many_in`` for new code so SQL
     fragments do not spread beyond this module.
     """
-    table_name = _data_table_name(table)
-    where_clause = _where_clause(table_name, where, args)
-    return _fetch_many_data(table_name, where_clause, args, limit)
+    from app.core.db_queries import fetch_many as _fetch_many
+
+    return _fetch_many(table, where, args, limit)
 
 
 def _fetch_many_data(
     table_name: str, where_clause: str = "", args: tuple[Any, ...] = (), limit: int = 200
 ) -> list[dict[str, Any]]:
-    _apply_read_barrier(table_name)
-    query = f"SELECT data FROM {table_name}"  # noqa: S608
-    if where_clause:
-        query += f" WHERE {where_clause}"
-    query += " ORDER BY created_at DESC LIMIT ?"
-    with connect() as conn:
-        rows = conn.execute(query, (*args, _query_limit(limit))).fetchall()
-        if table_name in SENSITIVE_RECORD_INTEGRITY_KINDS:
-            for row in rows:
-                data = json.loads(row["data"])
-                record_id = str(data.get("id") or "")
-                if record_id:
-                    _require_sensitive_record_integrity(conn, table_name, record_id, row["data"])
-    return [json.loads(row["data"]) for row in rows]
+    from app.core.db_queries import fetch_many_data
+
+    return fetch_many_data(table_name, where_clause, args, limit)
 
 
 def _data_table_name(table: str) -> str:
-    table_name = str(table or "").strip()
-    if table_name not in DATA_TABLES:
-        raise ValueError(f"Unsupported table: {table}")
-    return table_name
+    from app.core.db_queries import data_table_name
+
+    return data_table_name(table)
 
 
 def _where_clause(table_name: str, where: str, args: tuple[Any, ...]) -> str:
-    clause = str(where or "").strip()
-    if not clause:
-        if args:
-            raise ValueError("WHERE arguments require a WHERE clause")
-        return ""
-    if any(token in clause for token in UNSAFE_WHERE_TOKENS):
-        raise ValueError("Unsafe WHERE clause")
-    if WHERE_OR_RE.search(clause):
-        raise ValueError("Unsupported WHERE clause")
-    if clause.count("?") != len(args):
-        raise ValueError("WHERE placeholder count does not match arguments")
-    _validate_where_conditions(table_name, clause)
-    return clause
+    from app.core.db_queries import where_clause
+
+    return where_clause(table_name, where, args)
 
 
 def _validate_where_conditions(table_name: str, clause: str) -> None:
-    allowed_columns = WHERE_ALLOWED_COLUMNS.get(table_name, frozenset())
-    if not allowed_columns:
-        raise ValueError(f"WHERE clauses are not supported for table: {table_name}")
-    if not re.fullmatch(r"[A-Za-z0-9_?\s().,=<>!]+", clause):
-        raise ValueError("Unsafe WHERE clause")
+    from app.core.db_queries import validate_where_conditions
 
-    parts = [part.strip() for part in WHERE_CONDITION_JOINER_RE.split(clause) if part.strip()]
-    if not parts:
-        raise ValueError("Unsafe WHERE clause")
-    for part in parts:
-        _validate_where_condition_part(table_name, allowed_columns, part)
+    validate_where_conditions(table_name, clause)
 
 
 def _validate_where_condition_part(table_name: str, allowed_columns: frozenset[str], part: str) -> None:
-    match = WHERE_COMPARISON_RE.fullmatch(part) or WHERE_IN_RE.fullmatch(part) or WHERE_NULL_RE.fullmatch(part)
-    if not match:
-        raise ValueError("Unsupported WHERE clause")
-    column = match.group(1)
-    _where_column(table_name, column, allowed_columns=allowed_columns)
+    from app.core.db_queries import validate_where_condition_part
+
+    validate_where_condition_part(table_name, allowed_columns, part)
 
 
 def _where_column(table_name: str, column: str, *, allowed_columns: frozenset[str] | None = None) -> str:
-    column_name = str(column or "").strip()
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column_name):
-        raise ValueError(f"Unsupported WHERE column for {table_name}: {column}")
-    allowed = allowed_columns if allowed_columns is not None else WHERE_ALLOWED_COLUMNS.get(table_name, frozenset())
-    if column_name not in allowed:
-        raise ValueError(f"Unsupported WHERE column for {table_name}: {column_name}")
-    return column_name
+    from app.core.db_queries import where_column
+
+    return where_column(table_name, column, allowed_columns=allowed_columns)
 
 
 def _query_limit(limit: int) -> int:
-    value = int(limit)
-    if value < 1:
-        raise ValueError("Limit must be positive")
-    return value
+    from app.core.db_queries import query_limit
+
+    return query_limit(limit)
 
 
 def claim_scheduled_task_run(
@@ -756,49 +369,13 @@ def claim_scheduled_task_run(
     expected_next_run_at: str,
     claimed_data: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Atomically claim one due scheduled task before side effects run."""
-    stored = dict(claimed_data)
-    now = str(stored.get("updated_at") or _now_iso())
-    expected_next = expected_next_run_at or ""
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT enabled, next_run_at, data FROM scheduled_tasks WHERE id = ?",
-            (schedule_id,),
-        ).fetchone()
-        if not row or not bool(row["enabled"]):
-            return None
+    from app.core.db_scheduling import claim_scheduled_task_run as _claim_scheduled_task_run
 
-        current = json.loads(row["data"])
-        if current.get("enabled") is False:
-            return None
-        current_next = str(row["next_run_at"] or current.get("next_run_at") or "")
-        if current_next != expected_next:
-            return None
-
-        cursor = conn.execute(
-            """
-            UPDATE scheduled_tasks
-            SET next_run_at = ?,
-                last_run_at = ?,
-                data = ?,
-                updated_at = ?
-            WHERE id = ?
-              AND enabled = 1
-              AND COALESCE(next_run_at, '') = ?
-            """,
-            (
-                stored.get("next_run_at") or None,
-                stored.get("last_run_at") or None,
-                _json(stored),
-                now,
-                schedule_id,
-                expected_next,
-            ),
-        )
-        if cursor.rowcount != 1:
-            return None
-    return stored
+    return _claim_scheduled_task_run(
+        schedule_id,
+        expected_next_run_at=expected_next_run_at,
+        claimed_data=claimed_data,
+    )
 
 
 def complete_scheduled_task_run(
@@ -810,32 +387,16 @@ def complete_scheduled_task_run(
     last_task_id: str = "",
     updated_at: str | None = None,
 ) -> dict[str, Any] | None:
-    """Persist a schedule execution result without overwriting newer schedule state."""
-    timestamp = updated_at or _now_iso()
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT data FROM scheduled_tasks WHERE id = ?", (schedule_id,)).fetchone()
-        if not row:
-            return None
+    from app.core.db_scheduling import complete_scheduled_task_run as _complete_scheduled_task_run
 
-        stored = json.loads(row["data"])
-        if str(stored.get("last_run_at") or "") != expected_last_run_at:
-            return None
-        if str(stored.get("next_run_at") or "") != expected_next_run_at:
-            return None
-        stored["last_status"] = last_status
-        stored["last_task_id"] = last_task_id
-        stored["updated_at"] = timestamp
-        conn.execute(
-            """
-            UPDATE scheduled_tasks
-            SET data = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (_json(stored), timestamp, schedule_id),
-        )
-    return stored
+    return _complete_scheduled_task_run(
+        schedule_id,
+        expected_last_run_at=expected_last_run_at,
+        expected_next_run_at=expected_next_run_at,
+        last_status=last_status,
+        last_task_id=last_task_id,
+        updated_at=updated_at,
+    )
 
 
 def set_scheduled_task_enabled(
@@ -845,542 +406,123 @@ def set_scheduled_task_enabled(
     next_run_at: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any] | None:
-    """Atomically toggle a scheduled task without overwriting run metadata."""
-    timestamp = updated_at or _now_iso()
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT data FROM scheduled_tasks WHERE id = ?",
-            (schedule_id,),
-        ).fetchone()
-        if not row:
-            return None
+    from app.core.db_scheduling import set_scheduled_task_enabled as _set_scheduled_task_enabled
 
-        stored = json.loads(row["data"])
-        stored["enabled"] = bool(enabled)
-        if next_run_at is not None:
-            stored["next_run_at"] = next_run_at
-        stored["updated_at"] = timestamp
-        conn.execute(
-            """
-            UPDATE scheduled_tasks
-            SET enabled = ?,
-                next_run_at = ?,
-                last_run_at = ?,
-                data = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                1 if enabled else 0,
-                stored.get("next_run_at") or None,
-                stored.get("last_run_at") or None,
-                _json(stored),
-                timestamp,
-                schedule_id,
-            ),
-        )
-    return stored
+    return _set_scheduled_task_enabled(schedule_id, enabled, next_run_at=next_run_at, updated_at=updated_at)
 
 
 def insert_perception_observation(payload: dict[str, Any]) -> None:
-    body = dict(payload)
-    body.setdefault("id", f"pobs_{uuid4().hex}")
-    body.setdefault("created_at", _now_iso())
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO perception_observations (
-                id, task_id, event_id, event_type, environment_type, source_agent, summary,
-                suppressed, process_name, window_title, screen_state_id, data, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                body["id"],
-                body.get("task_id") or None,
-                body.get("event_id") or None,
-                body.get("event_type") or "",
-                body.get("environment_type") or None,
-                body.get("source_agent") or None,
-                body.get("summary") or "",
-                1 if body.get("suppressed") else 0,
-                body.get("process_name") or None,
-                body.get("window_title") or None,
-                body.get("screen_state_id") or None,
-                _json(body),
-                body["created_at"],
-            ),
-        )
+    from app.core.db_scheduling import insert_perception_observation as _insert_perception_observation
+
+    _insert_perception_observation(payload)
 
 
 def insert_perception_suggestion(payload: dict[str, Any]) -> None:
-    body = dict(payload)
-    body.setdefault("id", f"psug_{uuid4().hex}")
-    body.setdefault("created_at", _now_iso())
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO perception_suggestions (
-                id, task_id, suggestion_id, rule_id, severity, title, summary, suppressed,
-                status, linked_run_id, expires_at, data, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                body["id"],
-                body.get("task_id") or None,
-                body.get("suggestion_id") or None,
-                body.get("rule_id") or None,
-                body.get("severity") or "info",
-                body.get("title") or None,
-                body.get("summary") or "",
-                1 if body.get("suppressed") else 0,
-                body.get("status") or "proposed",
-                body.get("linked_run_id") or None,
-                body.get("expires_at") or None,
-                _json(body),
-                body["created_at"],
-            ),
-        )
+    from app.core.db_scheduling import insert_perception_suggestion as _insert_perception_suggestion
+
+    _insert_perception_suggestion(payload)
 
 
 def next_run_event_sequence(run_id: str) -> int:
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?", (run_id,)
-        ).fetchone()
-    return int(row["sequence"] or 0) + 1
+    from app.core.db_run_events import next_run_event_sequence as _next_run_event_sequence
+
+    return _next_run_event_sequence(run_id)
 
 
 def insert_run_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
-    return _insert_run_event_record(data)
+    from app.core.db_run_events import insert_run_event as _insert_run_event
+
+    return _insert_run_event(model)
 
 
 def _insert_run_event_record(data: dict[str, Any]) -> dict[str, Any]:
-    with _EVENT_WRITE_LOCK:
-        with connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            return _insert_run_event_locked(conn, data)
+    from app.core.db_run_events import insert_run_event_record
+
+    return insert_run_event_record(data)
 
 
 def _insert_run_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
-    now = data.get("created_at") or _now_iso()
-    stored = dict(data)
-    stored.setdefault("id", f"runevt_{uuid4().hex}")
-    stored["created_at"] = now
-    sequence = int(stored.get("sequence") or 0)
-    if sequence <= 0:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?",
-            (stored["run_id"],),
-        ).fetchone()
-        sequence = int(row["sequence"] or 0) + 1
-        stored["sequence"] = sequence
-    conn.execute(
-        """
-        INSERT INTO run_events (id, run_id, name, sequence, data, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            stored["id"],
-            stored["run_id"],
-            stored["name"],
-            sequence,
-            _json(stored),
-            now,
-        ),
-    )
-    return stored
+    from app.core.db_run_events import insert_run_event_locked
+
+    return insert_run_event_locked(conn, data)
 
 
 def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
-    return _insert_audit_event_record(data)
+    from app.core.db_audit_chain import insert_audit_event as _insert_audit_event
+
+    return _insert_audit_event(model)
 
 
 def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
-    init_db()
-    try:
-        with _EVENT_WRITE_LOCK, connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            stored = _prepare_audit_event_locked(conn, data)
-            conn.execute(
-                """
-                INSERT INTO audit_events (
-                    id, task_id, event_type, actor, sequence, prev_hash,
-                    event_hash, hmac, data, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    stored["id"],
-                    stored.get("task_id"),
-                    stored["event_type"],
-                    stored["actor"],
-                    stored["sequence"],
-                    stored["prev_hash"],
-                    stored["event_hash"],
-                    stored["hmac"],
-                    _json(stored),
-                    stored["created_at"],
-                ),
-            )
-            # Head is reserved in _prepare_audit_event_locked; refresh with the committed hash.
-            _store_audit_chain_head(stored["sequence"], stored["event_hash"], event_id=stored["id"])
-    except Exception:
-        _invalidate_audit_chain_head()
-        raise
-    return stored
+    from app.core.db_audit_chain import insert_audit_event_record
+
+    return insert_audit_event_record(data)
 
 
 def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
-    query = """
-        SELECT id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at
-        FROM audit_events
-        WHERE sequence > 0
-        ORDER BY sequence ASC, created_at ASC, id ASC
-    """
-    args: tuple[Any, ...] = ()
-    if limit is not None:
-        query += " LIMIT ?"
-        args = (max(1, int(limit)),)
+    from app.core.db_audit_chain import verify_audit_log as _verify_audit_log
 
-    expected_prev = AUDIT_GENESIS_HASH
-    checked = 0
-    failures: list[dict[str, Any]] = []
-    last_hash = expected_prev
-    last_event_id: str | None = None
-    last_sequence = 0
-    persisted_head: dict[str, Any] | None = None
-    external_anchor: dict[str, Any] | None = None
-    missing_triggers: list[str] = []
-    with connect() as conn:
-        rows = conn.execute(query, args).fetchall()
-        if limit is None:
-            missing_triggers = _missing_audit_append_only_triggers(conn)
-            persisted_head = _latest_persisted_audit_chain_head(conn)
-            external_anchor = _read_audit_anchor()
-
-    for index, row in enumerate(rows, start=1):
-        row_id = str(row["id"] or "")
-        row_sequence = int(row["sequence"] or 0)
-        try:
-            data = json.loads(row["data"])
-        except (TypeError, ValueError):
-            failures.append({"index": index, "id": row_id, "sequence": row_sequence, "reason": "invalid_json"})
-            break
-
-        sequence = int(data.get("sequence") or row_sequence or 0)
-        prev_hash = str(data.get("prev_hash") or row["prev_hash"] or "")
-        event_hash = str(data.get("event_hash") or row["event_hash"] or "")
-        event_hmac = str(data.get("hmac") or row["hmac"] or "")
-
-        column_mismatch = _audit_column_mismatch(row, data)
-        if column_mismatch:
-            failures.append(
-                {
-                    "index": index,
-                    "id": row_id,
-                    "sequence": sequence,
-                    "reason": "stored_column_mismatch",
-                    "fields": column_mismatch,
-                }
-            )
-            break
-        if sequence != index:
-            failures.append(
-                {"index": index, "id": row_id, "sequence": sequence, "reason": "sequence_gap", "expected": index}
-            )
-            break
-        if prev_hash != expected_prev:
-            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "prev_hash_mismatch"})
-            break
-
-        unsigned = dict(data)
-        unsigned["sequence"] = sequence
-        unsigned["prev_hash"] = prev_hash
-        unsigned["event_hash"] = ""
-        unsigned["hmac"] = ""
-        computed_hash = _audit_event_hash(unsigned)
-        computed_hmac = _audit_event_hmac(computed_hash)
-        if not hmac.compare_digest(event_hash, computed_hash):
-            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "event_hash_mismatch"})
-            break
-        if not hmac.compare_digest(event_hmac, computed_hmac):
-            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "hmac_mismatch"})
-            break
-
-        checked += 1
-        last_hash = event_hash
-        last_event_id = row_id
-        last_sequence = sequence
-        expected_prev = event_hash
-
-    if not failures and limit is None and persisted_head is not None:
-        anchored_sequence = int(persisted_head["sequence"] or 0)
-        anchored_hash = str(persisted_head["event_hash"] or "")
-        if anchored_sequence != last_sequence or anchored_hash != last_hash:
-            failures.append(
-                {
-                    "index": checked + 1,
-                    "id": persisted_head.get("event_id") or None,
-                    "sequence": anchored_sequence,
-                    "reason": "tail_truncated",
-                    "expected_last_sequence": anchored_sequence,
-                    "actual_last_sequence": last_sequence,
-                }
-            )
-
-    if limit is None and missing_triggers:
-        failures.append(
-            {
-                "index": checked + 1,
-                "id": last_event_id,
-                "sequence": last_sequence,
-                "reason": "append_only_trigger_missing",
-                "missing_triggers": missing_triggers,
-            }
-        )
-
-    if not failures and limit is None and external_anchor is not None:
-        anchored_sequence = int(external_anchor.get("sequence") or 0)
-        anchored_hash = str(external_anchor.get("event_hash") or "")
-        if anchored_sequence != last_sequence or anchored_hash != last_hash:
-            failures.append(
-                {
-                    "index": checked + 1,
-                    "id": external_anchor.get("event_id") or None,
-                    "sequence": anchored_sequence,
-                    "reason": "external_anchor_mismatch",
-                    "expected_last_sequence": anchored_sequence,
-                    "actual_last_sequence": last_sequence,
-                }
-            )
-
-    failure = failures[0] if failures else {}
-    return {
-        "ok": not failures,
-        "checked": checked,
-        "last_event_id": last_event_id,
-        "last_sequence": last_sequence,
-        "last_hash": last_hash,
-        "failure_index": failure.get("index"),
-        "failure_event_id": failure.get("id"),
-        "failure_sequence": failure.get("sequence"),
-        "failure_reason": str(failure.get("reason") or ""),
-        "failures": failures,
-        "anchor": external_anchor,
-    }
+    return _verify_audit_log(limit=limit)
 
 
 def _audit_column_mismatch(row: sqlite3.Row, data: dict[str, Any]) -> list[str]:
-    mismatched: list[str] = []
-    for field in ("id", "task_id", "event_type", "actor", "sequence", "prev_hash", "event_hash", "hmac", "created_at"):
-        if field not in data:
-            continue
-        row_value = row[field]
-        data_value = data.get(field)
-        if field == "sequence":
-            if int(data_value or 0) != int(row_value or 0):
-                mismatched.append(field)
-            continue
-        if data_value is None and row_value is None:
-            continue
-        if str(data_value or "") != str(row_value or ""):
-            mismatched.append(field)
-    return mismatched
+    from app.core.db_audit_chain import audit_column_mismatch
+
+    return audit_column_mismatch(row, data)
 
 
 def _missing_audit_append_only_triggers(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'trigger'
-          AND name IN (?, ?, ?, ?)
-        """,
-        tuple(sorted(AUDIT_APPEND_ONLY_TRIGGERS)),
-    ).fetchall()
-    present = {str(row["name"]) for row in rows}
-    return sorted(AUDIT_APPEND_ONLY_TRIGGERS - present)
+    from app.core.db_audit_chain import missing_audit_append_only_triggers
 
-
-PERSONAL_DATA_TABLES: tuple[str, ...] = (
-    "tasks",
-    "chat_messages",
-    "plans",
-    "goals",
-    "agent_messages",
-    "runs",
-    "run_events",
-    "task_recordings",
-    "safety_reviews",
-    "tool_calls",
-    "tool_results",
-    "approvals",
-    "mobile_pairings",
-    "mobile_devices",
-    "llm_usage_events",
-    "indexed_files",
-    "document_chunks",
-    "document_chunk_embeddings",
-    "scheduled_tasks",
-    "wakeups",
-    "memories",
-    "session_contexts",
-    "perception_observations",
-    "perception_suggestions",
-)
-SETTINGS_TABLES: tuple[str, ...] = ("app_settings", "permission_policies")
+    return missing_audit_append_only_triggers(conn)
 
 
 def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
-    """Delete locally stored user content (PIPL/GDPR local deletion entry).
+    from app.core.db_maintenance import erase_local_user_data as _erase_local_user_data
 
-    Audit events are preserved by default so the tamper-evident chain can show
-    that the erase happened; callers should append an erase audit event after
-    this returns. The database file is VACUUMed so deleted rows do not survive
-    in free pages.
-    """
-    tables = PERSONAL_DATA_TABLES + (SETTINGS_TABLES if include_settings else ())
-    counts: dict[str, int] = {}
-    with connect() as conn:
-        for table in tables:
-            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
-            counts[table] = int(row[0] or 0)
-            conn.execute(f"DELETE FROM {table}")  # noqa: S608
-    with connect() as conn:
-        conn.execute("VACUUM")
-    if include_settings:
-        _notify_settings_invalidated()
-    return counts
+    return _erase_local_user_data(include_settings=include_settings)
 
 
 def local_product_diagnostics(*, recent_limit: int = 200) -> dict[str, Any]:
-    limit = _query_limit(recent_limit)
-    return build_local_product_diagnostics(
-        sample_size=limit,
-        database_present=db_path().exists(),
-        tasks=fetch_many("tasks", limit=limit),
-        runs=fetch_many("runs", limit=limit),
-        approvals=fetch_many("approvals", limit=limit),
-        mobile_devices=fetch_many("mobile_devices", limit=limit),
-        mobile_pairings=fetch_many("mobile_pairings", limit=limit),
-        tool_results=fetch_many("tool_results", limit=limit),
-        audits=fetch_many("audit_events", limit=limit),
-    )
+    from app.core.db_maintenance import local_product_diagnostics as _local_product_diagnostics
+
+    return _local_product_diagnostics(recent_limit=recent_limit)
 
 
 def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
-    stored = dict(data)
-    stored.setdefault("id", f"audit_{uuid4().hex}")
-    stored["created_at"] = stored.get("created_at") or _now_iso()
+    from app.core.db_audit_chain import prepare_audit_event_locked
 
-    # Resolve the HMAC secret *before* taking the cache lock: _audit_hmac_secret
-    # acquires _AUDIT_CACHE_LOCK itself and threading.Lock is not reentrant, so
-    # calling it while holding the lock self-deadlocks the first audit write of
-    # every process (and freezes the DB via the open BEGIN IMMEDIATE txn).
-    hmac_secret = _audit_hmac_secret()
+    return prepare_audit_event_locked(conn, data)
 
-    key = str(db_path())
-    with _AUDIT_CACHE_LOCK:
-        head = _AUDIT_CHAIN_HEADS.get(key)
-        if head is None:
-            persisted_head = _latest_persisted_audit_chain_head(conn)
-            if persisted_head is not None:
-                sequence = int(persisted_head["sequence"] or 0) + 1
-                prev_hash = str(persisted_head["event_hash"] or "")
-            else:
-                row = conn.execute(
-                    """
-                    SELECT sequence, event_hash
-                    FROM audit_events
-                    ORDER BY sequence DESC, created_at DESC, id DESC
-                    LIMIT 1
-                    """
-                ).fetchone()
-                sequence = int(row["sequence"] or 0) + 1 if row else 1
-                prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
-        else:
-            sequence = head[0] + 1
-            prev_hash = head[1]
 
-        stored["sequence"] = sequence
-        stored["prev_hash"] = prev_hash
-        stored["event_hash"] = ""
-        stored["hmac"] = ""
-        event_hash = _audit_event_hash(stored)
-        stored["event_hash"] = event_hash
-        stored["hmac"] = _audit_event_hmac(event_hash, secret=hmac_secret)
-        # Reserve the next sequence before releasing the lock so concurrent writers
-        # cannot derive the same sequence from a stale in-memory or DB tail.
-        _AUDIT_CHAIN_HEADS[key] = (sequence, event_hash)
-    return stored
+def _storage_safe_audit_event(data: dict[str, Any]) -> dict[str, Any]:
+    from app.core.db_audit_chain import storage_safe_audit_event
+
+    return storage_safe_audit_event(data)
+
+
+def _restore_remote_input_approval_binding_ids(stored: dict[str, Any], original_payload: dict[str, Any]) -> None:
+    from app.core.db_audit_chain import restore_remote_input_approval_binding_ids
+
+    restore_remote_input_approval_binding_ids(stored, original_payload)
 
 
 def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "") -> None:
-    record_id = f"audit_head_{uuid4().hex}"
-    created_at = _now_iso()
-    payload = _audit_chain_head_integrity_payload(
-        record_id=record_id,
-        sequence=int(sequence),
-        event_hash=str(event_hash),
-        event_id=str(event_id or ""),
-        created_at=created_at,
-    )
-    with _AUDIT_CACHE_LOCK:
-        _AUDIT_CHAIN_HEADS[str(db_path())] = (int(sequence), str(event_hash))
-    with connect() as conn:
-        _begin_immediate_transaction(conn)
-        conn.execute(
-            """
-            INSERT INTO audit_chain_heads (id, sequence, event_hash, event_id, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (record_id, int(sequence), str(event_hash), str(event_id or ""), created_at),
-        )
-        _store_sensitive_record_integrity(conn, "audit_chain_heads", record_id, payload)
-    _write_audit_anchor(sequence, event_hash, event_id=event_id)
+    from app.core.db_audit_chain import store_audit_chain_head
+
+    store_audit_chain_head(sequence, event_hash, event_id=event_id)
 
 
 def _invalidate_audit_chain_head() -> None:
-    with _AUDIT_CACHE_LOCK:
-        _AUDIT_CHAIN_HEADS.pop(str(db_path()), None)
+    from app.core.db_audit_chain import invalidate_audit_chain_head
+
+    invalidate_audit_chain_head()
 
 
 def _latest_persisted_audit_chain_head(conn: sqlite3.Connection) -> dict[str, Any] | None:
-    try:
-        row = conn.execute(
-            """
-            SELECT id, sequence, event_hash, event_id, created_at
-            FROM audit_chain_heads
-            ORDER BY sequence DESC, created_at DESC, id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    except sqlite3.Error:
-        return None
-    if not row:
-        return None
-    sequence = int(row["sequence"] or 0)
-    event_hash = str(row["event_hash"] or "")
-    if sequence <= 0 or not event_hash:
-        return None
-    _require_sensitive_record_integrity(
-        conn,
-        "audit_chain_heads",
-        str(row["id"]),
-        _audit_chain_head_integrity_payload(
-            record_id=str(row["id"]),
-            sequence=sequence,
-            event_hash=event_hash,
-            event_id=str(row["event_id"] or ""),
-            created_at=str(row["created_at"] or ""),
-        ),
-    )
-    return {"sequence": sequence, "event_hash": event_hash, "event_id": str(row["event_id"] or "")}
+    from app.core.db_audit_chain import latest_persisted_audit_chain_head
+
+    return latest_persisted_audit_chain_head(conn)
 
 
 def _audit_chain_head_integrity_payload(
@@ -1391,155 +533,81 @@ def _audit_chain_head_integrity_payload(
     event_id: str,
     created_at: str,
 ) -> str:
-    return json.dumps(
-        {
-            "id": record_id,
-            "sequence": int(sequence),
-            "event_hash": event_hash,
-            "event_id": event_id,
-            "created_at": created_at,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    from app.core.db_audit_chain import audit_chain_head_integrity_payload
+
+    return audit_chain_head_integrity_payload(
+        record_id=record_id,
+        sequence=sequence,
+        event_hash=event_hash,
+        event_id=event_id,
+        created_at=created_at,
     )
 
 
 def audit_anchor_path() -> Path:
-    return Path(get_base_settings().data_dir) / AUDIT_ANCHOR_FILE
+    from app.core.db_audit_chain import audit_anchor_path as _audit_anchor_path
+
+    return _audit_anchor_path()
 
 
 def _write_audit_anchor(sequence: int, event_hash: str, *, event_id: str = "") -> None:
-    payload = {
-        "schema": 1,
-        "sequence": int(sequence),
-        "event_hash": str(event_hash),
-        "event_id": str(event_id or ""),
-        "updated_at": _now_iso(),
-    }
-    payload["anchor_sha256"] = sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    path = audit_anchor_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    from app.core.db_audit_chain import write_audit_anchor
+
+    write_audit_anchor(sequence, event_hash, event_id=event_id)
 
 
 def _read_audit_anchor() -> dict[str, Any] | None:
-    path = audit_anchor_path()
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
-    if not isinstance(payload, dict):
-        return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
-    return payload
+    from app.core.db_audit_chain import read_audit_anchor
+
+    return read_audit_anchor()
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:
-    canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return sha256(canonical.encode("utf-8")).hexdigest()
+    from app.core.db_audit_chain import audit_event_hash
+
+    return audit_event_hash(event)
 
 
 def _audit_event_hmac(event_hash: str, *, secret: str | None = None) -> str:
-    key = secret if secret is not None else _audit_hmac_secret()
-    return hmac.new(key.encode("utf-8"), event_hash.encode("utf-8"), sha256).hexdigest()
+    from app.core.db_audit_chain import audit_event_hmac
+
+    return audit_event_hmac(event_hash, secret=secret)
 
 
 def _audit_hmac_secret() -> str:
-    from app.security.local_secret import load_or_create_local_secret
+    from app.core.db_audit_chain import audit_hmac_secret
 
-    configured = str(get_env("LENGRVIS_AUDIT_HMAC_SECRET") or "").strip()
-    if configured:
-        return configured
-
-    secret_path = _active_audit_hmac_secret_path()
-    key = str(secret_path)
-    with _AUDIT_CACHE_LOCK:
-        cached = _AUDIT_SECRET_CACHE.get(key)
-    if cached:
-        return cached
-
-    secret = load_or_create_local_secret(
-        secret_path,
-        unavailable_message="Audit HMAC secret is unavailable.",
-    )
-    with _AUDIT_CACHE_LOCK:
-        _AUDIT_SECRET_CACHE[key] = secret
-    return secret
+    return audit_hmac_secret()
 
 
 def _active_audit_hmac_secret_path() -> Path:
-    secret_path = audit_hmac_secret_path()
-    legacy_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
-    if secret_path == legacy_path or secret_path.exists() or not legacy_path.exists():
-        return secret_path
-    try:
-        secret_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_path.replace(secret_path)
-        return secret_path
-    except OSError:
-        return legacy_path
+    from app.core.db_audit_chain import active_audit_hmac_secret_path
+
+    return active_audit_hmac_secret_path()
 
 
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT data FROM run_events
-            WHERE run_id = ? AND sequence > ?
-            ORDER BY sequence ASC
-            LIMIT ?
-            """,
-            (run_id, after_sequence, limit),
-        ).fetchall()
-    return [json.loads(row["data"]) for row in rows]
+    from app.core.db_run_events import fetch_run_events as _fetch_run_events
+
+    return _fetch_run_events(run_id, after_sequence=after_sequence, limit=limit)
 
 
 def delete_run_events_before(cutoff_iso: str) -> int:
-    with connect() as conn:
-        cursor = conn.execute("DELETE FROM run_events WHERE created_at < ?", (cutoff_iso,))
-    return int(cursor.rowcount or 0)
+    from app.core.db_run_events import delete_run_events_before as _delete_run_events_before
+
+    return _delete_run_events_before(cutoff_iso)
 
 
 def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str, Any] | None:
-    """Atomically mark an approved approval as consumed before side effects run."""
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT data FROM approvals WHERE id = ? AND status = ?",
-            (approval_id, "approved"),
-        ).fetchone()
-        if not row:
-            return None
-        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
-        data = json.loads(row["data"])
-        if data.get("consumed_at"):
-            return None
-        data["consumed_at"] = consumed_at
-        cursor = conn.execute(
-            """
-            UPDATE approvals
-            SET data = ?
-            WHERE id = ?
-              AND status = ?
-              AND json_extract(data, '$.consumed_at') IS NULL
-            """,
-            (_json(data), approval_id, "approved"),
-        )
-        if cursor.rowcount != 1:
-            return None
-        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
-    return data
+    from app.core.db_approvals import claim_approval_for_execution as _claim_approval_for_execution
+
+    return _claim_approval_for_execution(approval_id, consumed_at)
 
 
 def expire_approval_if_pending(approval_id: str, expired_at: str, reason: str = "") -> dict[str, Any] | None:
-    """Atomically expire one pending, unconsumed approval."""
-    return expire_approval_if_unconsumed(approval_id, expired_at, reason, statuses={"pending"})
+    from app.core.db_approvals import expire_approval_if_pending as _expire_approval_if_pending
+
+    return _expire_approval_if_pending(approval_id, expired_at, reason)
 
 
 def expire_approval_if_unconsumed(
@@ -1549,142 +617,33 @@ def expire_approval_if_unconsumed(
     *,
     statuses: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Atomically expire one unconsumed approval in an allowed status."""
-    allowed_statuses = statuses or {"pending", "approved"}
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT data FROM approvals WHERE id = ?",
-            (approval_id,),
-        ).fetchone()
-        if not row:
-            return None
-        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
-        data = json.loads(row["data"])
-        current_status = str(data.get("status") or "")
-        if current_status not in allowed_statuses or data.get("consumed_at"):
-            return None
-        data["status"] = "expired"
-        data["decided_at"] = expired_at
-        if reason:
-            data["expired_reason"] = reason
-        placeholders = ",".join("?" for _ in allowed_statuses)
-        query_template = """
-            UPDATE approvals
-            SET data = ?,
-                status = ?
-            WHERE id = ?
-              AND status IN ({status_placeholders})
-              AND json_extract(data, '$.consumed_at') IS NULL
-        """
-        query = query_template.format(status_placeholders=placeholders)  # noqa: S608
-        cursor = conn.execute(
-            query,
-            (_json(data), "expired", approval_id, *sorted(allowed_statuses)),
-        )
-        if cursor.rowcount != 1:
-            return None
-        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
-    return data
+    from app.core.db_approvals import expire_approval_if_unconsumed as _expire_approval_if_unconsumed
+
+    return _expire_approval_if_unconsumed(approval_id, expired_at, reason, statuses=statuses)
 
 
 def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str = "") -> list[dict[str, Any]]:
-    """Atomically expire all pending, unconsumed approvals for a task."""
-    expired: list[dict[str, Any]] = []
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            "SELECT id, data FROM approvals WHERE task_id = ? AND status = ?",
-            (task_id, "pending"),
-        ).fetchall()
-        for row in rows:
-            _require_sensitive_record_integrity(conn, "approvals", row["id"], row["data"])
-            data = json.loads(row["data"])
-            if data.get("status") != "pending" or data.get("consumed_at"):
-                continue
-            data["status"] = "expired"
-            data["decided_at"] = expired_at
-            if reason:
-                data["expired_reason"] = reason
-            cursor = conn.execute(
-                """
-                UPDATE approvals
-                SET data = ?,
-                    status = ?
-                WHERE id = ?
-                  AND status = ?
-                  AND json_extract(data, '$.status') = ?
-                  AND json_extract(data, '$.consumed_at') IS NULL
-                """,
-                (_json(data), "expired", row["id"], "pending", "pending"),
-            )
-            if cursor.rowcount == 1:
-                _store_sensitive_record_integrity(conn, "approvals", row["id"], _json(data))
-                expired.append(data)
-    return expired
+    from app.core.db_approvals import expire_pending_approvals_for_task as _expire_pending_approvals_for_task
+
+    return _expire_pending_approvals_for_task(task_id, expired_at, reason)
 
 
 def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -> dict[str, Any] | None:
-    """Atomically move a pending, unconsumed approval to a terminal decision."""
-    if status not in {"approved", "rejected"}:
-        raise ValueError(f"Unsupported approval decision status: {status}")
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT data FROM approvals WHERE id = ?",
-            (approval_id,),
-        ).fetchone()
-        if not row:
-            return None
-        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
-        data = json.loads(row["data"])
-        if data.get("status") != "pending" or data.get("consumed_at"):
-            return None
-        data["status"] = status
-        data["decided_at"] = decided_at
-        cursor = conn.execute(
-            """
-            UPDATE approvals
-            SET data = ?,
-                status = ?
-            WHERE id = ?
-              AND status = ?
-              AND json_extract(data, '$.status') = ?
-              AND json_extract(data, '$.consumed_at') IS NULL
-            """,
-            (_json(data), status, approval_id, "pending", "pending"),
-        )
-        if cursor.rowcount != 1:
-            return None
-        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
-    return data
+    from app.core.db_approvals import decide_approval_atomically as _decide_approval_atomically
+
+    return _decide_approval_atomically(approval_id, status, decided_at)
 
 
 def set_setting(key: str, value: Any) -> None:
-    stored = _json(value)
-    with connect() as conn:
-        _begin_immediate_transaction(conn)
-        conn.execute(
-            """
-            INSERT INTO app_settings (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (key, stored, _now_iso()),
-        )
-        _store_sensitive_record_integrity(conn, "app_settings", key, stored)
-    _notify_settings_invalidated()
+    from app.core.db_settings import set_setting as _set_setting
+
+    _set_setting(key, value)
 
 
 def get_settings_overrides() -> dict[str, Any]:
-    with connect() as conn:
-        rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
-        for row in rows:
-            _require_sensitive_record_integrity(conn, "app_settings", str(row["key"]), row["value"])
-    result: dict[str, Any] = {}
-    for row in rows:
-        result[row["key"]] = json.loads(row["value"])
-    return result
+    from app.core.db_settings import get_settings_overrides as _get_settings_overrides
+
+    return _get_settings_overrides()
 
 
 def store_sensitive_record_integrity(
@@ -1694,187 +653,69 @@ def store_sensitive_record_integrity(
     *,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    if conn is not None:
-        _store_sensitive_record_integrity(conn, table, record_id, data)
-        return
-    with connect() as conn:
-        _begin_immediate_transaction(conn)
-        _store_sensitive_record_integrity(conn, table, record_id, data)
+    from app.core.db_sensitive_integrity import store_sensitive_record_integrity as _store_public
+
+    _store_public(table, record_id, data, conn=conn)
 
 
 def require_sensitive_record_integrity(table: str, record_id: str, data: str) -> None:
-    with connect() as conn:
-        _require_sensitive_record_integrity(conn, table, record_id, data)
+    from app.core.db_sensitive_integrity import require_sensitive_record_integrity as _require_public
+
+    _require_public(table, record_id, data)
 
 
 def sensitive_integrity_check() -> dict[str, Any]:
-    failures: list[dict[str, str]] = []
-    checked = 0
-    with connect() as conn:
-        _ensure_sensitive_record_integrity_schema(conn)
-        checks = (
-            ("approvals", "SELECT id, data FROM approvals"),
-            ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
-            ("permission_policies", "SELECT id, data FROM permission_policies"),
-            (
-                "audit_chain_heads",
-                "SELECT id, sequence, event_hash, event_id, created_at FROM audit_chain_heads",
-            ),
-        )
-        for table, query in checks:
-            try:
-                rows = conn.execute(query).fetchall()
-            except sqlite3.Error:
-                continue
-            for row in rows:
-                checked += 1
-                data = (
-                    _audit_chain_head_integrity_payload(
-                        record_id=str(row["id"]),
-                        sequence=int(row["sequence"] or 0),
-                        event_hash=str(row["event_hash"] or ""),
-                        event_id=str(row["event_id"] or ""),
-                        created_at=str(row["created_at"] or ""),
-                    )
-                    if table == "audit_chain_heads"
-                    else str(row["data"])
-                )
-                try:
-                    _require_sensitive_record_integrity(conn, table, str(row["id"]), data)
-                except SensitiveRecordIntegrityError as exc:
-                    failures.append({"table": table, "id": str(row["id"]), "reason": str(exc)})
-    return {"ok": not failures, "checked": checked, "failures": failures}
+    from app.core.db_sensitive_integrity import sensitive_integrity_check as _sensitive_integrity_check
+
+    return _sensitive_integrity_check()
 
 
 def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
-    """Sign pre-existing local sensitive records once during startup migration."""
-    failures: list[dict[str, str]] = []
-    checked = 0
-    bootstrap_completed = False
-    with connect() as conn:
-        _ensure_sensitive_record_integrity_schema(conn)
-        _begin_immediate_transaction(conn)
-        bootstrap_completed = _sensitive_integrity_bootstrap_completed(conn)
-        for table, row, data in _iter_sensitive_record_rows(conn):
-            checked += 1
-            record_id = str(row["id"])
-            if _sensitive_record_integrity_row_exists(conn, table, record_id):
-                try:
-                    _require_sensitive_record_integrity(conn, table, record_id, data)
-                except SensitiveRecordIntegrityError as exc:
-                    failures.append({"table": table, "id": record_id, "reason": str(exc)})
-            elif bootstrap_completed:
-                failures.append(
-                    {
-                        "table": table,
-                        "id": record_id,
-                        "reason": "Sensitive local record integrity proof missing",
-                    }
-                )
-            else:
-                _store_sensitive_record_integrity(conn, table, record_id, data)
-        if not failures and not bootstrap_completed:
-            _mark_sensitive_integrity_bootstrap_completed(conn)
-    status = {"ok": not failures, "checked": checked, "failures": failures}
-    set_startup_sensitive_integrity_status(status)
-    return status
+    from app.core.db_sensitive_integrity import bootstrap_sensitive_record_integrity as _bootstrap
+
+    return _bootstrap()
 
 
 def set_startup_sensitive_integrity_status(status: dict[str, Any]) -> None:
-    global _STARTUP_SENSITIVE_INTEGRITY_STATUS
-    _STARTUP_SENSITIVE_INTEGRITY_STATUS = dict(status)
+    from app.core.db_sensitive_integrity import set_startup_sensitive_integrity_status as _set_status
+
+    _set_status(status)
 
 
 def get_startup_sensitive_integrity_status() -> dict[str, Any]:
-    return dict(_STARTUP_SENSITIVE_INTEGRITY_STATUS)
+    from app.core.db_sensitive_integrity import get_startup_sensitive_integrity_status as _get_status
+
+    return _get_status()
 
 
 def require_sensitive_integrity_ok() -> None:
-    startup = get_startup_sensitive_integrity_status()
-    if startup and startup.get("ok") is False:
-        raise SensitiveRecordIntegrityError("Sensitive local record integrity check failed at startup")
-    current = sensitive_integrity_check()
-    set_startup_sensitive_integrity_status(current)
-    if not current.get("ok"):
-        failure = (current.get("failures") or [{}])[0]
-        raise SensitiveRecordIntegrityError(
-            f"Sensitive local record integrity check failed for {failure.get('table')}:{failure.get('id')}"
-        )
+    from app.core.db_sensitive_integrity import require_sensitive_integrity_ok as _require_ok
+
+    _require_ok()
 
 
 def audit_fail_closed_enabled() -> bool:
-    raw = str(get_env(AUDIT_FAIL_CLOSED_ENV_VAR) or "").strip().lower()
-    commercial = str(get_env("LENGRVIS_COMMERCIAL_RELEASE") or "").strip().lower()
-    return raw in {"1", "true", "yes", "on"} or commercial in {"1", "true", "yes", "on"}
+    from app.core.db_sensitive_integrity import audit_fail_closed_enabled as _enabled
+
+    return _enabled()
 
 
 def audit_fail_closed_status() -> dict[str, Any]:
-    audit_status = verify_audit_log()
-    sensitive_status = sensitive_integrity_check()
-    failures: list[dict[str, Any]] = []
-    if not audit_status.get("ok"):
-        failures.append(
-            {
-                "kind": "audit_chain",
-                "reason": audit_status.get("failure_reason") or "audit_chain_invalid",
-            }
-        )
-    if not sensitive_status.get("ok"):
-        failure = (sensitive_status.get("failures") or [{}])[0]
-        failures.append(
-            {
-                "kind": "sensitive_record_integrity",
-                "table": failure.get("table"),
-                "id": failure.get("id"),
-                "reason": failure.get("reason") or "sensitive_record_integrity_invalid",
-            }
-        )
-    return {
-        "ok": not failures,
-        "audit": audit_status,
-        "sensitive_records": sensitive_status,
-        "failures": failures,
-    }
+    from app.core.db_sensitive_integrity import audit_fail_closed_status as _status
+
+    return _status()
 
 
 def require_audit_fail_closed_ok() -> None:
-    status = audit_fail_closed_status()
-    if status.get("ok"):
-        return
-    failure = (status.get("failures") or [{}])[0]
-    raise SensitiveRecordIntegrityError(
-        f"Audit fail-closed gate blocked local writes: {failure.get('kind')}:{failure.get('reason')}"
-    )
+    from app.core.db_sensitive_integrity import require_audit_fail_closed_ok as _require_ok
+
+    _require_ok()
 
 
 def _iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str, sqlite3.Row, str]]:
-    checks = (
-        ("approvals", "SELECT id, data FROM approvals"),
-        ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
-        ("permission_policies", "SELECT id, data FROM permission_policies"),
-        (
-            "audit_chain_heads",
-            "SELECT id, sequence, event_hash, event_id, created_at FROM audit_chain_heads",
-        ),
-    )
-    for table, query in checks:
-        try:
-            rows = conn.execute(query).fetchall()
-        except sqlite3.Error:
-            continue
-        for row in rows:
-            data = (
-                _audit_chain_head_integrity_payload(
-                    record_id=str(row["id"]),
-                    sequence=int(row["sequence"] or 0),
-                    event_hash=str(row["event_hash"] or ""),
-                    event_id=str(row["event_id"] or ""),
-                    created_at=str(row["created_at"] or ""),
-                )
-                if table == "audit_chain_heads"
-                else str(row["data"])
-            )
-            yield table, row, data
+    from app.core.db_sensitive_integrity import iter_sensitive_record_rows
+
+    yield from iter_sensitive_record_rows(conn)
 
 
 def _begin_immediate_transaction(conn: sqlite3.Connection) -> None:
@@ -1883,187 +724,72 @@ def _begin_immediate_transaction(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_sensitive_record_integrity_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {SENSITIVE_RECORD_INTEGRITY_TABLE} (
-            table_name TEXT NOT NULL,
-            record_id TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            digest TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (table_name, record_id)
-        )
-        """
-    )
+    from app.core.db_sensitive_integrity import ensure_sensitive_record_integrity_schema
+
+    ensure_sensitive_record_integrity_schema(conn)
 
 
 def _store_sensitive_record_integrity(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
-    if table not in SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
-        return
-    _ensure_sensitive_record_integrity_schema(conn)
-    digest = _sensitive_record_digest(table, record_id, data)
-    conn.execute(
-        """
-        INSERT INTO sensitive_record_integrity (table_name, record_id, version, digest, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(table_name, record_id) DO UPDATE SET
-            version=excluded.version,
-            digest=excluded.digest,
-            updated_at=excluded.updated_at
-        """,
-        (table, record_id, SENSITIVE_RECORD_INTEGRITY_VERSION, digest, _now_iso()),
-    )
+    from app.core.db_sensitive_integrity import store_sensitive_record_integrity_locked
+
+    store_sensitive_record_integrity_locked(conn, table, record_id, data)
 
 
 def _sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str, record_id: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM sensitive_record_integrity
-        WHERE table_name = ? AND record_id = ?
-        """,
-        (table, record_id),
-    ).fetchone()
-    return row is not None
+    from app.core.db_sensitive_integrity import sensitive_record_integrity_row_exists
+
+    return sensitive_record_integrity_row_exists(conn, table, record_id)
 
 
 def _sensitive_integrity_bootstrap_payload() -> str:
-    return json.dumps({"version": SENSITIVE_RECORD_INTEGRITY_VERSION, "bootstrapped": True})
+    from app.core.db_sensitive_integrity import sensitive_integrity_bootstrap_payload
+
+    return sensitive_integrity_bootstrap_payload()
 
 
 def _sensitive_integrity_bootstrap_digest() -> str:
-    return hmac.new(
-        _audit_hmac_secret().encode("utf-8"),
-        _sensitive_integrity_bootstrap_payload().encode("utf-8"),
-        sha256,
-    ).hexdigest()
+    from app.core.db_sensitive_integrity import sensitive_integrity_bootstrap_digest
+
+    return sensitive_integrity_bootstrap_digest()
 
 
 def _sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        """
-        SELECT digest
-        FROM sensitive_record_integrity
-        WHERE table_name = '__meta__' AND record_id = 'bootstrap'
-        """,
-    ).fetchone()
-    if not row:
-        return False
-    expected = _sensitive_integrity_bootstrap_digest()
-    return hmac.compare_digest(str(row["digest"] or ""), expected)
+    from app.core.db_sensitive_integrity import sensitive_integrity_bootstrap_completed
+
+    return sensitive_integrity_bootstrap_completed(conn)
 
 
 def _mark_sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> None:
-    _ensure_sensitive_record_integrity_schema(conn)
-    conn.execute(
-        """
-        INSERT INTO sensitive_record_integrity (table_name, record_id, version, digest, updated_at)
-        VALUES ('__meta__', 'bootstrap', ?, ?, ?)
-        ON CONFLICT(table_name, record_id) DO UPDATE SET
-            version=excluded.version,
-            digest=excluded.digest,
-            updated_at=excluded.updated_at
-        """,
-        (SENSITIVE_RECORD_INTEGRITY_VERSION, _sensitive_integrity_bootstrap_digest(), _now_iso()),
-    )
+    from app.core.db_sensitive_integrity import mark_sensitive_integrity_bootstrap_completed
+
+    mark_sensitive_integrity_bootstrap_completed(conn)
 
 
 def _require_sensitive_record_integrity(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
-    if table not in SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
-        return
-    _ensure_sensitive_record_integrity_schema(conn)
-    row = conn.execute(
-        """
-        SELECT digest
-        FROM sensitive_record_integrity
-        WHERE table_name = ? AND record_id = ?
-        """,
-        (table, record_id),
-    ).fetchone()
-    expected = _sensitive_record_digest(table, record_id, data)
-    if not row:
-        raise SensitiveRecordIntegrityError(f"Sensitive local record integrity proof missing for {table}:{record_id}")
-    actual = str(row["digest"] or "")
-    if not hmac.compare_digest(actual, expected):
-        raise SensitiveRecordIntegrityError(f"Sensitive local record integrity check failed for {table}:{record_id}")
+    from app.core.db_sensitive_integrity import require_sensitive_record_integrity_locked
+
+    require_sensitive_record_integrity_locked(conn, table, record_id, data)
 
 
 def _sensitive_record_digest(table: str, record_id: str, data: str) -> str:
-    body = json.dumps(
-        {
-            "version": SENSITIVE_RECORD_INTEGRITY_VERSION,
-            "table": table,
-            "record_id": record_id,
-            "data": data,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hmac.new(_audit_hmac_secret().encode("utf-8"), body.encode("utf-8"), sha256).hexdigest()
+    from app.core.db_sensitive_integrity import sensitive_record_digest
+
+    return sensitive_record_digest(table, record_id, data)
 
 
 def upsert_memory(payload: dict[str, Any]) -> None:
-    """Custom helper for memories: persists embedding as JSON in data column."""
-    record_id = str(payload.get("id") or "")
-    content = str(payload.get("content", ""))
-    kind = str(payload.get("kind", "fact"))
-    tags = payload.get("tags") or []
-    embedding = payload.get("embedding") or []
-    body = {
-        "id": record_id,
-        "kind": kind,
-        "content": content,
-        "tags": list(tags),
-        "task_id": payload.get("task_id", ""),
-        "source": payload.get("source", "user"),
-        "use_count": int(payload.get("use_count") or 0),
-        "last_used_at": payload.get("last_used_at") or "",
-        "embedding_dim": int(payload.get("embedding_dim") or len(embedding)),
-        "created_at": payload.get("created_at") or _now_iso(),
-        "embedding": list(embedding),
-    }
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO memories (
-                id, kind, content, tags, task_id, embedding, data, created_at, last_used_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                body["id"],
-                kind,
-                content,
-                ",".join(tags) if tags else "",
-                body["task_id"],
-                None,  # embedding column kept null; we store JSON list inside data instead.
-                _json(body),
-                body["created_at"],
-                body["last_used_at"] or None,
-            ),
-        )
+    from app.core.db_memory import upsert_memory as _upsert_memory
+
+    return _upsert_memory(payload)
 
 
 def list_memories(*, tags: list[str] | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT data, tags FROM memories ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        body = json.loads(row["data"])
-        if tags:
-            row_tags = set(str(row["tags"] or "").split(",")) - {""}
-            wanted = set(tags)
-            if not wanted.issubset(row_tags):
-                continue
-        results.append(body)
-    return results
+    from app.core.db_memory import list_memories as _list_memories
+
+    return _list_memories(tags=tags, limit=limit)
 
 
 def delete_memory(memory_id: str) -> bool:
-    with connect() as conn:
-        cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-    return cursor.rowcount > 0
+    from app.core.db_memory import delete_memory as _delete_memory
+
+    return _delete_memory(memory_id)

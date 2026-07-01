@@ -121,7 +121,7 @@ class CompletionHandler:
         if not messages:
             return
         settings = get_effective_settings()
-        llm_messages = [message.to_openai_dict(include_legacy=False) for message in messages[-80:]]
+        llm_messages = self.orchestrator.bus.get_llm_messages(task.id, settings, limit=80)
         summary = summarize_messages(llm_messages, settings)
         if not summary:
             return

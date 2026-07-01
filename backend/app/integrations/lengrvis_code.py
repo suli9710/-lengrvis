@@ -16,6 +16,7 @@ from typing import Any
 
 from app.config import PROJECT_ROOT, AppSettings, get_env
 from app.orchestration.execution_models import EngineTurnResult, RunObservation, RunPhase, RunState
+from app.policy.redaction import redact_public_text, redact_value
 
 VENDORED_LENGRVIS_CODE_ROOT = PROJECT_ROOT / "vendor" / "lengrvis-code"
 LENGRVIS_CODE_DISPLAY_NAME = "Lengrvis Code"
@@ -781,10 +782,11 @@ def lengrvis_code_summary_to_turn_result(state: RunState, summary: LengrvisCodeS
         deep=True,
     )
     payload = _summary_payload(summary)
+    result_message = payload.get("assistant_text") if not summary.is_error else ""
     return EngineTurnResult(
         state=updated,
         finished=True,
-        message=summary.final_text or transition_reason,
+        message=str(result_message or transition_reason),
         outputs={LENGRVIS_CODE_ADAPTER_NAME: payload},
     )
 
@@ -958,15 +960,16 @@ def _summary_message(summary: LengrvisCodeStreamSummary) -> str:
 
 def _error_reason(summary: LengrvisCodeStreamSummary) -> str:
     if summary.launch_error:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {summary.launch_error}"
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {_public_lengrvis_code_text(summary.launch_error)}"
     if summary.permission_denials:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {_short_json(summary.permission_denials)}"
+        denials = _public_lengrvis_code_json(summary.permission_denials)
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {denials}"
     if summary.result and isinstance(summary.result.get("errors"), list) and summary.result["errors"]:
-        return "; ".join(str(item) for item in summary.result["errors"])
+        return "; ".join(_public_lengrvis_code_text(item) for item in summary.result["errors"])
     if summary.result and isinstance(summary.result.get("subtype"), str):
         return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {summary.result['subtype']}"
     if summary.stderr.strip():
-        return summary.stderr.strip()[:500]
+        return _public_lengrvis_code_text(summary.stderr.strip(), limit=500)
     if summary.returncode not in {None, 0}:
         return f"{LENGRVIS_CODE_DISPLAY_NAME} exited with code {summary.returncode}."
     if summary.invalid_lines:
@@ -986,12 +989,12 @@ def _summary_payload(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
         "error_classification": error_classification,
         "returncode": summary.returncode,
         "event_count": len(summary.events),
-        "assistant_text": summary.final_text,
+        "assistant_text": _public_lengrvis_code_text(summary.final_text) if summary.is_error else summary.final_text,
         "tool_events": summary.tool_events,
         "system_events": summary.system_events,
-        "result": summary.result,
+        "result": _public_lengrvis_code_result(summary.result),
         "usage": summary.usage,
-        "permission_denials": summary.permission_denials,
+        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
         "invalid_line_count": len(summary.invalid_lines),
         "diagnostics": _diagnostics(summary),
         "adapter_events": adapter_events,
@@ -1003,31 +1006,35 @@ def _summary_payload(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
     if summary.permission_denials:
         payload["awaiting_write_approval"] = True
     if summary.launch_error:
-        payload["launch_error"] = summary.launch_error
+        payload["launch_error"] = _public_lengrvis_code_text(summary.launch_error)
     if summary.stderr:
-        payload["stderr"] = summary.stderr[-4000:]
+        payload["stderr"] = _public_lengrvis_code_text(summary.stderr[-4000:])
     if summary.invalid_lines:
-        payload["invalid_lines"] = summary.invalid_lines[:10]
+        payload["invalid_lines"] = [_public_lengrvis_code_text(line, limit=500) for line in summary.invalid_lines[:10]]
     return payload
 
 
 def _diagnostics(summary: LengrvisCodeStreamSummary) -> list[str]:
     diagnostics: list[str] = []
     if summary.launch_error:
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {summary.launch_error}")
+        launch_error = _public_lengrvis_code_text(summary.launch_error)
+        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {launch_error}")
     health_diagnostic = summary.runtime_health.get("diagnostic") if summary.runtime_health else ""
     if isinstance(health_diagnostic, str) and health_diagnostic:
-        diagnostics.append(health_diagnostic)
+        diagnostics.append(_public_lengrvis_code_text(health_diagnostic))
     if summary.stderr.strip():
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} stderr: {summary.stderr.strip()[:500]}")
+        stderr = _public_lengrvis_code_text(summary.stderr.strip(), limit=500)
+        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} stderr: {stderr}")
     if summary.invalid_lines:
         diagnostics.append(f"Malformed {LENGRVIS_CODE_DISPLAY_NAME} stream-json lines: {len(summary.invalid_lines)}")
     if summary.returncode not in {None, 0}:
         diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} exited with code {summary.returncode}.")
     if summary.permission_denials:
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {_short_json(summary.permission_denials)}")
+        diagnostics.append(
+            f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {_public_lengrvis_code_json(summary.permission_denials)}"
+        )
     if summary.result and isinstance(summary.result.get("errors"), list):
-        diagnostics.extend(str(item) for item in summary.result["errors"])
+        diagnostics.extend(_public_lengrvis_code_text(item) for item in summary.result["errors"])
     return diagnostics
 
 
@@ -1295,7 +1302,7 @@ def _base_event_payload(
         "adapter_name": LENGRVIS_CODE_ADAPTER_NAME,
         "adapter_display_name": LENGRVIS_CODE_DISPLAY_NAME,
         "usage": summary.usage,
-        "permission_denials": summary.permission_denials,
+        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
 
@@ -1304,7 +1311,7 @@ def _stderr_diagnostics(summary: LengrvisCodeStreamSummary) -> list[str]:
     stderr = summary.stderr.strip()
     if not stderr:
         return []
-    return [line.strip()[:500] for line in stderr.splitlines() if line.strip()][:10]
+    return [_public_lengrvis_code_text(line.strip(), limit=500) for line in stderr.splitlines() if line.strip()][:10]
 
 
 def _short_json(value: Any, *, limit: int = 500) -> str:
@@ -1313,6 +1320,40 @@ def _short_json(value: Any, *, limit: int = 500) -> str:
     except (TypeError, ValueError):
         text = str(value)
     return text[:limit]
+
+
+def _public_lengrvis_code_text(value: Any, *, limit: int | None = None) -> str:
+    redacted = redact_public_text(str(redact_value(str(value or "")) or ""))
+    return redacted[:limit] if limit is not None else redacted
+
+
+def _public_lengrvis_code_json(value: Any, *, limit: int = 500) -> str:
+    return _public_lengrvis_code_text(_short_json(value, limit=limit * 2), limit=limit)
+
+
+def _public_lengrvis_code_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _public_lengrvis_code_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_public_lengrvis_code_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_public_lengrvis_code_value(item) for item in value]
+    if isinstance(value, set):
+        return [_public_lengrvis_code_value(item) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        return _public_lengrvis_code_text(value)
+    return value
+
+
+def _public_lengrvis_code_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    if not result.get("is_error"):
+        safe = dict(result)
+        if isinstance(safe.get("permission_denials"), list):
+            safe["permission_denials"] = _public_lengrvis_code_value(safe["permission_denials"])
+        return safe
+    return _public_lengrvis_code_value(result)
 
 
 def _tool_input_summary(value: Any) -> str:
@@ -1400,12 +1441,12 @@ def _terminal_status(summary: LengrvisCodeStreamSummary) -> str:
 
 def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
     payload = {
-        "result": event.get("result"),
+        "result": _public_lengrvis_code_text(event.get("result")) if event.get("is_error") else event.get("result"),
         "subtype": event.get("subtype"),
         "is_error": bool(event.get("is_error")),
-        "errors": event.get("errors") if isinstance(event.get("errors"), list) else [],
+        "errors": _public_lengrvis_code_value(event.get("errors")) if isinstance(event.get("errors"), list) else [],
         "usage": summary.usage,
-        "permission_denials": summary.permission_denials,
+        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
         "error_classification": classify_lengrvis_code_error(summary),
         "returncode": summary.returncode,
         "stderr_diagnostics": _stderr_diagnostics(summary),

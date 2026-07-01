@@ -17,7 +17,11 @@ from app.context_usage import (
     TOOLS_REGISTRY_CATEGORY,
     analyze_context_usage,
     context_usage_to_dict,
+    load_agent_history,
 )
+from app.core import db
+from app.core.schemas import MessageType, OpenAIMessageRole
+from app.orchestration.agent_bus import AgentBus, flush_agent_message_writes
 
 
 def _settings(**overrides) -> AppSettings:
@@ -181,6 +185,61 @@ def test_context_usage_reports_projection_phases_breakdown_and_claude_view():
     assert payload["lineage"]["projection"]["strategy"] == payload["projection"]["strategy"]
     assert payload["claude_view"]["totalTokens"] == payload["used_tokens"]
     assert payload["claude_view"]["messageBreakdown"]["toolCallsByType"][0]["name"] == "file.read"
+
+
+def test_context_usage_task_history_uses_llm_safe_agent_messages(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-context-usage-secret-value"
+
+    assistant = bus.publish_text(
+        "task_context_usage_history",
+        "PlannerAgent",
+        f"Tool failed while reading {local_path} token={secret}",
+        structured_payload={"path": local_path, "api_key": secret},
+        metadata={"error": f"raw error {local_path} token={secret}"},
+        tool_calls=[
+            {
+                "id": "call_context_usage",
+                "type": "function",
+                "function": {"name": "file.read_text", "arguments": {"path": local_path, "api_key": secret}},
+            }
+        ],
+    )
+    bus.publish_text(
+        "task_context_usage_history",
+        "file.read_text",
+        f"result contained {local_path} token={secret}",
+        message_type=MessageType.OBSERVATION,
+        role=OpenAIMessageRole.TOOL,
+        tool_call_id="call_context_usage",
+    )
+
+    assert flush_agent_message_writes(timeout_seconds=10)
+    persisted = next(message for message in bus.get_messages("task_context_usage_history") if message.id == assistant.id)
+    assert local_path in persisted.content
+    assert secret in persisted.content
+
+    history = load_agent_history("task_context_usage_history")
+    report = context_usage_to_dict(
+        analyze_context_usage(
+            task_id="task_context_usage_history",
+            tool_definitions=[],
+            session_context={},
+            settings=_settings(context_auto_compact_enabled=False),
+            include_registered_tools=False,
+        )
+    )
+
+    dumped_history = str(history)
+    assert local_path not in dumped_history
+    assert secret not in dumped_history
+    assert "[REDACTED_LOCAL_PATH]" in dumped_history
+    assert "***" in dumped_history
+    assert report["lineage"]["history_source"] == "task_history"
+    assert report["lineage"]["message_count"] == 2
 
 
 def test_context_usage_to_dict_is_api_ready():

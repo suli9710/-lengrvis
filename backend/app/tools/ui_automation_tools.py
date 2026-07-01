@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import concurrent.futures
 import json
 import re
 import tempfile
@@ -18,44 +19,86 @@ from app.tools.schemas import ToolDefinition
 
 MAX_VISION_GROUNDING_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS = ((MAX_VISION_GROUNDING_IMAGE_BYTES + 2) // 3) * 4
+DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS = 30.0
+
+
+async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+
+
+def _run_ui_automation(
+    coro,
+    action: str,
+    *,
+    timeout_seconds: float | None = DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS,
+) -> Any:
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_with_timeout(coro, timeout_seconds))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds))
+        try:
+            guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
+            return future.result(timeout=guard_timeout)
+        finally:
+            if not future.done():
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+    except TimeoutError:
+        return {"ok": False, "error": f"UIAutomation {action} timed out."}
+    except Exception as exc:  # noqa: BLE001 - UIAutomation adapters should fail inline for tool callers.
+        return {"ok": False, "error": f"UIAutomation {action} failed: {exc}"}
 
 
 def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    app_context = asyncio.run(target.active_window())
+    app_context = _run_ui_automation(target.active_window(), "active_window")
+    if isinstance(app_context, dict):
+        return app_context
     return {"ok": bool(app_context.available), "app_context": app_context.model_dump(mode="json")}
 
 
 def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.observe(
             _selector_args(args),
             max_depth=int(args.get("max_depth") or args.get("maxDepth") or 2),
             max_elements=int(args.get("max_elements") or args.get("maxElements") or 200),
-        )
+        ),
+        "observe",
     )
 
 
 def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    element = asyncio.run(
+    element = _run_ui_automation(
         target.find_element(
             _selector_args(args),
-        )
+        ),
+        "find_element",
     )
+    if isinstance(element, dict):
+        return element
     return {"ok": element is not None, "element": element.to_dict() if element else None}
 
 
 def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    element = asyncio.run(
+    element = _run_ui_automation(
         target.wait_for_element(
             _selector_args(args),
             timeout_seconds=float(args.get("timeout_seconds") or args.get("timeoutSeconds") or 5),
             poll_interval_seconds=float(args.get("poll_interval_seconds") or args.get("pollIntervalSeconds") or 0.25),
-        )
+        ),
+        "wait_for_element",
     )
+    if isinstance(element, dict):
+        return element
     return {"ok": element is not None, "element": element.to_dict() if element else None}
 
 
@@ -66,14 +109,15 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.click(
             selector,
             task_id=_task_id(context),
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "click",
     )
 
 
@@ -85,7 +129,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("type_text")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.type_text(
             selector,
             text,
@@ -93,31 +137,35 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "type_text",
     )
 
 
 def focus(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(target.focus(_selector_args(args)))
+    return _run_ui_automation(target.focus(_selector_args(args)), "focus")
 
 
 def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    windows = asyncio.run(target.list_windows())
+    windows = _run_ui_automation(target.list_windows(), "list_windows")
+    if isinstance(windows, dict):
+        return windows
     return {"ok": True, "windows": windows, "count": len(windows)}
 
 
 def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.focus_window(
             title=str(args.get("title") or ""),
             title_contains=str(args.get("title_contains") or args.get("titleContains") or ""),
             class_name=str(args.get("class_name") or args.get("className") or ""),
             process_id=_optional_int(args.get("process_id") or args.get("processId")),
             hwnd=_optional_int(args.get("hwnd")),
-        )
+        ),
+        "focus_window",
     )
 
 
@@ -135,7 +183,7 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click_at")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.click_at(
             x,
             y,
@@ -145,7 +193,8 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "click_at",
     )
 
 
@@ -163,7 +212,7 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("drag")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.drag(
             detail["start_x"],
             detail["start_y"],
@@ -175,7 +224,8 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "drag",
     )
 
 
@@ -188,14 +238,15 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("key_press")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.key_press(
             key,
             task_id=_task_id(context),
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "key_press",
     )
 
 
@@ -211,25 +262,27 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("hotkey")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.hotkey(
             keys,
             task_id=_task_id(context),
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
             approval_id=str(args.get("approval_id") or ""),
-        )
+        ),
+        "hotkey",
     )
 
 
 def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return asyncio.run(
+    return _run_ui_automation(
         target.screenshot(
             max_width=int(args.get("max_width") or args.get("maxWidth") or 1280),
             max_height=int(args.get("max_height") or args.get("maxHeight") or 720),
             quality=int(args.get("quality") or 50),
-        )
+        ),
+        "screenshot",
     )
 
 
@@ -238,13 +291,17 @@ def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     if not prop:
         return {"ok": False, "error": "Property name is required."}
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    value = asyncio.run(target.get_property(_selector_args(args), prop))
+    value = _run_ui_automation(target.get_property(_selector_args(args), prop), "get_property")
+    if isinstance(value, dict):
+        return value
     return {"ok": value is not None, "property": prop, "value": value}
 
 
 def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    children = asyncio.run(target.get_children(_selector_args(args)))
+    children = _run_ui_automation(target.get_children(_selector_args(args)), "get_children")
+    if isinstance(children, dict):
+        return children
     return {"ok": True, "children": [child.to_dict() for child in children], "count": len(children)}
 
 
@@ -260,7 +317,9 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     description = str(args.get("target") or args.get("description") or "").strip()
 
     if any(selector.values()):
-        element = asyncio.run(target.find_element(selector))
+        element = _run_ui_automation(target.find_element(selector), "locate_on_screen.find_element")
+        if isinstance(element, dict):
+            return element
         if element is not None:
             payload = element.to_dict()
             center = _rect_center(payload.get("rect") or {})
@@ -284,7 +343,10 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
             ),
         }
 
-    screenshot_payload = asyncio.run(target.screenshot(max_width=1600, max_height=1000, quality=70))
+    screenshot_payload = _run_ui_automation(
+        target.screenshot(max_width=1600, max_height=1000, quality=70),
+        "locate_on_screen.screenshot",
+    )
     if not screenshot_payload.get("ok"):
         error = screenshot_payload.get("error", "unknown capture error")
         return {

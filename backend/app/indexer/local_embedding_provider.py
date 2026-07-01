@@ -25,6 +25,7 @@ from app.acceleration.onnx_sessions import (
     session_input_names,
 )
 from app.config import AppSettings, get_env
+from app.policy.redaction import redact_public_text, redact_value
 
 _MODEL_ENV_KEYS = (
     "LENGRVIS_EMBEDDING_ONNX_MODEL_PATH",
@@ -89,7 +90,7 @@ class LocalEmbeddingProvider:
         try:
             self._ensure_ready()
         except Exception as exc:  # noqa: BLE001 - health must not break fallback.
-            return {"available": False, **asdict(self.backend), "error": str(exc)}
+            return {"available": False, **asdict(self.backend), "error": _safe_local_embedding_error(exc)}
         return {"available": True, **asdict(self.backend)}
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
@@ -127,8 +128,6 @@ class LocalEmbeddingProvider:
         try:
             self._session = create_inference_session(_session_backend(self.backend))
         except OnnxAccelerationUnavailable as exc:
-            raise LocalEmbeddingUnavailable(f"Failed to create ONNX embedding session: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001 - native runtime/model failures should degrade.
             raise LocalEmbeddingUnavailable(f"Failed to create ONNX embedding session: {exc}") from exc
         return self._session
 
@@ -215,13 +214,12 @@ def test_embedding(settings: AppSettings | None = None, texts: list[str] | None 
     try:
         vectors = provider.embed_sync(sample)
     except Exception as exc:  # noqa: BLE001 - smoke result should not become a 500.
-        error = str(exc) or exc.__class__.__name__
         return {
             "ok": False,
             "available": False,
             "status": "unavailable",
             "operation": "test_embedding",
-            "error": error,
+            "error": _safe_local_embedding_error(exc),
             "text_embedding": health,
         }
     dim = len(vectors[0]) if vectors else 0
@@ -333,7 +331,7 @@ def _load_tokenizer(model_dir: Path) -> _Tokenizer:
         ) from exc
     try:
         tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, ValueError) as exc:
         raise LocalEmbeddingUnavailable(f"Failed to load local embedding tokenizer: {exc}") from exc
     return _TransformersTokenizer(tokenizer)
 
@@ -374,7 +372,7 @@ class _TransformersTokenizer:
 def _session_inputs(session: Any) -> set[str]:
     try:
         return set(session_input_names(session))
-    except Exception as exc:  # noqa: BLE001
+    except OnnxAccelerationUnavailable as exc:
         raise LocalEmbeddingUnavailable(f"Unable to inspect ONNX embedding inputs: {exc}") from exc
 
 
@@ -416,6 +414,10 @@ def _unavailable_reason(settings: AppSettings | None) -> str:
     if not _available_execution_providers():
         return "onnxruntime is not installed or reports no execution providers."
     return "No supported local ONNX embedding execution provider is available: WinML, DirectML, OpenVINO, or CPU."
+
+
+def _safe_local_embedding_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
 
 
 def _cache_key(backend: LocalEmbeddingBackend | None) -> str:

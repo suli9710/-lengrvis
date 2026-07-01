@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from typing import Any
 
 from app.config import AppSettings
@@ -10,6 +11,8 @@ from app.core.audit import record
 from app.mcp.client import MCPClient, MCPServerConfig
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+
+DEFAULT_MCP_EXECUTOR_TIMEOUT_SECONDS = 30.0
 
 
 class MCPRegistry:
@@ -99,9 +102,39 @@ def _build_executor(registry: MCPRegistry, server: str, tool_name: str):
         client = registry.clients.get(server)
         if client is None:
             return {"ok": False, "error": f"MCP server '{server}' not registered"}
-        return asyncio.run(client.call_tool(tool_name, args))
+        return _run_mcp_call(client, tool_name, args)
 
     return execute
+
+
+async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+
+
+def _run_mcp_call(client: MCPClient, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    timeout = float(getattr(client, "timeout", DEFAULT_MCP_EXECUTOR_TIMEOUT_SECONDS) or 0)
+    server = str(getattr(getattr(client, "config", None), "name", "") or "")
+    coro = _with_timeout(client.call_tool(tool_name, args), timeout)
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
+            guard_timeout = None if timeout <= 0 else timeout + 1
+            return future.result(timeout=guard_timeout)
+        finally:
+            if not future.done():
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+    except TimeoutError:
+        return {"ok": False, "error": "MCP tool call timed out.", "server": server}
+    except Exception as exc:  # noqa: BLE001 - third-party MCP tools should fail inline.
+        return {"ok": False, "error": f"MCP tool call failed: {exc}", "server": server}
 
 
 _registry: MCPRegistry | None = None

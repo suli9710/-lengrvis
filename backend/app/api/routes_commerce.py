@@ -4,8 +4,8 @@ Team-tier audit export / policy management.
 Entitlement gating is enforced per-endpoint via
 :func:`app.commerce.entitlements.require_feature`, which raises an
 ``EntitlementError`` (HTTP 402) handled by the global AppError handler. Existing
-security flows are reused unchanged: audit payloads pass through the same
-read-path redaction as ``/api/audit`` and policy imports go through the same
+security flows are reused unchanged: audit payload exports pass through the same
+defense-in-depth redaction as ``/api/audit`` and policy imports go through the same
 relaxation-confirmation guard as ``/api/settings/permission-policy``.
 """
 

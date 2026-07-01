@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import AppSettings
+from app.context.agent_message_projection import llm_safe_agent_message
 from app.context.management import (
     auto_compact_threshold,
     compact_boundary_view,
@@ -291,7 +292,7 @@ def context_usage_to_dict(report: ContextUsageReport) -> dict[str, Any]:
 
 def load_agent_history(task_id: str, *, limit: int = 1000) -> list[dict[str, Any]]:
     rows = db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=limit)
-    messages = [AgentMessage.model_validate(row).to_openai_dict(include_legacy=False) for row in rows]
+    messages = [llm_safe_agent_message(AgentMessage.model_validate(row)) for row in rows]
     return sorted(messages, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")))
 
 

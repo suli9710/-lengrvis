@@ -16,7 +16,7 @@ from app.config import get_env
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
 from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.services import document_service
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe,
@@ -144,7 +144,7 @@ def _append_extraction_warning(
 
 
 def _redacted_error(exc: BaseException) -> str:
-    return str(redact_value(str(exc)))
+    return redact_public_text(str(redact_value(str(exc)) or ""))
 
 
 def _max_parse_bytes() -> int:

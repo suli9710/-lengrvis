@@ -8,6 +8,7 @@ from app.context import management as context_management_module
 from app.context_management import (
     ContextAwareProvider,
     PromptTooLongError,
+    agent_messages_to_openai,
     auto_compact_threshold,
     count_messages_tokens,
     effective_context_window,
@@ -19,6 +20,7 @@ from app.context_management import (
     summarize_messages,
     warning_state,
 )
+from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole
 from app.llm.base import LLMProvider
 
 
@@ -60,6 +62,46 @@ def test_rough_token_count_mixed_cjk_ascii():
     tokens = rough_token_count(mixed)
     expected = round((600 / 4) + (300 / 1.6))
     assert tokens == expected
+
+
+def test_agent_messages_to_openai_uses_llm_safe_projection():
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-context-management-secret-value"
+    message = AgentMessage(
+        task_id="task_context_management_safe",
+        role=OpenAIMessageRole.ASSISTANT,
+        from_agent="PlannerAgent",
+        message_type=MessageType.OBSERVATION,
+        content=f"Tool failed while reading {local_path} token={secret}",
+        structured_payload={"path": local_path, "api_key": secret},
+        metadata={"error": f"raw error {local_path} token={secret}"},
+        tool_calls=[
+            {
+                "id": "call_context_management",
+                "type": "function",
+                "function": {"name": "file.read_text", "arguments": {"path": local_path, "api_key": secret}},
+            }
+        ],
+    )
+
+    projection = agent_messages_to_openai(
+        [message],
+        _settings(
+            context_auto_compact_enabled=False,
+            context_history_snip_enabled=False,
+            context_micro_compact_enabled=False,
+            context_session_memory_enabled=False,
+        ),
+        source="test",
+    )
+
+    assert local_path in message.content
+    assert secret in message.content
+    dumped = str(projection.messages)
+    assert local_path not in dumped
+    assert secret not in dumped
+    assert "[REDACTED_LOCAL_PATH]" in dumped
+    assert "***" in dumped
 
 
 def test_context_thresholds_reserve_output_tokens():

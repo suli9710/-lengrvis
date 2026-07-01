@@ -28,6 +28,7 @@ from app.llm.structured_output import (
 )
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
+from app.policy.redaction import redact_public_text, redact_value
 
 _PREFERRED_EXECUTION_PROVIDERS = [
     ("onnx-winml", "WindowsMLExecutionProvider"),
@@ -446,7 +447,7 @@ def warmup(settings: AppSettings | None = None, *, model_path: str | None = None
     try:
         provider._ensure_genai_model()
     except Exception as exc:  # noqa: BLE001 - native/runtime errors must be returned to callers.
-        error = str(exc) or exc.__class__.__name__
+        error = _safe_onnx_error(exc)
         return {
             "ok": False,
             "available": False,
@@ -489,7 +490,7 @@ async def test_generate(
     try:
         text = await provider.chat([{"role": "user", "content": prompt or "Say hello from ONNX."}])
     except Exception as exc:  # noqa: BLE001 - route helper returns structured smoke status.
-        error = str(exc) or exc.__class__.__name__
+        error = _safe_onnx_error(exc)
         return {
             "ok": False,
             "available": False,
@@ -862,11 +863,15 @@ def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        return {"available": False, "module": module_name, "error": str(exc)}
+        return {"available": False, "module": module_name, "error": _safe_onnx_error(exc)}
     except Exception as exc:  # noqa: BLE001 - optional native package probe.
-        return {"available": False, "module": module_name, "error": str(exc)}
+        return {"available": False, "module": module_name, "error": _safe_onnx_error(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}
+
+
+def _safe_onnx_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
 
 
 def _winml_snapshot(runtime_packages: dict[str, dict[str, Any]], providers: list[str]) -> dict[str, Any]:

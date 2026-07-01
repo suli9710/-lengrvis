@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import webbrowser
 from pathlib import PurePath
 from typing import Any
@@ -33,6 +34,7 @@ EXTRA_SENSITIVE_SELECTOR_TOKENS = {
 }
 
 _CUA_BROWSER_ENVIRONMENT = "browser"
+DEFAULT_CUA_RUN_TIMEOUT_SECONDS = 60.0
 _BROWSER_ACTIVITY_RUNTIME: BrowserActivityRuntime | None = None
 
 
@@ -423,8 +425,38 @@ async def cua_run_async(args: dict[str, Any], context: dict[str, Any]) -> dict[s
     return {**result, "activity": activity}
 
 
+async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+
+
+def _run_cua_tool(coro, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+    if timeout_seconds is None:
+        timeout_seconds = DEFAULT_CUA_RUN_TIMEOUT_SECONDS
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_with_timeout(coro, timeout_seconds))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds))
+        try:
+            guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
+            return future.result(timeout=guard_timeout)
+        finally:
+            if not future.done():
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+    except TimeoutError:
+        return {"ok": False, "status": "timeout", "error": "browser.cua_run timed out."}
+    except Exception as exc:  # noqa: BLE001 - browser CUA tools should fail inline for tool callers.
+        return {"ok": False, "status": "failed", "error": f"browser.cua_run failed: {exc}"}
+
+
 def cua_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    return asyncio.run(cua_run_async(args, context))
+    return _run_cua_tool(cua_run_async(args, context))
+
 
 
 def replay_export(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.policy.redaction import redact_public_text, redact_value
+
 
 class WorkflowError(ValueError):
     """Raised when a workflow graph is invalid or cannot be executed."""
@@ -120,12 +122,15 @@ class WorkflowRuntime:
             try:
                 result = await self._run_step(step, handlers)
                 result.setdefault("focus_ok", focus_ok)
+                if not result.get("ok", False):
+                    result = _public_workflow_failure_result(result)
                 results[step.id] = result
                 if not result.get("ok", False):
-                    errors.append(str(result.get("error") or f"step {step.id} failed"))
+                    errors.append(_safe_workflow_error(result.get("error") or f"step {step.id} failed"))
             except Exception as exc:  # noqa: BLE001 - workflow handlers are user-provided integrations.
-                results[step.id] = {"ok": False, "error": str(exc), "focus_ok": focus_ok}
-                errors.append(str(exc))
+                error = _safe_workflow_error(exc)
+                results[step.id] = {"ok": False, "error": error, "focus_ok": focus_ok}
+                errors.append(error)
             finally:
                 if clipboard_restore is not None:
                     self.clipboard.set_text(clipboard_restore)
@@ -169,3 +174,25 @@ def topological_order(steps: list[WorkflowStep]) -> list[str]:
     if len(order) != len(steps):
         raise WorkflowError("workflow contains a dependency cycle")
     return order
+
+
+def _public_workflow_failure_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): _public_workflow_failure_value(value) for key, value in result.items()}
+
+
+def _public_workflow_failure_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _public_workflow_failure_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_public_workflow_failure_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_public_workflow_failure_value(item) for item in value]
+    if isinstance(value, set):
+        return [_public_workflow_failure_value(item) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        return _safe_workflow_error(value)
+    return value
+
+
+def _safe_workflow_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__

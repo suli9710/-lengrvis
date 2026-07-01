@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib.util
 import json
 import logging
@@ -27,12 +28,14 @@ from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt
 from app.llm.registry import get_effective_settings, get_provider
 from app.policy.privacy import can_use_cloud_model
+from app.policy.redaction import redact_public_text
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 _IMAGE_EXTENSIONS = IMAGE_EXTENSIONS
 _GPS_EXIF_TAG = 34853
+DEFAULT_VISION_TIMEOUT_SECONDS = 45.0
 logger = logging.getLogger(__name__)
 
 _DESCRIPTION_METADATA_KEYS = (
@@ -149,10 +152,42 @@ def _resolve_image_batch(args: dict[str, Any], context: dict[str, Any]) -> list[
     return sorted(dict.fromkeys(paths), key=lambda path: str(path).lower())
 
 
-def _run_vision(prompt: str, image_path: Path, task: str = "vision") -> str:
+async def _with_timeout(value: Any, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return await value
+    return await asyncio.wait_for(value, timeout=timeout_seconds)
+
+
+def _run_awaitable(value: Any, *, timeout_seconds: float | None = DEFAULT_VISION_TIMEOUT_SECONDS) -> Any:
+    if not hasattr(value, "__await__"):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_with_timeout(value, timeout_seconds))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(asyncio.run, _with_timeout(value, timeout_seconds))
+    try:
+        guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
+        return future.result(timeout=guard_timeout)
+    finally:
+        if not future.done():
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _run_vision(
+    prompt: str,
+    image_path: Path,
+    task: str = "vision",
+    *,
+    timeout_seconds: float | None = DEFAULT_VISION_TIMEOUT_SECONDS,
+) -> str:
     try:
         provider = get_provider(task=task)
-        return asyncio.run(provider.vision(str(image_path), prompt))
+        return str(_run_awaitable(provider.vision(str(image_path), prompt), timeout_seconds=timeout_seconds))
+    except TimeoutError:
+        return "[vision timed out]"
     except NotImplementedError:
         return f"[{provider.name}] vision not configured"
     except LocalBackendUnavailable as exc:
@@ -415,28 +450,34 @@ def image_label_text(profile: dict[str, Any]) -> str:
 
 def _local_image_embedding(image_path: Path, *, settings: Any) -> dict[str, Any]:
     model = str(getattr(settings, "onnx_image_embedding_model_path", "") or "").strip()
+    model_label = _image_embedding_model_label(settings, model)
     if _image_embedding_disabled(settings):
-        return {"ok": False, "source": "local_image_embedding", "model": model, "error": "Image embedding is disabled."}
+        return {
+            "ok": False,
+            "source": "local_image_embedding",
+            "model": model_label,
+            "error": "Image embedding is disabled.",
+        }
     if not model:
         return {
             "ok": False,
             "source": "local_image_embedding",
-            "model": model,
+            "model": model_label,
             "error": "No local image embedding model configured.",
         }
     if not Path(model).exists():
         return {
             "ok": False,
             "source": "local_image_embedding",
-            "model": model,
-            "error": f"Local image embedding model not found: {model}",
+            "model": model_label,
+            "error": f"Local image embedding model not found: {model_label or 'configured model'}",
         }
     backend = _image_embedding_backend(settings)
     if backend is None:
         return {
             "ok": False,
             "source": "local_image_embedding",
-            "model": model,
+            "model": model_label,
             "error": "Local image embedding runtime is unavailable.",
         }
     try:
@@ -445,17 +486,31 @@ def _local_image_embedding(image_path: Path, *, settings: Any) -> dict[str, Any]
         return {
             "ok": False,
             "source": f"local_image_embedding_{backend.kind.removeprefix('onnx-')}",
-            "model": model,
-            "error": str(exc),
+            "model": model_label,
+            "error": _safe_embedding_error(exc),
         }
     return {
         "ok": bool(vector),
         "embedding": vector,
         "source": f"local_image_embedding_{backend.kind.removeprefix('onnx-')}",
-        "model": backend.model_id or model,
+        "model": backend.model_id or model_label,
         "error": "" if vector else "Local image embedding produced no vector.",
         "fallback_used": False,
     }
+
+
+def _image_embedding_model_label(settings: Any, model: str) -> str:
+    model_id = str(getattr(settings, "onnx_image_embedding_model_id", "") or "").strip()
+    if model_id:
+        return model_id
+    if not model:
+        return ""
+    return Path(model).name or "configured model"
+
+
+def _safe_embedding_error(exc: Exception) -> str:
+    text = str(exc) or exc.__class__.__name__
+    return redact_public_text(text)
 
 
 def _embedding_fallback_profile(image_path: Path, context: dict[str, Any], *, settings: Any) -> dict[str, Any]:
@@ -649,9 +704,7 @@ def _synthetic_image_for_smoke() -> Path:
 
 
 def _run_maybe_async(value: Any) -> Any:
-    if hasattr(value, "__await__"):
-        return asyncio.run(value)
-    return value
+    return _run_awaitable(value)
 
 
 def _coerce_vector(vector: Any) -> list[float]:

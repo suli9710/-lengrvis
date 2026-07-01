@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from app.config import AppSettings, get_env
+from app.policy.redaction import redact_public_text, redact_value
 
 WINML_PROVIDER = "WindowsMLExecutionProvider"
 DIRECTML_PROVIDER = "DmlExecutionProvider"
@@ -556,7 +557,7 @@ def preprocess_image_for_onnx(
         with Image.open(image_path) as image:
             image = image.convert("RGB").resize((size, size))
             array = np.asarray(image, dtype=np.float32)
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, ValueError) as exc:
         raise OnnxAccelerationUnavailable(f"Failed to load image for ONNX preprocessing: {exc}") from exc
     array = array / 255.0
     if normalize:
@@ -633,11 +634,15 @@ def _module_status(module_name: str) -> dict[str, Any]:
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        return {"available": False, "module": module_name, "error": str(exc)}
+        return {"available": False, "module": module_name, "error": _safe_runtime_error(exc)}
     except Exception as exc:  # noqa: BLE001 - optional runtime import failures become health data.
-        return {"available": False, "module": module_name, "error": str(exc)}
+        return {"available": False, "module": module_name, "error": _safe_runtime_error(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}
+
+
+def _safe_runtime_error(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
 
 
 def _module_available(module_name: str) -> bool:

@@ -559,10 +559,7 @@ def _append_path_values(value: Any, values: list[Any]) -> None:
 
 def _tool_specific_path_values(tool_name: str, args: dict[str, Any], context: dict[str, Any]) -> list[Any]:
     if tool_name == "file.rename" and args.get("source") and args.get("new_name"):
-        try:
-            source = _resolve_candidate_path(args["source"], _allowed_directories(context))
-        except Exception:  # noqa: BLE001
-            source = None
+        source = _resolve_candidate_path(args["source"], _allowed_directories(context))
         if source is not None:
             return [source.with_name(str(args["new_name"]))]
     if tool_name == "file.edit_text" and args.get("path"):

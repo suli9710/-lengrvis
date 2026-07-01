@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import numpy as np
@@ -97,6 +98,58 @@ def test_vision_tools_use_injected_local_provider(sample_png, monkeypatch, tmp_p
     assert ocr["text"] == "local ocr text"
 
 
+def test_run_vision_times_out_slow_provider(sample_png, monkeypatch):
+    class _SlowVisionProvider:
+        name = "slow-vision"
+
+        async def vision(self, image_path: str, prompt: str, model: str | None = None) -> str:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return "late description"
+
+    monkeypatch.setattr(vision_tools, "get_provider", lambda task="vision": _SlowVisionProvider())
+
+    started = time.monotonic()
+    description = vision_tools._run_vision("describe", sample_png, timeout_seconds=0.01)
+
+    assert description == "[vision timed out]"
+    assert time.monotonic() - started < 0.5
+
+
+def test_run_vision_timeout_returns_from_running_event_loop(sample_png, monkeypatch):
+    class _SlowVisionProvider:
+        name = "slow-vision"
+
+        async def vision(self, image_path: str, prompt: str, model: str | None = None) -> str:  # noqa: ARG002
+            await asyncio.sleep(1.0)
+            return "late description"
+
+    monkeypatch.setattr(vision_tools, "get_provider", lambda task="vision": _SlowVisionProvider())
+
+    async def invoke() -> str:
+        return vision_tools._run_vision("describe", sample_png, timeout_seconds=0.01)
+
+    started = time.monotonic()
+    description = asyncio.run(invoke())
+
+    assert description == "[vision timed out]"
+    assert time.monotonic() - started < 0.5
+
+
+def test_run_maybe_async_timeout_returns_from_running_event_loop():
+    async def slow_vector() -> list[float]:
+        await asyncio.sleep(1.0)
+        return [99.0]
+
+    async def invoke() -> None:
+        with pytest.raises(TimeoutError):
+            vision_tools._run_awaitable(slow_vector(), timeout_seconds=0.01)
+
+    started = time.monotonic()
+    asyncio.run(invoke())
+
+    assert time.monotonic() - started < 0.5
+
+
 def test_embed_image_falls_back_to_label_text_embedding_in_privacy_mode(sample_png, monkeypatch, tmp_path):
     monkeypatch.setattr(
         vision_tools,
@@ -162,6 +215,64 @@ def test_embed_image_runs_local_onnx_session(sample_png, monkeypatch, tmp_path):
     assert result["source"] == "local_image_embedding_cpu"
     assert result["model"] == "clip-test"
     assert result["embedding"] == pytest.approx([1 / 3, 2 / 3, 2 / 3])
+
+
+def test_embed_image_missing_local_model_does_not_leak_config_path(sample_png, tmp_path):
+    model_path = tmp_path / "private-models" / "missing-model.onnx"
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": AppSettings(
+            mode="privacy",
+            provider_name="openai",
+            api_key="",
+            image_embedding_backend="cpu",
+            onnx_image_embedding_model_path=str(model_path),
+        ),
+    }
+
+    result = vision_tools.embed_image({"path": str(sample_png)}, context)
+    dumped = str(result)
+
+    assert result["ok"] is True
+    assert result["source"] == "label_text_embedding"
+    assert result["fallback_used"] is True
+    assert str(model_path) not in dumped
+    assert str(model_path.parent) not in dumped
+    assert result["error"].startswith("Local image embedding model not found: ")
+    assert "openai/clip-vit-base-patch32" in result["error"]
+
+
+def test_embed_image_local_runtime_error_redacts_model_path(sample_png, monkeypatch, tmp_path):
+    model_path = tmp_path / "private-models" / "clip-secret.onnx"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"placeholder")
+
+    def fail_session(_backend):
+        raise vision_tools.OnnxAccelerationUnavailable(f"could not load {model_path} with token=secret-token-value")
+
+    monkeypatch.setattr(vision_tools, "create_inference_session", fail_session)
+    monkeypatch.setattr(vision_tools, "available_execution_providers", lambda: ["CPUExecutionProvider"])
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": AppSettings(
+            mode="privacy",
+            provider_name="openai",
+            api_key="",
+            image_embedding_backend="cpu",
+            onnx_image_embedding_execution_provider="cpu",
+            onnx_image_embedding_model_path=str(model_path),
+        ),
+    }
+
+    result = vision_tools.embed_image({"path": str(sample_png)}, context)
+    dumped = str(result)
+
+    assert result["ok"] is True
+    assert result["source"] == "label_text_embedding"
+    assert str(model_path) not in dumped
+    assert str(model_path.parent) not in dumped
+    assert "secret-token-value" not in dumped
+    assert "[REDACTED_LOCAL_PATH]" in result["error"]
 
 
 def test_unsupported_extension_rejected(tmp_path, monkeypatch):

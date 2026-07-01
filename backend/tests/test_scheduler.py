@@ -120,6 +120,41 @@ def test_scheduler_execute_failure_logs_best_effort_warning(caplog):
     assert "executor exploded" in caplog.text
 
 
+def test_scheduler_execute_failure_persists_redacted_status():
+    private_path = "C:/Users/Suli/private/schedules/.env"
+    private_file = "scheduler-output.log"
+    secret_token = "scheduler-secret-1234567890"
+
+    async def executor(goal: str, mode: str) -> str:  # noqa: ARG001
+        raise RuntimeError(f"executor failed at {private_path} {private_file} token={secret_token}")
+
+    sched = Scheduler(executor=executor)
+    item = sched.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    far_future = _utc_now() + timedelta(days=1)
+
+    async def runner():
+        fired = await sched.tick(now=far_future)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return fired
+
+    fired_ids = asyncio.run(runner())
+
+    assert item.id in fired_ids
+    refreshed = sched.get(item.id)
+    assert refreshed is not None
+    assert refreshed.last_status.startswith("failed: executor failed")
+    assert "[REDACTED_LOCAL_PATH]" in refreshed.last_status
+    assert "[REDACTED_FILE_NAME]" in refreshed.last_status
+    assert private_path not in refreshed.last_status
+    assert private_file not in refreshed.last_status
+    assert secret_token not in refreshed.last_status
+    status_text = str(sched.status())
+    assert private_path not in status_text
+    assert private_file not in status_text
+    assert secret_token not in status_text
+
+
 def test_tick_skips_not_due_schedules():
     sched = Scheduler(executor=lambda g, m: asyncio.sleep(0))  # type: ignore[arg-type]
     item = sched.schedule("0 9 * * *", "daily 9am", mode="privacy")
