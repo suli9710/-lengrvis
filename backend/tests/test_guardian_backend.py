@@ -21,8 +21,9 @@ from tls_test_material import write_lan_tls_material
 
 from app.api import routes_approvals
 from app.core import db
-from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus, Wakeup
+from app.core.schemas import Approval, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, Wakeup
 from app.guardian import create_guardian_app
+from app.orchestration.agent_bus import AgentBus, flush_agent_message_writes
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
@@ -121,6 +122,39 @@ def test_guardian_pairing_routes_are_single_sourced_from_routes_pair(monkeypatch
     actual_pair_paths = {path for path in app.openapi()["paths"] if path.startswith("/api/pair")}
 
     assert actual_pair_paths == expected_pair_paths
+
+
+def test_guardian_notification_websocket_redacts_sensitive_agent_messages(monkeypatch, tmp_path: Path):
+    token = _require_desktop_api_token(monkeypatch)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-guardian-notification-secret"
+    message = AgentBus().publish_text(
+        "__system__",
+        "NotificationService",
+        f"Background job touched {local_path} token={secret}",
+        message_type=MessageType.NOTIFICATION,
+        structured_payload={"path": local_path, "api_key": secret},
+        metadata={"error": f"failed at {local_path} token={secret}"},
+    )
+    assert flush_agent_message_writes(timeout_seconds=10)
+
+    with TestClient(create_guardian_app()) as client:
+        with client.websocket_connect("/ws/notifications", headers={DESKTOP_API_TOKEN_HEADER: token}) as websocket:
+            assert websocket.receive_json()["type"] == "connected"
+            event = websocket.receive_json()
+
+    assert event["type"] == "agent_message"
+    assert event["message"]["id"] == message.id
+    persisted = next(item for item in AgentBus().get_messages("__system__", limit=10) if item.id == message.id)
+    assert local_path in persisted.content
+    assert secret in persisted.content
+    dumped_event = json.dumps(event, ensure_ascii=False)
+    assert local_path not in dumped_event
+    assert secret not in dumped_event
+    assert event["message"]["metadata"]["structured_payload"]["path"] == "[REDACTED_LOCAL_PATH]"
+    assert event["message"]["metadata"]["structured_payload"]["api_key"] == "***"
 
 
 def test_guardian_rejects_remote_desktop_websocket_proxy(monkeypatch, tmp_path: Path):

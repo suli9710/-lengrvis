@@ -4,6 +4,8 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from app.policy.policy_rules import BROWSER_CONTENT_PROMPT_INJECTION_WARNING, BROWSER_CONTENT_TRUST
+
 REDACTED = "***"
 
 SENSITIVE_KEY_FRAGMENTS = {
@@ -70,8 +72,13 @@ PATTERNS = [
     (re.compile(r"\b1[3-9]\d{9}\b"), "[REDACTED_PHONE]"),
 ]
 GENERIC_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-])")
+PUBLIC_MACHINE_LABELS = {
+    BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
+    BROWSER_CONTENT_TRUST,
+}
 LOCAL_PATH_PATTERN = re.compile(
-    r"(?i)(?:[A-Za-z]:[\\/][^\s,;'\"<>]+|(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>]+|~[\\/][^\s,;'\"<>]+)"
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?:[A-Za-z]:[\\/][^\s,;'\"<>]+|(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>]+|~[\\/][^\s,;'\"<>]+)"
 )
 PUBLIC_FILE_NAME_PATTERN = re.compile(
     r"(?i)(?<![\w.-])(?:(?:\.(?:env|npmrc|pypirc|netrc)(?:\.[A-Za-z0-9_-]+)*)|(?:[A-Za-z0-9][A-Za-z0-9_.()-]{0,96}\."
@@ -92,7 +99,7 @@ def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
     for pattern, replacement in PATTERNS:
         redacted = pattern.sub(replacement, redacted)
     if redact_generic_tokens:
-        redacted = GENERIC_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", redacted)
+        redacted = GENERIC_TOKEN_PATTERN.sub(_redact_generic_token, redacted)
     return redacted
 
 
@@ -101,6 +108,13 @@ def redact_public_text(text: str, *, redact_generic_tokens: bool = True) -> str:
     redacted = LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redacted)
     redacted = PUBLIC_FILE_NAME_PATTERN.sub("[REDACTED_FILE_NAME]", redacted)
     return PUBLIC_PROMPT_TEXT_PATTERN.sub("[REDACTED_PROMPT]", redacted)
+
+
+def _redact_generic_token(match: re.Match[str]) -> str:
+    token = match.group(0)
+    if token in PUBLIC_MACHINE_LABELS:
+        return token
+    return "[REDACTED_TOKEN]"
 
 
 def redact_value(value: Any) -> Any:

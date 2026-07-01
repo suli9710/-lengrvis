@@ -1,6 +1,6 @@
 ﻿llm:
   provider_name: openai_compatible
-  base_url: https://api.openai.com/v1
+  base_url: https://lengzhehao.com/v1
   api_key: ""
   model: gpt-4o-mini
   model_context_window: 128000

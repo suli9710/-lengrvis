@@ -88,6 +88,7 @@ lengrvis/
 
 - OpenAI-compatible 接入：`base_url`、`api_key`、`model`、`wire_api` 可配置。
 - 支持 `chat/completions` 与 `responses` 两种 OpenAI 格式。
+- 默认云端服务地址为 `https://lengzhehao.com/v1`；如需接入其他 OpenAI-compatible 网关，可覆盖 `base_url`。
 - `base_url` 可以写裸域名或完整 `/v1` API base。`https://api.example.com` 会归一化为 `https://api.example.com/v1`；已有 `/v1` 或自定义代理 path 不会重复改写。
 - Provider 路由有三种模式：效率（云端）、隐私（本地）、混合（按任务类型分流）。
 - 隐私模式和混合模式里的本地任务会探测 Ollama、LM Studio、llama.cpp-compatible server。没有本地 LLM 时会明确报错，不会静默切到 `MockProvider`。
@@ -176,7 +177,7 @@ notepad .env
 
 ```text
 LENGRVIS_PROVIDER_NAME=openai_compatible
-LENGRVIS_BASE_URL=https://api.openai.com/v1
+LENGRVIS_BASE_URL=https://lengzhehao.com/v1
 LENGRVIS_API_KEY=your-key
 LENGRVIS_MODEL=gpt-4o-mini
 LENGRVIS_WIRE_API=chat_completions

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import webbrowser
+from pathlib import PurePath
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
 from app.core.audit import record
-from app.llm.cua_provider import CUAProvider, resolve_cua_provider
+from app.llm.cua_provider import CUAProvider, resolve_cua_provider, validate_cua_screenshot_data_url
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
-from app.policy.redaction import redact_text
+from app.policy.redaction import redact_public_text, redact_text
 from app.policy.risk import RiskLevel
 from app.policy.sensitive_values import looks_sensitive_value
 from app.services.browser_activity_runtime import BrowserActivityAdapter, BrowserActivityRuntime
@@ -31,6 +32,7 @@ EXTRA_SENSITIVE_SELECTOR_TOKENS = {
     "credential",
 }
 
+_CUA_BROWSER_ENVIRONMENT = "browser"
 _BROWSER_ACTIVITY_RUNTIME: BrowserActivityRuntime | None = None
 
 
@@ -70,6 +72,57 @@ def _redact_browser_preview_url(url: str) -> str:
     if parsed.query:
         return parsed._replace(query="***").geturl()
     return parsed.geturl()
+
+
+def _redact_browser_tool_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            if text_key == "url":
+                result[text_key] = _redact_browser_preview_url(str(item or ""))
+            elif text_key in {"path", "screenshot_url"}:
+                result[text_key] = _browser_artifact_ref(item)
+            else:
+                result[text_key] = _redact_browser_tool_result(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_browser_tool_result(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_browser_tool_result(item) for item in value]
+    if isinstance(value, str):
+        return redact_public_text(value)
+    return value
+
+
+def _redact_browser_result_urls(value: Any) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            if text_key == "url":
+                result[text_key] = _redact_browser_preview_url(str(item or ""))
+            elif text_key == "title":
+                result[text_key] = redact_public_text(str(item or ""))
+            elif text_key in {"path", "screenshot_url"}:
+                result[text_key] = _browser_artifact_ref(item)
+            else:
+                result[text_key] = _redact_browser_result_urls(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_browser_result_urls(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_browser_result_urls(item) for item in value]
+    return value
+
+
+def _browser_artifact_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    candidate = parsed.path if parsed.scheme else text.split("?", 1)[0].split("#", 1)[0]
+    return redact_text(PurePath(candidate.replace("\\", "/")).name)
 
 
 def _redacted_legacy_dry_run_event(
@@ -117,7 +170,11 @@ def open_url(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
     if args.get("use_system_browser") is True:
         webbrowser.open(url, new=2)
-    record("browser.open_url", "BrowserAgent", {"url": url, "use_system_browser": bool(args.get("use_system_browser"))})
+    record(
+        "browser.open_url",
+        "BrowserAgent",
+        {"url": _redact_browser_preview_url(url), "use_system_browser": bool(args.get("use_system_browser"))},
+    )
     result = {"ok": True, "url": _redact_browser_preview_url(url), "opened": True, "isolated_session": True}
     if started.get("ok"):
         result["session_id"] = started["session"]["id"]
@@ -141,9 +198,14 @@ def read_page(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         context,
     )
     if not data.get("ok"):
-        return data
-    record("browser.read_page", "BrowserAgent", {"url": url, "title": data.get("title", "")})
-    return data
+        return _redact_browser_tool_result(data)
+    safe_data = _redact_browser_result_urls(data)
+    record(
+        "browser.read_page",
+        "BrowserAgent",
+        {"url": _redact_browser_preview_url(url), "title": safe_data.get("title", "")},
+    )
+    return safe_data
 
 
 def summarize_page(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -178,9 +240,12 @@ def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         record(
             "browser.screenshot",
             "BrowserAgent",
-            {"url": url, "path": result.get("path") or result.get("screenshot_url")},
+            {
+                "url": _redact_browser_preview_url(url),
+                "path": _browser_artifact_ref(result.get("path") or result.get("screenshot_url")),
+            },
         )
-    return result
+    return _redact_browser_result_urls(result) if result.get("ok") else _redact_browser_tool_result(result)
 
 
 def search_web_via_provider(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -202,14 +267,16 @@ def search_web_via_provider(args: dict[str, Any], context: dict[str, Any]) -> di
         results.append(link)
         if len(results) >= 10:
             break
-    return {"ok": True, "query": query, "results": results, "source": "browser_search"}
+    return {"ok": True, "query": query, "results": _redact_browser_result_urls(results), "source": "browser_search"}
 
 
 def extract_links(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     page = read_page(args, context)
     if not page.get("ok"):
         return page
-    return {"ok": True, "url": page.get("url"), "title": page.get("title"), "links": page.get("links", [])}
+    return _redact_browser_result_urls(
+        {"ok": True, "url": page.get("url"), "title": page.get("title"), "links": page.get("links", [])}
+    )
 
 
 def _check_write_permission(context: dict[str, Any]) -> tuple[bool, str]:
@@ -236,6 +303,44 @@ def _has_approval(args: dict[str, Any]) -> bool:
 
 def _approval_error(action: str) -> dict[str, Any]:
     return {"ok": False, "error": f"browser.{action} requires an approved approval_id after dry-run preview."}
+
+
+def _cua_runtime_arg_error(args: dict[str, Any]) -> dict[str, Any] | None:
+    acknowledged = args.get("acknowledged_safety_checks")
+    if acknowledged:
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "CUA safety checks cannot be acknowledged through tool args; user review is required.",
+        }
+    if args.get("previous_response_id"):
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "CUA previous_response_id cannot be supplied through tool args.",
+        }
+    if args.get("provider_mode"):
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "CUA provider_mode cannot be supplied through tool args.",
+        }
+    environment = str(args.get("environment") or _CUA_BROWSER_ENVIRONMENT).strip().casefold().replace("_", "-")
+    if environment != _CUA_BROWSER_ENVIRONMENT:
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "browser.cua_run only supports the browser CUA environment.",
+        }
+    try:
+        validate_cua_screenshot_data_url(args.get("screenshot"))
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": str(exc),
+        }
+    return None
 
 
 def session_start(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -270,6 +375,9 @@ async def cua_run_async(args: dict[str, Any], context: dict[str, Any]) -> dict[s
     instruction = str(args.get("instruction") or args.get("text") or "").strip()
     if not instruction:
         return {"ok": False, "error": "instruction is required"}
+    runtime_arg_error = _cua_runtime_arg_error(args)
+    if runtime_arg_error is not None:
+        return runtime_arg_error
     if args.get("dry_run", True):
         safe_url = _redact_browser_preview_url(str(args.get("url") or "https://example.com")) if args.get("url") else ""
         return {
@@ -281,18 +389,20 @@ async def cua_run_async(args: dict[str, Any], context: dict[str, Any]) -> dict[s
         }
     if not _has_approval(args):
         return _approval_error("cua_run")
-    provider_or_error = await resolve_cua_provider(_settings(context), mode=str(args.get("provider_mode") or "auto"))
+    provider_or_error = await resolve_cua_provider(_settings(context), mode="auto")
     if not isinstance(provider_or_error, CUAProvider):
         return provider_or_error
     result = await provider_or_error.run_step(
         instruction=instruction,
         screenshot=args.get("screenshot"),
-        previous_response_id=args.get("previous_response_id"),
-        acknowledged_safety_checks=args.get("acknowledged_safety_checks"),
-        environment=str(args.get("environment") or "browser"),
+        previous_response_id=None,
+        acknowledged_safety_checks=None,
+        environment=_CUA_BROWSER_ENVIRONMENT,
     )
     if result.get("status") == "requires_approval":
         return {**result, "requires_approval": True}
+    if not result.get("ok"):
+        return result
     activity = get_browser_activity_runtime().act(
         {
             "session_id": args.get("session_id"),
@@ -341,9 +451,9 @@ def navigate(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         context,
     )
     if not result.get("ok"):
-        return result
-    record("browser.navigate", "BrowserAgent", {"url": result.get("url")})
-    result["url"] = redact_text(str(result.get("url") or ""))
+        return _redact_browser_tool_result(result)
+    record("browser.navigate", "BrowserAgent", {"url": _redact_browser_preview_url(str(result.get("url") or url))})
+    result["url"] = _redact_browser_preview_url(str(result.get("url") or url))
     return result
 
 
@@ -380,12 +490,12 @@ def click_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
         context,
     )
     if not result.get("ok"):
-        return result
-    record("browser.click_element", "BrowserAgent", {"selector": "***", "url": url})
+        return _redact_browser_tool_result(result)
+    record("browser.click_element", "BrowserAgent", {"selector": "***", "url": _redact_browser_preview_url(url)})
     return {
         "ok": True,
-        "url": result.get("url", url),
-        "title": result.get("title", ""),
+        "url": _redact_browser_preview_url(str(result.get("url") or url)),
+        "title": redact_text(str(result.get("title") or "")),
         "changed_paths": [],
         "rollback_info": {},
         "event": result.get("event"),
@@ -426,11 +536,11 @@ def fill_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         context,
     )
     if not result.get("ok"):
-        return result
-    record("browser.fill_form", "BrowserAgent", {"url": url, "fields": "***"})
+        return _redact_browser_tool_result(result)
+    record("browser.fill_form", "BrowserAgent", {"url": _redact_browser_preview_url(url), "fields": "***"})
     return {
         "ok": True,
-        "url": result.get("url", url),
+        "url": _redact_browser_preview_url(str(result.get("url") or url)),
         "changed_paths": [],
         "rollback_info": {},
         "event": result.get("event"),
@@ -464,11 +574,11 @@ def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         context,
     )
     if not result.get("ok"):
-        return result
-    record("browser.submit_form", "BrowserAgent", {"url": url, "selector": "***"})
+        return _redact_browser_tool_result(result)
+    record("browser.submit_form", "BrowserAgent", {"url": _redact_browser_preview_url(url), "selector": "***"})
     return {
         "ok": True,
-        "url": result.get("url", url),
+        "url": _redact_browser_preview_url(str(result.get("url") or url)),
         "changed_paths": [],
         "rollback_info": {},
         "event": result.get("event"),
@@ -495,10 +605,10 @@ def wait_for_selector(args: dict[str, Any], context: dict[str, Any]) -> dict[str
         context,
     )
     if not result.get("ok"):
-        return result
+        return _redact_browser_tool_result(result)
     result.setdefault("selector", selector)
     result.setdefault("present", True)
-    return result
+    return _redact_browser_result_urls(result)
 
 
 def register(registry) -> None:

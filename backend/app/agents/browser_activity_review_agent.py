@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlparse
 from app.agents.base import BaseAgent
 from app.core import db
 from app.core.schemas import MessageType, SafetyReview
+from app.llm.cua_provider import validate_cua_screenshot_data_url
 from app.policy.policy_engine import (
     BROWSER_ACTIVITY_HANDOFF_TERMS,
     BROWSER_ACTIVITY_MUTATING_KINDS,
@@ -80,6 +81,24 @@ class BrowserActivityReviewAgent(BaseAgent):
                     safe_alternative=(
                         "Pause browser automation and ask the user to handle credentials, payments, "
                         "orders, messages, destructive actions, downloads/uploads, or page-supplied agent instructions."
+                    ),
+                ),
+                tool_name=tool_name,
+            )
+
+        cua_boundary_reasons = _cua_boundary_reasons(kind, payload)
+        if cua_boundary_reasons:
+            return self._record_review(
+                SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type=target_type,
+                    verdict=SafetyVerdict.DENY,
+                    risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                    reasons=cua_boundary_reasons,
+                    safe_alternative=(
+                        "Run browser CUA only in the browser environment and let returned safety checks pause "
+                        "for user review."
                     ),
                 ),
                 tool_name=tool_name,
@@ -253,6 +272,26 @@ def _deny_reasons(handoff_hits: list[str], injection_hits: list[str]) -> list[st
         reasons.append(
             "Browser activity appears to contain webpage instructions aimed at overriding the agent or policy."
         )
+    return reasons
+
+
+def _cua_boundary_reasons(kind: str, payload: Mapping[str, Any]) -> list[str]:
+    if kind != "cua":
+        return []
+    reasons: list[str] = []
+    if payload.get("acknowledged_safety_checks"):
+        reasons.append("CUA safety checks cannot be acknowledged through model or tool arguments.")
+    if payload.get("previous_response_id"):
+        reasons.append("CUA previous_response_id cannot be supplied through model or tool arguments.")
+    if payload.get("provider_mode"):
+        reasons.append("CUA provider_mode cannot be supplied through model or tool arguments.")
+    environment = str(payload.get("environment") or "browser").strip().casefold().replace("_", "-")
+    if environment != "browser":
+        reasons.append("Browser CUA only supports the browser environment.")
+    try:
+        validate_cua_screenshot_data_url(payload.get("screenshot"))
+    except ValueError as exc:
+        reasons.append(str(exc))
     return reasons
 
 

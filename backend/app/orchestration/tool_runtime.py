@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlparse
 from weakref import WeakKeyDictionary
 
 from app.core import db
@@ -51,7 +52,7 @@ from app.policy.model_boundary import model_control_arg_error
 from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
-from app.policy.redaction import redact_value
+from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
 from app.tools.schemas import ToolDefinition
@@ -90,6 +91,120 @@ def _exception_error_text(exc: BaseException, step: PlanStep) -> str:
 class RuntimeExecutionResult:
     kind: str
     result: ToolResult | None = None
+
+
+def _withheld_tool_result(result: ToolResult, review: SafetyReview, runtime: TaskRuntimeContext) -> ToolResult:
+    reason = review.safe_alternative or "Tool result was withheld by SafetyReviewAgent."
+    _discard_persisted_result(result, runtime)
+    return _withheld_result_stub(
+        result,
+        reason=reason,
+        review_id=review.id,
+        review_verdict=review.verdict.value,
+    )
+
+
+def _withheld_result_stub(
+    result: ToolResult,
+    *,
+    reason: str,
+    review_id: str = "",
+    review_verdict: str = "",
+) -> ToolResult:
+    output: dict[str, Any] = {
+        "ok": False,
+        "withheld": True,
+        "reason": reason,
+    }
+    if review_id:
+        output["post_tool_review_id"] = review_id
+    if review_verdict:
+        output["post_tool_review_verdict"] = review_verdict
+    return ToolResult(
+        id=result.id,
+        tool_call_id=result.tool_call_id,
+        ok=False,
+        output=output,
+        error=reason,
+        observation="Tool result was withheld by SafetyReviewAgent.",
+    )
+
+
+def _discard_persisted_result(result: ToolResult, runtime: TaskRuntimeContext) -> None:
+    runtime.large_results.pop(result.id, None)
+    output = result.output if isinstance(result.output, dict) else {}
+    if not output.get("persisted_result"):
+        return
+    path = str(output.get("path") or "").strip()
+    if not path:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not delete withheld large result file: %s", path)
+
+
+_MESSAGE_SAFE_URL_KEYS = {"url", "final_url", "source_url", "target_url", "href"}
+_MESSAGE_SAFE_ARTIFACT_KEYS = {"screenshot_url", "artifact_url"}
+_MESSAGE_SAFE_IDENTIFIER_KEYS = {"id", "task_id", "step_id", "tool_call_id", "run_id"}
+
+
+def _message_safe_tool_result(result: ToolResult) -> ToolResult:
+    original_output = result.output if isinstance(result.output, dict) else {}
+    output = _message_safe_value(copy.deepcopy(result.output))
+    if isinstance(output, dict) and output.get("persisted_result") and original_output.get("path"):
+        output["path"] = Path(str(original_output.get("path") or "")).name
+    return result.model_copy(
+        update={
+            "output": output,
+            "error": _message_safe_text(result.error),
+            "observation": _message_safe_text(result.observation),
+        },
+        deep=True,
+    )
+
+
+def _message_safe_value(value: Any, *, key: str = "") -> Any:
+    if key and contains_sensitive_key(key):
+        return REDACTED if value is not None else value
+    if isinstance(value, dict):
+        return {str(item_key): _message_safe_value(item, key=str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_message_safe_value(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_message_safe_value(item, key=key) for item in value]
+    if isinstance(value, set):
+        return [_message_safe_value(item, key=key) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        normalized_key = key.replace("-", "_").casefold()
+        if normalized_key in _MESSAGE_SAFE_ARTIFACT_KEYS:
+            return _message_safe_artifact_ref(value)
+        if normalized_key in _MESSAGE_SAFE_URL_KEYS:
+            return _message_safe_url(value)
+        return _message_safe_text(value, preserve_generic_tokens=normalized_key in _MESSAGE_SAFE_IDENTIFIER_KEYS)
+    return value
+
+
+def _message_safe_text(text: str, *, preserve_generic_tokens: bool = False) -> str:
+    return redact_public_text(str(text or ""), redact_generic_tokens=not preserve_generic_tokens)
+
+
+def _message_safe_url(value: str) -> str:
+    text = _message_safe_text(value)
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"} and (parsed.query or parsed.fragment):
+        query = "***" if parsed.query else ""
+        return parsed._replace(query=query, fragment="").geturl()
+    return text
+
+
+def _message_safe_artifact_ref(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    candidate = parsed.path if parsed.scheme else text.split("?", 1)[0].split("#", 1)[0]
+    return _message_safe_text(Path(candidate.replace("\\", "/")).name)
 
 
 @dataclass(slots=True)
@@ -363,6 +478,8 @@ class ToolRuntime:
         db.upsert_model("tool_results", result)
         post_tool_review = self._review_tool_result(task, step, tool, result)
         if post_tool_review.verdict == SafetyVerdict.DENY:
+            result = _withheld_tool_result(result, post_tool_review, runtime)
+            db.upsert_model("tool_results", result)
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", result)
@@ -558,12 +675,12 @@ class ToolRuntime:
         orchestrator.bus.publish_text(
             task.id,
             step.agent_name,
-            result.observation if result.ok else orchestrator._friendly_tool_error(result.error),
+            _message_safe_text(result.observation if result.ok else orchestrator._friendly_tool_error(result.error)),
             role=OpenAIMessageRole.TOOL,
             message_type=MessageType.OBSERVATION,
             step_id=step.id,
             tool_call_id=call.id,
-            structured_payload=result.model_dump(),
+            structured_payload=_message_safe_tool_result(result).model_dump(),
             metadata={
                 "post_tool_review_id": post_tool_review.id,
                 "post_tool_review_verdict": post_tool_review.verdict.value,
@@ -728,20 +845,21 @@ class ToolRuntime:
             observation=f"{step.tool_name} dry-run preview generated.",
         )
         if not preview_result.ok:
+            safe_summary = _message_safe_text(orchestrator._friendly_tool_error(preview_result.error))
             set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
             orchestrator._set_status(
                 task,
                 TaskStatus.FAILED,
-                final_summary=orchestrator._friendly_tool_error(preview_result.error),
+                final_summary=safe_summary,
             )
             orchestrator.bus.publish_text(
                 task.id,
                 step.agent_name,
-                task.final_summary,
+                safe_summary,
                 role=OpenAIMessageRole.TOOL,
                 message_type=MessageType.OBSERVATION,
                 step_id=step.id,
-                structured_payload=preview_result.model_dump(),
+                structured_payload=_message_safe_tool_result(preview_result).model_dump(),
             )
             return RuntimeExecutionResult("fatal_failed", preview_result)
         preview_contract_error = self._dry_run_preview_contract_error(preview)
@@ -760,6 +878,10 @@ class ToolRuntime:
                 {"tool": tool.name, "reason": preview_contract_error, "step_id": step.id},
                 task_id=task.id,
             )
+            preview_result = _withheld_result_stub(
+                preview_result,
+                reason="Tool dry-run preview did not satisfy the approval safety contract.",
+            )
             return RuntimeExecutionResult("fatal_denied", preview_result)
 
         post_preview_review = orchestrator.safety.review_tool_result(
@@ -771,6 +893,7 @@ class ToolRuntime:
             tool_definition=tool,
         )
         if post_preview_review.verdict == SafetyVerdict.DENY:
+            preview_result = _withheld_tool_result(preview_result, post_preview_review, runtime)
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_preview_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", preview_result)

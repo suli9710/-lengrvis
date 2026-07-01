@@ -6,8 +6,13 @@ from pathlib import Path
 from app.config import AppSettings
 from app.core.schemas import ToolResult
 from app.orchestration.runtime_context import LargeResultReference, TaskRuntimeContext
+from app.policy.policy_rules import BROWSER_CONTENT_TRUST
 
 DEFAULT_PREVIEW_CHARS = 2000
+_PRESERVED_SAFETY_METADATA_KEYS = {
+    "browser_content_warnings",
+    "content_trust",
+}
 
 
 def apply_result_budget(
@@ -31,17 +36,24 @@ def apply_result_budget(
         content,
     )
     runtime.remember_large_result(result.id, reference)
-    result.output = {
+    budgeted_output = {
         "persisted_result": True,
         "path": reference.path,
         "original_size": reference.original_size,
         "preview": reference.preview,
         "has_more": reference.has_more,
     }
+    if isinstance(result.output, dict):
+        for key in _PRESERVED_SAFETY_METADATA_KEYS:
+            if key in result.output:
+                budgeted_output[key] = result.output[key]
+        if result.output.get("content_trust") == BROWSER_CONTENT_TRUST:
+            budgeted_output["content_trust"] = BROWSER_CONTENT_TRUST
+    result.output = budgeted_output
     if result.observation:
-        result.observation = f"{result.observation} Large output persisted to {reference.path}."
+        result.observation = f"{result.observation} Large output persisted as an internal result artifact."
     else:
-        result.observation = f"Large output persisted to {reference.path}."
+        result.observation = "Large output persisted as an internal result artifact."
     return result
 
 

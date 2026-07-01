@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -44,6 +46,59 @@ def test_task_websocket_receives_agent_bus_messages(monkeypatch, tmp_path):
     assert event["message"]["id"] == message.id
     assert event["message"]["content"] == "Plan ready over WebSocket."
     assert event["message"]["metadata"]["structured_payload"] == {"phase": "plan"}
+
+
+def test_task_websocket_redacts_sensitive_agent_message_payloads(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    app = _test_app()
+    task_id = "task_ws_redaction"
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-websocket-secret-value"
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/tasks/{task_id}") as websocket:
+            assert websocket.receive_json()["type"] == "connected"
+
+            message = chat_bus.publish_text(
+                task_id,
+                "PlannerAgent",
+                f"Reading {local_path} token={secret}",
+                message_type=MessageType.PROPOSAL,
+                structured_payload={"path": local_path, "api_key": secret},
+                metadata={"error": f"failed at {local_path} token={secret}"},
+                tool_calls=[
+                    {
+                        "id": "call_ws_secret",
+                        "type": "function",
+                        "function": {
+                            "name": "file.read_text",
+                            "arguments": {"path": local_path, "api_key": secret},
+                        },
+                    }
+                ],
+            )
+
+            event = websocket.receive_json()
+
+    persisted = chat_bus.get_messages(task_id, limit=10)[0]
+    assert persisted.id == message.id
+    assert local_path in persisted.content
+    assert secret in persisted.content
+    dumped_event = str(event)
+    assert local_path not in dumped_event
+    assert secret not in dumped_event
+    wire_message = event["message"]
+    assert "[REDACTED_LOCAL_PATH]" in wire_message["content"]
+    assert wire_message["metadata"]["structured_payload"]["path"] == "[REDACTED_LOCAL_PATH]"
+    assert wire_message["metadata"]["structured_payload"]["api_key"] == "***"
+    assert wire_message["structured_payload"]["path"] == "[REDACTED_LOCAL_PATH]"
+    assert wire_message["structured_payload"]["api_key"] == "***"
+    arguments = json.loads(wire_message["tool_calls"][0]["function"]["arguments"])
+    assert arguments["path"] == "[REDACTED_LOCAL_PATH]"
+    assert arguments["api_key"] == "***"
+    assert wire_message["tool_calls"][0]["id"] == "call_ws_secret"
+    assert wire_message["tool_calls"][0]["function"]["name"] == "file.read_text"
 
 
 def test_task_websocket_replays_persisted_messages(monkeypatch, tmp_path):

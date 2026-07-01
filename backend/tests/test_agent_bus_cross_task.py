@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 import time
@@ -85,6 +86,78 @@ def test_get_llm_messages_honors_requested_limit_above_db_default(monkeypatch, t
     assert len(projected) == 500
     assert any(message["content"] == "message 549" for message in projected)
     assert all(message["content"] != "message 0" for message in projected)
+
+
+def test_get_llm_messages_redacts_non_user_payloads_without_rewriting_ledger(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    settings = AppSettings(
+        provider_name="mock",
+        mode="efficiency",
+        context_auto_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_micro_compact_enabled=False,
+        context_session_memory_enabled=False,
+    )
+    local_path = r"C:\Users\Suli\Desktop\mavris\.env"
+    secret = "sk-agent-bus-secret-value"
+
+    message = bus.publish_text(
+        "task_llm_redaction",
+        "PlannerAgent",
+        f"Tool failed while reading {local_path} token={secret}",
+        structured_payload={
+            "path": local_path,
+            "api_key": secret,
+            "nested": {"note": f"hidden prompt from {local_path}"},
+        },
+        metadata={"error": f"raw error {local_path} token={secret}"},
+        tool_calls=[
+            {
+                "id": "call_secret",
+                "type": "function",
+                "function": {
+                    "name": "file.read_text",
+                    "arguments": {"path": local_path, "api_key": secret},
+                },
+            }
+        ],
+    )
+    bus.publish_text(
+        "task_llm_redaction",
+        "file.read_text",
+        '{"ok": true}',
+        message_type=MessageType.OBSERVATION,
+        role=OpenAIMessageRole.TOOL,
+        tool_call_id="call_secret",
+    )
+
+    assert flush_agent_message_writes(timeout_seconds=10)
+    persisted_messages = bus.get_messages("task_llm_redaction", limit=10)
+    persisted = next(item for item in persisted_messages if item.id == message.id)
+    assert persisted.id == message.id
+    assert local_path in persisted.content
+    assert secret in persisted.content
+    assert persisted.structured_payload["path"] == local_path
+    assert persisted.structured_payload["api_key"] == secret
+
+    projected = bus.get_llm_messages("task_llm_redaction", settings, limit=10)
+
+    assert len(projected) == 2
+    dumped = str(projected)
+    assert local_path not in dumped
+    assert secret not in dumped
+    llm_message = next(item for item in projected if item.get("tool_calls"))
+    assert "[REDACTED_LOCAL_PATH]" in llm_message["content"]
+    metadata = llm_message["metadata"]
+    assert metadata["structured_payload"]["path"] == "[REDACTED_LOCAL_PATH]"
+    assert metadata["structured_payload"]["api_key"] == "***"
+    arguments = json.loads(llm_message["tool_calls"][0]["function"]["arguments"])
+    assert arguments["path"] == "[REDACTED_LOCAL_PATH]"
+    assert arguments["api_key"] == "***"
+    assert llm_message["tool_calls"][0]["id"] == "call_secret"
+    assert llm_message["tool_calls"][0]["function"]["name"] == "file.read_text"
 
 
 def test_persist_queue_backpressure_preserves_tool_call_pairs(monkeypatch, tmp_path):

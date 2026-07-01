@@ -70,6 +70,7 @@ from app.config_sources import (
 __all__ = [
     "APP_ROOT",
     "CONFIG_PARENT_SEARCH_DEPTH",
+    "DEFAULT_CLOUD_BASE_URL",
     "DEFAULT_DATA_DIR",
     "DPAPI_PREFIX",
     "ENV_PREFIX",
@@ -100,6 +101,8 @@ __all__ = [
     "_resolve_mobile_jwt_secret",
 ]
 
+DEFAULT_CLOUD_BASE_URL = "https://lengzhehao.com/v1"
+
 
 def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
     plain = str(raw_plain or "").strip()
@@ -120,7 +123,7 @@ class AppSettings(BaseSettings):
     )
 
     provider_name: str = "openai_compatible"
-    base_url: str = "https://api.openai.com/v1"
+    base_url: str = DEFAULT_CLOUD_BASE_URL
     api_key: str = ""
     model: str = "gpt-4o-mini"
     review_model: str = ""
@@ -381,7 +384,7 @@ class AppSettings(BaseSettings):
 
         return cls(
             provider_name=str(value("LENGRVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
-            base_url=str(value("LENGRVIS_BASE_URL", "base_url", "https://api.openai.com/v1")),
+            base_url=str(value("LENGRVIS_BASE_URL", "base_url", DEFAULT_CLOUD_BASE_URL)),
             api_key=api_key,
             model=str(value("LENGRVIS_MODEL", "model", "gpt-4o-mini")),
             review_model=str(value("LENGRVIS_REVIEW_MODEL", "review_model", "")),

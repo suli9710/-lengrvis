@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import socket
 from typing import Any
 
@@ -8,6 +9,7 @@ import httpx
 import pytest
 
 from app.config import AppSettings
+from app.llm import cua_provider
 from app.llm.cua_provider import DEFAULT_CUA_MODEL, CUAProvider, probe_cua_provider, resolve_cua_provider
 
 
@@ -91,10 +93,7 @@ def test_resolve_cua_provider_auto_probes_openai_compatible_first():
 
 
 def test_resolve_cua_provider_returns_degraded_when_unsupported():
-    FakeAsyncClient.responses = [
-        _response(404, {"error": {"message": "not found"}}),
-        _response(404, {"error": {"message": "not found"}}),
-    ]
+    FakeAsyncClient.responses = [_response(404, {"error": {"message": "not found"}})]
 
     result = asyncio.run(resolve_cua_provider(_settings(), client_factory=FakeAsyncClient))
 
@@ -104,7 +103,55 @@ def test_resolve_cua_provider_returns_degraded_when_unsupported():
     assert result["status"] == "unavailable"
     assert "unsupported" in result["reason"].lower() or "not supported" in result["reason"].lower()
     assert FakeAsyncClient.requests[0]["headers"]["Host"] == "api.example.test"
+    assert len(FakeAsyncClient.requests) == 1
+
+
+def test_resolve_cua_provider_only_falls_back_to_official_openai_when_configured():
+    FakeAsyncClient.responses = [
+        _response(404, {"error": {"message": "not found"}}),
+        _response(404, {"error": {"message": "not found"}}),
+    ]
+
+    result = asyncio.run(
+        resolve_cua_provider(_settings(base_url="https://api.openai.com/v1"), client_factory=FakeAsyncClient)
+    )
+
+    assert isinstance(result, dict)
+    assert result["ok"] is False
+    assert FakeAsyncClient.requests[0]["headers"]["Host"] == "api.openai.com"
     assert FakeAsyncClient.requests[1]["headers"]["Host"] == "api.openai.com"
+
+
+def test_resolve_cua_provider_treats_bare_openai_origin_as_official():
+    FakeAsyncClient.responses = [
+        _response(404, {"error": {"message": "not found"}}),
+        _response(404, {"error": {"message": "not found"}}),
+    ]
+
+    result = asyncio.run(
+        resolve_cua_provider(_settings(base_url="https://api.openai.com"), client_factory=FakeAsyncClient)
+    )
+
+    assert isinstance(result, dict)
+    assert result["ok"] is False
+    assert [request["url"] for request in FakeAsyncClient.requests] == [
+        "https://93.184.216.35/v1/responses",
+        "https://93.184.216.35/v1/responses",
+    ]
+
+
+def test_resolve_cua_provider_does_not_rewrite_custom_openai_host_path_to_official_v1():
+    FakeAsyncClient.responses = [_response(404, {"error": {"message": "not found"}})]
+
+    result = asyncio.run(
+        resolve_cua_provider(_settings(base_url="https://api.openai.com/custom/v1"), client_factory=FakeAsyncClient)
+    )
+
+    assert isinstance(result, dict)
+    assert result["ok"] is False
+    assert len(FakeAsyncClient.requests) == 1
+    assert FakeAsyncClient.requests[0]["headers"]["Host"] == "api.openai.com"
+    assert FakeAsyncClient.requests[0]["url"] == "https://93.184.216.35/custom/v1/responses"
 
 
 def test_cua_provider_uses_configurable_model_without_logging_secrets():
@@ -122,6 +169,101 @@ def test_cua_provider_uses_configurable_model_without_logging_secrets():
     assert sent["json"]["model"] == "custom-cua"
     assert sent["headers"]["Authorization"] == "Bearer sk-test"
     assert "sk-test" not in str(result)
+
+
+def test_cua_provider_accepts_small_inline_screenshot_data_url():
+    screenshot = "data:image/png;base64," + base64.b64encode(b"png").decode("ascii")
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, {"id": "resp_run", "status": "completed", "output": []})]
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", screenshot=screenshot))
+
+    assert result["ok"] is True
+    content = FakeAsyncClient.requests[0]["json"]["input"][0]["content"]
+    assert content[1] == {"type": "input_image", "image_url": screenshot}
+
+
+def test_cua_provider_normalizes_browser_environment():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, {"id": "resp_run", "status": "completed", "output": []})]
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", environment="BROWSER"))
+
+    assert result["ok"] is True
+    assert FakeAsyncClient.requests[0]["json"]["tools"] == [
+        {"type": "computer_use_preview", "environment": "browser"}
+    ]
+
+
+def test_cua_provider_rejects_non_browser_environment_without_request():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", environment="windows"))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert "browser environment" in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_rejects_previous_response_id_without_request():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", previous_response_id="resp_other_task"))
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "previous_response_id" in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
+@pytest.mark.parametrize(
+    "screenshot, reason_fragment",
+    [
+        ("file:///C:/Users/Suli/Desktop/screen.png", "inline data:image"),
+        ("https://example.com/screen.png", "inline data:image"),
+        ("data:image/png;base64,@@not-base64@@", "valid base64"),
+        ("data:text/plain;base64,aGVsbG8=", "inline data:image"),
+        ("data:image/svg+xml;base64,PHN2Zz4=", "PNG, JPEG, or WebP"),
+    ],
+)
+def test_cua_provider_rejects_unsafe_screenshot_inputs_without_request(screenshot: str, reason_fragment: str):
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", screenshot=screenshot))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert reason_fragment in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_rejects_oversized_screenshot_without_request():
+    screenshot = "data:image/png;base64," + base64.b64encode(b"x" * (8 * 1024 * 1024 + 1)).decode("ascii")
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", screenshot=screenshot))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert "8 MB" in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_rejects_oversized_base64_before_decode(monkeypatch: pytest.MonkeyPatch):
+    def fail_decode(*args: Any, **kwargs: Any) -> bytes:  # noqa: ARG001
+        raise AssertionError("oversized CUA screenshot should be rejected before base64 decode")
+
+    monkeypatch.setattr(cua_provider.base64, "b64decode", fail_decode)
+    screenshot = "data:image/png;base64," + ("A" * (cua_provider.MAX_CUA_SCREENSHOT_BASE64_CHARS + 4))
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect the page.", screenshot=screenshot))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert "8 MB" in result["reason"]
+    assert FakeAsyncClient.requests == []
 
 
 def test_cua_provider_pauses_on_pending_safety_checks():
@@ -153,7 +295,7 @@ def test_cua_provider_pauses_on_pending_safety_checks():
     assert "abc" not in str(result)
 
 
-def test_cua_provider_never_auto_acknowledges_pending_safety_checks():
+def test_cua_provider_rejects_supplied_safety_check_acknowledgements():
     provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
 
     result = asyncio.run(
@@ -164,8 +306,9 @@ def test_cua_provider_never_auto_acknowledges_pending_safety_checks():
     )
 
     assert result["ok"] is False
-    assert result["status"] == "requires_approval"
-    assert result["paused"] is True
+    assert result["status"] == "denied"
+    assert "cannot be acknowledged" in result["reason"]
+    assert "pending_safety_checks" not in result
     assert FakeAsyncClient.requests == []
 
 
@@ -178,6 +321,78 @@ def test_cua_provider_returns_unavailable_without_api_key():
     assert result["status"] == "unavailable"
     assert result["degraded"] is True
     assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_redacts_secrets_from_transport_errors():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    FakeAsyncClient.errors = [
+        RuntimeError(
+            "upstream rejected Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345 "
+            "api_key=sk-abcdefghijklmnopqrstuvwx token=secret-token-value"
+        )
+    ]
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    reason = result["reason"]
+    assert "Bearer abcdefghijklmnopqrstuvwxyz012345" not in reason
+    assert "sk-abcdefghijklmnopqrstuvwx" not in reason
+    assert "secret-token-value" not in reason
+    assert "Bearer [REDACTED]" in reason
+
+
+def test_probe_cua_provider_redacts_provider_error_payload_secrets():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "error": {
+                    "message": "bad credentials Bearer abcdefghijklmnopqrstuvwxyz012345 "
+                    "api_key=sk-abcdefghijklmnopqrstuvwx token=secret-token-value"
+                }
+            },
+        )
+    ]
+
+    result = asyncio.run(probe_cua_provider(provider))
+
+    assert result["available"] is False
+    reason = result["reason"]
+    assert "Bearer abcdefghijklmnopqrstuvwxyz012345" not in reason
+    assert "sk-abcdefghijklmnopqrstuvwx" not in reason
+    assert "secret-token-value" not in reason
+    assert "Bearer [REDACTED]" in reason
+
+
+def test_cua_provider_redacts_terminal_status_details():
+    provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "id": "resp_failed",
+                "status": "incomplete",
+                "incomplete_details": {
+                    "reason": "tool failed with Bearer abcdefghijklmnopqrstuvwxyz012345",
+                    "api_key": "sk-abcdefghijklmnopqrstuvwx",
+                    "token": "secret-token-value",
+                },
+            },
+        )
+    ]
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    reason = result["reason"]
+    assert "Bearer abcdefghijklmnopqrstuvwxyz012345" not in reason
+    assert "sk-abcdefghijklmnopqrstuvwx" not in reason
+    assert "secret-token-value" not in reason
+    assert "Bearer [REDACTED]" in reason
 
 
 def test_cua_provider_blocks_ssrf_to_metadata_host():

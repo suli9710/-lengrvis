@@ -7,6 +7,7 @@ import pytest
 from app.config import AppSettings
 from app.core.schemas import ToolResult
 from app.policy.policy_engine import PolicyEngine
+from app.policy.policy_rules import BROWSER_CONTENT_PROMPT_INJECTION_WARNING, BROWSER_CONTENT_TRUST
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
@@ -162,6 +163,54 @@ def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
     )
 
     assert review.verdict == SafetyVerdict.ALLOW
+
+
+def test_policy_denies_browser_tool_result_with_prompt_injection_warning():
+    result = ToolResult(
+        tool_call_id="tool_browser_injection",
+        ok=True,
+        output={
+            "ok": True,
+            "text": "Visible page text remains available in storage.",
+            "content_trust": BROWSER_CONTENT_TRUST,
+            "browser_content_warnings": [BROWSER_CONTENT_PROMPT_INJECTION_WARNING],
+        },
+    )
+
+    review = PolicyEngine().review_tool_result(
+        "task_browser",
+        "step_browser",
+        "browser.read_page",
+        result,
+        RiskLevel.R0_READ_ONLY,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert "prompt-injection" in " ".join(review.reasons)
+
+
+def test_policy_allows_browser_tool_result_with_untrusted_label_without_warning():
+    result = ToolResult(
+        tool_call_id="tool_browser_normal",
+        ok=True,
+        output={
+            "ok": True,
+            "text": "Ordinary visible page text.",
+            "content_trust": BROWSER_CONTENT_TRUST,
+        },
+    )
+
+    review = PolicyEngine().review_tool_result(
+        "task_browser",
+        "step_browser",
+        "browser.read_page",
+        result,
+        RiskLevel.R0_READ_ONLY,
+    )
+
+    assert review.verdict == SafetyVerdict.ALLOW
+    assert "untrusted browser content" in " ".join(review.reasons)
 
 
 def test_permission_mode_plan_denies_modifying_tool_call():

@@ -853,7 +853,12 @@ def test_circuit_cooldown_allows_success_and_clears_state(monkeypatch):
 def test_circuit_isolated_by_endpoint_and_actual_model(monkeypatch):
     _patch_shared_client(monkeypatch)
     provider = OpenAICompatibleProvider(
-        _settings(llm_api_max_retries=0, llm_api_circuit_failure_threshold=1, embedding_model="embed-a")
+        _settings(
+            base_url="https://api.openai.com/v1",
+            llm_api_max_retries=0,
+            llm_api_circuit_failure_threshold=1,
+            embedding_model="embed-a",
+        )
     )
     FakeAsyncClient.responses = [
         _response(503, {"error": "embedding down"}),

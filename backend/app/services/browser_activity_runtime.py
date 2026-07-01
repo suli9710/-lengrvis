@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
@@ -20,8 +20,13 @@ from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
 from app.core.schemas import new_id, now_iso
 from app.policy.execution_marker import execution_is_marked_approved
+from app.policy.policy_rules import (
+    BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
+    BROWSER_CONTENT_TRUST,
+    BROWSER_PROMPT_INJECTION_PATTERNS,
+)
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
-from app.policy.redaction import REDACTED, redact_text, redact_value
+from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.policy.sensitive_values import looks_sensitive_value
 
@@ -59,8 +64,6 @@ SENSITIVE_SELECTOR_TOKENS = {
     "auth",
     "credential",
 }
-
-
 @dataclass(slots=True)
 class BrowserSession:
     id: str = field(default_factory=lambda: new_id("browser_session"))
@@ -449,7 +452,7 @@ class BrowserActivityRuntime:
             screenshot_url=result.get("screenshot_url") or result.get("path"),
             result_metadata=_result_metadata(result),
         )
-        safe_result = dict(result)
+        safe_result = _safe_result(result)
         safe_result["event"] = self._event_dict(event)
         if session.id:
             safe_result.setdefault("session", self._session_dict(session))
@@ -614,7 +617,7 @@ class BrowserActivityRuntime:
             verdict=_enum_text(verdict),
             ok=ok,
             error=_safe_text(error or "") if error else None,
-            screenshot_url=_safe_text(screenshot_url or "") if screenshot_url else None,
+            screenshot_url=_artifact_ref(screenshot_url) if screenshot_url else None,
             result=_redact_event_value(result_metadata) if result_metadata else None,
         )
         with self._lock:
@@ -937,23 +940,88 @@ def _result_metadata(result: dict[str, Any]) -> dict[str, Any]:
         metadata["text_chars"] = len(str(result.get("text") or ""))
     if isinstance(result.get("links"), list):
         metadata["link_count"] = len(result.get("links") or [])
+    if _has_browser_content(result):
+        metadata["content_trust"] = BROWSER_CONTENT_TRUST
+        warnings = _browser_content_warnings(result)
+        if warnings:
+            metadata["browser_content_warnings"] = warnings
     return metadata
 
 
-def _redact_event_value(value: Any) -> Any:
-    redacted = redact_value(value)
-    if isinstance(redacted, dict):
-        result = {}
-        for key, item in redacted.items():
-            if key == "url":
-                result[key] = _safe_url(str(item or ""))
-            elif key in {"text", "selector", "fields"}:
-                result[key] = REDACTED if item not in (None, "", {}) else item
+def _safe_result(value: Any, *, key: str = "") -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for item_key, item in value.items():
+            text_key = str(item_key)
+            if text_key == "url":
+                result[text_key] = _safe_url(str(item or ""))
+            elif text_key in {"path", "screenshot_url"}:
+                result[text_key] = _artifact_ref(item)
+            elif text_key in {"title", "error"}:
+                result[text_key] = _safe_text(str(item or ""))
             else:
-                result[key] = _redact_event_value(item)
+                result[text_key] = _safe_result(item, key=text_key)
+        if _has_browser_content(value):
+            result["content_trust"] = BROWSER_CONTENT_TRUST
+            warnings = _browser_content_warnings(value)
+            if warnings:
+                result["browser_content_warnings"] = warnings
         return result
-    if isinstance(redacted, list):
-        return [_redact_event_value(item) for item in redacted]
+    if isinstance(value, list):
+        return [_safe_result(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_safe_result(item, key=key) for item in value]
+    if isinstance(value, str):
+        if key == "text":
+            return value
+        return _safe_text(value)
+    return value
+
+
+def _has_browser_content(result: dict[str, Any]) -> bool:
+    return result.get("text") is not None or isinstance(result.get("links"), list)
+
+
+def _browser_content_warnings(result: dict[str, Any]) -> list[str]:
+    inspected_parts: list[str] = []
+    if result.get("text") is not None:
+        inspected_parts.append(str(result.get("text") or ""))
+    if result.get("title") is not None:
+        inspected_parts.append(str(result.get("title") or ""))
+    for link in result.get("links") or []:
+        if isinstance(link, dict):
+            inspected_parts.append(str(link.get("title") or ""))
+            inspected_parts.append(str(link.get("url") or ""))
+    inspected = "\n".join(inspected_parts)
+    if any(re.search(pattern, inspected, flags=re.IGNORECASE) for pattern in BROWSER_PROMPT_INJECTION_PATTERNS):
+        return [BROWSER_CONTENT_PROMPT_INJECTION_WARNING]
+    return []
+
+
+def _redact_event_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            text_key = str(key)
+            if text_key == "url":
+                result[key] = _safe_url(str(item or ""))
+            elif text_key in {"path", "screenshot_url"}:
+                result[key] = _artifact_ref(item)
+            elif text_key in {"content_trust", "browser_content_warnings"}:
+                result[key] = _safe_metadata_label_value(item)
+            else:
+                if text_key in {"text", "selector", "fields"}:
+                    result[key] = REDACTED if item not in (None, "", {}) else item
+                elif contains_sensitive_key(text_key):
+                    result[key] = _redact_event_value(redact_value({text_key: item}).get(text_key))
+                else:
+                    result[key] = _redact_event_value(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_event_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_event_value(item) for item in value]
+    redacted = redact_value(value)
     if isinstance(redacted, str):
         return _safe_text(redacted)
     return redacted
@@ -971,8 +1039,29 @@ def _safe_url(url: str) -> str:
     return parsed._replace(query=REDACTED).geturl()
 
 
+def _artifact_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    candidate = parsed.path if parsed.scheme else text.split("?", 1)[0].split("#", 1)[0]
+    return redact_text(PurePath(candidate.replace("\\", "/")).name)
+
+
+def _safe_metadata_label_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_safe_metadata_label_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_safe_metadata_label_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _safe_metadata_label_value(item) for key, item in value.items()}
+    if isinstance(value, str):
+        return redact_text(value, redact_generic_tokens=False)
+    return value
+
+
 def _safe_text(text: str) -> str:
-    return redact_text(text) if text else ""
+    return redact_public_text(text) if text else ""
 
 
 def _parse_iso(value: str) -> datetime | None:

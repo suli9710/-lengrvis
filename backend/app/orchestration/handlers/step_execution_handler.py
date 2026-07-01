@@ -31,6 +31,7 @@ from app.policy.approval_binding import (
     settings_fingerprint,
 )
 from app.policy.permissions import PermissionStore
+from app.policy.redaction import redact_audit_payload, redact_public_text
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -184,17 +185,22 @@ class StepExecutionHandler:
             try:
                 tool = orchestrator._apply_subagent_tool_proposal(task, step, action)
             except KeyError as exc:
+                safe_error = redact_public_text(str(exc))
+                safe_tool_name = redact_public_text(str(action.tool_name or ""))
                 set_step_status(step, StepStatus.FAILED, actor="StepExecutionHandler")
                 orchestrator._set_status(
-                    task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc))
+                    task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(safe_error)
                 )
                 orchestrator.bus.publish_text(
                     task.id,
                     orchestrator.name,
-                    f"Subagent proposed an unavailable tool: {action.tool_name}",
+                    f"Subagent proposed an unavailable tool: {safe_tool_name}",
                     message_type=MessageType.REVISION,
                     step_id=step.id,
-                    structured_payload={"subagent_action": action.model_dump(), "error": str(exc)},
+                    structured_payload={
+                        "subagent_action": redact_audit_payload(action.model_dump()),
+                        "error": safe_error,
+                    },
                 )
                 orchestrator._supervise_new_agent_messages(task.id, "subagent_invalid_tool")
                 return StepExecutionOutcome("fatal_failed")

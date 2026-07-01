@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.api.agent_message_wire import wire_safe_agent_message
 from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatResponse
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.orchestrator_registry import orchestrator_registry
@@ -96,5 +97,5 @@ def _agent_message_event(task_id: str, message: AgentMessage) -> dict:
     return {
         "type": "agent_message",
         "task_id": task_id,
-        "message": message.to_openai_dict(),
+        "message": wire_safe_agent_message(message),
     }

@@ -16,6 +16,8 @@ MODEL_CONTROL_KEYS = {
     "permission_policy_version",
     "policy_decision",
     "preview_hmac",
+    "previous_response_id",
+    "provider_mode",
     "risk_level",
     "runtime_state",
     "settings_fingerprint",

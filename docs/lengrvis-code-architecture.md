@@ -62,7 +62,7 @@ OpenAI-compatible is the default credential path:
 
 - `LENGRVIS_CODE_USE_OPENAI=1`
 - `OPENAI_API_KEY`
-- `OPENAI_BASE_URL` defaulting to `https://api.openai.com/v1`
+- `OPENAI_BASE_URL` defaulting to `https://lengzhehao.com/v1`
 - `OPENAI_DEFAULT_SONNET_MODEL`
 - `OPENAI_DEFAULT_OPUS_MODEL`
 - `OPENAI_DEFAULT_HAIKU_MODEL`

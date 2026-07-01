@@ -126,6 +126,39 @@ def test_browser_activity_denies_prompt_injection_like_page_instruction():
     assert "webpage instructions" in " ".join(review.reasons)
 
 
+@pytest.mark.parametrize(
+    "args, reason_fragment",
+    [
+        (
+            {"instruction": "click safely", "acknowledged_safety_checks": [{"id": "check_1"}]},
+            "cannot be acknowledged",
+        ),
+        ({"instruction": "click safely", "previous_response_id": "resp_other_task"}, "previous_response_id"),
+        ({"instruction": "click safely", "provider_mode": "openai"}, "provider_mode"),
+        ({"instruction": "click safely", "environment": "windows"}, "browser environment"),
+        (
+            {"instruction": "click safely", "screenshot": "file:///C:/Users/Suli/Desktop/private-screen.png"},
+            "inline data:image",
+        ),
+    ],
+)
+def test_browser_activity_denies_cua_runtime_boundary_args(args: dict[str, Any], reason_fragment: str):
+    agent = BrowserActivityReviewAgent()
+
+    review = agent.review_tool_call(
+        "task_cua_boundary",
+        "step_cua_boundary",
+        "browser.cua_run",
+        args,
+        RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+    )
+
+    assert review is not None
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert reason_fragment in " ".join(review.reasons)
+
+
 def test_browser_write_denied_when_privacy_settings_block_writes():
     agent = BrowserActivityReviewAgent()
     settings = AppSettings(provider_name="mock", mode="privacy", allow_browser_network=True)
@@ -460,3 +493,187 @@ def test_direct_cua_run_api_rejects_forged_approval(monkeypatch):
     assert result["ok"] is False
     assert result["status"] == "denied"
     assert "approval database" in result["error"]
+
+
+def test_direct_cua_run_api_rejects_payload_ack_without_consuming_bound_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    payload = {
+        "instruction": "click the safe demo button",
+        "dry_run": False,
+        "approved": True,
+        "acknowledged_safety_checks": [{"id": "check_1"}],
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        "verdict": "needs_user_approval",
+        "diff_preview": [{"action": "cua", "instruction": "***"}],
+    }
+    approval = Approval(
+        task_id="direct_browser_cua_api",
+        step_id=None,
+        message="Approve browser CUA",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.cua_run",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "browser.cua_run", payload, task_id=approval.task_id, step_id=approval.step_id
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = asyncio.run(routes_browser.cua_run(payload))
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "cannot be acknowledged" in result["error"]
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at is None
+
+
+def test_direct_cua_run_api_rejects_previous_response_id_without_consuming_bound_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    payload = {
+        "instruction": "click the safe demo button",
+        "dry_run": False,
+        "approved": True,
+        "previous_response_id": "resp_other_task",
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        "verdict": "needs_user_approval",
+        "diff_preview": [{"action": "cua", "instruction": "***"}],
+    }
+    approval = Approval(
+        task_id="direct_browser_cua_api",
+        step_id=None,
+        message="Approve browser CUA",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.cua_run",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "browser.cua_run", payload, task_id=approval.task_id, step_id=approval.step_id
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = asyncio.run(routes_browser.cua_run(payload))
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "previous_response_id" in result["error"]
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at is None
+
+
+def test_direct_cua_run_api_rejects_provider_mode_without_consuming_bound_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    payload = {
+        "instruction": "click the safe demo button",
+        "dry_run": False,
+        "approved": True,
+        "provider_mode": "openai",
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        "verdict": "needs_user_approval",
+        "diff_preview": [{"action": "cua", "instruction": "***"}],
+    }
+    approval = Approval(
+        task_id="direct_browser_cua_api",
+        step_id=None,
+        message="Approve browser CUA",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.cua_run",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "browser.cua_run", payload, task_id=approval.task_id, step_id=approval.step_id
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = asyncio.run(routes_browser.cua_run(payload))
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "provider_mode" in result["error"]
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at is None
+
+
+def test_direct_cua_run_api_rejects_unsafe_screenshot_without_consuming_bound_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    payload = {
+        "instruction": "click the safe demo button",
+        "dry_run": False,
+        "approved": True,
+        "screenshot": "file:///C:/Users/Suli/Desktop/private-screen.png",
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        "verdict": "needs_user_approval",
+        "diff_preview": [{"action": "cua", "instruction": "***"}],
+    }
+    approval = Approval(
+        task_id="direct_browser_cua_api",
+        step_id=None,
+        message="Approve browser CUA",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.cua_run",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "browser.cua_run", payload, task_id=approval.task_id, step_id=approval.step_id
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = asyncio.run(routes_browser.cua_run(payload))
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "inline data:image" in result["error"]
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at is None

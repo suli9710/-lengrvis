@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.agents.planner_agent import PlannerAgent
-from app.config import AppSettings
+from app.config import DEFAULT_CLOUD_BASE_URL, AppSettings
 from app.llm.local_provider import LocalBackend, LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
@@ -30,6 +30,11 @@ def test_appsettings_default_disables_mock_fallback():
     assert AppSettings().allow_mock_fallback is False
 
 
+def test_appsettings_defaults_to_lengzhehao_cloud_base_url():
+    assert AppSettings().base_url == DEFAULT_CLOUD_BASE_URL
+    assert DEFAULT_CLOUD_BASE_URL == "https://lengzhehao.com/v1"
+
+
 def test_appsettings_from_sources_default_disables_mock_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing-config.yaml"))
     monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
@@ -37,6 +42,15 @@ def test_appsettings_from_sources_default_disables_mock_fallback(monkeypatch, tm
     monkeypatch.delenv("LENGRVIS_ALLOW_MOCK_FALLBACK", raising=False)
 
     assert AppSettings.from_sources().allow_mock_fallback is False
+
+
+def test_appsettings_from_sources_defaults_to_lengzhehao_cloud_base_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing-config.yaml"))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("LENGRVIS_BASE_URL", raising=False)
+
+    assert AppSettings.from_sources().base_url == DEFAULT_CLOUD_BASE_URL
 
 
 def test_appsettings_from_sources_allows_explicit_mock_fallback_opt_in(monkeypatch, tmp_path):

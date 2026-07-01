@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
 from app.config import AppSettings
 from app.core.outbound_url import is_local_base_url, pin_outbound_http_url, validate_outbound_http_url
 from app.llm.openai_compatible import normalize_openai_base_url
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_text, redact_value
 
 DEFAULT_CUA_MODEL = "computer-use-preview"
+OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
+CUA_BROWSER_ENVIRONMENT = "browser"
+MAX_CUA_SCREENSHOT_BYTES = 8 * 1024 * 1024
+MAX_CUA_SCREENSHOT_BASE64_CHARS = ((MAX_CUA_SCREENSHOT_BYTES + 2) // 3) * 4
+_ALLOWED_CUA_SCREENSHOT_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
 class CUAUnavailable(RuntimeError):
@@ -44,26 +52,29 @@ class CUAProvider:
         acknowledged_safety_checks: list[dict[str, Any]] | None = None,
         environment: str = "browser",
     ) -> dict[str, Any]:
+        if previous_response_id:
+            return _denied_result("CUA previous_response_id cannot be supplied to run_step.", self.source, self.model)
         if acknowledged_safety_checks:
-            return {
-                "ok": False,
-                "status": "requires_approval",
-                "paused": True,
-                "degraded": True,
-                "reason": "Pending CUA safety checks must be reviewed by the user; they are never auto-acknowledged.",
-                "pending_safety_checks": _redact_safety_checks(acknowledged_safety_checks),
-                "provider": self.source,
-                "model": self.model,
-            }
+            return _denied_result(
+                "CUA safety checks cannot be acknowledged through run_step.", self.source, self.model
+            )
+        environment_name = _normalize_cua_environment(environment)
+        if environment_name != CUA_BROWSER_ENVIRONMENT:
+            return _unavailable_result(
+                "Browser CUA only supports the browser environment.", self.source, self.model
+            )
         if not self.settings.api_key:
             return _unavailable_result(
                 "CUA provider is unavailable because no API key is configured.", self.source, self.model
             )
+        try:
+            screenshot_url = validate_cua_screenshot_data_url(screenshot)
+        except ValueError as exc:
+            return _unavailable_result(str(exc), self.source, self.model)
         payload = self._payload(
             instruction=instruction,
-            screenshot=screenshot,
-            previous_response_id=previous_response_id,
-            environment=environment,
+            screenshot=screenshot_url,
+            environment=environment_name,
         )
         try:
             async with self.client_factory(timeout=self.settings.timeout) as client:
@@ -81,7 +92,11 @@ class CUAProvider:
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:  # noqa: BLE001
-            return _unavailable_result(f"CUA provider request failed or is unsupported: {exc}", self.source, self.model)
+            return _unavailable_result(
+                f"CUA provider request failed or is unsupported: {_safe_error_message(exc)}",
+                self.source,
+                self.model,
+            )
         return self._normalize_response(data)
 
     def _payload(
@@ -89,7 +104,6 @@ class CUAProvider:
         *,
         instruction: str,
         screenshot: str | None,
-        previous_response_id: str | None,
         environment: str,
     ) -> dict[str, Any]:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": instruction}]
@@ -101,8 +115,6 @@ class CUAProvider:
             "input": [{"role": "user", "content": content}],
             "store": not self.settings.disable_response_storage,
         }
-        if previous_response_id:
-            payload["previous_response_id"] = previous_response_id
         return payload
 
     def _normalize_response(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -125,7 +137,11 @@ class CUAProvider:
         status = str(data.get("status") or "")
         if status in {"failed", "cancelled", "incomplete"}:
             detail = data.get("incomplete_details") or data.get("error") or status
-            return _unavailable_result(f"CUA provider returned terminal status: {detail}", self.source, self.model)
+            return _unavailable_result(
+                f"CUA provider returned terminal status: {_safe_detail_message(detail)}",
+                self.source,
+                self.model,
+            )
         return {
             "ok": True,
             "status": status or "completed",
@@ -189,7 +205,7 @@ async def resolve_cua_provider(
 async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
     payload = {
         "model": provider.model,
-        "tools": [{"type": "computer_use_preview", "environment": "browser"}],
+        "tools": [{"type": "computer_use_preview", "environment": CUA_BROWSER_ENVIRONMENT}],
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "probe computer-use availability"}]}],
         "max_output_tokens": 1,
         "store": False,
@@ -212,7 +228,10 @@ async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
             response.raise_for_status()
             data = response.json()
     except Exception as exc:  # noqa: BLE001
-        return {"available": False, "reason": f"Responses computer-use preview probe failed: {exc}"}
+        return {
+            "available": False,
+            "reason": f"Responses computer-use preview probe failed: {_safe_error_message(exc)}",
+        }
     if data.get("error"):
         return {"available": False, "reason": _error_message(data["error"])}
     return {"available": True, "provider": provider.source, "model": provider.model}
@@ -237,15 +256,33 @@ def _responses_settings(settings: AppSettings) -> AppSettings:
 
 
 def _official_openai_settings(settings: AppSettings) -> AppSettings | None:
-    if not settings.api_key:
+    if not settings.api_key or not _is_official_openai_base_url(settings.base_url):
         return None
     return settings.model_copy(
         update={
             "provider_name": "openai",
-            "base_url": "https://api.openai.com/v1",
+            "base_url": OFFICIAL_OPENAI_BASE_URL,
             "wire_api": "responses",
             "requires_openai_auth": True,
         }
+    )
+
+
+def _is_official_openai_base_url(base_url: str) -> bool:
+    try:
+        parsed = urlparse(normalize_openai_base_url(base_url))
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "api.openai.com"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/v1"
+        and not parsed.query
+        and not parsed.fragment
     )
 
 
@@ -255,6 +292,35 @@ def _configured_cua_model(settings: AppSettings) -> str:
         if value:
             return str(value)
     return DEFAULT_CUA_MODEL
+
+
+def _normalize_cua_environment(environment: Any) -> str:
+    return str(environment or CUA_BROWSER_ENVIRONMENT).strip().casefold().replace("_", "-")
+
+
+def validate_cua_screenshot_data_url(screenshot: str | None) -> str | None:
+    value = str(screenshot or "").strip()
+    if not value:
+        return None
+    prefix, separator, encoded = value.partition(",")
+    if separator != "," or not prefix.casefold().startswith("data:image/"):
+        raise ValueError("CUA screenshot must be an inline data:image/*;base64 payload.")
+    header = prefix.split(":", 1)[1].casefold()
+    parts = [part.strip() for part in header.split(";") if part.strip()]
+    mime_type = parts[0] if parts else ""
+    if mime_type == "image/jpg":
+        mime_type = "image/jpeg"
+    if mime_type not in _ALLOWED_CUA_SCREENSHOT_MIME_TYPES or "base64" not in parts[1:]:
+        raise ValueError("CUA screenshot must be a PNG, JPEG, or WebP base64 data URL.")
+    if len(encoded) > MAX_CUA_SCREENSHOT_BASE64_CHARS:
+        raise ValueError("CUA screenshot exceeds the 8 MB decoded payload limit.")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("CUA screenshot is not valid base64.") from exc
+    if len(decoded) > MAX_CUA_SCREENSHOT_BYTES:
+        raise ValueError("CUA screenshot exceeds the 8 MB decoded payload limit.")
+    return value
 
 
 def _pending_safety_checks(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -285,8 +351,16 @@ def _redact_safety_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _error_message(error: Any) -> str:
     if isinstance(error, dict):
-        return str(error.get("message") or error.get("type") or "provider error")
-    return str(error)
+        return redact_text(str(error.get("message") or error.get("type") or "provider error"))
+    return redact_text(str(error))
+
+
+def _safe_error_message(error: BaseException) -> str:
+    return redact_text(str(error))
+
+
+def _safe_detail_message(detail: Any) -> str:
+    return redact_text(str(redact_value(detail)))
 
 
 def _unavailable_result(reason: str, provider: str, model: str) -> dict[str, Any]:
@@ -294,6 +368,16 @@ def _unavailable_result(reason: str, provider: str, model: str) -> dict[str, Any
         "ok": False,
         "status": "unavailable",
         "degraded": True,
+        "provider": provider,
+        "model": model,
+        "reason": reason,
+    }
+
+
+def _denied_result(reason: str, provider: str, model: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "denied",
         "provider": provider,
         "model": model,
         "reason": reason,

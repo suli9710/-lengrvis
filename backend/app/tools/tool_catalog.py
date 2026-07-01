@@ -342,7 +342,7 @@ TOOL_CATALOG: dict[str, tuple[str, str]] = {
         "summarize page content brief 总结 页面 摘要 网页",
     ),
     "browser.screenshot": (
-        "Capture a screenshot of a page and return the image path",
+        "Capture a screenshot of a page and return a redacted screenshot artifact reference",
         "screenshot capture image snapshot 截图 截屏 快照 网页",
     ),
     "browser.search_web_via_provider": (

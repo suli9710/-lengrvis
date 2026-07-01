@@ -9,6 +9,7 @@ import websockets
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from app.api.agent_message_wire import wire_safe_agent_message
 from app.api.routes_approvals import (
     _approval_native_confirmation,
     _deny_rejected_step,
@@ -376,7 +377,7 @@ async def notification_messages(websocket: WebSocket):
                     continue
                 seen.add(message.id)
                 await websocket.send_json(
-                    {"type": "agent_message", "task_id": message.task_id, "message": message.to_openai_dict()}
+                    {"type": "agent_message", "task_id": message.task_id, "message": wire_safe_agent_message(message)}
                 )
             await asyncio.sleep(2.0)
     except WebSocketDisconnect:

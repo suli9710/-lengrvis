@@ -51,6 +51,7 @@ from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
 from app.perception.context_store import handle_perception_event
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error, strip_model_control_args
+from app.policy.redaction import redact_audit_payload, redact_public_text
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
@@ -299,17 +300,18 @@ class OrchestratorAgent:
         ).to_metadata()
         step.requires_approval = bool(step.requires_approval) or tool.risk_level.value.startswith(("R2", "R3"))
         if changed:
+            safe_tool_name = redact_public_text(str(step.tool_name or ""))
             self.bus.publish_text(
                 task.id,
                 self.name,
-                f"Using {step.agent_name} proposal for {step.tool_name}.",
+                f"Using {step.agent_name} proposal for {safe_tool_name}.",
                 message_type=MessageType.REVISION,
                 step_id=step.id,
                 structured_payload={
-                    "subagent_action": action.model_dump(),
-                    "original_step": original,
-                    "final_tool": step.tool_name,
-                    "final_args": step.args,
+                    "subagent_action": redact_audit_payload(action.model_dump()),
+                    "original_step": redact_audit_payload(original),
+                    "final_tool": safe_tool_name,
+                    "final_args": redact_audit_payload(step.args),
                 },
             )
             record(
@@ -331,18 +333,19 @@ class OrchestratorAgent:
         original_args: dict,
         proposed_args: dict,
     ) -> dict:
+        proposed_args = strip_model_control_args(proposed_args)
         if not getattr(tool, "input_schema", None):
             return proposed_args
         properties = set((tool.input_schema.get("properties") or {}).keys())
         required = set(tool.input_schema.get("required") or [])
         if not properties and not required:
-            return strip_model_control_args(proposed_args)
+            return proposed_args
         allowed = properties | required
         merged = {key: value for key, value in proposed_args.items() if key in allowed}
         for key in required:
             if key in original_args and key not in merged:
                 merged[key] = original_args[key]
-        return strip_model_control_args(merged)
+        return merged
 
     def _handle_subagent_revision_request(self, task: Task, step: PlanStep, action: AgentAction) -> None:
         set_step_status(step, StepStatus.SKIPPED, actor=self.name)
@@ -352,14 +355,18 @@ class OrchestratorAgent:
             from_agent = getattr(tool, "agent_owner", "") or step.agent_name
         except Exception:  # noqa: BLE001 - missing tool metadata should degrade to the planned agent.
             from_agent = step.agent_name
+        safe_question = redact_public_text(question)
         self.bus.publish_text(
             task.id,
             from_agent,
-            question,
+            safe_question,
             message_type=MessageType.REVISION,
             to_agent="PlannerAgent",
             step_id=step.id,
-            structured_payload={"subagent_action": action.model_dump(), "revision_requested": True},
+            structured_payload={
+                "subagent_action": redact_audit_payload(action.model_dump()),
+                "revision_requested": True,
+            },
         )
         self.bus.publish_text(
             task.id,
@@ -378,13 +385,14 @@ class OrchestratorAgent:
         )
 
     def _friendly_tool_error(self, error: str) -> str:
+        safe_error = redact_public_text(str(error or ""))
         if "No authorized directories configured" in error:
             return "没有配置授权工作区。请先在设置里填写包含目标文件夹的授权工作区，然后再执行文件操作。"
         if "outside authorized directories" in error:
             return "目标路径不在授权工作区内。请先在设置里授权该路径的上级文件夹。"
         if "Sensitive or system paths" in error:
             return "目标路径属于系统或敏感路径，安全策略已阻止执行。"
-        return f"任务执行失败：{error}" if error else "任务执行失败。"
+        return f"任务执行失败：{safe_error}" if safe_error else "任务执行失败。"
 
     def _supervise_new_agent_messages(self, task_id: str, stage: str) -> bool:
         """Batch supervise new messages with per-task cursor and id de-dupe."""
@@ -522,16 +530,16 @@ class OrchestratorAgent:
         rationale = (action.rationale or "").strip()
         summary_parts: list[str] = []
         if action.kind == "propose_tool":
-            summary_parts.append(f"propose_tool {action.tool_name or step.tool_name}")
+            summary_parts.append(f"propose_tool {redact_public_text(str(action.tool_name or step.tool_name))}")
         elif action.kind == "request_revision":
             summary_parts.append("request_revision")
             if action.follow_up_question:
-                summary_parts.append(f"follow_up: {action.follow_up_question[:160]}")
+                summary_parts.append(f"follow_up: {redact_public_text(action.follow_up_question[:160])}")
         else:
             summary_parts.append(action.kind)
         if rationale:
-            summary_parts.append(rationale[:200])
-        summary = " | ".join(summary_parts) or f"{agent.name} reasoned about {step.tool_name}"
+            summary_parts.append(redact_public_text(rationale[:200]))
+        summary = " | ".join(summary_parts) or f"{agent.name} reasoned about {redact_public_text(str(step.tool_name))}"
         allowed_tools = getattr(agent, "allowed_tools", None)
         visible_tool_ids = allowed_tools(self.registry) if callable(allowed_tools) else []
         model_action = ModelActionEnvelope(
@@ -552,10 +560,10 @@ class OrchestratorAgent:
             message_type=MessageType.PROPOSAL,
             step_id=step.id,
             structured_payload={
-                "subagent_action": action.model_dump(),
-                "model_action": model_action,
+                "subagent_action": redact_audit_payload(action.model_dump()),
+                "model_action": redact_audit_payload(model_action),
                 "diverged": diverged,
-                "plan_tool": step.tool_name,
+                "plan_tool": redact_public_text(str(step.tool_name)),
             },
         )
         if diverged:

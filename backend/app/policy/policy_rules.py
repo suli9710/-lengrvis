@@ -147,6 +147,8 @@ BROWSER_PROMPT_INJECTION_PATTERNS = {
     r"disable\s+(safety|security|policy)",
     r"you\s+are\s+now\s+(in\s+)?developer\s+mode",
 }
+BROWSER_CONTENT_TRUST = "untrusted_browser_content"
+BROWSER_CONTENT_PROMPT_INJECTION_WARNING = "prompt_injection_like_browser_content"
 CLEANUP_READ_TOOLS = {"file.cleanup_scan", "file.cleanup_plan", "file.dedupe_plan"}
 CLEANUP_WRITE_TOOLS = {"file.cleanup_execute", "file.cleanup_rollback"}
 
