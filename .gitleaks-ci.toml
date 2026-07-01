@@ -114,6 +114,36 @@ paths = ['''^puzzler_bards\.2b\+bb3199_2026-06-27\.json$''']
 regexes = ['''^.*$''']
 
 [[allowlists]]
+description = "Historical redaction test placeholders replaced with low-entropy fixtures"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "08b166cf455b0c83b72e1b8f6c1a4c2923886b66",
+]
+paths = [
+  '''^backend/tests/test_onnx_provider\.py$''',
+  '''^backend/tests/test_privacy_redaction\.py$''',
+  '''^backend/tests/test_scheduler\.py$''',
+  '''^backend/tests/test_task_recordings\.py$''',
+]
+regexes = [
+  '''onnx-warmup-secret-1234567890''',
+  '''recording-secret-1234567890''',
+  '''scheduler-secret-1234567890''',
+  '''sk-test-1234567890abcdef''',
+]
+
+[[allowlists]]
+description = "Historical strict config listed fixed test tokens before scoped allowlists"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "6ae403746c6a8c442368e213ab624aa0b8aed8f4",
+]
+paths = ['''^\.gitleaks-ci\.toml$''']
+regexes = ['''token=''']
+
+[[allowlists]]
 description = "Historical CI docs used fixed local test HMAC strings before format helper"
 condition = "AND"
 regexTarget = "match"

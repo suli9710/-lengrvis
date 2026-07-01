@@ -32,7 +32,7 @@ def test_audit_record_stores_secret_safe_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     payload = {
         "note": "saved to C:\\Users\\alice\\Documents\\private-payroll-2026.xlsx",
-        "token": "sk-test-1234567890abcdef",
+        "token": "test-only-token",
         "status": "ok",
     }
 
@@ -40,7 +40,7 @@ def test_audit_record_stores_secret_safe_payload(monkeypatch, tmp_path):
     rows = db.fetch_many("audit_events", "id = ?", (event.id,), limit=1)
     stored_text = str(rows[0]["payload"])
 
-    assert "sk-test-1234567890abcdef" not in stored_text
+    assert "test-only-token" not in stored_text
     assert rows[0]["payload"]["status"] == "ok"
     assert rows[0]["payload"]["note"].startswith("saved to C:\\Users\\alice")
 

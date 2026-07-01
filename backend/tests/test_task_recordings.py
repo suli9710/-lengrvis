@@ -289,8 +289,7 @@ def test_capture_step_screenshot_logs_capture_failures(monkeypatch: pytest.Monke
 
     def grab_screen():
         raise RuntimeError(
-            "screen capture unavailable for C:/Users/Suli/private/capture-frame.png "
-            "token=recording-secret-1234567890"
+            "screen capture unavailable for C:/Users/Suli/private/capture-frame.png token=test-only-token"
         )
 
     monkeypatch.setattr(task_recording_service, "_grab_screen", grab_screen)
@@ -299,7 +298,7 @@ def test_capture_step_screenshot_logs_capture_failures(monkeypatch: pytest.Monke
 
     assert frame["ok"] is False
     assert "screen capture unavailable" in frame["error"]
-    assert "recording-secret-1234567890" not in frame["error"]
+    assert "test-only-token" not in frame["error"]
     assert "C:/Users/Suli/private/capture-frame.png" not in frame["error"]
     assert "capture-frame.png" not in frame["error"]
     assert "task_recording.capture_step_screenshot" in caplog.text

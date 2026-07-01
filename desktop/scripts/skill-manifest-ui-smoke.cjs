@@ -67,7 +67,7 @@ function assertSourceBoundaries() {
   assertIncludes(sharedTypes, "supportsDryRun: boolean;", "desktop skill type preview flag");
   assertIncludes(sharedTypes, "rollbackHint: string;", "desktop skill type rollback hint");
 
-  const apiMappers = read("desktop/src/renderer/lib/api/mappers.ts");
+  const apiMappers = read("desktop/src/renderer/lib/api/catalogMappers.ts");
   assertIncludes(apiMappers, "permissions: Array.isArray(tool.permissions) ? tool.permissions.map(String) : []", "desktop API permission mapping");
   assertIncludes(apiMappers, "supportsDryRun: Boolean(tool.supports_dry_run)", "desktop API preview mapping");
   assertIncludes(apiMappers, "rollbackHint: String(tool.rollback_hint ?? \"\")", "desktop API rollback mapping");

@@ -123,7 +123,7 @@ def test_scheduler_execute_failure_logs_best_effort_warning(caplog):
 def test_scheduler_execute_failure_persists_redacted_status():
     private_path = "C:/Users/Suli/private/schedules/.env"
     private_file = "scheduler-output.log"
-    secret_token = "scheduler-secret-1234567890"
+    secret_token = "test-only-token"
 
     async def executor(goal: str, mode: str) -> str:  # noqa: ARG001
         raise RuntimeError(f"executor failed at {private_path} {private_file} token={secret_token}")

@@ -754,7 +754,7 @@ def test_onnx_warmup_redacts_native_runtime_failures(monkeypatch, tmp_path: Path
     _mock_onnx_modules(monkeypatch)
 
     def fail_ensure_model(self):  # noqa: ANN001
-        raise RuntimeError(f"failed loading {private_file} token=onnx-warmup-secret-1234567890")
+        raise RuntimeError(f"failed loading {private_file} token=test-only-token")
 
     monkeypatch.setattr(onnx_provider.OnnxProvider, "_ensure_genai_model", fail_ensure_model)
 
@@ -762,7 +762,7 @@ def test_onnx_warmup_redacts_native_runtime_failures(monkeypatch, tmp_path: Path
 
     assert result["ok"] is False
     assert "failed loading" in result["error"]
-    assert "onnx-warmup-secret-1234567890" not in result["error"]
+    assert "test-only-token" not in result["error"]
     assert str(private_file) not in result["error"]
     assert "adapter-secret.onnx" not in result["error"]
     assert result["errors"] == [result["error"]]

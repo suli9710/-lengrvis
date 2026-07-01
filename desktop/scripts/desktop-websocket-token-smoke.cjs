@@ -123,7 +123,10 @@ assert.match(
   "production renderer build must strip VITE_LENGRVIS_DESKTOP_API_TOKEN"
 );
 
-const settingsSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
+const settingsSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "renderer", "components", "settings", "LocalModelInstaller.tsx"),
+  "utf8"
+);
 assert.match(settingsSource, /subscribeInstallModelProgressSocket/, "install progress should use the shared subscribe helper");
 assert.doesNotMatch(settingsSource, /new WebSocket\(buildInstallModelWebSocketUrl/, "install progress must not directly create protected WebSockets");
 assert.doesNotMatch(

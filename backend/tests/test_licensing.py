@@ -81,6 +81,14 @@ def _make_revocations(*, generated_at: datetime | None = None) -> str:
     )
 
 
+def _mock_available_device_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        licensing,
+        "collect_activation_device_identity",
+        lambda settings: LocalDeviceIdentity("dev_test", "fp_test", {}),
+    )
+
+
 def _legacy_hmac_token(payload: dict[str, object], signing_key: str) -> str:
     body = _b64url(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     digest = hmac.new(signing_key.encode("utf-8"), body.encode("ascii"), sha256).digest()
@@ -387,6 +395,7 @@ def test_license_status_reports_ignored_paid_plan_override(
 def test_commercial_release_uses_verified_license_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _mock_available_device_identity(monkeypatch)
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
     monkeypatch.setenv(
         "LENGRVIS_LICENSE_KEY",
@@ -780,6 +789,7 @@ def test_commercial_offline_license_requires_revocation_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    _mock_available_device_identity(monkeypatch)
     monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
     monkeypatch.delenv("LENGRVIS_LICENSE_REVOCATIONS", raising=False)
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
@@ -806,6 +816,7 @@ def test_commercial_offline_license_rejects_stale_revocation_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    _mock_available_device_identity(monkeypatch)
     now = datetime.now(UTC)
     monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
     monkeypatch.delenv("LENGRVIS_LICENSE_REVOCATIONS", raising=False)
