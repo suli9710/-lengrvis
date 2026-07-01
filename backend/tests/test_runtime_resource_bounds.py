@@ -87,6 +87,80 @@ def test_onnx_session_cache_evicts_least_recent(monkeypatch, tmp_path: Path) -> 
         onnx_sessions.clear_session_cache()
 
 
+def test_onnx_provider_probe_and_import_failures_are_narrow(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import_onnxruntime = onnx_sessions.import_onnxruntime
+
+    class RuntimeFailingOrt:
+        @staticmethod
+        def get_available_providers():
+            raise RuntimeError("provider probe failed")
+
+    monkeypatch.setattr(onnx_sessions, "import_onnxruntime", lambda: RuntimeFailingOrt)
+    assert onnx_sessions.available_execution_providers() == []
+
+    class BuggyOrt:
+        @staticmethod
+        def get_available_providers():
+            raise AssertionError("provider probe bug")
+
+    monkeypatch.setattr(onnx_sessions, "import_onnxruntime", lambda: BuggyOrt)
+    with pytest.raises(AssertionError, match="provider probe bug"):
+        onnx_sessions.available_execution_providers()
+
+    calls: list[str] = []
+
+    def import_with_fallback(module_name: str):
+        calls.append(module_name)
+        if module_name == "onnxruntime_windowsml":
+            raise OSError("native runtime load failed")
+        if module_name == "onnxruntime_directml":
+            return object()
+        raise AssertionError("unexpected module")
+
+    monkeypatch.setattr(onnx_sessions.importlib, "import_module", import_with_fallback)
+    monkeypatch.setattr(onnx_sessions, "import_onnxruntime", real_import_onnxruntime)
+    assert onnx_sessions.import_onnxruntime() is not None
+    assert calls[:2] == ["onnxruntime_windowsml", "onnxruntime_directml"]
+
+    def import_bug(_module_name: str):
+        raise AssertionError("import hook bug")
+
+    monkeypatch.setattr(onnx_sessions.importlib, "import_module", import_bug)
+    with pytest.raises(AssertionError, match="import hook bug"):
+        onnx_sessions.import_onnxruntime()
+
+
+def test_onnx_session_output_name_discovery_is_narrow() -> None:
+    class RuntimeFailingSession:
+        def get_outputs(self):
+            raise RuntimeError("native output metadata unavailable")
+
+    assert onnx_sessions.session_output_names(RuntimeFailingSession()) == []
+
+    class BuggySession:
+        def get_outputs(self):
+            raise AssertionError("test double bug")
+
+    with pytest.raises(AssertionError, match="test double bug"):
+        onnx_sessions.session_output_names(BuggySession())
+
+
+def test_onnx_session_input_name_discovery_is_narrow() -> None:
+    class RuntimeFailingSession:
+        def get_inputs(self):
+            raise RuntimeError("native input metadata unavailable")
+
+    with pytest.raises(onnx_sessions.OnnxAccelerationUnavailable, match="native input metadata unavailable"):
+        onnx_sessions.session_input_names(RuntimeFailingSession())
+
+    class BuggySession:
+        def get_inputs(self):
+            raise AssertionError("input metadata bug")
+
+    with pytest.raises(AssertionError, match="input metadata bug"):
+        onnx_sessions.session_input_names(BuggySession())
+
+
 def test_in_memory_run_store_evicts_least_recent_run() -> None:
     now = 0.0
     store = InMemoryRunStore(max_runs=2, ttl_seconds=100, terminal_ttl_seconds=100, clock=lambda: now)

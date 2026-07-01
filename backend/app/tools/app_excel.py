@@ -26,6 +26,23 @@ MAX_CELL_TEXT_LENGTH = 32767
 MAX_EXCEL_ROW = 1_048_576
 MAX_EXCEL_COLUMN = 16_384
 logger = logging.getLogger(__name__)
+
+_COM_OPERATION_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+
+
+def _pywin32_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        import pywintypes  # type: ignore[import-not-found]
+    except ImportError:
+        return _COM_OPERATION_ERRORS
+    errors = tuple(
+        error_type
+        for error_type in (getattr(pywintypes, "error", None), getattr(pywintypes, "com_error", None))
+        if isinstance(error_type, type) and issubclass(error_type, BaseException)
+    )
+    return (*_COM_OPERATION_ERRORS, *errors)
+
+
 CELL_REF_RE = re.compile(r"^(?P<column>[A-Z]{1,3})(?P<row>[1-9][0-9]{0,6})$")
 
 
@@ -118,12 +135,12 @@ class PyWin32ExcelClient:
     def _open_excel(self) -> Any:
         try:
             import win32com.client  # type: ignore[import-not-found]
-        except Exception as exc:  # pragma: no cover - depends on host package
+        except ImportError as exc:  # pragma: no cover - depends on host package
             raise ExcelUnavailableError("pywin32 is not installed; Excel COM automation is unavailable.") from exc
 
         try:
             return win32com.client.DispatchEx("Excel.Application")
-        except Exception as exc:  # pragma: no cover - depends on installed Excel
+        except _pywin32_error_types() as exc:  # pragma: no cover - depends on installed Excel
             raise ExcelUnavailableError("Microsoft Excel COM automation is unavailable on this host.") from exc
 
 
@@ -277,7 +294,7 @@ def _configure_excel(excel: Any, *, visible: bool) -> None:
     excel.DisplayAlerts = False
     try:
         excel.AutomationSecurity = 3
-    except Exception as exc:  # noqa: BLE001 - COM property support varies across Excel installations.
+    except _pywin32_error_types() as exc:
         logger.debug("could not set Excel automation security: %s", exc, exc_info=True)
 
 

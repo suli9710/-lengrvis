@@ -145,9 +145,7 @@ def test_local_embedding_health_redacts_runtime_failures(monkeypatch: pytest.Mon
     )
 
     def fail_create_session(_backend):
-        raise OnnxAccelerationUnavailable(
-            f"failed to load {model} with token=embedding-secret-1234567890"
-        )
+        raise OnnxAccelerationUnavailable(f"failed to load {model} with token=embedding-secret-1234567890")
 
     monkeypatch.setattr(local_embedding_provider, "create_inference_session", fail_create_session)
 
@@ -193,6 +191,29 @@ def test_onnx_runtime_package_snapshot_redacts_import_failures(monkeypatch: pyte
     assert "runtime-secret-1234567890" not in status["error"]
     assert str(private_file) not in status["error"]
     assert "runtime-secret.dll" not in status["error"]
+
+
+def test_onnx_module_status_only_suppresses_optional_runtime_import_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    private_file = tmp_path / "Users" / "Suli" / "private-runtime" / "runtime-secret.dll"
+
+    def fail_import(_name: str):
+        raise OSError(f"unable to load {private_file} token=runtime-secret-1234567890")
+
+    monkeypatch.setattr(onnx_sessions.importlib, "import_module", fail_import)
+    status = onnx_sessions._module_status("onnxruntime")
+
+    assert status["available"] is False
+    assert "runtime-secret-1234567890" not in status["error"]
+    assert str(private_file) not in status["error"]
+
+    def import_bug(_name: str):
+        raise AssertionError("module status bug")
+
+    monkeypatch.setattr(onnx_sessions.importlib, "import_module", import_bug)
+    with pytest.raises(AssertionError, match="module status bug"):
+        onnx_sessions._module_status("onnxruntime")
 
 
 def test_memory_agent_uses_embedding_service(monkeypatch: pytest.MonkeyPatch) -> None:

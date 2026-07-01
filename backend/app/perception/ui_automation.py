@@ -30,6 +30,46 @@ class UIAutomationUnavailable(RuntimeError):
     """Raised when the local UIAutomation provider cannot operate."""
 
 
+_UI_ACTION_ERROR_BASE = (
+    UIAutomationUnavailable,
+    ctypes.ArgumentError,
+    OSError,
+    RuntimeError,
+    AttributeError,
+    TypeError,
+    ValueError,
+)
+_OPTIONAL_UI_PROVIDER_ERRORS = (ImportError, OSError, RuntimeError)
+
+
+def _ui_action_error_types() -> tuple[type[BaseException], ...]:
+    return (*_UI_ACTION_ERROR_BASE, *_com_exception_types(), *_pyautogui_exception_types())
+
+
+def _com_exception_types() -> tuple[type[BaseException], ...]:
+    try:
+        import comtypes  # type: ignore[import-not-found]
+    except _OPTIONAL_UI_PROVIDER_ERRORS:
+        return ()
+    return tuple(candidate for candidate in (getattr(comtypes, "COMError", None),) if isinstance(candidate, type))
+
+
+def _ui_provider_activation_error_types() -> tuple[type[BaseException], ...]:
+    return (*_OPTIONAL_UI_PROVIDER_ERRORS, *_com_exception_types())
+
+
+def _pyautogui_exception_types() -> tuple[type[BaseException], ...]:
+    try:
+        import pyautogui  # type: ignore[import-not-found]
+    except _OPTIONAL_UI_PROVIDER_ERRORS:
+        return ()
+    candidates = (
+        getattr(pyautogui, "PyAutoGUIException", None),
+        getattr(pyautogui, "FailSafeException", None),
+    )
+    return tuple(candidate for candidate in candidates if isinstance(candidate, type))
+
+
 @dataclass(slots=True)
 class UIAutomationSelector:
     automation_id: str = ""
@@ -355,7 +395,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
         try:
             await asyncio.to_thread(self._click_sync, target_element.native)
-        except Exception as exc:  # noqa: BLE001 - COM exceptions vary by provider.
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "click", "element": target_element.to_dict()}
 
@@ -393,7 +433,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
         try:
             await asyncio.to_thread(self._type_text_sync, target_element.native, text)
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "type_text", "characters": len(text), "element": target_element.to_dict()}
 
@@ -404,7 +444,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
         try:
             await asyncio.to_thread(self._focus_sync, target_element.native)
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "focus", "element": target_element.to_dict()}
 
@@ -463,7 +503,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
         try:
             await asyncio.to_thread(_send_mouse_click, int(x), int(y), _normalize_mouse_button(button), safe_clicks)
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "action": "click_at", "x": int(x), "y": int(y), "button": button, "clicks": safe_clicks}
 
@@ -508,7 +548,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             await asyncio.to_thread(
                 _send_mouse_drag, int(start_x), int(start_y), int(end_x), int(end_y), duration, button
             )
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc)}
         return {
             "ok": True,
@@ -549,7 +589,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
         try:
             await asyncio.to_thread(_press_key, normalized)
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "action": "key_press", "key": normalized}
 
@@ -583,7 +623,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
         try:
             await asyncio.to_thread(_send_hotkey, normalized)
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "action": "hotkey", "keys": normalized}
 
@@ -625,12 +665,12 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return None
         try:
             import comtypes.client  # type: ignore[import-not-found]
-        except Exception as exc:  # pragma: no cover - depends on host packages.  # noqa: BLE001
+        except _OPTIONAL_UI_PROVIDER_ERRORS as exc:  # pragma: no cover - depends on host packages.
             self._available_error = f"comtypes is not installed or unavailable: {exc}"
             return None
         try:
             return comtypes.client.CreateObject("UIAutomationClient.CUIAutomation")
-        except Exception as exc:  # pragma: no cover - depends on host COM.  # noqa: BLE001
+        except _ui_provider_activation_error_types() as exc:  # pragma: no cover - host-specific COM errors.
             self._available_error = f"Could not create UIAutomation COM object: {exc}"
             return None
 
@@ -725,14 +765,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     def _children_sync(self, native: Any) -> list[UIAutomationElement]:
         try:
             children = native.FindAll(2, self._automation.CreateTrueCondition())
-        except Exception:  # noqa: BLE001
+        except _ui_action_error_types():
             return []
         length = int(getattr(children, "Length", 0) or 0)
         result: list[UIAutomationElement] = []
         for index in range(length):
             try:
                 result.append(_element_from_native(children.GetElement(index)))
-            except Exception:  # noqa: S112, BLE001
+            except _ui_action_error_types():
                 continue
         return result
 
@@ -741,7 +781,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             pattern = native.GetCurrentPattern(10000)
             pattern.Invoke()
             return
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             logger.debug("UIA invoke pattern failed, falling back to pointer click: %s", exc, exc_info=True)
         rect = getattr(native, "CurrentBoundingRectangle", None)
         if rect is not None:
@@ -760,7 +800,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             value_pattern = native.GetCurrentPattern(10002)
             value_pattern.SetValue(text)
             return
-        except Exception as exc:  # noqa: BLE001
+        except _ui_action_error_types() as exc:
             logger.debug("UIA value pattern failed, falling back to keyboard input: %s", exc, exc_info=True)
         native.SetFocus()
         _send_text(text)
@@ -1310,7 +1350,7 @@ def _native_text(native: Any) -> str:
         value_pattern = native.GetCurrentPattern(10002)
         value = str(getattr(value_pattern, "CurrentValue", "") or "")
         return value or str(getattr(native, "CurrentName", "") or "")
-    except Exception:  # noqa: BLE001
+    except _ui_action_error_types():
         return str(getattr(native, "CurrentName", "") or "")
 
 
@@ -1456,7 +1496,7 @@ def _list_windows_sync() -> list[dict[str, Any]]:
                         "rect": rect.model_dump() if rect else None,
                     }
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - exceptions must not cross a ctypes EnumWindows callback.
             return True
         return True
 
@@ -1506,7 +1546,7 @@ def _focus_window_sync(
     target_hwnd = int(target["hwnd"])
     try:
         user32.ShowWindow(target_hwnd, 9)
-    except Exception:  # noqa: BLE001
+    except (ctypes.ArgumentError, OSError, RuntimeError, AttributeError):
         # Restoring a minimized window is best-effort; SetForegroundWindow
         # below still runs and its result is what gets reported.
         logger.debug("ShowWindow failed for hwnd %s", target_hwnd, exc_info=True)

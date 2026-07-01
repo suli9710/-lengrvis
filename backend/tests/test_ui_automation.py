@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
+import types
 
 import pytest
 
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview
+from app.perception import ui_automation as uia
 from app.perception.ui_automation import (
     UIAutomationElement,
     UnavailableUIAutomationTarget,
@@ -133,6 +136,15 @@ class FakeAutomation:
         return object()
 
 
+def _install_fake_comtypes(monkeypatch: pytest.MonkeyPatch, create_object) -> None:
+    fake_client = types.ModuleType("comtypes.client")
+    fake_client.CreateObject = create_object
+    fake_comtypes = types.ModuleType("comtypes")
+    fake_comtypes.client = fake_client
+    monkeypatch.setitem(sys.modules, "comtypes", fake_comtypes)
+    monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
+
+
 def test_ui_automation_bridge_times_out_slow_call() -> None:
     async def slow_call() -> dict:
         await asyncio.sleep(1.0)
@@ -183,6 +195,30 @@ def test_factory_returns_graceful_target_when_provider_missing():
     target = create_ui_automation_target(policy_engine=FakePolicy())
 
     assert isinstance(target, WindowsCOMUIAutomationTarget | UnavailableUIAutomationTarget)
+
+
+def test_windows_adapter_reports_expected_com_activation_errors(monkeypatch):
+    def fail_create_object(_prog_id: str):
+        raise OSError("activation failed")
+
+    _install_fake_comtypes(monkeypatch, fail_create_object)
+    monkeypatch.setattr(uia.sys, "platform", "win32")
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy())
+
+    assert target.available is False
+    assert "activation failed" in target.unavailable_reason
+
+
+def test_windows_adapter_does_not_swallow_unexpected_com_activation_bugs(monkeypatch):
+    def fail_create_object(_prog_id: str):
+        raise AssertionError("activation bug")
+
+    _install_fake_comtypes(monkeypatch, fail_create_object)
+    monkeypatch.setattr(uia.sys, "platform", "win32")
+
+    with pytest.raises(AssertionError, match="activation bug"):
+        WindowsCOMUIAutomationTarget(policy_engine=FakePolicy())
 
 
 @pytest.mark.asyncio
@@ -256,6 +292,37 @@ async def test_observe_returns_tree_and_flat_elements(monkeypatch):
     assert observed["root"]["children"][0]["name"] == "Cancel"
 
 
+def test_children_sync_degrades_for_expected_provider_errors():
+    class FindAllFailingNative(FakeNative):
+        def FindAll(self, scope: int, condition):  # noqa: ARG002
+            raise RuntimeError("tree unavailable")
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(FakeNative()))
+
+    assert target._children_sync(FindAllFailingNative()) == []
+
+
+def test_children_sync_skips_stale_provider_children():
+    class StaleCollection:
+        Length = 2
+
+        def GetElement(self, index: int):
+            if index == 0:
+                raise RuntimeError("stale child")
+            return FakeNative(name="Ready", automation_id="ready_button")
+
+    class NativeWithStaleChild(FakeNative):
+        def FindAll(self, scope: int, condition):  # noqa: ARG002
+            return StaleCollection()
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(FakeNative()))
+
+    children = target._children_sync(NativeWithStaleChild())
+
+    assert len(children) == 1
+    assert children[0].name == "Ready"
+
+
 @pytest.mark.asyncio
 async def test_wait_for_element_supports_contains_selector():
     child = FakeNative(name="Send message", automation_id="send_button")
@@ -277,6 +344,141 @@ async def test_focus_sets_native_focus():
 
     assert result["ok"] is True
     assert native.focused is True
+
+
+@pytest.mark.asyncio
+async def test_action_wrappers_return_error_for_expected_provider_failures(monkeypatch):
+    native = FakeNative()
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+
+    def fail_action(*args, **kwargs):  # noqa: ARG001
+        raise uia.UIAutomationUnavailable("provider failed")
+
+    monkeypatch.setattr(target, "_click_sync", fail_action)
+    monkeypatch.setattr(target, "_type_text_sync", fail_action)
+    monkeypatch.setattr(target, "_focus_sync", fail_action)
+    monkeypatch.setattr(uia, "_send_mouse_click", fail_action)
+    monkeypatch.setattr(uia, "_send_mouse_drag", fail_action)
+    monkeypatch.setattr(uia, "_press_key", fail_action)
+    monkeypatch.setattr(uia, "_send_hotkey", fail_action)
+
+    click = await target.click({"automation_id": "send_button"})
+    typed = await target.type_text({"automation_id": "send_button"}, "hello")
+    focused = await target.focus({"automation_id": "send_button"})
+    clicked_at = await target.click_at(1, 2)
+    dragged = await target.drag(1, 2, 3, 4)
+    key = await target.key_press("enter")
+    hotkey = await target.hotkey(["ctrl", "s"])
+
+    assert click["ok"] is False
+    assert typed["ok"] is False
+    assert focused["ok"] is False
+    assert clicked_at["ok"] is False
+    assert dragged["ok"] is False
+    assert key["ok"] is False
+    assert hotkey["ok"] is False
+    assert all(
+        "provider failed" in result["error"] for result in (click, typed, focused, clicked_at, dragged, key, hotkey)
+    )
+
+
+def test_native_text_falls_back_to_name_when_value_pattern_fails():
+    class NativeWithoutValuePattern:
+        CurrentName = "Fallback name"
+
+        def GetCurrentPattern(self, _pattern_id: int):
+            raise RuntimeError("value pattern unavailable")
+
+    assert uia._native_text(NativeWithoutValuePattern()) == "Fallback name"
+
+
+def test_click_sync_falls_back_to_pointer_when_invoke_pattern_unavailable(monkeypatch):
+    class NativeWithoutInvoke(FakeNative):
+        CurrentBoundingRectangle = types.SimpleNamespace(left=2, top=4, right=12, bottom=24)
+
+        def GetCurrentPattern(self, pattern_id: int):
+            if pattern_id == 10000:
+                raise RuntimeError("invoke unavailable")
+            return super().GetCurrentPattern(pattern_id)
+
+    clicked: list[tuple[int, int, str, int]] = []
+    monkeypatch.setattr(
+        uia, "_send_mouse_click", lambda x, y, button="left", clicks=1: clicked.append((x, y, button, clicks))
+    )
+    native = NativeWithoutInvoke()
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+
+    target._click_sync(native)
+
+    assert native.focused is True
+    assert clicked == [(7, 14, "left", 1)]
+
+
+def test_click_sync_does_not_swallow_unexpected_invoke_bugs():
+    class BuggyInvokeNative(FakeNative):
+        def GetCurrentPattern(self, pattern_id: int):  # noqa: ARG002
+            raise AssertionError("invoke bug")
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(FakeNative()))
+
+    with pytest.raises(AssertionError, match="invoke bug"):
+        target._click_sync(BuggyInvokeNative())
+
+
+def test_type_text_sync_falls_back_to_keyboard_when_value_pattern_unavailable(monkeypatch):
+    class NativeWithoutValuePattern(FakeNative):
+        def GetCurrentPattern(self, pattern_id: int):
+            if pattern_id == 10002:
+                raise RuntimeError("value unavailable")
+            return super().GetCurrentPattern(pattern_id)
+
+    sent_text: list[str] = []
+    monkeypatch.setattr(uia, "_send_text", sent_text.append)
+    native = NativeWithoutValuePattern()
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+
+    target._type_text_sync(native, "hello")
+
+    assert native.focused is True
+    assert sent_text == ["hello"]
+
+
+def test_type_text_sync_does_not_swallow_unexpected_value_pattern_bugs():
+    class BuggyValueNative(FakeNative):
+        def GetCurrentPattern(self, pattern_id: int):  # noqa: ARG002
+            raise AssertionError("value bug")
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(FakeNative()))
+
+    with pytest.raises(AssertionError, match="value bug"):
+        target._type_text_sync(BuggyValueNative(), "hello")
+
+
+def test_focus_window_continues_when_show_window_fails(monkeypatch):
+    calls: list[tuple[str, int]] = []
+
+    class FakeUser32:
+        def ShowWindow(self, hwnd: int, command: int) -> None:
+            calls.append(("show", hwnd))
+            assert command == 9
+            raise OSError("show failed")
+
+        def SetForegroundWindow(self, hwnd: int) -> bool:
+            calls.append(("foreground", hwnd))
+            return True
+
+    monkeypatch.setattr(uia.sys, "platform", "win32")
+    monkeypatch.setattr(
+        uia,
+        "_list_windows_sync",
+        lambda: [{"hwnd": 123, "title": "Editor", "class_name": "Window", "process_id": 1, "rect": None}],
+    )
+    monkeypatch.setattr(uia.ctypes, "windll", types.SimpleNamespace(user32=FakeUser32()), raising=False)
+
+    result = uia._focus_window_sync(title="Editor")
+
+    assert result["ok"] is True
+    assert calls == [("show", 123), ("foreground", 123)]
 
 
 @pytest.mark.asyncio

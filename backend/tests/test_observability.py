@@ -14,6 +14,7 @@ from app.observability import (
     span,
 )
 from app.observability import context as obs_context
+from app.observability import crash as crash_module
 
 _SECRET = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -120,3 +121,18 @@ def test_report_exception_writes_redacted_file_and_counter(tmp_path):
     assert _SECRET not in content
     counters = {c["name"] for c in metrics.snapshot()["counters"]}
     assert "crashes_total" in counters
+
+
+def test_crash_report_prune_only_suppresses_filesystem_errors():
+    class OSErrorDir:
+        def glob(self, pattern):
+            raise OSError("directory unavailable")
+
+    crash_module._prune_reports(OSErrorDir())
+
+    class RuntimeErrorDir:
+        def glob(self, pattern):
+            raise RuntimeError("glob bug")
+
+    with pytest.raises(RuntimeError, match="glob bug"):
+        crash_module._prune_reports(RuntimeErrorDir())

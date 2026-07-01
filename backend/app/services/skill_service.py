@@ -138,7 +138,7 @@ async def refresh_runtime_registry(settings: AppSettings | None = None) -> dict[
     mcp_registry.load_from_settings(effective)
     try:
         mcp_definitions = await mcp_registry.adapt_to_tool_definitions()
-    except Exception as exc:  # noqa: BLE001
+    except (KeyError, TypeError, ValueError) as exc:
         mcp_definitions = []
         log_best_effort_failure(logger, "skill.refresh_runtime_registry.mcp_definitions", exc)
         record("mcp.refresh_load_failed", "SkillService", {"error": str(exc)})

@@ -8,6 +8,7 @@ performed programmatically and surface as `requires_user_action`.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +34,11 @@ from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 try:
     from send2trash import send2trash
-except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
+except ImportError:  # pragma: no cover - optional dependency guard
     send2trash = None
+
+
+_ROLLBACK_FILESYSTEM_ERRORS = (OSError, SecurityError, ValueError, shutil.Error)
 
 
 def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -329,7 +333,7 @@ def _move_back(
         return {"ok": True, "action": "move_back", "from": str(source), "to": str(target)}
     except ToolAbortedError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except _ROLLBACK_FILESYSTEM_ERRORS as exc:
         return {"ok": False, "action": "move_back", "detail": _safe_rollback_detail(exc)}
 
 
@@ -379,7 +383,7 @@ def _delete_if_empty(
         return {"ok": True, "action": "delete_folder_if_empty", "path": str(path)}
     except ToolAbortedError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, SecurityError, ValueError) as exc:
         return {"ok": False, "action": "delete_folder_if_empty", "detail": _safe_rollback_detail(exc)}
 
 
@@ -408,7 +412,7 @@ def _restore_backup(
         return {"ok": True, "action": "restore_backup", "restored": str(original)}
     except ToolAbortedError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except _ROLLBACK_FILESYSTEM_ERRORS as exc:
         return {"ok": False, "action": "restore_backup", "detail": _safe_rollback_detail(exc)}
 
 

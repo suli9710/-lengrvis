@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import http.server
 import json
 import socketserver
@@ -105,6 +106,100 @@ def test_winget_scan_decodes_utf16_json_without_bom(monkeypatch):
     assert apps[0]["id"] == "vendor.sample"
     assert apps[0]["name"] == "Sample App"
     assert apps[0]["source"] == "winget"
+
+
+def test_registry_scan_degrades_when_winreg_is_unavailable(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, global_vars=None, local_vars=None, fromlist=(), level=0):
+        if name == "winreg":
+            raise ImportError("winreg unavailable")
+        return real_import(name, global_vars, local_vars, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert app_tools._scan_registry_apps() == []
+
+
+def test_registry_scan_does_not_swallow_unexpected_winreg_bugs(monkeypatch):
+    fake_winreg = types.ModuleType("winreg")
+    fake_winreg.HKEY_CURRENT_USER = object()
+    fake_winreg.HKEY_LOCAL_MACHINE = object()
+
+    def broken_open_key(*_args):
+        raise RuntimeError("registry bug")
+
+    fake_winreg.OpenKey = broken_open_key
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+
+    with pytest.raises(RuntimeError, match="registry bug"):
+        app_tools._scan_registry_apps()
+
+
+def test_appx_scan_degrades_for_expected_process_and_json_failures(monkeypatch):
+    monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
+
+    class InvalidJsonCompleted:
+        returncode = 0
+        stdout = b"{"
+
+    monkeypatch.setattr(app_tools.subprocess, "run", lambda *args, **kwargs: InvalidJsonCompleted())
+    assert app_tools._scan_appx_packages() == []
+
+    def raise_timeout(*_args, **_kwargs):
+        raise app_tools.subprocess.TimeoutExpired(cmd="powershell.exe", timeout=1)
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_timeout)
+    assert app_tools._scan_appx_packages() == []
+
+    def raise_os_error(*_args, **_kwargs):
+        raise PermissionError("powershell blocked")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_os_error)
+    assert app_tools._scan_appx_packages() == []
+
+
+def test_appx_scan_does_not_swallow_unexpected_process_bugs(monkeypatch):
+    monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
+
+    def raise_bug(*_args, **_kwargs):
+        raise RuntimeError("appx bug")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_bug)
+
+    with pytest.raises(RuntimeError, match="appx bug"):
+        app_tools._scan_appx_packages()
+
+
+def test_winget_scan_degrades_for_expected_process_and_json_failures(monkeypatch):
+    class InvalidJsonCompleted:
+        returncode = 0
+        stdout = b"{"
+
+    monkeypatch.setattr(app_tools.subprocess, "run", lambda *args, **kwargs: InvalidJsonCompleted())
+    assert app_tools._scan_winget_packages() == []
+
+    def raise_timeout(*_args, **_kwargs):
+        raise app_tools.subprocess.TimeoutExpired(cmd="winget", timeout=1)
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_timeout)
+    assert app_tools._scan_winget_packages() == []
+
+    def raise_os_error(*_args, **_kwargs):
+        raise FileNotFoundError("winget")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_os_error)
+    assert app_tools._scan_winget_packages() == []
+
+
+def test_winget_scan_does_not_swallow_unexpected_process_bugs(monkeypatch):
+    def raise_bug(*_args, **_kwargs):
+        raise RuntimeError("winget bug")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", raise_bug)
+
+    with pytest.raises(RuntimeError, match="winget bug"):
+        app_tools._scan_winget_packages()
 
 
 def _registry_product_apps():

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import httpx
+
 from app.config import AppSettings
 from app.context import management as context_management_module
 from app.context_management import (
@@ -124,6 +126,20 @@ def test_context_record_event_logs_best_effort_audit_failures(monkeypatch, caplo
 
     assert "context.record_event" in caplog.text
     assert "audit exploded" in caplog.text
+
+
+def test_response_error_text_falls_back_for_non_json_body():
+    response = httpx.Response(502, text="upstream unavailable")
+
+    assert context_management_module._response_error_text(response) == "upstream unavailable"
+
+
+def test_response_error_text_serializes_json_body():
+    response = httpx.Response(400, json={"detail": "bad request"})
+
+    assert context_management_module.json.loads(context_management_module._response_error_text(response)) == {
+        "detail": "bad request"
+    }
 
 
 def test_warning_state_uses_configured_auto_compact_limit():

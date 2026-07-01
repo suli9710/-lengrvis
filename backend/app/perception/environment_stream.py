@@ -5,6 +5,7 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import sqlite3
 import threading
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable
@@ -19,7 +20,7 @@ from pydantic import Field
 from app.config import get_env
 from app.core.schemas import MessageType
 from app.indexer.file_watcher import DirectoryChangeWatcher, FileChangeCallback
-from app.orchestration.agent_bus import GLOBAL_TASK_ID
+from app.orchestration.agent_bus import GLOBAL_TASK_ID, AgentMessagePersistBackpressureError
 from app.orchestration.dispatcher import EventDispatcher
 from app.orchestration.events import Event
 from app.perception.app_context import get_current_app_context
@@ -33,6 +34,8 @@ DEFAULT_TRIGGERED_SIGNATURE_LIMIT = 1000
 DEFAULT_SINK_TIMEOUT_SECONDS = 10.0
 _BACKGROUND_LOOP: asyncio.AbstractEventLoop | None = None
 _BACKGROUND_LOOP_LOCK = threading.Lock()
+_PERCEPTION_STORAGE_ERRORS = (sqlite3.Error, OSError, TypeError, ValueError)
+_SUGGESTION_PUBLISH_ERRORS = (AgentMessagePersistBackpressureError, sqlite3.Error, OSError, TypeError, ValueError)
 
 
 def _ensure_background_loop() -> asyncio.AbstractEventLoop:
@@ -399,13 +402,13 @@ class EnvironmentStream:
     def _store_observation(self, event: EnvironmentEvent) -> None:
         try:
             store_observation(event)
-        except Exception:
+        except _PERCEPTION_STORAGE_ERRORS:
             logger.exception("Failed to store perception observation %s", event.id)
 
     def _store_suggestion(self, suggestion: ProactiveSuggestion, event: EnvironmentEvent) -> None:
         try:
             store_suggestion(suggestion, event)
-        except Exception:
+        except _PERCEPTION_STORAGE_ERRORS:
             logger.exception("Failed to store perception suggestion %s", suggestion.id)
 
     def submit(self, event: EnvironmentEvent) -> None:
@@ -617,7 +620,7 @@ class EnvironmentStream:
                     message_type=MessageType.NOTIFICATION,
                     structured_payload=payload,
                 )
-        except Exception:
+        except _SUGGESTION_PUBLISH_ERRORS:
             logger.exception("Failed to publish proactive suggestion %s", suggestion.rule_id)
 
     def file_change_sink(self) -> FileChangeCallback:
@@ -828,7 +831,7 @@ def _rules_from_settings(settings: Any | None) -> list[EnvironmentRule]:
         return env_rules or default_environment_rules()
     try:
         return [EnvironmentRule.from_dict(raw) if isinstance(raw, dict) else raw for raw in raw_rules]
-    except Exception:
+    except (TypeError, ValueError):
         logger.exception("Invalid environment rules in settings; using defaults")
         return default_environment_rules()
 

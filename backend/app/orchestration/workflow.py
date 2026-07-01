@@ -44,7 +44,7 @@ class BestEffortWindowFocus:
             return False
         try:
             import pygetwindow  # type: ignore[import-not-found]
-        except Exception:  # noqa: BLE001
+        except ImportError:
             return False
         try:
             windows = pygetwindow.getWindowsWithTitle(target_app)
@@ -52,7 +52,7 @@ class BestEffortWindowFocus:
                 return False
             windows[0].activate()
             return True
-        except Exception:  # noqa: BLE001
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             return False
 
 

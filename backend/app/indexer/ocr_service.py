@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import importlib.util
+import json
 import logging
 import tempfile
 import threading
@@ -38,6 +39,10 @@ DEFAULT_MAX_PADDLE_OCR_LINES = 512
 DEFAULT_PROVIDER_OCR_TIMEOUT_SECONDS = 45.0
 
 logger = logging.getLogger(__name__)
+_OPTIONAL_IMAGE_IMPORT_ERRORS = (ImportError, OSError)
+_OPTIONAL_OCR_ENGINE_ERRORS = (ImportError, OSError, RuntimeError, ValueError, AttributeError)
+_IMAGE_METADATA_ERRORS = (ImportError, OSError, ValueError, AttributeError)
+_OCR_VOCAB_ERRORS = (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError)
 
 
 @dataclass(slots=True)
@@ -193,7 +198,7 @@ def accelerated_ocr_smoke(settings: AppSettings | None = None) -> dict[str, Any]
 
     try:
         from PIL import Image, ImageDraw
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_IMAGE_IMPORT_ERRORS as exc:
         payload["ok"] = False
         payload["error"] = f"Synthetic OCR smoke image unavailable: {exc}"
         return payload
@@ -397,7 +402,7 @@ def _ocr_text_from_image_metadata(image_path: Path) -> str:
 
         with Image.open(image_path) as image:
             info = dict(getattr(image, "info", {}) or {})
-    except Exception:  # noqa: BLE001 - metadata extraction is best effort.
+    except _IMAGE_METADATA_ERRORS:
         return ""
     for key in ("lengrvis_ocr_text", "lengrvis_ocr_text", "ocr_text", "Description", "Comment"):
         value = info.get(key)
@@ -413,7 +418,7 @@ def _ocr_text_with_tesseract(image_path: Path) -> str:
 
         with Image.open(image_path) as image:
             return str(pytesseract.image_to_string(image) or "").strip()
-    except Exception:  # noqa: BLE001 - optional local OCR engine.
+    except _OPTIONAL_OCR_ENGINE_ERRORS:
         return ""
 
 
@@ -440,7 +445,7 @@ def _ocr_text_with_paddleocr(image_path: Path) -> str:
     try:
         ocr = _get_paddle_ocr(get_env("LENGRVIS_PADDLEOCR_LANG", "en") or "en")
         result = ocr.ocr(str(image_path), cls=True)
-    except Exception:  # noqa: BLE001 - optional PaddleOCR engine.
+    except _OPTIONAL_OCR_ENGINE_ERRORS:
         return ""
 
     lines: list[str] = []
@@ -481,7 +486,7 @@ def _pil_image_exceeds_ocr_limit(image: Any) -> bool:
         height = int(getattr(image, "height", 0) or 0)
         bands = getattr(image, "getbands", lambda: ())()
         channels = max(1, len(tuple(bands or ())))
-    except Exception:  # noqa: BLE001 - PIL-compatible image objects are optional best effort.
+    except (TypeError, ValueError, AttributeError, OSError):
         return False
     return width > 0 and height > 0 and width * height * channels > max_bytes
 
@@ -615,14 +620,12 @@ def _load_ocr_vocab(model_dir: Path) -> dict[int, str]:
             continue
         try:
             if path.suffix.lower() == ".json":
-                import json
-
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     return {int(value): str(key) for key, value in raw.items()}
             lines = path.read_text(encoding="utf-8").splitlines()
             return {index: line.strip() for index, line in enumerate(lines)}
-        except Exception as exc:  # noqa: BLE001 - model vocab probing is best effort.
+        except _OCR_VOCAB_ERRORS as exc:
             logger.debug("Skipping unreadable OCR vocab candidate %s: %s", path, exc)
             continue
     return {}

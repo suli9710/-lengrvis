@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import builtins
+import sys
 import threading
+import types
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +87,70 @@ def test_excel_status_reports_unavailable_without_com(monkeypatch):
     assert result["available"] is False
     assert "write_cell" in result["allowed_operations"]
     assert "not installed" in result["error"]
+
+
+def test_excel_open_import_guard_is_narrow(monkeypatch):
+    real_import = builtins.__import__
+
+    def import_missing(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "win32com.client":
+            raise ImportError("missing pywin32")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_missing)
+    with pytest.raises(app_excel.ExcelUnavailableError, match="pywin32 is not installed"):
+        app_excel.PyWin32ExcelClient()._open_excel()
+
+    def import_bug(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "win32com.client":
+            raise RuntimeError("import hook bug")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_bug)
+    with pytest.raises(RuntimeError, match="import hook bug"):
+        app_excel.PyWin32ExcelClient()._open_excel()
+
+
+def test_excel_com_errors_are_wrapped_for_dispatch_but_not_unexpected_import_bugs(monkeypatch):
+    class FakeComError(Exception):
+        pass
+
+    fake_pywintypes = types.ModuleType("pywintypes")
+    fake_pywintypes.error = FakeComError
+    fake_pywintypes.com_error = FakeComError
+    fake_win32com = types.ModuleType("win32com")
+    fake_client = types.ModuleType("win32com.client")
+    fake_client.DispatchEx = lambda _name: (_ for _ in ()).throw(FakeComError("excel unavailable"))
+    fake_win32com.client = fake_client
+
+    monkeypatch.setitem(sys.modules, "pywintypes", fake_pywintypes)
+    monkeypatch.setitem(sys.modules, "win32com", fake_win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", fake_client)
+
+    with pytest.raises(app_excel.ExcelUnavailableError, match="Microsoft Excel COM automation is unavailable"):
+        app_excel.PyWin32ExcelClient()._open_excel()
+
+
+def test_configure_excel_suppresses_com_security_setting_errors(monkeypatch):
+    class FakeComError(Exception):
+        pass
+
+    fake_pywintypes = types.ModuleType("pywintypes")
+    fake_pywintypes.error = FakeComError
+    fake_pywintypes.com_error = FakeComError
+    monkeypatch.setitem(sys.modules, "pywintypes", fake_pywintypes)
+
+    class FakeExcel:
+        def __setattr__(self, name, value):
+            if name == "AutomationSecurity":
+                raise FakeComError("security unsupported")
+            super().__setattr__(name, value)
+
+    excel = FakeExcel()
+    app_excel._configure_excel(excel, visible=False)
+
+    assert excel.Visible is False
+    assert excel.DisplayAlerts is False
 
 
 def test_excel_status_uses_mock_client_when_provided(tmp_path):

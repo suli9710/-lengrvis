@@ -1734,7 +1734,7 @@ def _error_text(exc: BaseException) -> str:
 def _response_error_text(response: httpx.Response) -> str:
     try:
         data = response.json()
-    except Exception:  # noqa: BLE001 - response bodies may not be JSON.
+    except ValueError:
         return response.text
     return _json(data)
 

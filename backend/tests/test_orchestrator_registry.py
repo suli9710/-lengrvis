@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,34 @@ def test_terminal_run_releases_registry_binding_but_paused_run_keeps_it() -> Non
     assert orchestrator_registry.get_for_task("task_m5_shared") is orchestrator
     orchestrator_registry.release_task("task_m5_shared")
     orchestrator_registry.release_task("task_m5")
+
+
+def test_terminal_release_tolerates_sibling_scan_store_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.schemas import Run, RunEngine, RunPhase
+    from app.orchestration.orchestrator_registry import orchestrator_registry
+    from app.services import run_service
+
+    orchestrator = SimpleNamespace(bus=AgentBus())
+    completed = Run(
+        message="goal",
+        mode="efficiency",
+        engine=RunEngine.OS,
+        phase=RunPhase.COMPLETED,
+        task_id="task_m5_scan_error",
+    )
+    db.upsert_model("runs", completed)
+    orchestrator_registry.bind(task_id="task_m5_scan_error", orchestrator=orchestrator, run_id=completed.id)
+
+    def raise_scan_error(*args, **kwargs):  # noqa: ARG001
+        raise sqlite3.Error("sibling scan unavailable")
+
+    monkeypatch.setattr(run_service.db, "fetch_many", raise_scan_error)
+
+    run_service._release_terminal_orchestrator(completed.id)
+
+    assert orchestrator_registry.get_for_run(completed.id) is None
+    assert orchestrator_registry.get_for_task("task_m5_scan_error") is orchestrator
+    orchestrator_registry.release_task("task_m5_scan_error")
 
 
 def test_agent_bus_instances_do_not_share_subscriptions() -> None:

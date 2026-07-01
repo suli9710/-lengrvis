@@ -64,6 +64,24 @@ SENSITIVE_SELECTOR_TOKENS = {
     "auth",
     "credential",
 }
+
+
+def _playwright_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        from playwright.sync_api import Error as PlaywrightError
+    except ImportError:
+        return ()
+    return (PlaywrightError,)
+
+
+def _playwright_adapter_error_types() -> tuple[type[BaseException], ...]:
+    return (ImportError, *_playwright_error_types())
+
+
+def _playwright_action_error_types() -> tuple[type[BaseException], ...]:
+    return (ImportError, ValueError, *_playwright_error_types())
+
+
 @dataclass(slots=True)
 class BrowserSession:
     id: str = field(default_factory=lambda: new_id("browser_session"))
@@ -136,7 +154,7 @@ class LocalBrowserActivityAdapter:
             data["adapter"] = "playwright"
         except ValueError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except _playwright_adapter_error_types() as exc:
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
             with httpx.Client(timeout=30, follow_redirects=False) as client:
@@ -171,7 +189,7 @@ class LocalBrowserActivityAdapter:
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
-        except Exception as exc:  # noqa: BLE001
+        except _playwright_action_error_types() as exc:
             return {"ok": False, "error": f"Playwright screenshot failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
@@ -192,7 +210,7 @@ class LocalBrowserActivityAdapter:
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
-        except Exception as exc:  # noqa: BLE001
+        except _playwright_action_error_types() as exc:
             return {"ok": False, "error": f"wait_for failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
@@ -231,7 +249,7 @@ class LocalBrowserActivityAdapter:
                 final_url = _validate_final_url(page.url)
                 title = page.title()
                 browser.close()
-        except Exception as exc:  # noqa: BLE001
+        except _playwright_action_error_types() as exc:
             return {"ok": False, "error": f"{kind} failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
 
@@ -889,7 +907,7 @@ def _playwright_field_is_sensitive(page: Any, selector: str) -> bool:
             key: page.get_attribute(selector, key, timeout=4000)
             for key in ("type", "autocomplete", "name", "id", "aria-label", "placeholder")
         }
-    except Exception:  # noqa: BLE001 - element missing/un-introspectable; let fill surface its own error.
+    except _playwright_error_types():
         return False
     return _field_attributes_are_sensitive(attrs)
 
@@ -1032,7 +1050,7 @@ def _safe_url(url: str) -> str:
         return ""
     try:
         parsed = urlparse(redact_text(url))
-    except Exception:  # noqa: BLE001
+    except ValueError:
         return redact_text(url)
     if not parsed.query:
         return redact_text(url)

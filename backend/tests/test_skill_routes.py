@@ -47,7 +47,7 @@ def test_refresh_runtime_registry_logs_mcp_definition_failures(monkeypatch, capl
             return None
 
         async def adapt_to_tool_definitions(self):
-            raise RuntimeError("mcp exploded")
+            raise ValueError("mcp exploded")
 
     monkeypatch.setattr(skill_service, "get_mcp_registry", lambda: FailingMcpRegistry())
     monkeypatch.setattr(skill_service, "register_all_tools", lambda **kwargs: None)
@@ -65,6 +65,22 @@ def test_refresh_runtime_registry_logs_mcp_definition_failures(monkeypatch, capl
     assert "skill.refresh_runtime_registry.mcp_definitions" in caplog.text
     assert "mcp exploded" in caplog.text
     assert recorded == [("mcp.refresh_load_failed", "SkillService", {"error": "mcp exploded"})]
+
+
+def test_refresh_runtime_registry_does_not_swallow_unexpected_mcp_bugs(monkeypatch):
+    class BuggyMcpRegistry:
+        def load_from_settings(self, settings):  # noqa: ARG002
+            return None
+
+        async def adapt_to_tool_definitions(self):
+            raise RuntimeError("mcp adapter bug")
+
+    monkeypatch.setattr(skill_service, "get_mcp_registry", lambda: BuggyMcpRegistry())
+    monkeypatch.setattr(skill_service, "register_all_tools", lambda **kwargs: None)
+    monkeypatch.setattr(skill_service, "tool_registry", SimpleNamespace(list=lambda: []))
+
+    with pytest.raises(RuntimeError, match="mcp adapter bug"):
+        asyncio.run(skill_service.refresh_runtime_registry())
 
 
 def _write_skill(root: Path, name: str = "route-demo") -> Path:

@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.indexer.fts_index import FTSIndex
 from app.llm.registry import get_effective_settings
@@ -73,6 +74,7 @@ DEFAULT_LIBRARY_DIR_NAMES = (
 IMAGE_LIBRARY_DIR_NAMES = ("Desktop", "Downloads", "Pictures", "Videos", "桌面", "下载", "图片", "视频")
 DOCUMENT_LIBRARY_DIR_NAMES = ("Desktop", "Documents", "Downloads", "桌面", "文档", "下载")
 APP_LIBRARY_DIR_NAMES = ("Desktop", "Downloads", "桌面", "下载")
+_IMAGE_DIMENSION_ERRORS = (ImportError, OSError, ValueError, TypeError, AttributeError)
 
 
 @dataclass(frozen=True)
@@ -156,7 +158,7 @@ def preview_local_image(path: str) -> FileResponse:
     library_roots = _library_roots(list(settings.allowed_directories or []))
     try:
         resolved = resolve_authorized(path, library_roots)
-    except Exception as exc:  # noqa: BLE001 - convert security/path failures to HTTP responses.
+    except (SecurityError, OSError, ValueError) as exc:
         raise HTTPException(status_code=403, detail="未授权访问该文件") from exc
     if not resolved.is_file() or resolved.suffix.lower() not in IMAGE_EXTENSIONS:
         raise HTTPException(status_code=404, detail="图片不存在")
@@ -213,7 +215,7 @@ def _iter_library_files(allowed_directories: list[str], extensions: set[str], bu
             break
         try:
             root = resolve_authorized(raw_root, allowed_directories)
-        except Exception:  # noqa: S112, BLE001
+        except (SecurityError, OSError, ValueError):  # noqa: S112 - unauthorized or malformed roots are skipped.
             continue
         if not root.exists():
             continue
@@ -387,7 +389,7 @@ def _image_dimensions(path: Path) -> tuple[int, int]:
 
         with Image.open(path) as image:
             return int(image.width), int(image.height)
-    except Exception:  # noqa: BLE001
+    except _IMAGE_DIMENSION_ERRORS:
         return 0, 0
 
 

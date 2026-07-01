@@ -218,6 +218,40 @@ def test_guardian_full_backend_probe_uses_runtime_status(monkeypatch, tmp_path: 
     ]
 
 
+def test_guardian_full_backend_health_probe_only_suppresses_http_errors(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    _require_desktop_api_token(monkeypatch)
+    db.init_db()
+
+    import app.services.guardian_runtime as guardian_runtime
+
+    request = httpx.Request("GET", f"{guardian_runtime.FULL_BACKEND_URL}/api/runtime/status")
+
+    class HttpFailingClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ANN002
+            return None
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise httpx.ConnectError("full backend offline", request=request)
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", HttpFailingClient)
+    assert asyncio.run(guardian_runtime.GuardianRuntime()._is_full_backend_healthy()) is False
+
+    class BuggyClient(HttpFailingClient):
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise RuntimeError("health probe bug")
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", BuggyClient)
+    with pytest.raises(RuntimeError, match="health probe bug"):
+        asyncio.run(guardian_runtime.GuardianRuntime()._is_full_backend_healthy())
+
+
 def test_guardian_idle_recycle_treats_active_runs_as_busy(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     token = _require_desktop_api_token(monkeypatch)
@@ -251,6 +285,53 @@ def test_guardian_idle_recycle_treats_active_runs_as_busy(monkeypatch, tmp_path:
 
     assert asyncio.run(guardian_runtime.runtime._full_backend_has_active_runs()) is True
     assert requested_headers == [{DESKTOP_API_TOKEN_HEADER: token}]
+
+
+def test_guardian_active_run_probe_suppresses_http_and_json_errors(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    _require_desktop_api_token(monkeypatch)
+    db.init_db()
+
+    import app.services.guardian_runtime as guardian_runtime
+
+    class BadJsonResponse:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("invalid status payload")
+
+    class BadJsonClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ANN002
+            return None
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            return BadJsonResponse()
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", BadJsonClient)
+    assert asyncio.run(guardian_runtime.GuardianRuntime()._full_backend_has_active_runs()) is False
+
+    request = httpx.Request("GET", f"{guardian_runtime.FULL_BACKEND_URL}/api/runtime/status")
+
+    class HttpFailingClient(BadJsonClient):
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise httpx.ConnectError("full backend offline", request=request)
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", HttpFailingClient)
+    assert asyncio.run(guardian_runtime.GuardianRuntime()._full_backend_has_active_runs()) is False
+
+    class BuggyClient(BadJsonClient):
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise RuntimeError("active-runs probe bug")
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", BuggyClient)
+    with pytest.raises(RuntimeError, match="active-runs probe bug"):
+        asyncio.run(guardian_runtime.GuardianRuntime()._full_backend_has_active_runs())
 
 
 def test_guardian_runtime_internal_http_calls_send_desktop_token(monkeypatch, tmp_path: Path):
@@ -319,6 +400,42 @@ def test_guardian_runtime_internal_http_calls_send_desktop_token(monkeypatch, tm
     assert all(key.lower() not in {"host", "content-length"} for key in proxy_headers)
     assert sum(1 for key in proxy_headers if key.lower() == DESKTOP_API_TOKEN_HEADER) == 1
     assert "stale-token" not in proxy_headers.values()
+
+
+def test_guardian_foreground_background_notifications_only_suppress_http_errors(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    _require_desktop_api_token(monkeypatch)
+    db.init_db()
+
+    import app.services.guardian_runtime as guardian_runtime
+
+    request = httpx.Request("POST", f"{guardian_runtime.FULL_BACKEND_URL}/api/runtime/foreground")
+
+    class HttpFailingClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ANN002
+            return None
+
+        async def post(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise httpx.ConnectError("full backend offline", request=request)
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", HttpFailingClient)
+    guardian = guardian_runtime.GuardianRuntime()
+    asyncio.run(guardian._notify_full_foreground())
+    asyncio.run(guardian._notify_full_background())
+
+    class BuggyClient(HttpFailingClient):
+        async def post(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            raise RuntimeError("notify bug")
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", BuggyClient)
+    with pytest.raises(RuntimeError, match="notify bug"):
+        asyncio.run(guardian._notify_full_foreground())
 
 
 def test_guardian_scheduler_creates_wakeup_without_orchestrator(monkeypatch, tmp_path: Path):
@@ -1237,8 +1354,7 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
 
         async def post(self, *args, **kwargs):  # noqa: ANN001, ANN002
             raise httpx.ConnectError(
-                "runtime continue disconnected token=transport-secret-1234567890 "
-                "at C:/Users/Suli/private/approval.xlsx"
+                "runtime continue disconnected token=transport-secret-1234567890 at C:/Users/Suli/private/approval.xlsx"
             )
 
     async def fake_wake_transient(*args, **kwargs):  # noqa: ANN001, ANN002

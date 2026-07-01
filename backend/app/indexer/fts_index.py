@@ -11,6 +11,7 @@ from typing import Any
 
 from app.core import db
 from app.core.audit import record
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.core.schemas import DocumentChunk, IndexedFile, now_iso
 from app.indexer.chunker import chunk_text
@@ -200,7 +201,7 @@ class FTSIndex:
         for raw in allowed_directories:
             try:
                 valid_roots.append(resolve_authorized(raw, allowed_directories))
-            except Exception as exc:  # noqa: BLE001 - rebuild reports authorization failures.
+            except (OSError, SecurityError, ValueError) as exc:
                 record_rebuild_failure(raw, exc)
 
         if not valid_roots:
@@ -299,7 +300,7 @@ class FTSIndex:
                         bytes_indexed = bytes_start
                         record_rebuild_failure(path, exc)
                         continue
-            except Exception as exc:  # noqa: BLE001 - rebuild reports authorization/enumeration failures.
+            except OSError as exc:
                 record_rebuild_failure(root, exc)
                 continue
             if aborted:

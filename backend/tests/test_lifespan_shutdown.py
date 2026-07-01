@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -87,3 +88,48 @@ def test_lifespan_shutdown_calls_task_pool_shutdown(monkeypatch: pytest.MonkeyPa
         assert response.status_code == 200
 
     assert shutdown_calls == [True]
+
+
+def test_lifespan_mcp_load_degrades_for_definition_shape_errors(monkeypatch: pytest.MonkeyPatch):
+    from app import lifespan
+    from app.config import AppSettings
+
+    recorded: list[tuple[str, str, dict[str, str]]] = []
+    registered: list[list[object]] = []
+
+    class FailingMcpRegistry:
+        def load_from_settings(self, settings):  # noqa: ARG002
+            return None
+
+        async def adapt_to_tool_definitions(self):
+            raise ValueError("bad mcp definition")
+
+    monkeypatch.setattr(lifespan, "get_mcp_registry", lambda: FailingMcpRegistry())
+    monkeypatch.setattr(lifespan, "record", lambda event, actor, payload: recorded.append((event, actor, payload)))
+    monkeypatch.setattr(
+        lifespan,
+        "register_all_tools",
+        lambda *, extra_definitions, settings: registered.append(list(extra_definitions)),
+    )
+
+    asyncio.run(lifespan._load_mcp_tools(AppSettings(provider_name="mock")))
+
+    assert recorded == [("mcp.startup_load_failed", "lifespan", {"error": "bad mcp definition"})]
+    assert registered == [[]]
+
+
+def test_lifespan_mcp_load_does_not_swallow_unexpected_adapter_bugs(monkeypatch: pytest.MonkeyPatch):
+    from app import lifespan
+    from app.config import AppSettings
+
+    class BuggyMcpRegistry:
+        def load_from_settings(self, settings):  # noqa: ARG002
+            return None
+
+        async def adapt_to_tool_definitions(self):
+            raise RuntimeError("mcp adapter bug")
+
+    monkeypatch.setattr(lifespan, "get_mcp_registry", lambda: BuggyMcpRegistry())
+
+    with pytest.raises(RuntimeError, match="mcp adapter bug"):
+        asyncio.run(lifespan._load_mcp_tools(AppSettings(provider_name="mock")))

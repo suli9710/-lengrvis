@@ -38,6 +38,12 @@ _GPS_EXIF_TAG = 34853
 DEFAULT_VISION_TIMEOUT_SECONDS = 45.0
 logger = logging.getLogger(__name__)
 
+_IMAGE_METADATA_ERRORS = (ImportError, OSError, ValueError, TypeError, AttributeError)
+_VECTOR_COERCE_ERRORS = (TypeError, ValueError, OverflowError)
+_EXIF_TEXT_ERRORS = (UnicodeError, ValueError)
+_GPS_IFD_ERRORS = (AttributeError, KeyError, TypeError, ValueError)
+_TEXT_EMBEDDING_FALLBACK_ERRORS = (TimeoutError, OSError, TypeError, ValueError, OverflowError)
+
 _DESCRIPTION_METADATA_KEYS = (
     "lengrvis_description",
     "lengrvis_description",
@@ -302,7 +308,7 @@ def image_embedding(
         try:
             vectors = embed_texts_sync([label_text], embedder=text_embedder)
             vector = vectors[0] if vectors else []
-        except Exception:  # noqa: BLE001
+        except _TEXT_EMBEDDING_FALLBACK_ERRORS:
             from app.indexer.clustering import hashing_vectorize
 
             vector = hashing_vectorize([label_text], dim=64)[0]
@@ -359,7 +365,7 @@ def extract_image_metadata(image_path: Path) -> dict[str, Any]:
             info = dict(getattr(image, "info", {}) or {})
             exif = image.getexif()
             gps_ifd = _get_gps_ifd(exif)
-    except Exception as exc:  # noqa: BLE001
+    except _IMAGE_METADATA_ERRORS as exc:
         metadata["metadata_error"] = str(exc)
         return metadata
 
@@ -710,7 +716,7 @@ def _run_maybe_async(value: Any) -> Any:
 def _coerce_vector(vector: Any) -> list[float]:
     try:
         return [float(value) for value in vector]
-    except Exception:  # noqa: BLE001
+    except _VECTOR_COERCE_ERRORS:
         return []
 
 
@@ -784,7 +790,7 @@ def _decode_exif_text(value: Any) -> str:
     if isinstance(value, tuple) and all(isinstance(item, int) for item in value):
         try:
             return bytes(value).decode("utf-16le").strip("\x00 ").strip()
-        except Exception:  # noqa: BLE001
+        except _EXIF_TEXT_ERRORS:
             return ""
     text = str(value).strip()
     return text if text and text.lower() != "none" else ""
@@ -914,7 +920,7 @@ def _get_gps_ifd(exif: Any) -> dict[int, Any]:
     try:
         gps = exif.get_ifd(_GPS_EXIF_TAG)
         return dict(gps or {})
-    except Exception:  # noqa: BLE001
+    except _GPS_IFD_ERRORS:
         raw = exif.get(_GPS_EXIF_TAG)
         return dict(raw or {}) if isinstance(raw, dict) else {}
 

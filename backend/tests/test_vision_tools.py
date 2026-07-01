@@ -176,6 +176,40 @@ def test_embed_image_falls_back_to_label_text_embedding_in_privacy_mode(sample_p
     assert result["dim"] > 0
 
 
+def test_embed_image_text_embedding_fallback_is_narrow(sample_png, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        vision_tools,
+        "describe_image",
+        lambda args, context: {
+            "ok": True,
+            "path": str(sample_png),
+            "description": "A screenshot of a document.",
+            "tags": ["screenshot"],
+            "structured_labels": {"scene_type": "screenshot", "people_count": 0, "visible_objects": ["document"]},
+            "metadata": {},
+        },
+    )
+
+    def recoverable_embedder(_texts):
+        raise ValueError("embedding payload malformed")
+
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": AppSettings(mode="privacy", provider_name="openai", api_key=""),
+        "embedder": recoverable_embedder,
+    }
+    result = vision_tools.embed_image({"path": str(sample_png)}, context)
+    assert result["ok"] is True
+    assert result["source"] == "label_text_embedding"
+
+    def buggy_embedder(_texts):
+        raise RuntimeError("custom embedder bug")
+
+    context["embedder"] = buggy_embedder
+    with pytest.raises(RuntimeError, match="custom embedder bug"):
+        vision_tools.embed_image({"path": str(sample_png)}, context)
+
+
 def test_embed_image_runs_local_onnx_session(sample_png, monkeypatch, tmp_path):
     model_path = tmp_path / "clip" / "model.onnx"
     model_path.parent.mkdir()
@@ -273,6 +307,59 @@ def test_embed_image_local_runtime_error_redacts_model_path(sample_png, monkeypa
     assert str(model_path.parent) not in dumped
     assert "secret-token-value" not in dumped
     assert "[REDACTED_LOCAL_PATH]" in result["error"]
+
+
+def test_extract_image_metadata_reports_bad_image_but_not_unexpected_open_bug(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not-a-real-png")
+
+    metadata = vision_tools.extract_image_metadata(broken)
+
+    assert metadata["filename"] == "broken.png"
+    assert "metadata_error" in metadata
+
+    from PIL import Image
+
+    def fail_open(_path):
+        raise RuntimeError("unexpected pillow bug")
+
+    monkeypatch.setattr(Image, "open", fail_open)
+    with pytest.raises(RuntimeError, match="unexpected pillow bug"):
+        vision_tools.extract_image_metadata(broken)
+
+
+def test_image_vector_coercion_skips_bad_values_but_not_unexpected_iter_bug():
+    assert vision_tools._coerce_vector(["1.5", object()]) == []
+
+    class _BuggyIterable:
+        def __iter__(self):
+            raise RuntimeError("iterator bug")
+
+    with pytest.raises(RuntimeError, match="iterator bug"):
+        vision_tools._coerce_vector(_BuggyIterable())
+
+
+def test_image_metadata_helpers_recover_expected_gps_errors_but_not_runtime_bug():
+    assert vision_tools._decode_exif_text((999,)) == ""
+
+    class _RecoverableExif:
+        def get_ifd(self, _tag):
+            raise ValueError("gps block unavailable")
+
+        def get(self, tag):
+            assert tag == vision_tools._GPS_EXIF_TAG
+            return {1: "N"}
+
+    assert vision_tools._get_gps_ifd(_RecoverableExif()) == {1: "N"}
+
+    class _BuggyExif:
+        def get_ifd(self, _tag):
+            raise RuntimeError("gps parser bug")
+
+    with pytest.raises(RuntimeError, match="gps parser bug"):
+        vision_tools._get_gps_ifd(_BuggyExif())
 
 
 def test_unsupported_extension_rejected(tmp_path, monkeypatch):

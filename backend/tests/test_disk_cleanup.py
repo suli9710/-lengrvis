@@ -51,6 +51,18 @@ def test_find_large_files_handles_missing_root(tmp_path: Path):
     assert result["files"] == []
 
 
+def test_find_large_files_does_not_swallow_unexpected_authorization_bug(monkeypatch, workspace: Path):
+    def raise_unexpected(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("authorization bug")
+
+    monkeypatch.setattr(system_tools, "resolve_authorized", raise_unexpected)
+
+    with pytest.raises(RuntimeError, match="authorization bug"):
+        system_tools.find_large_files(
+            {"threshold_mb": 1, "roots": [str(workspace)]}, {"allowed_directories": [str(workspace)]}
+        )
+
+
 def test_cleanup_suggestions_three_buckets(workspace: Path):
     result = system_tools.cleanup_suggestions({"threshold_mb": 1}, {"allowed_directories": [str(workspace)]})
     assert result["ok"] is True

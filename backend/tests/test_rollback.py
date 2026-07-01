@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import threading
 from pathlib import Path
 
@@ -174,10 +175,7 @@ def test_rollback_failure_detail_redacts_paths_and_secrets(monkeypatch: pytest.M
     )
 
     def fake_move_file(*args, **kwargs):  # noqa: ANN001, ANN002
-        raise OSError(
-            "move failed for C:/Users/Suli/private/private-rollback.xlsx "
-            "token=rollback-secret-1234567890"
-        )
+        raise OSError("move failed for C:/Users/Suli/private/private-rollback.xlsx token=rollback-secret-1234567890")
 
     monkeypatch.setattr(rollback_tools, "safe_move_file", fake_move_file)
 
@@ -190,6 +188,120 @@ def test_rollback_failure_detail_redacts_paths_and_secrets(monkeypatch: pytest.M
     assert "C:/Users/Suli/private/private-rollback.xlsx" not in outcome["detail"]
     assert "private-rollback.xlsx" not in outcome["detail"]
     assert "[REDACTED]" in outcome["detail"]
+
+
+def test_rollback_move_back_does_not_swallow_unexpected_move_bugs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    original = tmp_path / "from.txt"
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-move-bug",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
+    )
+
+    def buggy_move_file(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise TypeError("move implementation bug")
+
+    monkeypatch.setattr(rollback_tools, "safe_move_file", buggy_move_file)
+
+    with pytest.raises(TypeError, match="move implementation bug"):
+        rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+
+def test_rollback_delete_empty_folder_reports_expected_filesystem_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    folder = tmp_path / "empty-folder"
+    folder.mkdir()
+    result = ToolResult(
+        tool_call_id="call-delete-permission",
+        ok=True,
+        rollback_info={"delete_folder_if_empty": str(folder)},
+    )
+
+    def deny_mutation(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(rollback_tools, "ensure_mutation_path_safe", deny_mutation)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["action"] == "delete_folder_if_empty"
+    assert "permission denied" in outcome["detail"]
+    assert folder.exists()
+
+
+def test_rollback_restore_backup_reports_expected_copy_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    original = tmp_path / "config.json"
+    original.write_text("changed-content", encoding="utf-8")
+    backup = tmp_path / "config.json.bak"
+    backup.write_text("original-content", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-restore-copy-error",
+        ok=True,
+        rollback_info={"backup": str(backup)},
+    )
+
+    def fail_copy(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise shutil.SameFileError("same file")
+
+    monkeypatch.setattr(rollback_tools, "safe_copy_file_between_scopes", fail_copy)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["action"] == "restore_backup"
+    assert "same file" in outcome["detail"]
+    assert backup.exists()
+    assert original.read_text(encoding="utf-8") == "changed-content"
+
+
+def test_rollback_restore_backup_does_not_swallow_unexpected_copy_bugs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    original = tmp_path / "config.json"
+    original.write_text("changed-content", encoding="utf-8")
+    backup = tmp_path / "config.json.bak"
+    backup.write_text("original-content", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-restore-copy-bug",
+        ok=True,
+        rollback_info={"backup": str(backup)},
+    )
+
+    def buggy_copy(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise TypeError("copy implementation bug")
+
+    monkeypatch.setattr(rollback_tools, "safe_copy_file_between_scopes", buggy_copy)
+
+    with pytest.raises(TypeError, match="copy implementation bug"):
+        rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+
+def test_rollback_trash_keeps_os_boundary_failures_best_effort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    created = tmp_path / "report.md"
+    created.write_text("# report", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-trash-boundary",
+        ok=True,
+        rollback_info={"trash_created_file": str(created)},
+    )
+
+    def fail_trash(*args, **kwargs):  # noqa: ANN001, ANN002
+        raise Exception("COM init failed")  # noqa: TRY002
+
+    monkeypatch.setattr(rollback_tools, "send2trash", fail_trash)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["action"] == "trash"
+    assert "COM init failed" in outcome["detail"]
+    assert created.exists()
 
 
 def test_cleanup_rollback_preview_fails_closed_without_authorized_directories(tmp_path: Path):
@@ -270,6 +382,34 @@ def test_execute_rollback_uses_effective_authorized_directories(monkeypatch: pyt
     assert outcome["count"] == 1
     assert outcome["executed"][0]["ok"] is True
     assert original.exists() and not moved.exists()
+
+
+def test_execute_rollback_fails_closed_when_settings_context_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    original = tmp_path / "from.txt"
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-settings-fail",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
+    )
+    monkeypatch.setattr("app.tools.rollback_tools._results_for_task", lambda _task_id: [result])
+
+    def fail_settings():
+        raise Exception("settings unavailable")  # noqa: TRY002
+
+    monkeypatch.setattr("app.tools.rollback_tools.get_effective_settings", fail_settings)
+
+    outcome = rollback_tools.execute_rollback("task-settings-fail")
+
+    assert outcome["count"] == 1
+    assert outcome["executed"][0]["ok"] is False
+    assert "No authorized directories configured" in outcome["executed"][0]["detail"]
+    assert moved.exists()
+    assert not original.exists()
 
 
 def test_rollback_noop_when_no_info():

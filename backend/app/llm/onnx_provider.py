@@ -36,6 +36,9 @@ _PREFERRED_EXECUTION_PROVIDERS = [
     ("onnx-openvino", "OpenVINOExecutionProvider"),
     ("onnx-cpu", "CPUExecutionProvider"),
 ]
+_OPTIONAL_NATIVE_IMPORT_ERRORS = (OSError, RuntimeError, SystemError, ValueError)
+_OPTIONAL_PROVIDER_PROBE_ERRORS = (AttributeError, TypeError, OSError, RuntimeError, SystemError)
+_GENAI_NATIVE_RUNTIME_ERRORS = (AttributeError, TypeError, OSError, RuntimeError, SystemError, ValueError)
 _EXECUTION_PROVIDER_ALIASES = {
     "winml": "WindowsMLExecutionProvider",
     "windowsml": "WindowsMLExecutionProvider",
@@ -213,7 +216,7 @@ class OnnxProvider(LLMProvider):
                 "ONNX acceleration is visible, but no ONNX Runtime GenAI package could be loaded for text generation. "
                 "Install onnxruntime-genai-winml, onnxruntime-genai-directml, or an OpenVINO-capable GenAI runtime."
             ) from exc
-        except Exception as exc:  # pragma: no cover - depends on optional native package
+        except _GENAI_NATIVE_RUNTIME_ERRORS as exc:  # pragma: no cover - depends on optional native package
             raise LocalBackendUnavailable(f"Unable to load ONNX Runtime GenAI model: {exc}") from exc
 
         try:
@@ -238,7 +241,7 @@ class OnnxProvider(LLMProvider):
                 return "".join(parts)
         except LocalBackendUnavailable:
             raise
-        except Exception as exc:  # pragma: no cover - depends on optional native package/model
+        except _GENAI_NATIVE_RUNTIME_ERRORS as exc:  # pragma: no cover - depends on optional native package/model
             raise LocalBackendUnavailable(f"ONNX text generation failed: {exc}") from exc
 
     def _ensure_genai_model(self) -> _GenaiModelState:
@@ -802,7 +805,7 @@ def _import_genai_runtime(settings: AppSettings | None = None) -> Any:
             return importlib.import_module(module_name)
         except ImportError as exc:
             errors.append(f"{module_name}: {exc}")
-        except Exception as exc:  # noqa: BLE001 - optional native package probe.
+        except _OPTIONAL_NATIVE_IMPORT_ERRORS as exc:
             errors.append(f"{module_name}: {exc}")
     raise ImportError("; ".join(errors) or "No ONNX Runtime GenAI package is importable.")
 
@@ -812,7 +815,7 @@ def _is_genai_runtime_available(settings: AppSettings | None = None) -> bool:
         _import_genai_runtime(settings)
     except ImportError:
         return False
-    except Exception:  # noqa: BLE001 - optional native package probe.
+    except _OPTIONAL_NATIVE_IMPORT_ERRORS:
         return False
     return True
 
@@ -864,7 +867,7 @@ def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         return {"available": False, "module": module_name, "error": _safe_onnx_error(exc)}
-    except Exception as exc:  # noqa: BLE001 - optional native package probe.
+    except _OPTIONAL_NATIVE_IMPORT_ERRORS as exc:
         return {"available": False, "module": module_name, "error": _safe_onnx_error(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}
@@ -896,11 +899,11 @@ def _available_execution_providers() -> list[str]:
         import onnxruntime as ort
     except ImportError:
         return []
-    except Exception:  # noqa: BLE001 - optional native package probe.
+    except _OPTIONAL_NATIVE_IMPORT_ERRORS:
         return []
     try:
         return [str(item) for item in ort.get_available_providers()]
-    except Exception:  # noqa: BLE001 - optional native package probe.
+    except _OPTIONAL_PROVIDER_PROBE_ERRORS:
         return []
 
 
@@ -911,17 +914,17 @@ def _genai_reports_provider_available(kind: str) -> bool:
         og = _import_genai_runtime()
     except ImportError:
         return False
-    except Exception:  # noqa: BLE001 - optional native package probe.
+    except _OPTIONAL_NATIVE_IMPORT_ERRORS:
         return False
     if kind == "onnx-directml" and hasattr(og, "is_dml_available"):
         try:
             return bool(og.is_dml_available())
-        except Exception:  # noqa: BLE001 - optional native package probe.
+        except _OPTIONAL_PROVIDER_PROBE_ERRORS:
             return False
     if kind == "onnx-openvino" and hasattr(og, "is_openvino_available"):
         try:
             return bool(og.is_openvino_available())
-        except Exception:  # noqa: BLE001 - optional native package probe.
+        except _OPTIONAL_PROVIDER_PROBE_ERRORS:
             return False
     return False
 

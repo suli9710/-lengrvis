@@ -335,5 +335,5 @@ class ToolRuntimeLifecycleMixin:
             return tuple(self._hook_snapshot(child) for child in value)
         try:
             return copy.deepcopy(value)
-        except Exception:  # noqa: BLE001
+        except (copy.Error, AttributeError, RecursionError, TypeError, ValueError):
             return repr(value)

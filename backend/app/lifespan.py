@@ -71,7 +71,7 @@ async def _load_mcp_tools(settings: AppSettings) -> None:
     mcp_registry.load_from_settings(settings)
     try:
         mcp_definitions = await mcp_registry.adapt_to_tool_definitions()
-    except Exception as exc:  # noqa: BLE001
+    except (KeyError, TypeError, ValueError) as exc:
         mcp_definitions = []
         record("mcp.startup_load_failed", "lifespan", {"error": str(exc)})
     register_all_tools(extra_definitions=mcp_definitions, settings=settings)

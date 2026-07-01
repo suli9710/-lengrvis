@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 from app.orchestration.workflow import (
+    BestEffortWindowFocus,
     InMemoryClipboard,
     Workflow,
     WorkflowError,
@@ -32,6 +36,41 @@ def test_workflow_validates_and_orders_dag():
     )
 
     assert topological_order(workflow.steps) == ["open", "write", "save"]
+
+
+def test_best_effort_window_focus_is_narrow(monkeypatch: pytest.MonkeyPatch) -> None:
+    focus = BestEffortWindowFocus()
+    assert focus.focus("") is False
+
+    monkeypatch.delitem(sys.modules, "pygetwindow", raising=False)
+    real_import = __import__
+
+    def missing_pygetwindow(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
+        if name == "pygetwindow":
+            raise ImportError("missing optional dependency")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", missing_pygetwindow)
+    assert focus.focus("wps.office") is False
+
+    fake_pygetwindow = types.ModuleType("pygetwindow")
+
+    class FakeWindow:
+        def activate(self):
+            raise RuntimeError("window manager unavailable")
+
+    fake_pygetwindow.getWindowsWithTitle = lambda _target: [FakeWindow()]
+    monkeypatch.setitem(sys.modules, "pygetwindow", fake_pygetwindow)
+    monkeypatch.setattr("builtins.__import__", real_import)
+    assert focus.focus("wps.office") is False
+
+    class BuggyWindow:
+        def activate(self):
+            raise AssertionError("focus bug")
+
+    fake_pygetwindow.getWindowsWithTitle = lambda _target: [BuggyWindow()]
+    with pytest.raises(AssertionError, match="focus bug"):
+        focus.focus("wps.office")
 
 
 def test_workflow_rejects_cycles():

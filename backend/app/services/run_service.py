@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
+import sqlite3
 import threading
 from typing import Any
 
@@ -83,7 +85,16 @@ ENGINE_TERMINAL_PHASES = {
 _RUN_ENGINE_ROUTERS: dict[str, EngineRouter] = {}
 _RUN_ENGINE_ROUTERS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
-_PERSISTED_MODEL_ERRORS = (ValidationError, TypeError, ValueError, AttributeError)
+_PERSISTED_RUN_ROW_ERRORS = (ValidationError, TypeError)
+_PERSISTED_RUN_STATE_ERRORS = (ValidationError, AttributeError)
+_PERSISTED_AGENT_MESSAGE_ERRORS = (ValidationError, TypeError)
+_PERSISTED_PLAN_ROW_ERRORS = (ValidationError,)
+_PERSISTED_STORE_READ_ERRORS = (
+    sqlite3.Error,
+    json.JSONDecodeError,
+    db.SensitiveRecordIntegrityError,
+    ValidationError,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -159,7 +170,7 @@ async def create_run(
             _engine_selection(requested_engine),
             task_metadata=delegation_metadata or None,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - engine startup crosses provider, DB, policy, and tool setup.
         error = _redacted_error(exc)
         run = Run(
             message=message,
@@ -298,7 +309,7 @@ def recover_interrupted_runs() -> list[str]:
     for row in rows:
         try:
             run = Run.model_validate(row)
-        except _PERSISTED_MODEL_ERRORS as exc:
+        except _PERSISTED_RUN_ROW_ERRORS as exc:
             row_id = row.get("id") if isinstance(row, dict) else ""
             log_best_effort_failure(logger, "recover_interrupted_runs.validate_row", exc, run_id=row_id)
             continue
@@ -408,8 +419,10 @@ def _schedule_resume(run: Run) -> Run:
     router = _engine_router(settings)
     try:
         state = _state_from_run(run)
-    except _PERSISTED_MODEL_ERRORS as exc:
+    except _PERSISTED_RUN_STATE_ERRORS as exc:
         error = _redacted_error(exc)
+        if not isinstance(run.state, dict):
+            run.state = {}
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run.id, "run.failed", {"error": error, "task_id": run.task_id})
         return run
@@ -460,12 +473,16 @@ def cancel_run(run_id: str) -> Run:
 def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
     try:
         expired = db.expire_pending_approvals_for_task(task_id, now_iso(), reason)
-    except Exception as exc:  # noqa: BLE001 - approval expiry is best effort during state transitions.
+    except (sqlite3.Error, json.JSONDecodeError, db.SensitiveRecordIntegrityError) as exc:
         log_best_effort_failure(logger, "expire_pending_approvals.persist", exc, task_id=task_id)
         return []
     if not expired:
         return []
-    approvals = [Approval.model_validate(item) for item in expired]
+    try:
+        approvals = [Approval.model_validate(item) for item in expired]
+    except ValidationError as exc:
+        log_best_effort_failure(logger, "expire_pending_approvals.validate_expired", exc, task_id=task_id)
+        return []
     try:
         from app.services.approval_event_service import publish_approval_decided
 
@@ -558,7 +575,7 @@ async def _run_engine_loop(
             return
         _update_run(run, phase=RunPhase.FAILED, error=f"max turns reached ({max_turns})")
         run_event_bus.publish(run_id, "run.failed", {"reason": run.error, "max_turns": max_turns})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - resident engine loop boundary: persist a failed run instead of leaking RUNNING.
         run = get_run(run_id)
         if run.phase == RunPhase.CANCELLED:
             return
@@ -601,7 +618,12 @@ def _release_terminal_orchestrator(run_id: str) -> None:
     orchestrator_registry.release_run(run_id)
     if not run.task_id:
         return
-    for other in db.fetch_many("runs", "task_id = ?", (run.task_id,), limit=50):
+    try:
+        sibling_runs = db.fetch_many("runs", "task_id = ?", (run.task_id,), limit=50)
+    except _PERSISTED_STORE_READ_ERRORS as exc:
+        log_best_effort_failure(logger, "release_terminal_orchestrator.list_task_runs", exc, run_id=run_id)
+        return
+    for other in sibling_runs:
         if str(other.get("id")) == run_id:
             continue
         try:
@@ -665,7 +687,7 @@ async def _monitor_task_to_terminal(
 async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState) -> None:
     try:
         resumed = await router.engines[state.engine].resume_run(state.run_id)
-    except Exception as exc:  # noqa: BLE001 - resume can fall back to persisted state.
+    except Exception as exc:  # noqa: BLE001 - engine-specific resume may fail while persisted RunState is still usable.
         log_best_effort_failure(logger, "resume_engine_loop.resume_run", exc, run_id=run_id, engine=state.engine)
         resumed = state
     stop_event: asyncio.Event | None = None
@@ -776,7 +798,7 @@ def _agent_message(raw: dict[str, Any]) -> Any | None:
         from app.core.schemas import AgentMessage
 
         return AgentMessage.model_validate(raw)
-    except _PERSISTED_MODEL_ERRORS as exc:
+    except _PERSISTED_AGENT_MESSAGE_ERRORS as exc:
         message_id = raw.get("id") if isinstance(raw, dict) else ""
         logger.debug(
             "invalid agent message skipped while bridging run messages (message_id=%s): %s",
@@ -838,7 +860,7 @@ def _update_run_from_state(run: Run, state: RunState) -> Run:
 
 def _state_from_run(run: Run) -> RunState:
     if run.state:
-        state = RunState.model_validate(_run_state_payload(run.state))
+        state = _parse_persisted_run_state(run)
         return default_run_store.put(state)
     try:
         return default_run_store.get(run.id)
@@ -853,6 +875,10 @@ def _state_from_run(run: Run) -> RunState:
         task_id=run.task_id or "",
     )
     return default_run_store.put(state)
+
+
+def _parse_persisted_run_state(run: Run) -> RunState:
+    return RunState.model_validate(_run_state_payload(run.state))
 
 
 def _run_data_dir(run: Run) -> str:
@@ -881,7 +907,7 @@ def _is_approval_continuation(run: Run) -> bool:
         return False
     try:
         state = RunState.model_validate(_run_state_payload(run.state or {}))
-    except _PERSISTED_MODEL_ERRORS as exc:
+    except _PERSISTED_RUN_STATE_ERRORS as exc:
         log_best_effort_failure(logger, "is_approval_continuation.parse_state", exc, run_id=run.id)
         return False
     return state.continuation_kind == "approval_remaining_steps"
@@ -892,7 +918,7 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
         return
     try:
         state = RunState.model_validate(_run_state_payload(run.state))
-    except _PERSISTED_MODEL_ERRORS as exc:
+    except _PERSISTED_RUN_STATE_ERRORS as exc:
         log_best_effort_failure(logger, "sync_persisted_state_phase.parse_state", exc, run_id=run.id, phase=phase.value)
         return
     continuation_kind: str = ""
@@ -913,10 +939,14 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
 def _cancel_persisted_state(run: Run) -> None:
     runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
     try:
-        state = _state_from_run(run)
-    except _PERSISTED_MODEL_ERRORS as exc:
+        state = _parse_persisted_run_state(run) if run.state else None
+    except _PERSISTED_RUN_STATE_ERRORS as exc:
         log_best_effort_failure(logger, "cancel_persisted_state.parse_state", exc, run_id=run.id)
         return
+    if state is None:
+        state = _state_from_run(run)
+    else:
+        state = default_run_store.put(state)
     if isinstance(runtime, dict) and runtime:
         run.state["_runtime"] = dict(runtime)
     state = state.model_copy(
@@ -957,7 +987,7 @@ def _sync_run_phase_from_task(run: Run) -> Run:
         task = get_task(run.task_id)
     except KeyError:
         return run
-    except Exception as exc:  # noqa: BLE001 - run reads should tolerate task-store failures.
+    except _PERSISTED_STORE_READ_ERRORS as exc:
         log_best_effort_failure(logger, "sync_run_phase_from_task.task_lookup", exc, run_id=run.id, task_id=run.task_id)
         return run
     phase = _phase_for_task(task)
@@ -986,14 +1016,14 @@ def _sync_run_phase_from_task(run: Run) -> Run:
 def _latest_plan_for_task(task_id: str) -> Plan | None:
     try:
         rows = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
-    except Exception as exc:  # noqa: BLE001 - plan lookup only refines cancelled-vs-denied mapping.
+    except _PERSISTED_STORE_READ_ERRORS as exc:
         log_best_effort_failure(logger, "latest_plan_for_task.fetch", exc, task_id=task_id)
         return None
     if not rows:
         return None
     try:
         return Plan.model_validate(rows[0])
-    except _PERSISTED_MODEL_ERRORS as exc:
+    except _PERSISTED_PLAN_ROW_ERRORS as exc:
         log_best_effort_failure(logger, "latest_plan_for_task.validate_row", exc, task_id=task_id)
         return None
 

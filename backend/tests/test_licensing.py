@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.api import routes_commerce
+from app.commerce import licensing
 from app.commerce.device_identity import DeviceIdentityError, LocalDeviceIdentity, collect_activation_device_identity
 from app.commerce.entitlements import Plan
 from app.commerce.licensing import (
@@ -217,6 +218,33 @@ def test_tampered_signature_rejected() -> None:
 def test_wrong_public_key_rejected() -> None:
     with pytest.raises(LicenseError):
         parse_license(_make_token(), WRONG_PUBLIC_KEY)
+
+
+def test_invalid_license_keys_are_wrapped_but_unexpected_key_parser_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(LicenseError) as public_exc:
+        parse_license(_make_token(), _b64url(b"too-short"))
+    assert public_exc.value.code == "license_public_key_invalid"
+
+    with pytest.raises(LicenseError) as private_exc:
+        sign_license({"plan": "pro"}, _b64url(b"too-short"))
+    assert private_exc.value.code == "license_private_key_invalid"
+
+    def fail_public_key(_data):
+        raise RuntimeError("cryptography backend bug")
+
+    monkeypatch.setattr(licensing.serialization, "load_pem_public_key", fail_public_key)
+    bad_pem_public_key = "-----BEGIN PUBLIC KEY-----\nnot-a-key\n-----END PUBLIC KEY-----"
+    with pytest.raises(RuntimeError, match="cryptography backend bug"):
+        parse_license(_make_token(), bad_pem_public_key)
+
+
+def test_invalid_signature_encoding_is_wrapped() -> None:
+    with pytest.raises(LicenseError) as excinfo:
+        parse_license(f"not-ascii-\u2603.{_b64url(b'bad-signature')}", PUBLIC_KEY)
+
+    assert excinfo.value.code == "license_signature_invalid"
 
 
 def test_expired_license_inactive() -> None:

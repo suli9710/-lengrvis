@@ -177,14 +177,14 @@ class GuardianRuntime:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground", headers=desktop_api_token_headers())
-        except Exception:  # noqa: BLE001 - foreground notification is best-effort.
+        except httpx.HTTPError:
             return
 
     async def _notify_full_background(self) -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/background", headers=desktop_api_token_headers())
-        except Exception:  # noqa: BLE001 - background notification is best-effort.
+        except httpx.HTTPError:
             return
 
     def _full_backend_command(self) -> list[str]:
@@ -229,7 +229,7 @@ class GuardianRuntime:
                     f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
                 )
             return 200 <= response.status_code < 300
-        except Exception:  # noqa: BLE001 - health probes are best-effort.
+        except httpx.HTTPError:
             return False
 
     async def _stop_full_backend_locked(self) -> None:
@@ -272,7 +272,7 @@ class GuardianRuntime:
             if not 200 <= response.status_code < 300:
                 return False
             data = response.json()
-        except Exception:  # noqa: BLE001 - active-run checks are best-effort.
+        except (httpx.HTTPError, ValueError):
             return False
         active = data.get("activeRunIds") if isinstance(data, dict) else None
         return bool(active)

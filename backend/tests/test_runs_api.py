@@ -5,6 +5,7 @@ import base64
 import concurrent.futures
 import json
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -879,6 +880,40 @@ def test_resume_with_invalid_persisted_state_fails_run_without_scheduling(monkey
     assert any(event.name == "run.failed" for event in events)
 
 
+def test_resume_with_non_mapping_persisted_state_fails_run_without_scheduling(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    scheduled: list[object] = []
+    run = run_service.Run(
+        id="osrun_shape_invalid_resume_state",
+        message="resume invalid shape",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "osrun_shape_invalid_resume_state",
+            "engine": "os",
+            "phase": "paused",
+            "goal": "resume invalid shape",
+            "mode": "efficiency",
+        },
+    )
+    run.state = "not-a-state-object"  # type: ignore[assignment]
+    monkeypatch.setattr(run_service, "_engine_router", lambda settings: object())
+    monkeypatch.setattr(
+        run_service,
+        "_schedule_background",
+        lambda coro, *, data_dir=None: scheduled.append(coro),  # noqa: ARG005
+    )
+
+    resumed = run_service._schedule_resume(run)
+
+    assert resumed.phase == run_service.RunPhase.FAILED
+    assert scheduled == []
+    assert run_service.get_run(run.id).phase == run_service.RunPhase.FAILED
+
+
 def test_invalid_approval_continuation_state_returns_false(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
@@ -899,6 +934,32 @@ def test_invalid_approval_continuation_state_returns_false(monkeypatch, tmp_path
     assert run_service._is_approval_continuation(run) is False
 
 
+def test_non_mapping_persisted_state_helpers_are_tolerated(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="osrun_invalid_state_shape_helpers",
+        message="invalid helper state",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        state={
+            "run_id": "osrun_invalid_state_shape_helpers",
+            "engine": "os",
+            "phase": "running",
+            "goal": "invalid helper state",
+            "mode": "efficiency",
+        },
+    )
+    run.state = "not-a-state-object"  # type: ignore[assignment]
+
+    assert run_service._is_approval_continuation(run) is False
+    run_service._sync_persisted_state_phase(run, run_service.RunPhase.PAUSED, "shape_error")
+    run_service._cancel_persisted_state(run)
+    assert run.state == "not-a-state-object"
+
+
 def test_invalid_historical_agent_message_is_skipped():
     assert run_service._agent_message({"id": "msg_invalid"}) is None
 
@@ -907,6 +968,85 @@ def test_invalid_historical_plan_row_is_skipped(monkeypatch):
     monkeypatch.setattr(run_service.db, "fetch_many", lambda *args, **kwargs: [{"id": "plan_invalid"}])
 
     assert run_service._latest_plan_for_task("task_invalid_plan") is None
+
+
+def test_run_state_runtime_errors_are_not_swallowed(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="osrun_state_runtime_error",
+        message="resume runtime bug",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "osrun_state_runtime_error",
+            "engine": "os",
+            "phase": "paused",
+            "goal": "resume runtime bug",
+            "mode": "efficiency",
+        },
+    )
+
+    def raise_runtime(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("runstate parser bug")
+
+    monkeypatch.setattr(run_service, "_engine_router", lambda settings: object())
+    monkeypatch.setattr(run_service.RunState, "model_validate", raise_runtime)
+
+    with pytest.raises(RuntimeError, match="runstate parser bug"):
+        run_service._schedule_resume(run)
+
+
+def test_agent_message_runtime_errors_are_not_swallowed(monkeypatch):
+    def raise_runtime(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("agent message parser bug")
+
+    monkeypatch.setattr(AgentMessage, "model_validate", raise_runtime)
+
+    with pytest.raises(RuntimeError, match="agent message parser bug"):
+        run_service._agent_message({"id": "msg_runtime_bug"})
+
+
+def test_plan_runtime_errors_are_not_swallowed(monkeypatch):
+    monkeypatch.setattr(run_service.db, "fetch_many", lambda *args, **kwargs: [{"id": "plan_runtime_bug"}])
+
+    def raise_runtime(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("plan parser bug")
+
+    monkeypatch.setattr(run_service.Plan, "model_validate", raise_runtime)
+
+    with pytest.raises(RuntimeError, match="plan parser bug"):
+        run_service._latest_plan_for_task("task_runtime_bug")
+
+
+def test_task_lookup_store_errors_are_tolerated(monkeypatch):
+    run = run_service.Run(
+        id="run_task_lookup_store_error",
+        message="store error",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id="task_store_error",
+    )
+
+    def raise_sqlite_error(task_id):  # noqa: ARG001
+        raise sqlite3.Error("task db unavailable")
+
+    monkeypatch.setattr(run_service, "get_task", raise_sqlite_error)
+
+    assert run_service._sync_run_phase_from_task(run) is run
+
+
+def test_latest_plan_fetch_json_errors_are_tolerated(monkeypatch):
+    def raise_json_error(*args, **kwargs):  # noqa: ARG001
+        raise json.JSONDecodeError("bad plan json", "", 0)
+
+    monkeypatch.setattr(run_service.db, "fetch_many", raise_json_error)
+
+    assert run_service._latest_plan_for_task("task_bad_plan_json") is None
 
 
 def test_pause_updates_persisted_run_state_phase(monkeypatch, tmp_path):

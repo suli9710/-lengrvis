@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import socket
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -9,10 +11,12 @@ import pytest
 
 from app.config import AppSettings
 from app.core import db
+from app.services import browser_activity_runtime
 from app.services.browser_activity_runtime import (
     BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
     BROWSER_CONTENT_TRUST,
     BrowserActivityRuntime,
+    LocalBrowserActivityAdapter,
     _read_limited_http_response,
 )
 from app.tools import browser_tools
@@ -44,6 +48,21 @@ class FakeBrowserAdapter:
                 "links": [{"title": "Docs", "url": "https://example.test/docs"}],
             }
         return {"ok": True, "url": url, "title": "Example", "changed_paths": [], "rollback_info": {}}
+
+
+def _install_fake_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+    sync_playwright,
+    *,
+    error_type: type[BaseException] = RuntimeError,
+) -> None:
+    fake_sync_api = types.ModuleType("playwright.sync_api")
+    fake_sync_api.sync_playwright = sync_playwright
+    fake_sync_api.Error = error_type
+    fake_playwright = types.ModuleType("playwright")
+    fake_playwright.sync_api = fake_sync_api
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +221,22 @@ def test_runtime_adapter_exception_error_is_redacted_across_surfaces() -> None:
     assert private_path not in serialized_surfaces
     assert private_file not in serialized_surfaces
     assert secret_token not in serialized_surfaces
+
+
+def test_runtime_audit_recording_failure_does_not_break_event_append(monkeypatch) -> None:
+    runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
+
+    def fail_record(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(browser_activity_runtime, "record", fail_record)
+
+    started = runtime.session_start({"task_id": "task-audit-fails"}, _context())
+    events = runtime.events({"session_id": started["session"]["id"]})["events"]
+
+    assert started["ok"] is True
+    assert len(events) == 1
+    assert events[0]["type"] == "session.start"
 
 
 def test_runtime_session_lookup_errors_redact_token_like_ids() -> None:
@@ -397,6 +432,85 @@ def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
             _read_limited_http_response(client, "https://example.test/page", 64)
 
 
+def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_errors(monkeypatch) -> None:
+    def failing_sync_playwright():
+        raise RuntimeError("playwright launch failed")
+
+    _install_fake_playwright(monkeypatch, failing_sync_playwright)
+    monkeypatch.setattr(
+        browser_activity_runtime,
+        "_read_limited_http_response",
+        lambda _client, url, _max_chars: ("<html><title>Fallback</title><main>Hello</main></html>", url, False),
+    )
+
+    result = LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page", "max_chars": 100}, _context())
+
+    assert result["ok"] is True
+    assert result["adapter"] == "httpx"
+    assert result["title"] == "Fallback"
+    assert "playwright launch failed" in result["playwright_error"]
+
+
+def test_local_adapter_observe_does_not_swallow_unexpected_playwright_bugs(monkeypatch) -> None:
+    def failing_sync_playwright():
+        raise AssertionError("playwright bug")
+
+    _install_fake_playwright(monkeypatch, failing_sync_playwright)
+
+    with pytest.raises(AssertionError, match="playwright bug"):
+        LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page"}, _context())
+
+
+@pytest.mark.parametrize(
+    ("method_name", "action", "error_fragment"),
+    [
+        ("_screenshot", {"url": "https://example.test/screen"}, "Playwright screenshot failed"),
+        ("_wait", {"url": "https://example.test/page", "selector": "#ready"}, "wait_for failed"),
+        ("_write_like", {"kind": "click", "url": "https://example.test/page", "selector": "#go"}, "click failed"),
+    ],
+)
+def test_local_adapter_actions_report_expected_playwright_errors(
+    monkeypatch,
+    method_name: str,
+    action: dict[str, Any],
+    error_fragment: str,
+) -> None:
+    def failing_sync_playwright():
+        raise RuntimeError("playwright unavailable")
+
+    _install_fake_playwright(monkeypatch, failing_sync_playwright)
+    method = getattr(LocalBrowserActivityAdapter(), method_name)
+
+    result = method(action, _context())
+
+    assert result["ok"] is False
+    assert error_fragment in result["error"]
+    assert "playwright unavailable" in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "action"),
+    [
+        ("_screenshot", {"url": "https://example.test/screen"}),
+        ("_wait", {"url": "https://example.test/page", "selector": "#ready"}),
+        ("_write_like", {"kind": "click", "url": "https://example.test/page", "selector": "#go"}),
+    ],
+)
+def test_local_adapter_actions_do_not_swallow_unexpected_playwright_bugs(
+    monkeypatch,
+    method_name: str,
+    action: dict[str, Any],
+) -> None:
+    def failing_sync_playwright():
+        raise AssertionError("playwright bug")
+
+    _install_fake_playwright(monkeypatch, failing_sync_playwright)
+    method = getattr(LocalBrowserActivityAdapter(), method_name)
+
+    with pytest.raises(AssertionError, match="playwright bug"):
+        method(action, _context())
+
+
 def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatch) -> None:
     adapter = FakeBrowserAdapter()
     browser_tools.reset_browser_activity_runtime(adapter=adapter)
@@ -508,3 +622,28 @@ def test_field_attributes_are_not_sensitive_for_ordinary_inputs(attrs) -> None:
     from app.services.browser_activity_runtime import _field_attributes_are_sensitive
 
     assert _field_attributes_are_sensitive(attrs) is False
+
+
+def test_playwright_field_sensitivity_only_suppresses_playwright_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import browser_activity_runtime
+
+    class _RecoverablePage:
+        def get_attribute(self, *_args, **_kwargs):
+            raise ValueError("playwright timeout")
+
+    monkeypatch.setattr(browser_activity_runtime, "_playwright_error_types", lambda: (ValueError,))
+    assert browser_activity_runtime._playwright_field_is_sensitive(_RecoverablePage(), "#name") is False
+
+    class _BuggyPage:
+        def get_attribute(self, *_args, **_kwargs):
+            raise RuntimeError("fake page bug")
+
+    with pytest.raises(RuntimeError, match="fake page bug"):
+        browser_activity_runtime._playwright_field_is_sensitive(_BuggyPage(), "#name")
+
+
+def test_safe_url_redacts_query_and_handles_invalid_url() -> None:
+    from app.services.browser_activity_runtime import _safe_url
+
+    assert _safe_url("https://example.test/path?token=secret") == "https://example.test/path?***"
+    assert _safe_url("http://[bad?token=secret-token-value") == "http://[bad?token=[REDACTED]"

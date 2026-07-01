@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -184,7 +184,7 @@ def _load_public_key(public_key: str) -> Ed25519PublicKey:
         return Ed25519PublicKey.from_public_bytes(_b64url_decode(text.removeprefix("ed25519:")))
     except LicenseError:
         raise
-    except Exception as exc:  # noqa: BLE001 - cryptography raises several parse errors.
+    except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
         raise LicenseError("许可证验签公钥无效。", code="license_public_key_invalid") from exc
 
 
@@ -201,7 +201,7 @@ def _load_private_key(private_key: str, *, password: bytes | None = None) -> Ed2
         return Ed25519PrivateKey.from_private_bytes(_b64url_decode(text.removeprefix("ed25519:")))
     except LicenseError:
         raise
-    except Exception as exc:  # noqa: BLE001 - cryptography raises several parse errors.
+    except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
         raise LicenseError("许可证签名私钥无效。", code="license_private_key_invalid") from exc
 
 
@@ -260,7 +260,7 @@ def _parse_signed_payload(token: str, public_key: str, *, label: str) -> dict[st
         raise LicenseError(f"{label_zh}签名不匹配。", code="license_signature_mismatch") from exc
     except LicenseError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except (TypeError, UnicodeError, ValueError) as exc:
         raise LicenseError(f"{label_zh}签名无效。", code="license_signature_invalid") from exc
     raw = _b64url_decode(body)
     try:

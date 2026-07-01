@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 import websockets
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.api.agent_message_wire import wire_safe_agent_message
 from app.api.routes_approvals import (
@@ -577,7 +577,7 @@ async def proxy_full_backend(path: str, request: Request) -> Response:
 async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None:
     try:
         await runtime.wake_transient(reason=f"approval:{approval.id}")
-    except Exception as exc:  # noqa: BLE001 - guardian approval should surface wake failures clearly.
+    except (RuntimeError, OSError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
             detail=_approval_continue_unavailable_detail(approval, exc),
@@ -588,7 +588,7 @@ async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None
                 f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue",
                 headers=desktop_api_token_headers(),
             )
-    except Exception as exc:  # noqa: BLE001 - transport failures should be retryable approval errors.
+    except (httpx.HTTPError, OSError) as exc:
         raise HTTPException(
             status_code=503,
             detail=_approval_continue_unavailable_detail(approval, exc),
@@ -683,7 +683,7 @@ async def _execute_wakeup(wakeup: Wakeup) -> None:
             return
         try:
             data = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             wakeup_service.complete_wakeup(wakeup, error=f"Invalid run creation response: {exc}")
             return
         run_id = str(data.get("run_id") or "").strip() if isinstance(data, dict) else ""
@@ -691,7 +691,7 @@ async def _execute_wakeup(wakeup: Wakeup) -> None:
             wakeup_service.complete_wakeup(wakeup, error="Full backend did not return a run_id for the wakeup.")
             return
         wakeup_service.complete_wakeup(wakeup, run_id=run_id)
-    except Exception as exc:  # noqa: BLE001
+    except (httpx.HTTPError, OSError, ValueError) as exc:
         wakeup_service.complete_wakeup(wakeup, error=str(exc))
 
 
@@ -704,7 +704,7 @@ def full_backend_url() -> str:
 def _response_detail(response: Any, *, include_text: bool = True) -> Any:
     try:
         payload = response.json()
-    except Exception:  # noqa: BLE001 - backend error bodies are best-effort JSON.
+    except ValueError:
         return response.text if include_text else ""
     if isinstance(payload, dict) and "detail" in payload:
         return payload["detail"]
@@ -765,7 +765,7 @@ def _notification_messages() -> list[AgentMessage]:
         for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=200):
             try:
                 message = AgentMessage.model_validate(item)
-            except Exception:  # noqa: BLE001, S112 - malformed notification rows are skipped.
+            except (ValidationError, TypeError):  # noqa: S112 - malformed notification rows are skipped.
                 continue
             if message.message_type == MessageType.NOTIFICATION:
                 messages.append(message)

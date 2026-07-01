@@ -165,6 +165,41 @@ def test_prior_step_read_visible_to_later_write_step_with_include_prior_steps() 
     rs.clear_task_read_states("task_seq")
 
 
+def test_runtime_resource_state_helpers_are_narrow() -> None:
+    assert rs._read_state_for_path("missing", {"runtime": SimpleNamespace(extra_context=None)}) is None
+    assert (
+        rs._read_state_for_path(
+            "missing",
+            {"runtime": SimpleNamespace(extra_context={"_resource_read_states": object()})},
+        )
+        is None
+    )
+
+    class BadTaskId:
+        def __str__(self) -> str:
+            raise ValueError("bad task id")
+
+    class BuggyTaskId:
+        def __str__(self) -> str:
+            raise RuntimeError("task id bug")
+
+    assert rs._task_id({}, SimpleNamespace(task=SimpleNamespace(id=BadTaskId()))) == ""
+    with pytest.raises(RuntimeError, match="task id bug"):
+        rs._task_id({}, SimpleNamespace(task=SimpleNamespace(id=BuggyTaskId())))
+
+    class BadStepId:
+        def __str__(self) -> str:
+            raise TypeError("bad step id")
+
+    class BuggyStepId:
+        def __str__(self) -> str:
+            raise RuntimeError("step id bug")
+
+    assert rs._step_id({}, SimpleNamespace(step=SimpleNamespace(id=BadStepId()))) == ""
+    with pytest.raises(RuntimeError, match="step id bug"):
+        rs._step_id({}, SimpleNamespace(step=SimpleNamespace(id=BuggyStepId())))
+
+
 def test_file_rename_candidate_paths_include_destination(tmp_path: Path) -> None:
     source = tmp_path / "before.txt"
     source.write_text("data", encoding="utf-8")

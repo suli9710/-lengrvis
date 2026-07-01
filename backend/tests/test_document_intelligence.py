@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,19 @@ def test_extract_tables_from_csv(tmp_path: Path):
     assert result["tables"][0]["rows"][1] == ["North", "100"]
 
 
+def test_extract_csv_tables_does_not_swallow_unexpected_reader_bug(monkeypatch, tmp_path: Path):
+    path = tmp_path / "sales.csv"
+    path.write_text("Region,Revenue\nNorth,100\n", encoding="utf-8")
+
+    def raise_unexpected(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("csv reader bug")
+
+    monkeypatch.setattr(svc.csv, "reader", raise_unexpected)
+
+    with pytest.raises(RuntimeError, match="csv reader bug"):
+        svc._extract_csv_tables(path, [])
+
+
 def test_extract_tables_from_xlsx(tmp_path: Path):
     from openpyxl import Workbook
 
@@ -116,6 +130,30 @@ def test_extract_tables_from_xlsx(tmp_path: Path):
     assert result["tables"][0]["caption"] == "Plan"
     assert result["tables"][0]["headers"] == ["Task", "Owner"]
     assert result["tables"][0]["rows"][1] == ["Launch", "Ada"]
+
+
+def test_extract_xlsx_warns_for_corrupt_workbook(tmp_path: Path):
+    path = tmp_path / "broken.xlsx"
+    path.write_bytes(b"not a zip workbook")
+    warnings: list[str] = []
+
+    pages, tables = svc._extract_xlsx(path, warnings)
+
+    assert pages == [{"page": 1, "text": ""}]
+    assert tables == []
+    assert any("XLSX extraction failed" in warning for warning in warnings)
+
+
+def test_document_id_uses_sha256_when_blake3_unavailable(monkeypatch, tmp_path: Path):
+    path = tmp_path / "memo.txt"
+    path.write_text("memo", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setitem(sys.modules, "blake3", None)
+
+    document_id = svc._document_id(path, warnings)
+
+    assert document_id.startswith("sha256:")
+    assert any("blake3 unavailable" in warning for warning in warnings)
 
 
 def test_ask_with_citations_uses_extractive_fallback(tmp_path: Path):

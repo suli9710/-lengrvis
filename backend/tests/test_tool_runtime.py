@@ -711,6 +711,26 @@ def test_pre_execute_hook_cannot_mutate_args_or_runtime_after_review(tmp_path: P
     assert task.status == TaskStatus.COMPLETED
 
 
+def test_tool_runtime_hook_snapshot_fallback_is_narrow() -> None:
+    runtime = ToolRuntime(OrchestratorAgent())
+
+    class BadDeepcopy:
+        def __deepcopy__(self, memo):  # noqa: ANN001
+            raise TypeError("copy unsupported")
+
+        def __repr__(self) -> str:
+            return "BadDeepcopy()"
+
+    assert runtime._hook_snapshot(BadDeepcopy()) == "BadDeepcopy()"
+
+    class BuggyDeepcopy:
+        def __deepcopy__(self, memo):  # noqa: ANN001
+            raise AssertionError("copy bug")
+
+    with pytest.raises(AssertionError, match="copy bug"):
+        runtime._hook_snapshot(BuggyDeepcopy())
+
+
 def test_progress_publish_failure_does_not_mask_successful_tool_execution(monkeypatch):
     calls: list[dict[str, Any]] = []
 

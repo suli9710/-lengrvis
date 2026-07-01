@@ -11,6 +11,7 @@ import pytest
 from watchdog.events import FileModifiedEvent
 
 from app.core import db
+from app.core.errors import SecurityError
 from app.indexer import file_watcher as file_watcher_module
 from app.indexer import fts_index as fts_index_module
 from app.indexer.fts_index import FTSIndex
@@ -272,6 +273,41 @@ def test_file_change_handler_filters_by_suffix():
     handler.on_modified(FileModifiedEvent("notes.txt"))
 
     assert events == [("prompt.md", "upsert")]
+
+
+@pytest.mark.parametrize("exc", [SecurityError("blocked"), OSError("bad path"), ValueError("bad path")])
+def test_file_change_handler_skips_expected_authorization_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    events: list[tuple[str, str]] = []
+    handler = file_watcher_module._FileChangeHandler(
+        lambda path, action: events.append((path, action)),
+        allowed_directories=["/allowed"],
+    )
+    monkeypatch.setattr(
+        file_watcher_module,
+        "resolve_authorized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exc),
+    )
+
+    handler.on_modified(FileModifiedEvent("outside.md"))
+
+    assert events == []
+
+
+def test_file_change_handler_does_not_swallow_unexpected_authorization_bugs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = file_watcher_module._FileChangeHandler(lambda _path, _action: None, allowed_directories=["/allowed"])
+    monkeypatch.setattr(
+        file_watcher_module,
+        "resolve_authorized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("resolver bug")),
+    )
+
+    with pytest.raises(RuntimeError, match="resolver bug"):
+        handler.on_modified(FileModifiedEvent("outside.md"))
 
 
 def test_watch_directories_backward_compat():

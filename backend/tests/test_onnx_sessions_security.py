@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.acceleration import onnx_sessions
 from app.acceleration.onnx_sessions import resolve_onnx_model_path
 
 
@@ -62,3 +63,13 @@ def test_resolve_onnx_model_path_verifies_optional_manifest_sha256(
 
     model.write_bytes(b"tampered")
     assert resolve_onnx_model_path(bundle) is None
+
+
+def test_onnx_containment_roots_settings_lookup_failures_do_not_block_resolution(monkeypatch, tmp_path: Path) -> None:
+    import app.config as config_module
+
+    def buggy_settings_error():
+        raise RuntimeError("settings loader bug")
+
+    monkeypatch.setattr(config_module, "get_base_settings", buggy_settings_error)
+    assert onnx_sessions._onnx_containment_roots(tmp_path)

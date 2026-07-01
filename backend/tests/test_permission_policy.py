@@ -15,6 +15,7 @@ from app.policy.permissions import (
     PermissionRule,
     PermissionStore,
     PermissionTimeWindow,
+    _window_datetime,
     evaluate_permission_policy,
 )
 from app.policy.policy_engine import PolicyEngine
@@ -195,6 +196,46 @@ def test_permission_store_persists_policy_to_sqlite():
     assert loaded.rules[0].id == "weekend_delete"
     assert loaded.rules[0].time_windows
     assert loaded.rules[0].time_windows[0].days == [5, 6]
+
+
+def test_permission_store_corrupt_policy_parse_fallback_is_narrow(monkeypatch: pytest.MonkeyPatch):
+    store = PermissionStore()
+    store.save_policy(PermissionPolicy(rules=[weekend_delete_rule()]))
+    corrupt_payload = "{not-json"
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE permission_policies SET data = ?, updated_at = ? WHERE id = ?",
+            (corrupt_payload, "now", store.policy_id),
+        )
+        db.store_sensitive_record_integrity("permission_policies", store.policy_id, corrupt_payload, conn=conn)
+
+    assert store.get_policy().rules == []
+    updated = store.add_rule(weekend_delete_rule())
+    assert [rule.id for rule in updated.rules] == ["weekend_delete"]
+
+    def fail_model_validate(cls, value):  # noqa: ANN001
+        raise RuntimeError("policy parser bug")
+
+    monkeypatch.setattr(PermissionPolicy, "model_validate", classmethod(fail_model_validate))
+    valid_payload = "{}"
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE permission_policies SET data = ?, updated_at = ? WHERE id = ?",
+            (valid_payload, "now", store.policy_id),
+        )
+        db.store_sensitive_record_integrity("permission_policies", store.policy_id, valid_payload, conn=conn)
+
+    with pytest.raises(RuntimeError, match="policy parser bug"):
+        store.get_policy()
+
+
+def test_permission_window_datetime_invalid_timezone_falls_back() -> None:
+    now = datetime(2026, 1, 1, 12, 0)
+    window = PermissionTimeWindow(start="09:00", end="17:00", timezone="Not/A_Real_Zone")
+
+    assert _window_datetime(window, now) is now
 
 
 def test_settings_permission_policy_routes_round_trip_rule():

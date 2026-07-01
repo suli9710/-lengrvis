@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 from app.config import get_env
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
@@ -40,6 +41,10 @@ DEFAULT_REPORT_BLOCKS = 8
 DEFAULT_PREVIEW_CHARS = 20000
 DEFAULT_MAX_PARSE_BYTES = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
+_OPTIONAL_IMPORT_ERRORS = (ImportError, OSError)
+_TEXT_TABLE_READ_ERRORS = (OSError, UnicodeError, csv.Error)
+_OFFICE_LOAD_ERRORS = (OSError, ValueError, KeyError, EOFError, BadZipFile)
+_OPTIONAL_HASH_ERRORS = (ImportError, OSError, ValueError, RuntimeError)
 
 
 class DocumentTooLargeError(ValueError):
@@ -418,7 +423,7 @@ def generate_cited_report(
 def _parse_with_docling(path: Path) -> DocumentIR:
     try:
         from docling.document_converter import DocumentConverter
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         raise AdvancedParserUnavailable(str(exc)) from exc
 
     converter = DocumentConverter()
@@ -450,7 +455,7 @@ def _parse_with_docling(path: Path) -> DocumentIR:
 def _parse_with_unstructured(path: Path) -> DocumentIR:
     try:
         from unstructured.partition.auto import partition
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         raise AdvancedParserUnavailable(str(exc)) from exc
 
     elements = partition(filename=str(path))
@@ -554,7 +559,7 @@ def _extract_csv_tables(path: Path, warnings: list[str]) -> list[DocumentTable]:
     try:
         with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as handle:
             rows = [[_stringify_cell(cell) for cell in row] for row in csv.reader(handle)]
-    except Exception as exc:  # noqa: BLE001
+    except _TEXT_TABLE_READ_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "CSV extraction failed",
@@ -580,7 +585,8 @@ def _extract_csv_tables(path: Path, warnings: list[str]) -> list[DocumentTable]:
 def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
     try:
         from openpyxl import load_workbook
-    except Exception as exc:  # noqa: BLE001
+        from openpyxl.utils.exceptions import InvalidFileException
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "XLSX extraction unavailable",
@@ -594,7 +600,7 @@ def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     tables: list[DocumentTable] = []
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
-    except Exception as exc:  # noqa: BLE001
+    except (*_OFFICE_LOAD_ERRORS, InvalidFileException) as exc:
         _append_extraction_warning(
             warnings,
             "XLSX extraction failed",
@@ -640,12 +646,8 @@ def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
 def _extract_pdf_pages(path: Path, *, settings: Any | None, warnings: list[str]) -> list[dict[str, Any]]:
     try:
         from pypdf import PdfReader
-
-        reader = PdfReader(str(path))
-        pages = [{"page": index, "text": page.extract_text() or ""} for index, page in enumerate(reader.pages, start=1)]
-        if any(len(page["text"].strip()) >= 24 for page in pages):
-            return pages
-    except Exception as exc:  # noqa: BLE001
+        from pypdf.errors import PdfReadError
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "PDF page extraction fell back to OCR/text fallback",
@@ -653,6 +655,22 @@ def _extract_pdf_pages(path: Path, *, settings: Any | None, warnings: list[str])
             exc,
             extension=path.suffix.lower(),
         )
+    else:
+        try:
+            reader = PdfReader(str(path))
+            pages = [
+                {"page": index, "text": page.extract_text() or ""} for index, page in enumerate(reader.pages, start=1)
+            ]
+            if any(len(page["text"].strip()) >= 24 for page in pages):
+                return pages
+        except (*_OFFICE_LOAD_ERRORS, RuntimeError, PdfReadError) as exc:
+            _append_extraction_warning(
+                warnings,
+                "PDF page extraction fell back to OCR/text fallback",
+                "document_intelligence.pdf.page_extract",
+                exc,
+                extension=path.suffix.lower(),
+            )
 
     text = extract_pdf_text_with_ocr_fallback(path, settings=settings)
     return [{"page": 1, "text": text}]
@@ -661,7 +679,8 @@ def _extract_pdf_pages(path: Path, *, settings: Any | None, warnings: list[str])
 def _extract_docx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
     try:
         from docx import Document
-    except Exception as exc:  # noqa: BLE001
+        from docx.opc.exceptions import PackageNotFoundError
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "DOCX extraction unavailable",
@@ -673,7 +692,7 @@ def _extract_docx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
 
     try:
         document = Document(str(path))
-    except Exception as exc:  # noqa: BLE001
+    except (*_OFFICE_LOAD_ERRORS, PackageNotFoundError) as exc:
         _append_extraction_warning(
             warnings,
             "DOCX extraction failed",
@@ -705,7 +724,8 @@ def _extract_docx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
 def _extract_pptx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
     try:
         from pptx import Presentation
-    except Exception as exc:  # noqa: BLE001
+        from pptx.exc import PackageNotFoundError
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "PPTX extraction unavailable",
@@ -717,7 +737,7 @@ def _extract_pptx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
 
     try:
         presentation = Presentation(str(path))
-    except Exception as exc:  # noqa: BLE001
+    except (*_OFFICE_LOAD_ERRORS, PackageNotFoundError) as exc:
         _append_extraction_warning(
             warnings,
             "PPTX extraction failed",
@@ -755,7 +775,7 @@ def _extract_html(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     raw = path.read_text(encoding="utf-8", errors="ignore")
     try:
         from bs4 import BeautifulSoup
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_IMPORT_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "HTML parser unavailable, used tag-stripping fallback",
@@ -880,7 +900,7 @@ def _document_id(path: Path, warnings: list[str]) -> str:
         import blake3
 
         return f"blake3:{blake3.blake3(data).hexdigest()}"
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_HASH_ERRORS as exc:
         _append_extraction_warning(
             warnings,
             "blake3 unavailable, used sha256 fallback",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import time
 from typing import Any
@@ -131,7 +132,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                 message = None
             except WebSocketDisconnect:
                 break
-            except Exception:  # noqa: BLE001
+            except (json.JSONDecodeError, KeyError, TypeError):
                 await websocket.send_json(
                     _remote_client_error(
                         code=_REMOTE_SCREEN_CONTROL_ERROR_CODE,
@@ -545,7 +546,7 @@ async def _wait_for_frame_ack_or_timeout(
             continue
         except WebSocketDisconnect:
             raise
-        except Exception:  # noqa: BLE001
+        except (json.JSONDecodeError, KeyError, TypeError):
             await websocket.send_json(
                 _remote_client_error(
                     code=_REMOTE_SCREEN_CONTROL_ERROR_CODE,

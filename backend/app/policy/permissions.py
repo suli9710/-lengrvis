@@ -5,9 +5,9 @@ import json
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_field, field_validator, model_validator
 
 from app.core import db
 from app.core.schemas import now_iso
@@ -195,7 +195,7 @@ class PermissionStore:
         db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
         try:
             return PermissionPolicy.model_validate(json.loads(row["data"]))
-        except Exception:  # noqa: BLE001
+        except (json.JSONDecodeError, TypeError, ValidationError):
             return PermissionPolicy()
 
     def updated_at(self) -> str:
@@ -238,7 +238,7 @@ class PermissionStore:
                 db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
                 try:
                     policy = PermissionPolicy.model_validate(json.loads(row["data"]))
-                except Exception:  # noqa: BLE001
+                except (json.JSONDecodeError, TypeError, ValidationError):
                     policy = PermissionPolicy(id=self.policy_id)
             else:
                 policy = PermissionPolicy(id=self.policy_id)
@@ -465,7 +465,7 @@ def _window_datetime(window: PermissionTimeWindow, now: datetime) -> datetime:
         return now
     try:
         zone = ZoneInfo(window.timezone)
-    except Exception:  # noqa: BLE001
+    except ZoneInfoNotFoundError:
         return now
     return now.astimezone(zone) if now.tzinfo else now.replace(tzinfo=zone)
 

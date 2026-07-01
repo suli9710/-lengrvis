@@ -466,6 +466,7 @@ export function SettingsPanel({
       }
     >
       <div className="settings-grid">
+        <p className="field-hint settings-grid__full">普通用户的统一配置入口；高级用户仍可使用 .env 和 config.yaml 管理启动与本地配置。</p>
         <BasicSettingsSection
           draft={draft}
           setDraft={setDraft}

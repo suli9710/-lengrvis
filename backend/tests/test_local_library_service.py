@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import builtins
 import json
+import types
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import AppSettings
+from app.core.errors import SecurityError
 from app.main import app
 from app.services import local_library_service
 
@@ -128,6 +131,94 @@ def test_local_library_preview_requires_explicit_authorized_root(
     with pytest.raises(HTTPException) as outside_exc_info:
         local_library_service.preview_local_image(str(outside))
     assert outside_exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize("exc", [SecurityError("blocked"), OSError("bad path"), ValueError("bad path")])
+def test_local_library_preview_converts_expected_path_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    monkeypatch.setattr(local_library_service, "get_effective_settings", lambda: AppSettings(allowed_directories=["."]))
+    monkeypatch.setattr(
+        local_library_service, "resolve_authorized", lambda *_args, **_kwargs: (_ for _ in ()).throw(exc)
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        local_library_service.preview_local_image("preview.png")
+
+    assert exc_info.value.status_code == 403
+
+
+def test_local_library_preview_does_not_swallow_unexpected_path_bugs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(local_library_service, "get_effective_settings", lambda: AppSettings(allowed_directories=["."]))
+    monkeypatch.setattr(
+        local_library_service,
+        "resolve_authorized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("path resolver bug")),
+    )
+
+    with pytest.raises(RuntimeError, match="path resolver bug"):
+        local_library_service.preview_local_image("preview.png")
+
+
+def test_iter_library_files_skips_expected_root_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        local_library_service,
+        "resolve_authorized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SecurityError("blocked root")),
+    )
+    budget = local_library_service.ScanBudget(started_at=local_library_service.time.monotonic())
+
+    assert list(local_library_service._iter_library_files(["bad-root"], {".png"}, budget)) == []
+
+
+def test_iter_library_files_does_not_swallow_unexpected_root_bugs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        local_library_service,
+        "resolve_authorized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("root resolver bug")),
+    )
+    budget = local_library_service.ScanBudget(started_at=local_library_service.time.monotonic())
+
+    with pytest.raises(RuntimeError, match="root resolver bug"):
+        list(local_library_service._iter_library_files(["bad-root"], {".png"}, budget))
+
+
+def test_image_dimensions_degrade_for_expected_pillow_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name, global_vars=None, local_vars=None, fromlist=(), level=0):
+        if name == "PIL":
+            raise ImportError("pillow unavailable")
+        return real_import(name, global_vars, local_vars, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert local_library_service._image_dimensions(tmp_path / "sample.png") == (0, 0)
+
+
+def test_image_dimensions_does_not_swallow_unexpected_pillow_bugs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_import = builtins.__import__
+
+    class BuggyImage:
+        @staticmethod
+        def open(_path: Path):
+            raise RuntimeError("pillow bug")
+
+    def fake_import(name, global_vars=None, local_vars=None, fromlist=(), level=0):
+        if name == "PIL":
+            module = types.ModuleType("PIL")
+            module.Image = BuggyImage
+            return module
+        return real_import(name, global_vars, local_vars, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError, match="pillow bug"):
+        local_library_service._image_dimensions(tmp_path / "sample.png")
 
 
 def test_local_library_preview_uses_short_lived_signed_url(

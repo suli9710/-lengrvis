@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from app.core import db
 from app.indexer.file_watcher import FileWatcher
+from app.orchestration.agent_bus import AgentMessagePersistBackpressureError
 from app.orchestration.dispatcher import EventDispatcher
 from app.perception import environment_stream as environment_stream_module
 from app.perception import storage as perception_storage
@@ -169,6 +171,105 @@ def test_environment_stream_continues_after_dispatcher_handler_error():
     asyncio.run(run())
 
 
+def test_environment_stream_degrades_for_expected_observation_store_errors(monkeypatch: pytest.MonkeyPatch):
+    async def run() -> None:
+        seen: list[EnvironmentEvent] = []
+        dispatcher = EventDispatcher()
+        dispatcher.register("environment.event", lambda event: seen.append(event))
+        stream = EnvironmentStream(dispatcher=dispatcher, rule_engine=EnvironmentRuleEngine([]))
+
+        monkeypatch.setattr(
+            environment_stream_module,
+            "store_observation",
+            lambda _event: (_ for _ in ()).throw(sqlite3.OperationalError("store unavailable")),
+        )
+        event = EnvironmentEvent(environment_type=EnvironmentEventType.SCREEN_CHANGED, summary_text="desktop changed")
+
+        await stream.emit(event)
+
+        assert seen == [event]
+
+    asyncio.run(run())
+
+
+def test_environment_stream_does_not_swallow_unexpected_observation_store_bugs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        stream = EnvironmentStream(dispatcher=EventDispatcher(), rule_engine=EnvironmentRuleEngine([]))
+        monkeypatch.setattr(
+            environment_stream_module,
+            "store_observation",
+            lambda _event: (_ for _ in ()).throw(RuntimeError("store bug")),
+        )
+
+        with pytest.raises(RuntimeError, match="store bug"):
+            await stream.emit(EnvironmentEvent(environment_type=EnvironmentEventType.SCREEN_CHANGED))
+
+    asyncio.run(run())
+
+
+def test_environment_stream_degrades_for_expected_suggestion_store_errors(monkeypatch: pytest.MonkeyPatch):
+    async def run() -> None:
+        suggestions_seen = []
+        dispatcher = EventDispatcher()
+        dispatcher.register("environment.proactive_suggestion", lambda event: suggestions_seen.append(event))
+        stream = EnvironmentStream(
+            dispatcher=dispatcher,
+            rule_engine=EnvironmentRuleEngine(
+                [
+                    EnvironmentRule(
+                        id="file_changed",
+                        event_pattern=[EnvironmentEventType.FILE_CHANGED],
+                        title="File changed",
+                        body="File changed.",
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            environment_stream_module,
+            "store_suggestion",
+            lambda _suggestion, _event: (_ for _ in ()).throw(TypeError("suggestion payload bad")),
+        )
+
+        suggestions = await stream.emit(file_changed_event("C:/work/notes.txt", "upsert"))
+
+        assert suggestions
+        assert suggestions_seen == suggestions
+
+    asyncio.run(run())
+
+
+def test_environment_stream_does_not_swallow_unexpected_suggestion_store_bugs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        stream = EnvironmentStream(
+            dispatcher=EventDispatcher(),
+            rule_engine=EnvironmentRuleEngine(
+                [
+                    EnvironmentRule(
+                        id="file_changed",
+                        event_pattern=[EnvironmentEventType.FILE_CHANGED],
+                        title="File changed",
+                        body="File changed.",
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            environment_stream_module,
+            "store_suggestion",
+            lambda _suggestion, _event: (_ for _ in ()).throw(RuntimeError("suggestion store bug")),
+        )
+
+        with pytest.raises(RuntimeError, match="suggestion store bug"):
+            await stream.emit(file_changed_event("C:/work/notes.txt", "upsert"))
+
+    asyncio.run(run())
+
+
 def test_environment_stream_times_out_slow_sink_and_continues_dispatch(monkeypatch):
     async def run() -> None:
         received: list[EnvironmentEvent] = []
@@ -231,6 +332,23 @@ def test_environment_rules_can_load_from_settings():
     assert len(rules) == 1
     assert rules[0].event_pattern == [EnvironmentEventType.APP_SWITCHED]
     assert rules[0].body == "Notepad is active."
+
+
+def test_invalid_environment_rules_fall_back_but_unexpected_rule_bug_propagates(monkeypatch):
+    class Settings:
+        environment_rules = [{"event_pattern": ["not_a_real_event"]}]
+
+    from app.perception import environment_stream as stream_module
+
+    rules = stream_module._rules_from_settings(Settings())
+    assert rules == stream_module.default_environment_rules()
+
+    def fail_from_dict(_raw):
+        raise RuntimeError("rule parser bug")
+
+    monkeypatch.setattr(stream_module.EnvironmentRule, "from_dict", fail_from_dict)
+    with pytest.raises(RuntimeError, match="rule parser bug"):
+        stream_module._rules_from_settings(Settings())
 
 
 def test_environment_rule_engine_matches_event_sequence():
@@ -379,6 +497,66 @@ def test_environment_stream_dispatches_sanitized_screen_event_to_bus_and_audit(m
     serialized_audit = json.dumps(db.fetch_many("audit_events", limit=20))
     assert "raw-image-should-not-persist" not in serialized_messages
     assert "raw-image-should-not-persist" not in serialized_audit
+
+
+def test_environment_stream_degrades_for_expected_suggestion_publish_errors() -> None:
+    async def run() -> None:
+        suggestions_seen = []
+        dispatcher = EventDispatcher()
+        dispatcher.register("environment.proactive_suggestion", lambda event: suggestions_seen.append(event))
+
+        class BackpressureBus:
+            def publish_text(self, *_args, **_kwargs):
+                raise AgentMessagePersistBackpressureError("queue full")
+
+        stream = EnvironmentStream(
+            dispatcher=dispatcher,
+            bus=BackpressureBus(),
+            rule_engine=EnvironmentRuleEngine(
+                [
+                    EnvironmentRule(
+                        id="file_changed",
+                        event_pattern=[EnvironmentEventType.FILE_CHANGED],
+                        title="File changed",
+                        body="File changed.",
+                    )
+                ]
+            ),
+        )
+
+        suggestions = await stream.emit(file_changed_event("C:/work/notes.txt", "upsert"))
+
+        assert suggestions
+        assert suggestions_seen == suggestions
+
+    asyncio.run(run())
+
+
+def test_environment_stream_does_not_swallow_unexpected_suggestion_publish_bugs() -> None:
+    async def run() -> None:
+        class BuggyBus:
+            def publish_text(self, *_args, **_kwargs):
+                raise RuntimeError("bus bug")
+
+        stream = EnvironmentStream(
+            dispatcher=EventDispatcher(),
+            bus=BuggyBus(),
+            rule_engine=EnvironmentRuleEngine(
+                [
+                    EnvironmentRule(
+                        id="file_changed",
+                        event_pattern=[EnvironmentEventType.FILE_CHANGED],
+                        title="File changed",
+                        body="File changed.",
+                    )
+                ]
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="bus bug"):
+            await stream.emit(file_changed_event("C:/work/notes.txt", "upsert"))
+
+    asyncio.run(run())
 
 
 def test_environment_storage_suppresses_sensitive_window_suggestion(monkeypatch, tmp_path):

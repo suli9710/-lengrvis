@@ -249,7 +249,7 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
                             continue
             except OSError:
                 continue
-    except Exception as exc:  # noqa: BLE001 - registry scanning is best-effort.
+    except ImportError as exc:
         logger.debug("registry app scan failed: %s", exc, exc_info=True)
     return apps
 
@@ -301,7 +301,7 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
                 }
             )
         return apps
-    except Exception as exc:  # noqa: BLE001 - appx scanning is best-effort.
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         logger.debug("appx package scan failed: %s", exc, exc_info=True)
         return []
 
@@ -350,9 +350,7 @@ def _scan_winget_packages() -> list[dict[str, Any]]:
                 }
             )
         return apps
-    except FileNotFoundError:
-        return []
-    except Exception as exc:  # noqa: BLE001 - winget scanning is best-effort.
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         logger.debug("winget package scan failed: %s", exc, exc_info=True)
         return []
 

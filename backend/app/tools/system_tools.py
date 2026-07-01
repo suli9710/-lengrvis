@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import get_env
 from app.core.audit import record
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
@@ -27,6 +28,17 @@ def _safe_diagnostic_error(error: Exception | str) -> str:
     return redact_public_text(text) if text else ""
 
 
+def _psutil_error_types(psutil_module: Any) -> tuple[type[BaseException], ...]:
+    candidates = (
+        getattr(psutil_module, "Error", None),
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+    )
+    return tuple(candidate for candidate in candidates if isinstance(candidate, type))
+
+
 def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     data = {
         "platform": platform.platform(),
@@ -38,7 +50,10 @@ def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         import psutil
-
+    except (ImportError, OSError) as exc:
+        data["psutil_error"] = _safe_diagnostic_error(exc)
+        return data
+    try:
         data.update(
             {
                 "cpu_count": psutil.cpu_count(),
@@ -46,7 +61,7 @@ def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 "memory_available": psutil.virtual_memory().available,
             }
         )
-    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
+    except _psutil_error_types(psutil) as exc:
         data["psutil_error"] = _safe_diagnostic_error(exc)
     return data
 
@@ -54,7 +69,9 @@ def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     try:
         import psutil
-
+    except (ImportError, OSError) as exc:
+        return {"error": _safe_diagnostic_error(exc), "disks": []}
+    try:
         disks: list[dict[str, Any]] = []
         skipped: list[dict[str, str]] = []
         errors: list[dict[str, str]] = []
@@ -64,7 +81,7 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 continue
             try:
                 usage = psutil.disk_usage(partition.mountpoint)._asdict()
-            except Exception as exc:  # noqa: BLE001 - diagnostics must stay best-effort.
+            except _psutil_error_types(psutil) as exc:
                 errors.append({"mountpoint": str(partition.mountpoint), "error": _safe_diagnostic_error(exc)})
                 continue
             disks.append(
@@ -76,7 +93,7 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 }
             )
         return {"disks": disks, "skipped": skipped[:8], "errors": errors[:8]}
-    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
+    except _psutil_error_types(psutil) as exc:
         return {"error": _safe_diagnostic_error(exc), "disks": []}
 
 
@@ -101,19 +118,23 @@ def _skip_disk_partition(partition: Any) -> bool:
 def get_network(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     try:
         import psutil
-
+    except (ImportError, OSError) as exc:
+        return {"error": _safe_diagnostic_error(exc), "network": {}}
+    try:
         return {"network": {name: [addr._asdict() for addr in addrs] for name, addrs in psutil.net_if_addrs().items()}}
-    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
+    except _psutil_error_types(psutil) as exc:
         return {"error": _safe_diagnostic_error(exc), "network": {}}
 
 
 def get_battery(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     try:
         import psutil
-
+    except (ImportError, OSError) as exc:
+        return {"error": _safe_diagnostic_error(exc), "battery": None}
+    try:
         battery = psutil.sensors_battery()
         return {"battery": battery._asdict() if battery else None}
-    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
+    except _psutil_error_types(psutil) as exc:
         return {"error": _safe_diagnostic_error(exc), "battery": None}
 
 
@@ -152,7 +173,7 @@ def get_startup_items(args: dict[str, Any], context: dict[str, Any]) -> dict[str
                         index += 1
             except OSError:
                 continue
-    except Exception as exc:  # noqa: BLE001 - startup scan is best-effort.
+    except (ImportError, OSError) as exc:
         logger.debug("startup registry scan failed: %s", exc, exc_info=True)
 
     return {"startup_items": items, "count": len(items)}
@@ -191,7 +212,7 @@ def find_large_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     for raw in raw_roots:
         try:
             root_path = str(resolve_authorized(str(raw), allowed))
-        except Exception:  # noqa: BLE001, S112 - unauthorized or malformed roots are skipped.
+        except (SecurityError, OSError, ValueError):  # noqa: S112 - unauthorized or malformed roots are skipped.
             continue
         if not os.path.isdir(root_path):
             continue
@@ -306,7 +327,9 @@ def get_processes(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     limit = int(args.get("limit", 25))
     try:
         import psutil
-
+    except (ImportError, OSError) as exc:
+        return {"error": _safe_diagnostic_error(exc), "processes": []}
+    try:
         processes = []
         for process in psutil.process_iter(["pid", "name", "username", "cpu_percent", "memory_info", "status"]):
             try:
@@ -326,7 +349,7 @@ def get_processes(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
                 continue
         processes.sort(key=lambda item: int(item.get("memory_bytes") or 0), reverse=True)
         return {"processes": processes[:limit], "count": len(processes)}
-    except Exception as exc:  # noqa: BLE001 - process diagnostics are best-effort.
+    except _psutil_error_types(psutil) as exc:
         return {"error": _safe_diagnostic_error(exc), "processes": []}
 
 

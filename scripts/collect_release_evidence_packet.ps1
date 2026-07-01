@@ -133,6 +133,7 @@ $packet = [ordered]@{
         claimable_release_signoff = $false
         release_readiness_blocker_count = $releaseReadinessBlockers.Count
         portable_natural_language_scope = "submission_plus_read_only_routing_evidence_only"
+        manual_content_review_required = $true
         packet_status = if ($contractFailures.Count -eq 0) { "redacted_partial_evidence_summary" } else { "source_contract_failure" }
     }
     evidence = [ordered]@{
@@ -184,9 +185,15 @@ $packet = [ordered]@{
             status = if (($mobileRemoteInputContracts | Where-Object { -not $_.required_markers_present }).Count -eq 0) { "fail_closed_source_contract_present" } else { "source_contract_missing" }
             source_contracts = $mobileRemoteInputContracts
             automated_scope = "static source contract markers in mobile UI/client/smoke sources"
+            required_markers = @(
+                "assertRemoteInputApprovalMatchesSession",
+                "remoteInputApprovalMatchesActiveGrant",
+                "client-side remote-input binding failures must not reach the smoke server"
+            )
             verify_command = "npm --prefix mobile run smoke:remote-input-grant"
             latest_execution_status = "not_run_by_this_packet"
             not_signoff = @(
+                "not_signoff=source/client contract only, not live device/WSS",
                 "not evidence that the smoke command was executed by this packet",
                 "not a real phone/emulator run",
                 "not proof of a live desktop-to-mobile remote input session",
@@ -225,6 +232,8 @@ $packet = [ordered]@{
             status = if ($localModelTemplateContract.required_markers_present) { "manual_clean_machine_template_contract_present" } else { "source_contract_missing" }
             source_contract = $localModelTemplateContract
             latest_redacted_clean_machine_template = $localModelTemplateLatestSummary
+            expected_artifact = "local-model-clean-machine-evidence.redacted.json"
+            validation_failure_message = "latest local-model clean-machine helper artifact failed fail-closed validation"
             expected_marker = "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
             expected_clean_machine_signoff = $false
             expected_install_start_pull_pass = $false
@@ -244,6 +253,7 @@ $packet = [ordered]@{
             status = if ($diagnosticsContract.required_markers_present) { "manual_review_required_contract_present" } else { "source_contract_missing" }
             source_contract = $diagnosticsContract
             latest_redacted_review_packet = $diagnosticsReviewLatestSummary
+            expected_artifact = "diagnostics-external-review.redacted.json"
             expected_external_review_status = "manual_review_required"
             expected_required_before_external_sharing = $true
             expected_public_safe = $false
@@ -263,10 +273,21 @@ $packet = [ordered]@{
             status = if ($resultQualityReviewContract.required_markers_present) { "manual_review_required_contract_present" } else { "source_contract_missing" }
             source_contract = $resultQualityReviewContract
             latest_redacted_review_packet = $resultQualityReviewLatestSummary
+            expected_artifact = "result-quality-review.redacted.json"
             expected_marker = "NOT_RESULT_QUALITY_SIGNOFF"
             expected_result_quality_signoff = $false
+            result_quality_claim_blocked = $true
+            separate_human_signoff_required = $true
             expected_claim_allowed = $false
             expected_completed_result_evidence = $false
+            validation_failure_messages = @(
+                "summary.review_fields_complete does not match missing/issue/status state",
+                "summary.external_sharing_blocked is not true",
+                "summary.separate_human_content_review_required is not true",
+                "claim_controls.external_sharing_blocked is not true",
+                "claim_controls.separate_human_content_review_required is not true",
+                "latest result-quality review helper artifact failed fail-closed validation"
+            )
             verify_command = "python -m pytest backend/tests/test_result_quality_review_packet.py -q"
             not_signoff = @(
                 "not completed-result evidence",
@@ -280,10 +301,17 @@ $packet = [ordered]@{
             status = if ($rcHandoffContract.required_markers_present) { "manual_rc_handoff_contract_present" } else { "source_contract_missing" }
             source_contract = $rcHandoffContract
             latest_redacted_handoff_template = $rcHandoffLatestSummary
+            expected_artifact = "rc-handoff-template.redacted.json"
             expected_marker = "NOT_RELEASE_CANDIDATE_SIGNOFF"
             expected_release_candidate_signoff = $false
             expected_claim_allowed = $false
             expected_gate_commands_run_by_this_helper = $false
+            validation_failure_messages = @(
+                "summary.release_candidate_signoff is not false",
+                "summary.gate_commands_run_by_this_helper is not false",
+                "signoff_controls.must_not_tag_publish_or_announce is not true",
+                "latest RC handoff helper artifact failed fail-closed validation"
+            )
             verify_command = "python -m pytest backend/tests/test_start_app_script.py -q"
             not_signoff = @(
                 "not release-candidate pass",
@@ -326,6 +354,7 @@ $packet = [ordered]@{
         status = "manual_rc_handoff_required"
         release_candidate_signoff = $false
         packet_is_rc_signoff = $false
+        must_not_claim = "release-candidate pass"
         required_before_rc_signoff = @(
             "candidate commit or build id",
             "platform and packaged artifact paths or redacted artifact labels",
@@ -355,6 +384,22 @@ $packet = [ordered]@{
         beginner_instruction = "Use this packet as a redacted checklist only; do not tag, publish, or announce an RC until a separate handoff fills every required field."
     }
     release_readiness_blockers = $releaseReadinessBlockers
+    release_readiness_markdown_contract = [ordered]@{
+        heading = "## Release Readiness Blockers"
+        count_line = 'blocker_count=$($packet.summary.release_readiness_blocker_count)'
+    }
+    natural_language_completion_evidence = [ordered]@{
+        markdown_field = "completion_evidence\.level"
+        completed_result_without_signoff_expression = '$naturalLanguageCompletionLevel -eq "completed_result" -and $naturalLanguageResultVerified -and -not $naturalLanguageSignoff'
+        validation_failure_messages = @(
+            "natural-language pass line reports result_verified without completed_result level",
+            "natural-language pass line must not report completion_evidence signoff"
+        )
+    }
+    release_readiness_blocker_labels = @(
+        "missing_real_device_artifacts",
+        "missing_result_quality_signoff"
+    )
     next_manual_evidence_needed = @(
         "Clean-machine or packaged-profile local model install/start/pull/task-smoke evidence when local/offline model readiness is claimed.",
         "Real phone/emulator camera or QR pairing path, actual WSS connection, and explicit device certificate trust evidence when mobile LAN/WSS readiness is claimed.",

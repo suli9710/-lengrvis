@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.config import AppSettings
 from app.llm import local_provider, onnx_provider
-from app.llm.local_provider import LocalBackend
+from app.llm.local_provider import LocalBackend, LocalBackendUnavailable
 from app.llm.onnx_provider import OnnxBackend, OnnxProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
 from app.llm.registry import get_provider_for_mode
@@ -375,6 +376,74 @@ def test_onnx_provider_chat_uses_genai_runtime(monkeypatch, tmp_path: Path):
     assert text == "ok!"
 
 
+def test_onnx_provider_model_load_failures_are_narrow(monkeypatch, tmp_path: Path):
+    model_dir = _write_genai_bundle(tmp_path / "genai-model")
+    backend = OnnxBackend(
+        kind="onnx-cpu",
+        model_path=str(model_dir),
+        execution_provider="CPUExecutionProvider",
+        available_providers=["CPUExecutionProvider"],
+    )
+    provider = OnnxProvider(AppSettings(mode="privacy", model=str(model_dir), max_tokens=8), backend)
+
+    def fail_with_native_error():
+        raise OSError("native model load failed")
+
+    monkeypatch.setattr(provider, "_ensure_genai_model", fail_with_native_error)
+
+    with pytest.raises(LocalBackendUnavailable, match="Unable to load ONNX Runtime GenAI model"):
+        provider._generate_text("hello", temperature=0)
+
+    def fail_with_bug():
+        raise AssertionError("model load bug")
+
+    monkeypatch.setattr(provider, "_ensure_genai_model", fail_with_bug)
+
+    with pytest.raises(AssertionError, match="model load bug"):
+        provider._generate_text("hello", temperature=0)
+
+
+def test_onnx_provider_generation_failures_are_narrow(monkeypatch, tmp_path: Path):
+    model_dir = _write_genai_bundle(tmp_path / "genai-model")
+    backend = OnnxBackend(
+        kind="onnx-cpu",
+        model_path=str(model_dir),
+        execution_provider="CPUExecutionProvider",
+        available_providers=["CPUExecutionProvider"],
+    )
+    provider = OnnxProvider(AppSettings(mode="privacy", model=str(model_dir), max_tokens=8), backend)
+
+    class NativeFailingTokenizer:
+        def create_stream(self):
+            raise RuntimeError("native generation failed")
+
+    native_failing_state = types.SimpleNamespace(
+        runtime=types.SimpleNamespace(),
+        model=object(),
+        tokenizer=NativeFailingTokenizer(),
+        lock=threading.RLock(),
+    )
+    monkeypatch.setattr(provider, "_ensure_genai_model", lambda: native_failing_state)
+
+    with pytest.raises(LocalBackendUnavailable, match="ONNX text generation failed"):
+        provider._generate_text("hello", temperature=0)
+
+    class BuggyTokenizer:
+        def create_stream(self):
+            raise AssertionError("generation bug")
+
+    buggy_state = types.SimpleNamespace(
+        runtime=types.SimpleNamespace(),
+        model=object(),
+        tokenizer=BuggyTokenizer(),
+        lock=threading.RLock(),
+    )
+    monkeypatch.setattr(provider, "_ensure_genai_model", lambda: buggy_state)
+
+    with pytest.raises(AssertionError, match="generation bug"):
+        provider._generate_text("hello", temperature=0)
+
+
 def test_onnx_qwen_message_format_sanitizes_template_delimiters():
     backend = OnnxBackend(
         kind="onnx-directml",
@@ -734,6 +803,67 @@ def test_onnx_runtime_snapshot_redacts_import_failures(monkeypatch, tmp_path: Pa
     assert "onnx-runtime-secret-1234567890" not in status["error"]
     assert str(private_file) not in status["error"]
     assert "genai-secret.dll" not in status["error"]
+
+
+def test_import_genai_runtime_continues_after_native_probe_error(monkeypatch):
+    _clear_onnx_env(monkeypatch)
+    fake_genai = types.SimpleNamespace(__version__="1.0")
+
+    def import_runtime(name: str):
+        if name == "onnxruntime_genai_winml":
+            raise OSError("winml native runtime failed to initialize")
+        if name == "onnxruntime_genai":
+            return fake_genai
+        raise ImportError(name)
+
+    monkeypatch.setattr(onnx_provider.importlib, "import_module", import_runtime)
+
+    assert onnx_provider._import_genai_runtime() is fake_genai
+
+
+def test_import_genai_runtime_native_errors_aggregate_as_import_error(monkeypatch):
+    _clear_onnx_env(monkeypatch)
+
+    def import_runtime(name: str):
+        if name == "onnxruntime_genai_winml":
+            raise OSError("winml native runtime failed")
+        if name == "onnxruntime_genai":
+            raise RuntimeError("genai native runtime failed")
+        raise ImportError(name)
+
+    monkeypatch.setattr(onnx_provider.importlib, "import_module", import_runtime)
+
+    with pytest.raises(ImportError) as exc_info:
+        onnx_provider._import_genai_runtime()
+
+    assert "winml native runtime failed" in str(exc_info.value)
+    assert "genai native runtime failed" in str(exc_info.value)
+
+
+def test_onnx_runtime_snapshot_redacts_native_probe_failures(monkeypatch, tmp_path: Path):
+    private_file = tmp_path / "Users" / "Suli" / "private-runtime" / "native-secret.dll"
+
+    def fail_import(_name: str):
+        raise OSError(f"unable to load {private_file} token=onnx-native-secret-1234567890")
+
+    monkeypatch.setattr(onnx_provider.importlib, "import_module", fail_import)
+
+    status = onnx_provider._runtime_package_snapshot("onnxruntime_genai")
+
+    assert status["available"] is False
+    assert "unable to load" in status["error"]
+    assert "onnx-native-secret-1234567890" not in status["error"]
+    assert str(private_file) not in status["error"]
+    assert "native-secret.dll" not in status["error"]
+
+
+def test_available_execution_providers_returns_empty_on_provider_probe_failure(monkeypatch):
+    fake_onnxruntime = types.SimpleNamespace(
+        get_available_providers=lambda: (_ for _ in ()).throw(RuntimeError("provider probe failed"))
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_onnxruntime)
+
+    assert onnx_provider._available_execution_providers() == []
 
 
 def test_settings_onnx_status_includes_embedding_ocr_and_image_sections(monkeypatch, tmp_path: Path):

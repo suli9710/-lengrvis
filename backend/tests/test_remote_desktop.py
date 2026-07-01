@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from datetime import UTC, datetime, timedelta
@@ -572,6 +573,58 @@ def test_remote_screen_invalid_control_sends_generic_error(monkeypatch: pytest.M
             "line 1 column",
         ],
     )
+
+
+def test_remote_screen_ack_wait_only_suppresses_malformed_control_messages():
+    class MalformedThenAckWebSocket:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+            self.calls = 0
+
+        async def receive_json(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise json.JSONDecodeError("bad json", "not-json", 0)
+            return {"type": "frame_ack", "sequence": 7}
+
+        async def send_json(self, payload: dict[str, object]) -> None:
+            self.sent.append(payload)
+
+    websocket = MalformedThenAckWebSocket()
+
+    result = asyncio.run(
+        routes_remote._wait_for_frame_ack_or_timeout(
+            websocket,
+            sequence=7,
+            fps=1.0,
+            quality=80,
+            is_device_active=lambda: True,
+        )
+    )
+
+    assert result == (1.0, 80, True)
+    assert websocket.sent == [
+        {
+            "type": "error",
+            "code": "remote_screen.invalid_control",
+            "message": "Invalid screen stream control message.",
+        }
+    ]
+
+    class BuggyWebSocket(MalformedThenAckWebSocket):
+        async def receive_json(self):
+            raise RuntimeError("websocket state bug")
+
+    with pytest.raises(RuntimeError, match="websocket state bug"):
+        asyncio.run(
+            routes_remote._wait_for_frame_ack_or_timeout(
+                BuggyWebSocket(),
+                sequence=7,
+                fps=1.0,
+                quality=80,
+                is_device_active=lambda: True,
+            )
+        )
 
 
 def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.MonkeyPatch):

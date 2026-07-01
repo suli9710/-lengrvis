@@ -13,6 +13,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from app.core.audit import record
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 
 _DEBOUNCE_SECONDS = 2.0
@@ -57,7 +58,7 @@ class _FileChangeHandler(FileSystemEventHandler):
         if self._allowed_directories is not None:
             try:
                 resolve_authorized(path, self._allowed_directories)
-            except Exception:  # noqa: BLE001
+            except (SecurityError, OSError, ValueError):
                 return
         self._callback(path, action)
 

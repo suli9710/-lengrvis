@@ -216,6 +216,23 @@ def test_provider_ocr_timeout_returns_from_running_event_loop(
     assert time.monotonic() - started < 0.5
 
 
+def test_ocr_vocab_skips_invalid_json_but_not_unexpected_reader_bug(monkeypatch, tmp_path: Path) -> None:
+    model_dir = tmp_path / "ocr-model"
+    model_dir.mkdir()
+    vocab = model_dir / "vocab.json"
+    vocab.write_text("{not-json", encoding="utf-8")
+
+    assert ocr_service._load_ocr_vocab(model_dir) == {}
+
+    def raise_unexpected(self, *args: Any, **kwargs: Any):  # noqa: ANN001, ARG001
+        raise RuntimeError("vocab reader bug")
+
+    monkeypatch.setattr(Path, "read_text", raise_unexpected)
+
+    with pytest.raises(RuntimeError, match="vocab reader bug"):
+        ocr_service._load_ocr_vocab(model_dir)
+
+
 def test_image_pdf_extract_text_uses_ocr_fallback(image_pdf: Path) -> None:
     text = document_tools.extract_text_from_path(image_pdf)
 

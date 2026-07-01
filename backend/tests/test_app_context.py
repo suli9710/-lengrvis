@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+import types
+
+import pytest
+
 from app.perception import app_context
 
 
@@ -73,3 +78,76 @@ def test_windows_context_gracefully_handles_dependency_errors(monkeypatch):
 
     assert context.available is False
     assert "user32 unavailable" in context.error
+
+
+def test_process_name_suppresses_psutil_errors_but_not_unexpected_bugs(monkeypatch):
+    class FakePsutilError(Exception):
+        pass
+
+    class FakePsutil(types.SimpleNamespace):
+        Error = FakePsutilError
+
+    fake_psutil = FakePsutil()
+
+    class MissingProcess:
+        def __init__(self, _process_id):
+            pass
+
+        def name(self):
+            raise FakePsutilError("process vanished")
+
+    fake_psutil.Process = MissingProcess
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    assert app_context._process_name(42) == ""
+
+    class BuggyProcess:
+        def __init__(self, _process_id):
+            pass
+
+        def name(self):
+            raise RuntimeError("psutil wrapper bug")
+
+    fake_psutil.Process = BuggyProcess
+    with pytest.raises(RuntimeError, match="psutil wrapper bug"):
+        app_context._process_name(42)
+
+
+def test_app_context_optional_focus_providers_are_narrow(monkeypatch):
+    class FakeComtypesError(Exception):
+        pass
+
+    fake_comtypes = types.ModuleType("comtypes")
+    fake_comtypes.COMError = FakeComtypesError
+    fake_comtypes.__path__ = []
+    fake_client = types.ModuleType("comtypes.client")
+    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(FakeComtypesError("uia down"))
+    fake_comtypes.client = fake_client
+    monkeypatch.setitem(sys.modules, "comtypes", fake_comtypes)
+    monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
+    assert app_context._focused_control_from_comtypes() is None
+
+    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(RuntimeError("uia runtime down"))
+    assert app_context._focused_control_from_comtypes() is None
+
+    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(AssertionError("uia bug"))
+    with pytest.raises(AssertionError, match="uia bug"):
+        app_context._focused_control_from_comtypes()
+
+    class FakePywinError(Exception):
+        pass
+
+    fake_pywintypes = types.ModuleType("pywintypes")
+    fake_pywintypes.error = FakePywinError
+    fake_pywintypes.com_error = FakePywinError
+    fake_win32gui = types.ModuleType("win32gui")
+    fake_win32gui.GetFocus = lambda: 1
+    fake_win32gui.GetForegroundWindow = lambda: 1
+    fake_win32gui.GetWindowText = lambda _hwnd: (_ for _ in ()).throw(FakePywinError("win32 unavailable"))
+    fake_win32gui.GetClassName = lambda _hwnd: "Edit"
+    monkeypatch.setitem(sys.modules, "pywintypes", fake_pywintypes)
+    monkeypatch.setitem(sys.modules, "win32gui", fake_win32gui)
+    assert app_context._focused_control_from_pywin32() is None
+    assert app_context._window_metadata(123) == {"hwnd": 123, "class_name": "Edit"}
+
+    fake_win32gui.GetClassName = lambda _hwnd: (_ for _ in ()).throw(FakePywinError("class unavailable"))
+    assert app_context._window_metadata(123) == {"hwnd": 123}

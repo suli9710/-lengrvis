@@ -22,6 +22,7 @@ from app.core.schemas import (
     StepStatus,
     Task,
     TaskStatus,
+    ToolResult,
 )
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
@@ -363,6 +364,43 @@ def test_request_revision_pauses_before_later_plan_steps_execute():
     assert second_calls == []
     assert task.status == TaskPhase.EXECUTION
     assert task.execution_stage == ExecutionStage.PAUSED
+
+
+def test_revision_request_falls_back_to_step_agent_when_tool_metadata_missing():
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_and_plan("test.missing_tool")
+
+    orchestrator._handle_subagent_revision_request(
+        task,
+        step,
+        AgentAction(kind="request_revision", follow_up_question="Need a registered tool."),
+    )
+
+    messages = orchestrator.bus.get_messages(task.id)
+    revision = next(message for message in messages if message.message_type == MessageType.REVISION)
+    assert revision.from_agent == step.agent_name
+    assert revision.to_agent == "PlannerAgent"
+    assert step.status == StepStatus.SKIPPED
+
+
+def test_reflect_on_step_falls_back_to_step_agent_when_tool_metadata_missing():
+    class ReflectingAgent(RecordingAgent):
+        def __init__(self) -> None:
+            super().__init__(AgentAction(kind="done"))
+            self.reflected: list[PlanStep] = []
+
+        async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+            self.reflected.append(step)
+            return "reflected"
+
+    orchestrator = OrchestratorAgent()
+    agent = ReflectingAgent()
+    orchestrator.subagents["FileAgent"] = agent
+    task, _plan, step = _task_and_plan("test.missing_tool")
+
+    asyncio.run(orchestrator._reflect_on_step(task, step, ToolResult(tool_call_id="tool-1", ok=True)))
+
+    assert agent.reflected == [step]
 
 
 def test_done_action_skips_step_safely():

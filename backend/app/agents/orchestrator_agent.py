@@ -353,7 +353,7 @@ class OrchestratorAgent:
         try:
             tool = self.registry.get(step.tool_name) if step.tool_name else None
             from_agent = getattr(tool, "agent_owner", "") or step.agent_name
-        except Exception:  # noqa: BLE001 - missing tool metadata should degrade to the planned agent.
+        except KeyError:
             from_agent = step.agent_name
         safe_question = redact_public_text(question)
         self.bus.publish_text(
@@ -480,7 +480,7 @@ class OrchestratorAgent:
         try:
             tool = self.registry.get(step.tool_name) if step.tool_name else None
             owner_name = getattr(tool, "agent_owner", "") or step.agent_name
-        except Exception:  # noqa: BLE001 - missing tool metadata should degrade to the planned agent.
+        except KeyError:
             owner_name = step.agent_name
         agent = self.subagents.get(owner_name)
         if agent is None:

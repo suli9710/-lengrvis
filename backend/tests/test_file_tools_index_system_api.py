@@ -328,6 +328,37 @@ def test_rebuild_without_valid_roots_preserves_existing_index(monkeypatch: pytes
     assert FTSIndex().search("preserve searchable index content", allowed_directories=[str(workspace)])
 
 
+def test_rebuild_reports_root_enumeration_failures_and_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+
+    from app.core import db
+    from app.indexer import fts_index
+    from app.indexer.fts_index import FTSIndex
+
+    db.init_db()
+    blocked = tmp_path / "blocked"
+    allowed = tmp_path / "allowed"
+    blocked.mkdir()
+    allowed.mkdir()
+    (allowed / "keep.txt").write_text("searchable allowed content", encoding="utf-8")
+
+    original_rglob = fts_index.Path.rglob
+
+    def fake_rglob(path: Path, pattern: str):
+        if path == blocked:
+            raise PermissionError("blocked root")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(fts_index.Path, "rglob", fake_rglob)
+
+    result = FTSIndex(embedder=lambda texts: [[1.0] for _ in texts]).rebuild([str(blocked), str(allowed)])
+
+    assert result["files_indexed"] == 1
+    assert result["files_failed"] == 1
+    assert result["failures"] == [{"path_label": "blocked", "message": "blocked root"}]
+    assert FTSIndex().search("searchable allowed content", allowed_directories=[str(allowed)])
+
+
 def test_rebuild_keeps_lexical_index_when_embeddings_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 

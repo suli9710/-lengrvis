@@ -6,6 +6,45 @@ from typing import Any
 
 from app.perception.schemas import AppContext, Rect, UIElement
 
+_WINDOW_METADATA_ERRORS = (ImportError, AttributeError, OSError, TypeError, ValueError)
+
+
+def _optional_ui_provider_error_types() -> tuple[type[BaseException], ...]:
+    return (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError, ctypes.ArgumentError)
+
+
+def _comtypes_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        import comtypes
+    except ImportError:
+        return _optional_ui_provider_error_types()
+    com_error = getattr(comtypes, "COMError", None)
+    if isinstance(com_error, type) and issubclass(com_error, BaseException):
+        return (*_optional_ui_provider_error_types(), com_error)
+    return _optional_ui_provider_error_types()
+
+
+def _pywin32_error_types() -> tuple[type[BaseException], ...]:
+    base = _optional_ui_provider_error_types()
+    try:
+        import pywintypes  # type: ignore[import-not-found]
+    except ImportError:
+        return base
+    errors = tuple(
+        error_type
+        for error_type in (getattr(pywintypes, "error", None), getattr(pywintypes, "com_error", None))
+        if isinstance(error_type, type) and issubclass(error_type, BaseException)
+    )
+    return (*base, *errors)
+
+
+def _psutil_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        import psutil
+    except ImportError:
+        return (ImportError, OSError, ValueError, TypeError)
+    return (ImportError, OSError, ValueError, TypeError, psutil.Error)
+
 
 class _WinRect(ctypes.Structure):
     _fields_ = [
@@ -82,7 +121,7 @@ def _process_name(process_id: int | None) -> str:
         import psutil
 
         return str(psutil.Process(process_id).name())
-    except Exception:  # noqa: BLE001
+    except _psutil_error_types():
         return ""
 
 
@@ -120,7 +159,7 @@ def _focused_control_from_comtypes() -> UIElement | None:
                 "class_name": str(getattr(element, "CurrentClassName", "") or ""),
             },
         )
-    except Exception:  # noqa: BLE001
+    except _comtypes_error_types():
         return None
 
 
@@ -139,7 +178,7 @@ def _focused_control_from_pywin32() -> UIElement | None:
             text=title,
             attributes={"class_name": class_name, "hwnd": int(hwnd)},
         )
-    except Exception:  # noqa: BLE001
+    except _pywin32_error_types():
         return None
 
 
@@ -149,6 +188,6 @@ def _window_metadata(hwnd: int) -> dict[str, Any]:
         import win32gui
 
         metadata["class_name"] = str(win32gui.GetClassName(hwnd) or "")
-    except Exception:  # noqa: BLE001, S110
+    except _pywin32_error_types():  # noqa: S110
         pass
     return metadata

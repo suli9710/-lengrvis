@@ -53,7 +53,7 @@ def _default_report_dir() -> Path:
 def _prune_reports(report_dir: Path) -> None:
     try:
         reports = sorted(report_dir.glob("crash_*.json"))
-    except Exception:  # pragma: no cover  # noqa: BLE001
+    except OSError:  # pragma: no cover
         return
     excess = len(reports) - _MAX_REPORTS
     if excess <= 0:
@@ -61,7 +61,7 @@ def _prune_reports(report_dir: Path) -> None:
     for path in reports[:excess]:
         try:
             path.unlink()
-        except Exception:  # pragma: no cover  # noqa: S112, BLE001
+        except OSError:  # pragma: no cover  # noqa: S112
             continue
 
 

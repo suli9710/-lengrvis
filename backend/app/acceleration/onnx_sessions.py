@@ -60,6 +60,7 @@ _SESSION_CACHE: OrderedDict[str, Any] = OrderedDict()
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _GLOBAL_LOCK = threading.Lock()
 _DEFAULT_SESSION_CACHE_MAX_ENTRIES = 4
+_OPTIONAL_RUNTIME_ERRORS = (AttributeError, OSError, RuntimeError, SystemError, TypeError, ValueError)
 
 
 class OnnxAccelerationUnavailable(RuntimeError):
@@ -126,7 +127,7 @@ def available_execution_providers() -> list[str]:
         return []
     try:
         return [str(provider) for provider in ort.get_available_providers()]
-    except Exception:  # noqa: BLE001 - native runtime probing must degrade to unavailable.
+    except _OPTIONAL_RUNTIME_ERRORS:
         return []
 
 
@@ -136,7 +137,7 @@ def import_onnxruntime() -> Any | None:
             return importlib.import_module(module_name)
         except ImportError:
             continue
-        except Exception:  # noqa: BLE001, S112 - broken optional runtimes should not block fallback.
+        except _OPTIONAL_RUNTIME_ERRORS:  # noqa: S112
             continue
     return None
 
@@ -493,14 +494,14 @@ def run_session(session: Any, inputs: dict[str, np.ndarray], output_names: list[
 def session_input_names(session: Any) -> list[str]:
     try:
         return [str(item.name) for item in session.get_inputs()]
-    except Exception as exc:  # noqa: BLE001
+    except _OPTIONAL_RUNTIME_ERRORS as exc:
         raise OnnxAccelerationUnavailable(f"Unable to inspect ONNX model inputs: {exc}") from exc
 
 
 def session_output_names(session: Any) -> list[str]:
     try:
         return [str(item.name) for item in session.get_outputs()]
-    except Exception:  # noqa: BLE001 - output-name discovery is best-effort diagnostics.
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
         return []
 
 
@@ -635,7 +636,7 @@ def _module_status(module_name: str) -> dict[str, Any]:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         return {"available": False, "module": module_name, "error": _safe_runtime_error(exc)}
-    except Exception as exc:  # noqa: BLE001 - optional runtime import failures become health data.
+    except _OPTIONAL_RUNTIME_ERRORS as exc:
         return {"available": False, "module": module_name, "error": _safe_runtime_error(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}

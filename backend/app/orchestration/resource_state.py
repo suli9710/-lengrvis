@@ -418,7 +418,7 @@ def _read_state_for_path(
             cached = runtime.extra_context.get("_resource_read_states", {}).get(key)
             if cached:
                 return cached
-        except Exception as exc:  # noqa: BLE001
+        except (AttributeError, TypeError) as exc:
             logger.debug("could not read runtime resource cache for %s: %s", key, exc, exc_info=True)
     return None
 
@@ -468,7 +468,7 @@ def _task_id(context: dict[str, Any], runtime: Any | None = None) -> str:
     if runtime is not None:
         try:
             return str(runtime.task.id)
-        except Exception:  # noqa: BLE001
+        except (AttributeError, TypeError, ValueError):
             return ""
     return ""
 
@@ -481,7 +481,7 @@ def _step_id(context: dict[str, Any], runtime: Any | None = None) -> str:
             step = getattr(runtime, "step", None)
             if step is not None and getattr(step, "id", None):
                 return str(step.id)
-        except Exception:  # noqa: BLE001
+        except (AttributeError, TypeError, ValueError):
             return ""
     return ""
 
