@@ -43,10 +43,7 @@ def approval_dry_run_summary(tool: ToolDefinition, preview: dict[str, Any]) -> s
     if preview.get("error"):
         return f"{tool.name} dry-run failed: {preview.get('error')}"
     changed = (
-        preview.get("would_change")
-        or preview.get("changes")
-        or preview.get("items")
-        or preview.get("changed_paths")
+        preview.get("would_change") or preview.get("changes") or preview.get("items") or preview.get("changed_paths")
     )
     if isinstance(changed, list):
         return f"{tool.name} dry-run preview contains {len(changed)} item(s)."

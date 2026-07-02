@@ -57,9 +57,7 @@ def retained_tail_message_ids(boundary: dict[str, Any]) -> set[str]:
             ]
         )
         preserved = (
-            metadata_from_boundary.get("preserved_segment")
-            or metadata_from_boundary.get("preservedSegment")
-            or {}
+            metadata_from_boundary.get("preserved_segment") or metadata_from_boundary.get("preservedSegment") or {}
         )
         if isinstance(preserved, dict):
             raw_values.append(preserved.get("message_ids") or preserved.get("messageIds"))
