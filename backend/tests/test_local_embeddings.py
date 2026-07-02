@@ -55,15 +55,20 @@ def test_embed_texts_hashes_when_local_and_registry_are_unavailable(monkeypatch:
 
 
 def test_embed_texts_falls_back_when_local_provider_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    local_completed = False
+
     class SlowLocalProvider:
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
+            nonlocal local_completed
             await asyncio.sleep(1.0)
+            local_completed = True
             return [[99.0] for _ in texts]
 
     class RegistryProvider:
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
             return [[float(len(text)), 7.0] for text in texts]
 
+    monkeypatch.setattr(embedding_service, "get_effective_settings", lambda: AppSettings())
     monkeypatch.setattr(embedding_service, "get_local_embedding_provider", lambda settings: SlowLocalProvider())
     monkeypatch.setattr(embedding_service, "get_provider", lambda settings, task="embed": RegistryProvider())
 
@@ -71,6 +76,7 @@ def test_embed_texts_falls_back_when_local_provider_times_out(monkeypatch: pytes
     vectors = asyncio.run(embedding_service.embed_texts(["alpha"], timeout_seconds=0.01))
 
     assert vectors == [[5.0, 7.0]]
+    assert local_completed is False
     assert time.monotonic() - started < 0.5
 
 
