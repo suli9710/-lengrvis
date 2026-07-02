@@ -12,9 +12,7 @@ import {
   Loader2,
   MousePointerClick,
   Route,
-  RotateCcw,
   Search,
-  ShieldCheck,
   Sparkles,
   Table2,
   Trash2,
@@ -24,7 +22,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   AppSettings,
-  CleanupPlan,
   DocumentAskResponse,
   DocumentCompareResponse,
   DocumentIR,
@@ -37,6 +34,7 @@ import { documentScopesForFiles, mergeScopePaths } from "../lib/documentScope";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { zhUserFacingError } from "../lib/zh";
 import type { ConnectionState } from "../store";
+import { useFileCleanupWorkspace } from "./file-search/FileCleanupWorkspace";
 import { Badge, Panel } from "./Panel";
 
 interface FileSearchPanelProps {
@@ -66,7 +64,6 @@ export type FileToolTab = "search" | "document" | "cleanup";
 export type DocumentIntentAction = "read" | "summarize" | "ask";
 type SearchStatus = "idle" | "missing_scope" | "missing_query" | "loading" | "empty" | "success" | "error";
 type SearchNoticeTone = "info" | "error" | "empty" | "success";
-type CleanupApprovalStatus = "idle" | "planning" | "ready" | "requesting" | "requested" | "error";
 type ResultDocumentAction = "read" | "summarize";
 type DocumentWorkingAction = "read" | "summarize" | "ask" | "compare";
 type ResultActionMessage = {
@@ -184,11 +181,6 @@ export function FileSearchPanel({
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [isDocumentWorking, setIsDocumentWorking] = useState(false);
   const [documentWorkingAction, setDocumentWorkingAction] = useState<DocumentWorkingAction | null>(null);
-  const [cleanupPlan, setCleanupPlan] = useState<CleanupPlan | null>(null);
-  const [cleanupError, setCleanupError] = useState<string | null>(null);
-  const [cleanupApprovalStatus, setCleanupApprovalStatus] = useState<CleanupApprovalStatus>("idle");
-  const [cleanupApprovalMessage, setCleanupApprovalMessage] = useState<string | null>(null);
-  const [isCleanupWorking, setIsCleanupWorking] = useState(false);
   const scopePanelRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const documentPaneRef = useRef<HTMLElement | null>(null);
@@ -199,6 +191,13 @@ export function FileSearchPanel({
 
   const allowedDirectories = useMemo(() => normalizedDirectories(settings), [settings]);
   const currentScope = allowedDirectories[0] ?? "";
+  const cleanupWorkspace = useFileCleanupWorkspace({
+    api,
+    currentScope,
+    hasPendingApproval,
+    onOpenApprovals,
+    onRequestCleanupApproval
+  });
   const hasKnownFolderShortcuts = shortcutsHaveAnyPath(knownFolders);
   const selectedClusterDimension = clusterDimensionOption(clusterDimension);
   const resultClusterDimension = clusterDimensionOption(clusterResultDimension);
@@ -212,11 +211,6 @@ export function FileSearchPanel({
   const trimmedQuery = query.trim();
   const serviceUnavailable = connectionState === "offline";
   const searchButtonLabel = !currentScope ? "先选要找的文件夹" : trimmedQuery ? "搜索" : "先输入关键词";
-  const cleanupBuckets = useMemo(() => splitCleanupItems(cleanupPlan), [cleanupPlan]);
-  const executableCleanupCount = useMemo(
-    () => cleanupPlan?.items.filter(isExecutableCleanupItem).length ?? 0,
-    [cleanupPlan]
-  );
   const onboardingSteps = useMemo(
     () => buildFileOnboardingSteps({
       currentScope,
@@ -225,9 +219,9 @@ export function FileSearchPanel({
       resultsCount: results.length,
       selectedDocumentPath: selectedDocumentPathValue,
       documentReady: Boolean(documentResult),
-      cleanupReady: Boolean(cleanupPlan)
+      cleanupReady: cleanupWorkspace.hasPreview
     }),
-    [activeTool, cleanupPlan, currentScope, documentResult, results.length, searchStatus, selectedDocumentPathValue]
+    [activeTool, cleanupWorkspace.hasPreview, currentScope, documentResult, results.length, searchStatus, selectedDocumentPathValue]
   );
   const searchNotice = useMemo(
     () =>
@@ -323,10 +317,7 @@ export function FileSearchPanel({
     onClearResults?.();
     setClusters([]);
     setClusterError(null);
-    setCleanupPlan(null);
-    setCleanupError(null);
-    setCleanupApprovalStatus("idle");
-    setCleanupApprovalMessage(null);
+    cleanupWorkspace.reset();
     setIsSavingScope(true);
     try {
       await onSaveSettings({
@@ -739,89 +730,6 @@ export function FileSearchPanel({
     } finally {
       setIsDocumentWorking(false);
       setDocumentWorkingAction(null);
-    }
-  };
-
-  const resetCleanupPreview = () => {
-    setCleanupPlan(null);
-    setCleanupError(null);
-    setCleanupApprovalStatus("idle");
-    setCleanupApprovalMessage(null);
-  };
-
-  const scanCleanup = async () => {
-    if (!api) return;
-    if (!currentScope) {
-      setCleanupError("请先选择要检查的文件夹范围。");
-      return;
-    }
-    setIsCleanupWorking(true);
-    setCleanupError(null);
-    setCleanupApprovalStatus("idle");
-    setCleanupApprovalMessage(null);
-    try {
-      const response = await api.scanCleanup({ roots: [currentScope], thresholdMb: 100 });
-      if (response.ok && response.data) {
-        setCleanupPlan(response.data);
-      } else {
-        setCleanupError(userFileError(response.error?.message, "暂时无法扫描可清理项，请稍后重试。"));
-      }
-    } catch (error) {
-      setCleanupError(userFileError(error, "暂时无法扫描可清理项，请稍后重试。"));
-    } finally {
-      setIsCleanupWorking(false);
-    }
-  };
-
-  const generateCleanupApprovalPreview = async () => {
-    if (!api || isCleanupWorking) return;
-    if (!currentScope) {
-      setCleanupError("请先选择要检查的文件夹范围。");
-      return;
-    }
-    setIsCleanupWorking(true);
-    setCleanupError(null);
-    setCleanupApprovalStatus("planning");
-    setCleanupApprovalMessage("正在生成确认预览，只校验清单，不执行删除。");
-    try {
-      const response = await api.planCleanup({ roots: [currentScope], thresholdMb: 100, preferTrash: true });
-      if (response.ok && response.data) {
-        setCleanupPlan(response.data);
-        const executableCount = response.data.items.filter(isExecutableCleanupItem).length;
-        if (executableCount) {
-          setCleanupApprovalStatus("ready");
-          setCleanupApprovalMessage("确认预览已生成。下一步发起确认任务，Lengrvis 会等待你批准后才执行。");
-        } else {
-          setCleanupApprovalStatus("ready");
-          setCleanupApprovalMessage("确认预览已生成，但当前只有建议项，没有可执行清理项。");
-        }
-      } else {
-        setCleanupApprovalStatus("error");
-        setCleanupApprovalMessage(userFileError(response.error?.message, "确认预览生成失败，请稍后重试。"));
-      }
-    } catch (error) {
-      setCleanupApprovalStatus("error");
-      setCleanupApprovalMessage(userFileError(error, "确认预览生成失败，请稍后重试。"));
-    } finally {
-      setIsCleanupWorking(false);
-    }
-  };
-
-  const requestCleanupApproval = async () => {
-    if (!onRequestCleanupApproval || isCleanupWorking) return;
-    if (!currentScope) {
-      setCleanupError("请先选择要检查的文件夹范围。");
-      return;
-    }
-    setCleanupApprovalStatus("requesting");
-    setCleanupApprovalMessage("正在发起确认任务；在你批准前不会移动或删除文件。");
-    try {
-      await onRequestCleanupApproval(currentScope);
-      setCleanupApprovalStatus("requested");
-      setCleanupApprovalMessage("确认任务已发起。审批出现后，点“去确认”查看清单并决定批准或拒绝。");
-    } catch (error) {
-      setCleanupApprovalStatus("error");
-      setCleanupApprovalMessage(userFileError(error, "确认任务发起失败，请稍后重试。"));
     }
   };
 
@@ -1322,92 +1230,7 @@ export function FileSearchPanel({
         </section>
       ) : null}
 
-      {api && activeTool === "cleanup" ? (
-        <section className="file-tool-pane" aria-label="清理预览">
-          <div className="file-tool">
-            <div className="file-tool__head">
-              <div>
-                <strong>清理预览</strong>
-                <span className="muted">只扫描当前范围，扫描后再决定，不会直接删除</span>
-              </div>
-              <Badge tone={cleanupBuckets.permanent.length ? "warning" : "neutral"}>
-                {formatBytes(cleanupPlan?.reclaimableBytes)} 可释放
-              </Badge>
-            </div>
-            {!cleanupPlan ? (
-              <div className="cleanup-safety-gate">
-                <div>
-                  <strong>先扫描，不执行</strong>
-                  <p>这一步只读取文件信息，不移动、不删除。生成预览后，你再决定是否继续。</p>
-                </div>
-                <span>只读</span>
-              </div>
-            ) : null}
-            <button className="button button--secondary" type="button" onClick={() => void scanCleanup()} disabled={isCleanupWorking}>
-              <Trash2 size={16} aria-hidden="true" />
-              {isCleanupWorking && cleanupApprovalStatus === "idle" ? "正在扫描" : "只读扫描可清理项"}
-            </button>
-            {cleanupError ? <p className="field-error">{cleanupError}</p> : null}
-            {cleanupPlan ? (
-              <>
-                <div className="cleanup-action-row" aria-label="清理确认动作">
-                  <button
-                    className="button button--ghost"
-                    type="button"
-                    onClick={resetCleanupPreview}
-                    disabled={isCleanupWorking}
-                  >
-                    <RotateCcw size={16} aria-hidden="true" />
-                    放弃本次预览
-                  </button>
-                  <button
-                    className="button button--secondary"
-                    type="button"
-                    onClick={() => void generateCleanupApprovalPreview()}
-                    disabled={isCleanupWorking}
-                  >
-                    <ShieldCheck size={16} aria-hidden="true" />
-                    {cleanupApprovalStatus === "planning" ? "正在生成确认预览" : "生成确认预览"}
-                  </button>
-                  {onRequestCleanupApproval ? (
-                    <button
-                      className="button button--primary"
-                      type="button"
-                      onClick={() => void requestCleanupApproval()}
-                      disabled={isCleanupWorking || executableCleanupCount === 0}
-                      title={executableCleanupCount === 0 ? "当前没有可执行清理项" : "发起一个需要你批准的清理任务"}
-                    >
-                      <ShieldCheck size={16} aria-hidden="true" />
-                      {cleanupApprovalStatus === "requesting" ? "正在发起确认任务" : "发起确认任务"}
-                    </button>
-                  ) : null}
-                  {hasPendingApproval && onOpenApprovals ? (
-                    <button className="button button--ghost" type="button" onClick={onOpenApprovals}>
-                      去确认
-                    </button>
-                  ) : null}
-                </div>
-                {cleanupApprovalMessage ? (
-                  <p
-                    className={`file-status file-status--${cleanupApprovalStatus === "error" ? "error" : cleanupApprovalStatus === "ready" || cleanupApprovalStatus === "requested" ? "success" : "info"}`}
-                    role={cleanupApprovalStatus === "error" ? "alert" : "status"}
-                  >
-                    {cleanupApprovalMessage}
-                  </p>
-                ) : null}
-                <CleanupPlanPreview
-                  plan={cleanupPlan}
-                  permanent={cleanupBuckets.permanent}
-                  trash={cleanupBuckets.trash}
-                  suggestions={cleanupBuckets.suggestions}
-                />
-              </>
-            ) : (
-              <p className="file-status file-status--info">清理工具只会先给预览。真正移动或删除文件前，还会让你确认。</p>
-            )}
-          </div>
-        </section>
-      ) : null}
+      {api && activeTool === "cleanup" ? cleanupWorkspace.pane : null}
     </Panel>
   );
 }
@@ -1505,105 +1328,6 @@ function TablePreview({ table }: { table: DocumentIR["tables"][number] }) {
   );
 }
 
-function CleanupPlanPreview({
-  plan,
-  permanent,
-  trash,
-  suggestions
-}: {
-  plan: CleanupPlan;
-  permanent: CleanupPlan["items"];
-  trash: CleanupPlan["items"];
-  suggestions: CleanupPlan["items"];
-}) {
-  const needsApproval = plan.status === "needs_approval" || permanent.length > 0 || plan.riskWarnings.length > 0;
-  return (
-    <div className="cleanup-preview">
-      <div className={needsApproval ? "cleanup-safety-gate cleanup-safety-gate--approval" : "cleanup-safety-gate"}>
-        <div>
-          <strong>{needsApproval ? "等待你确认后才会执行" : "当前只是安全预览"}</strong>
-          <p>
-            {needsApproval
-              ? "包含永久删除或风险项。Lengrvis 会先生成审批预览，确认后才允许执行。"
-              : "扫描不会移动或删除文件；你可以先看清单，再决定下一步。"}
-          </p>
-        </div>
-        <span>{needsApproval ? "需确认" : "只读"}</span>
-      </div>
-      <div className="cleanup-preview__metrics">
-        <span><strong>{formatBytes(plan.reclaimableBytes)}</strong> 可释放</span>
-        <span><strong>{permanent.length}</strong> 永久删除</span>
-        <span><strong>{trash.length}</strong> 进回收站</span>
-      </div>
-      <div className="cleanup-approval-steps" aria-label="清理安全步骤">
-        <span className="cleanup-approval-step cleanup-approval-step--done">1 只读扫描</span>
-        <span className={plan.items.length ? "cleanup-approval-step cleanup-approval-step--done" : "cleanup-approval-step"}>2 风险分桶</span>
-        <span className={needsApproval ? "cleanup-approval-step cleanup-approval-step--current" : "cleanup-approval-step"}>3 用户确认</span>
-        <span className="cleanup-approval-step">4 执行或放弃</span>
-      </div>
-      <CleanupBucket title="永久删除" tone="danger" items={permanent} emptyText="没有永久删除项" />
-      <CleanupBucket title="进回收站" tone="warning" items={trash} emptyText="没有回收站项" />
-      <CleanupBucket title="仅建议" description="仅供你查看，Lengrvis 不会删除这些项目。" tone="neutral" items={suggestions} emptyText="没有建议项" />
-      {plan.riskWarnings.length ? (
-        <ul className="cleanup-risk">
-          {plan.riskWarnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-function CleanupBucket({
-  title,
-  description,
-  tone,
-  items,
-  emptyText
-}: {
-  title: string;
-  description?: string;
-  tone: "neutral" | "warning" | "danger";
-  items: CleanupPlan["items"];
-  emptyText: string;
-}) {
-  return (
-    <section className="cleanup-bucket">
-      <div className="row row--between">
-        <strong>{title}</strong>
-        <Badge tone={tone}>{items.length} 项</Badge>
-      </div>
-      {description ? <p className="muted">{description}</p> : null}
-      {items.length ? (
-        <ul>
-          {items.slice(0, 5).map((item) => (
-            <li key={item.id}>
-              <span>{item.path}</span>
-              <em>{formatBytes(item.sizeBytes ?? (item.sizeMb ? item.sizeMb * 1024 * 1024 : undefined))}</em>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">{emptyText}</p>
-      )}
-    </section>
-  );
-}
-
-function splitCleanupItems(plan: CleanupPlan | null) {
-  const items = plan?.items ?? [];
-  return {
-    permanent: items.filter((item) => item.disposition === "permanent_delete"),
-    trash: items.filter((item) => item.disposition === "trash"),
-    suggestions: items.filter((item) => item.disposition !== "permanent_delete" && item.disposition !== "trash")
-  };
-}
-
-function isExecutableCleanupItem(item: CleanupPlan["items"][number]): boolean {
-  return item.disposition === "permanent_delete" || item.disposition === "trash";
-}
-
 function normalizedDirectories(settings: AppSettings): string[] {
   return [
     ...(settings.allowedDirectories ?? []),
@@ -1678,18 +1402,6 @@ function fileOnboardingHeadline(steps: FileOnboardingStep[]) {
   if (current.id === "search") return "输入关键词，只在已选文件夹里找";
   if (current.id === "document") return "选中文档后读取、总结或提问";
   return "清理前先预览，不直接删除";
-}
-
-function formatBytes(bytes?: number): string {
-  if (!bytes || !Number.isFinite(bytes)) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 function formatCount(value?: number): string {

@@ -10,6 +10,7 @@ import pytest
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview
 from app.perception import ui_automation as uia
+from app.perception import ui_automation_actions as uia_actions
 from app.perception.ui_automation import (
     UIAutomationElement,
     UnavailableUIAutomationTarget,
@@ -469,8 +470,8 @@ def test_focus_window_continues_when_show_window_fails(monkeypatch):
 
     monkeypatch.setattr(uia.sys, "platform", "win32")
     monkeypatch.setattr(
-        uia,
-        "_list_windows_sync",
+        uia_actions,
+        "list_windows",
         lambda: [{"hwnd": 123, "title": "Editor", "class_name": "Window", "process_id": 1, "rect": None}],
     )
     monkeypatch.setattr(uia.ctypes, "windll", types.SimpleNamespace(user32=FakeUser32()), raising=False)
