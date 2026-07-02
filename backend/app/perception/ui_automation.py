@@ -2,21 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import hmac
 import logging
-import sqlite3
 import sys
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import ValidationError
-
-from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
+from app.core.schemas import Approval, SafetyReview
 from app.perception.app_context import get_current_app_context
-from app.perception.schemas import AppContext, Rect, UIElement
+from app.perception.schemas import AppContext
 from app.perception.ui_automation_actions import (
     UIAutomationUnavailable,
 )
@@ -53,9 +47,42 @@ from app.perception.ui_automation_actions import (
 from app.perception.ui_automation_actions import (
     send_text as _send_text,
 )
-from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
-from app.policy.execution_marker import execution_is_marked_approved
-from app.policy.permissions import PermissionStore
+from app.perception.ui_automation_approval import (
+    approval_args as _approval_args,
+)
+from app.perception.ui_automation_approval import (
+    approval_binding_error as _approval_binding_error,
+)
+from app.perception.ui_automation_approval import (
+    approval_gate_error as _approval_gate,
+)
+from app.perception.ui_automation_approval import review_action as _review_ui_action
+from app.perception.ui_automation_approval import tool_definition as _tool_definition
+from app.perception.ui_automation_elements import (
+    UIAutomationElement,
+    UIAutomationSelector,
+)
+from app.perception.ui_automation_elements import (
+    coerce_selector as _coerce_selector,
+)
+from app.perception.ui_automation_elements import (
+    control_type_name as _control_type_name,
+)
+from app.perception.ui_automation_elements import (
+    element_from_native as _convert_native_element,
+)
+from app.perception.ui_automation_elements import (
+    matches_selector as _matches_selector,
+)
+from app.perception.ui_automation_elements import (
+    rect_payload as _rect_payload,
+)
+from app.perception.ui_automation_elements import (
+    selector_from_element as _selector_from_element,
+)
+from app.perception.ui_automation_elements import (
+    selector_has_terms as _selector_has_terms,
+)
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 
@@ -100,65 +127,6 @@ def _pyautogui_exception_types() -> tuple[type[BaseException], ...]:
         getattr(pyautogui, "FailSafeException", None),
     )
     return tuple(candidate for candidate in candidates if isinstance(candidate, type))
-
-
-@dataclass(slots=True)
-class UIAutomationSelector:
-    automation_id: str = ""
-    name: str = ""
-    name_contains: str = ""
-    text_contains: str = ""
-    control_type: str = ""
-    class_name: str = ""
-    process_id: int | None = None
-
-    def as_query(self) -> dict[str, Any]:
-        return {
-            "automation_id": self.automation_id,
-            "name": self.name,
-            "name_contains": self.name_contains,
-            "text_contains": self.text_contains,
-            "control_type": self.control_type,
-            "class_name": self.class_name,
-            "process_id": self.process_id,
-        }
-
-
-@dataclass(slots=True)
-class UIAutomationElement:
-    name: str = ""
-    automation_id: str = ""
-    control_type: str = ""
-    class_name: str = ""
-    process_id: int | None = None
-    properties: dict[str, Any] = field(default_factory=dict)
-    native: Any = field(default=None, repr=False, compare=False)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "automation_id": self.automation_id,
-            "control_type": self.control_type,
-            "class_name": self.class_name,
-            "process_id": self.process_id,
-            "properties": self.properties,
-        }
-
-    def to_perception_element(self) -> UIElement:
-        rect = self.properties.get("bounding_box")
-        bounding_box = Rect.model_validate(rect) if isinstance(rect, dict) else None
-        return UIElement(
-            role=self.control_type,
-            name=self.name,
-            text=str(self.properties.get("text") or ""),
-            bounding_box=bounding_box,
-            attributes={
-                "automation_id": self.automation_id,
-                "class_name": self.class_name,
-                "process_id": self.process_id,
-                **self.properties,
-            },
-        )
 
 
 class UIAutomationTarget(ABC):
@@ -845,36 +813,10 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         args: dict[str, Any],
         risk_level: RiskLevel,
     ) -> SafetyReview:
-        if args.get("approved") and args.get("approval_id"):
-            review = self.policy_engine.review_tool_call(
-                task_id or "ui_automation",
-                step_id,
-                tool_name,
-                args,
-                risk_level,
-            )
-            if review.verdict == SafetyVerdict.DENY:
-                return review
-            approval_error = self._approval_gate_error(task_id, step_id, tool_name, args)
-            if approval_error:
-                return SafetyReview(
-                    task_id=task_id or "ui_automation",
-                    step_id=step_id,
-                    target_type="tool_call",
-                    verdict=SafetyVerdict.DENY,
-                    risk_level=risk_level,
-                    reasons=[approval_error],
-                )
-            return SafetyReview(
-                task_id=task_id or "ui_automation",
-                step_id=step_id,
-                target_type="tool_call",
-                verdict=SafetyVerdict.ALLOW,
-                risk_level=risk_level,
-                reasons=["Approved UIAutomation action may proceed."],
-            )
-        return self.policy_engine.review_tool_call(
-            task_id or "ui_automation",
+        return _review_ui_action(
+            self.policy_engine,
+            self._approval_gate_error,
+            task_id,
             step_id,
             tool_name,
             args,
@@ -888,52 +830,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         tool_name: str,
         args: dict[str, Any],
     ) -> str:
-        if execution_is_marked_approved(self.approval_context):
-            return ""
-        approval_id = str(args.get("approval_id") or "").strip()
-        if not approval_id:
-            return "UIAutomation live execution requires a valid approved approval_id."
-        try:
-            data = db.fetch_one("approvals", approval_id)
-        except (sqlite3.Error, db.SensitiveRecordIntegrityError) as exc:
-            return f"UIAutomation approval storage lookup failed: {exc}"
-        if not data:
-            return "UIAutomation approval id was not found in the approval database."
-        try:
-            approval = Approval.model_validate(data)
-        except ValidationError as exc:
-            return f"UIAutomation approval record is invalid: {exc}"
-        binding_error = _ui_automation_approval_binding_error(
-            approval,
-            tool_name,
-            args,
-            context=self.approval_context,
-            settings=getattr(self.policy_engine, "settings", None),
+        return _approval_gate(
+            policy_engine=self.policy_engine,
+            approval_context=self.approval_context,
+            binding_validator=_ui_automation_approval_binding_error,
             task_id=task_id,
             step_id=step_id,
-            allow_consumed=False,
-        )
-        if binding_error:
-            return binding_error
-        try:
-            claimed = db.claim_approval_for_execution(approval.id, now_iso())
-        except (sqlite3.Error, db.SensitiveRecordIntegrityError) as exc:
-            return f"UIAutomation approval claim failed: {exc}"
-        if not claimed:
-            return "UIAutomation approval has already been consumed or is no longer approved."
-        try:
-            claimed_approval = Approval.model_validate(claimed)
-        except ValidationError as exc:
-            return f"UIAutomation claimed approval record is invalid: {exc}"
-        return _ui_automation_approval_binding_error(
-            claimed_approval,
-            tool_name,
-            args,
-            context=self.approval_context,
-            settings=getattr(self.policy_engine, "settings", None),
-            task_id=task_id,
-            step_id=step_id,
-            allow_consumed=True,
+            tool_name=tool_name,
+            args=args,
         )
 
 
@@ -1106,186 +1010,35 @@ def _ui_automation_approval_binding_error(
     step_id: str | None,
     allow_consumed: bool,
 ) -> str:
-    if approval.approval_type != "tool_call":
-        return "UIAutomation approval is not bound to a tool call."
-    if approval.status != ApprovalStatus.APPROVED:
-        return f"UIAutomation approval status is {approval.status}; expected approved."
-    if approval.consumed_at and not allow_consumed:
-        return "UIAutomation approval has already been consumed."
-    tool = _ui_automation_tool_definition(tool_name)
-    if approval.tool_name != tool_name:
-        return "UIAutomation approval tool name does not match this action."
-    if task_id and approval.task_id != task_id:
-        return "UIAutomation approval task does not match this action."
-    if step_id and approval.step_id != step_id:
-        return "UIAutomation approval step does not match this action."
-    missing = [
-        key
-        for key, value in {
-            "tool_name": approval.tool_name,
-            "args_binding_hmac": approval.args_binding_hmac,
-            "preview_hmac": approval.preview_hmac,
-            "settings_fingerprint": approval.settings_fingerprint,
-            "permission_policy_version": approval.permission_policy_version,
-            "tool_version": approval.tool_version,
-        }.items()
-        if not value
-    ]
-    if missing:
-        return f"UIAutomation approval lacks binding metadata: {', '.join(missing)}."
-    if approval.risk_level and approval.risk_level != tool.risk_level.value:
-        return "UIAutomation approval risk level does not match this tool."
-    if approval.tool_version != getattr(tool, "tool_version", "1"):
-        return "UIAutomation approval tool version does not match this tool."
-    expected_args = args_binding_hmac(
+    return _approval_binding_error(
+        approval,
         tool_name,
-        _ui_automation_approval_args(args),
-        task_id=approval.task_id,
-        step_id=approval.step_id,
+        args,
+        context=context,
+        settings=settings,
+        task_id=task_id,
+        step_id=step_id,
+        allow_consumed=allow_consumed,
+        approval_args=_ui_automation_approval_args,
+        tool_definition=_ui_automation_tool_definition,
     )
-    if not hmac.compare_digest(str(approval.args_binding_hmac or ""), str(expected_args or "")):
-        return "UIAutomation approval arguments do not match this action."
-    expected_preview = preview_hmac(approval.diff_preview)
-    if not hmac.compare_digest(str(approval.preview_hmac or ""), str(expected_preview or "")):
-        return "UIAutomation approval preview was modified after review."
-    runtime_context = context or {}
-    runtime_settings = runtime_context.get("settings") or settings
-    allowed_directories = list(
-        runtime_context.get("allowed_directories") or getattr(runtime_settings, "allowed_directories", []) or []
-    )
-    expected_settings = settings_fingerprint(runtime_settings, allowed_directories=allowed_directories)
-    if not hmac.compare_digest(str(approval.settings_fingerprint or ""), str(expected_settings or "")):
-        return "UIAutomation runtime settings changed after approval preview."
-    expected_policy = permission_policy_version(PermissionStore().updated_at())
-    if not hmac.compare_digest(str(approval.permission_policy_version or ""), str(expected_policy or "")):
-        return "UIAutomation permission policy changed after approval preview."
-    return ""
 
 
 def _ui_automation_approval_args(args: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in args.items() if key not in {"approved", "approval_id", "dry_run"}}
+    return _approval_args(args)
 
 
 def _ui_automation_tool_definition(tool_name: str) -> Any:
-    from app.tools.registry import register_all_tools, registry
-
-    if not registry.list():
-        register_all_tools()
-    return registry.get(tool_name)
-
-
-def _coerce_selector(
-    selector: UIAutomationSelector | dict[str, Any] | None = None,
-    *,
-    name: str = "",
-    control_type: str = "",
-    automation_id: str = "",
-) -> UIAutomationSelector:
-    if isinstance(selector, UIAutomationSelector):
-        return selector
-    selector = selector or {}
-    return UIAutomationSelector(
-        automation_id=str(selector.get("automation_id") or selector.get("automationId") or automation_id or ""),
-        name=str(selector.get("name") or name or ""),
-        name_contains=str(selector.get("name_contains") or selector.get("nameContains") or ""),
-        text_contains=str(selector.get("text_contains") or selector.get("textContains") or selector.get("text") or ""),
-        control_type=str(selector.get("control_type") or selector.get("controlType") or control_type or ""),
-        class_name=str(selector.get("class_name") or selector.get("className") or ""),
-        process_id=int(selector.get("process_id") or selector.get("processId"))
-        if selector.get("process_id") is not None or selector.get("processId") is not None
-        else None,
-    )
-
-
-def _selector_from_element(
-    element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
-) -> UIAutomationSelector:
-    if isinstance(element, UIAutomationElement):
-        return UIAutomationSelector(
-            automation_id=element.automation_id,
-            name=element.name,
-            control_type=element.control_type,
-            class_name=element.class_name,
-            process_id=element.process_id,
-        )
-    return _coerce_selector(element)
+    return _tool_definition(tool_name)
 
 
 def _element_from_native(native: Any) -> UIAutomationElement:
-    bounding_box = _rect_payload(getattr(native, "CurrentBoundingRectangle", None))
-    value_text = _native_text(native)
-    properties = {
-        "is_enabled": getattr(native, "CurrentIsEnabled", None),
-        "is_keyboard_focusable": getattr(native, "CurrentIsKeyboardFocusable", None),
-        "is_offscreen": getattr(native, "CurrentIsOffscreen", None),
-        "has_keyboard_focus": getattr(native, "CurrentHasKeyboardFocus", None),
-        "bounding_box": bounding_box,
-        "text": value_text,
-        "localized_control_type": getattr(native, "CurrentLocalizedControlType", None),
-    }
-    return UIAutomationElement(
-        name=str(getattr(native, "CurrentName", "") or ""),
-        automation_id=str(getattr(native, "CurrentAutomationId", "") or ""),
-        control_type=_control_type_name(getattr(native, "CurrentControlType", "") or ""),
-        class_name=str(getattr(native, "CurrentClassName", "") or ""),
-        process_id=getattr(native, "CurrentProcessId", None),
-        properties={key: value for key, value in properties.items() if value is not None},
-        native=native,
+    return _convert_native_element(
+        native,
+        rect_converter=_rect_payload,
+        text_reader=_native_text,
+        control_type_converter=_control_type_name,
     )
-
-
-def _matches_selector(element: UIAutomationElement, selector: UIAutomationSelector) -> bool:
-    if selector.automation_id and element.automation_id != selector.automation_id:
-        return False
-    if selector.name and element.name != selector.name:
-        return False
-    if selector.name_contains and selector.name_contains.casefold() not in element.name.casefold():
-        return False
-    if selector.text_contains:
-        text = str(element.properties.get("text") or "")
-        if selector.text_contains.casefold() not in text.casefold():
-            return False
-    if selector.control_type and element.control_type.casefold() != selector.control_type.casefold():
-        return False
-    if selector.class_name and element.class_name.casefold() != selector.class_name.casefold():
-        return False
-    if selector.process_id is not None and element.process_id != selector.process_id:
-        return False
-    return any(value not in {"", None} for value in selector.as_query().values())
-
-
-def _selector_has_terms(selector: UIAutomationSelector) -> bool:
-    return any(value not in {"", None} for value in selector.as_query().values())
-
-
-def _rect_payload(rect: Any) -> dict[str, int] | None:
-    if rect is None:
-        return None
-    if isinstance(rect, dict):
-        try:
-            return Rect.model_validate(rect).model_dump()
-        except ValidationError:
-            return None
-    left = getattr(rect, "left", None)
-    top = getattr(rect, "top", None)
-    right = getattr(rect, "right", None)
-    bottom = getattr(rect, "bottom", None)
-    if None not in {left, top, right, bottom}:
-        return {
-            "x": int(left),
-            "y": int(top),
-            "width": max(0, int(right) - int(left)),
-            "height": max(0, int(bottom) - int(top)),
-        }
-    if isinstance(rect, list | tuple) and len(rect) >= 4:
-        left, top, right, bottom = rect[:4]
-        return {
-            "x": int(left),
-            "y": int(top),
-            "width": max(0, int(right) - int(left)),
-            "height": max(0, int(bottom) - int(top)),
-        }
-    return None
 
 
 def _native_text(native: Any) -> str:
@@ -1295,56 +1048,3 @@ def _native_text(native: Any) -> str:
         return value or str(getattr(native, "CurrentName", "") or "")
     except _ui_action_error_types():
         return str(getattr(native, "CurrentName", "") or "")
-
-
-_CONTROL_TYPE_NAMES = {
-    50000: "Button",
-    50001: "Calendar",
-    50002: "CheckBox",
-    50003: "ComboBox",
-    50004: "Edit",
-    50005: "Hyperlink",
-    50006: "Image",
-    50007: "ListItem",
-    50008: "List",
-    50009: "Menu",
-    50010: "MenuBar",
-    50011: "MenuItem",
-    50012: "ProgressBar",
-    50013: "RadioButton",
-    50014: "ScrollBar",
-    50015: "Slider",
-    50016: "Spinner",
-    50017: "StatusBar",
-    50018: "Tab",
-    50019: "TabItem",
-    50020: "Text",
-    50021: "ToolBar",
-    50022: "ToolTip",
-    50023: "Tree",
-    50024: "TreeItem",
-    50025: "Custom",
-    50026: "Group",
-    50027: "Thumb",
-    50028: "DataGrid",
-    50029: "DataItem",
-    50030: "Document",
-    50031: "SplitButton",
-    50032: "Window",
-    50033: "Pane",
-    50034: "Header",
-    50035: "HeaderItem",
-    50036: "Table",
-    50037: "TitleBar",
-    50038: "Separator",
-    50039: "SemanticZoom",
-    50040: "AppBar",
-}
-
-
-def _control_type_name(value: Any) -> str:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        return str(value or "")
-    return _CONTROL_TYPE_NAMES.get(numeric, str(numeric))

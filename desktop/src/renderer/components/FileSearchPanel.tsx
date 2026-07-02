@@ -1,7 +1,5 @@
 import {
-  AlertCircle,
   BookOpenText,
-  CheckCircle2,
   Download,
   FileQuestion,
   FileText,
@@ -14,7 +12,6 @@ import {
   Route,
   Search,
   Sparkles,
-  Table2,
   Trash2,
   type LucideIcon
 } from "lucide-react";
@@ -26,15 +23,40 @@ import type {
   DocumentCompareResponse,
   DocumentIR,
   FileSearchMeta,
-  FileSearchResult,
-  IndexStatus
+  FileSearchResult
 } from "../../shared/types";
-import type { BackendClusterEntry, FileClusterOptions, LengrvisApiClient } from "../lib/apiClient";
+import type { BackendClusterEntry, LengrvisApiClient } from "../lib/apiClient";
 import { documentScopesForFiles, mergeScopePaths } from "../lib/documentScope";
 import { motionAwareScrollBehavior } from "../lib/motion";
-import { zhUserFacingError } from "../lib/zh";
 import type { ConnectionState } from "../store";
+import { DocumentAnswerView, DocumentCompareView, DocumentResultView } from "./file-search/FileDocumentViews";
 import { useFileCleanupWorkspace } from "./file-search/FileCleanupWorkspace";
+import {
+  CLUSTER_DIMENSION_OPTIONS,
+  DEFAULT_SUMMARY_QUESTION,
+  SERVICE_OFFLINE_TEXT,
+  buildFileOnboardingSteps,
+  clusterDimensionOption,
+  clusterPayloadFor,
+  compactPath,
+  displayFilePath,
+  fileActionError,
+  noticeForIndexStatus,
+  noticeForSearchStatus,
+  normalizedDirectories,
+  searchErrorText,
+  shortcutsHaveAnyPath,
+  userFileError,
+  validateDocumentPath,
+  type FileClusterDimension,
+  type FileToolTabValue,
+  type ResultActionMessage,
+  type ResultDocumentAction,
+  type SearchStatus
+} from "./file-search/FileSearchModels";
+import { FileSearchResults } from "./file-search/FileSearchResults";
+import { FileScopePanel, type KnownFolderShortcut } from "./file-search/FileScopePanel";
+import { FileOnboardingRail, FileServiceGate } from "./file-search/FileToolChrome";
 import { Badge, Panel } from "./Panel";
 
 interface FileSearchPanelProps {
@@ -60,68 +82,19 @@ interface FileSearchPanelProps {
   onRequestCleanupApproval?: (scope: string) => Promise<void>;
 }
 
-export type FileToolTab = "search" | "document" | "cleanup";
+export type FileToolTab = FileToolTabValue;
 export type DocumentIntentAction = "read" | "summarize" | "ask";
-type SearchStatus = "idle" | "missing_scope" | "missing_query" | "loading" | "empty" | "success" | "error";
-type SearchNoticeTone = "info" | "error" | "empty" | "success";
-type ResultDocumentAction = "read" | "summarize";
 type DocumentWorkingAction = "read" | "summarize" | "ask" | "compare";
-type ResultActionMessage = {
-  path: string;
-  tone: "info" | "success" | "error";
-  text: string;
-};
 type DocumentOperationResult = {
   ok: boolean;
   error?: string;
 };
-
-type FileClusterDimension =
-  | "content"
-  | "type"
-  | "extension"
-  | "image_auto"
-  | "scene"
-  | "people"
-  | "objects"
-  | "tags"
-  | "time"
-  | "location";
-
-interface FileClusterDimensionOption {
-  value: FileClusterDimension;
-  label: string;
-  description: string;
-}
-
-interface KnownFolderShortcut {
-  id: "desktop" | "downloads" | "documents" | "pictures";
-  label: string;
-  icon: LucideIcon;
-  path: string | null;
-}
-
-const CLUSTER_DIMENSION_OPTIONS: FileClusterDimensionOption[] = [
-  { value: "content", label: "内容", description: "按文件名和扩展名做轻量内容聚类" },
-  { value: "type", label: "类型", description: "按文件类型分组" },
-  { value: "extension", label: "扩展名", description: "按文件扩展名精确分组" },
-  { value: "image_auto", label: "图片自动", description: "按图片语义和元数据自动聚类" },
-  { value: "scene", label: "场景", description: "按图片场景标签分组" },
-  { value: "people", label: "人物", description: "按图片中的人物数量分组" },
-  { value: "objects", label: "物体", description: "按图片中的可见物体分组" },
-  { value: "tags", label: "标签", description: "按图片结构化标签分组" },
-  { value: "time", label: "时间", description: "按图片拍摄或修改时间分组" },
-  { value: "location", label: "地点", description: "按图片 GPS 位置分组" }
-];
 
 const TOOL_TABS: Array<{ id: FileToolTab; label: string; description: string; icon: LucideIcon }> = [
   { id: "search", label: "搜索", description: "查找文件", icon: Search },
   { id: "document", label: "文档", description: "读取和提问", icon: FileText },
   { id: "cleanup", label: "清理", description: "先预览", icon: Trash2 }
 ];
-
-const DEFAULT_SUMMARY_QUESTION = "请用简单的话总结这份文档的重点。";
-const SERVICE_OFFLINE_TEXT = "助手暂时连不上，本机文件没有问题。请先点右上角刷新或到设置里启动服务，连接恢复后再继续。";
 
 export function FileSearchPanel({
   results,
@@ -181,7 +154,7 @@ export function FileSearchPanel({
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [isDocumentWorking, setIsDocumentWorking] = useState(false);
   const [documentWorkingAction, setDocumentWorkingAction] = useState<DocumentWorkingAction | null>(null);
-  const scopePanelRef = useRef<HTMLElement | null>(null);
+  const scopePanelRef = useRef<HTMLElement>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const documentPaneRef = useRef<HTMLElement | null>(null);
   const documentPathInputRef = useRef<HTMLInputElement | null>(null);
@@ -739,103 +712,24 @@ export function FileSearchPanel({
       eyebrow="先选文件夹，再操作"
       action={<Badge tone={currentScope ? "info" : "warning"}>{currentScope ? "已选文件夹" : "未选文件夹"}</Badge>}
     >
-      {serviceUnavailable ? (
-        <section className="file-service-gate" aria-label="Lengrvis 服务连接提示">
-          <div>
-            <strong>助手暂时连不上，电脑和文件夹没有问题</strong>
-            <p>文件搜索、范围保存和文档读取需要本机服务参与。请先点右上角刷新，或到设置里启动服务；连接恢复后，你已填的关键词和路径还可以继续用。</p>
-          </div>
-          <Badge tone="warning">先恢复连接</Badge>
-        </section>
-      ) : null}
+      {serviceUnavailable ? <FileServiceGate /> : null}
+      <FileOnboardingRail steps={onboardingSteps} onSelectTool={selectTool} />
 
-      <section className="file-onboarding-rail" aria-label="文件工具开箱流程">
-        <div className="file-onboarding-rail__copy">
-          <span>首次任务流</span>
-          <strong>{fileOnboardingHeadline(onboardingSteps)}</strong>
-        </div>
-        <div className="file-onboarding-steps">
-          {onboardingSteps.map((step, index) => (
-            <button
-              key={step.id}
-              type="button"
-              className={`file-onboarding-step file-onboarding-step--${step.state}`}
-              onClick={() => selectTool(step.tool)}
-              aria-current={step.state === "current" ? "step" : undefined}
-            >
-              <span className="file-onboarding-step__index">{index + 1}</span>
-              <span className="file-onboarding-step__label">{step.label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="file-scope-panel" aria-label="文件搜索范围" ref={scopePanelRef}>
-        <div className="file-scope-panel__head">
-          <div className="file-scope-current">
-            <span className="file-scope-current__label">当前范围</span>
-            <strong title={currentScope || undefined}>
-              {isSavingScope ? "正在切换范围..." : currentScope || "未选择范围"}
-            </strong>
-            <small>{currentScope ? "搜索、分组、清理都会限定在这里。" : "先选择一个文件夹，再开始搜索或整理。"}</small>
-          </div>
-          <button className="button button--secondary" type="button" onClick={() => void chooseFolder()} disabled={isSavingScope}>
-            <FolderOpen size={16} aria-hidden="true" />
-            选择要查找的文件夹
-          </button>
-        </div>
-        {!currentScope ? (
-          <p className="file-status file-status--info">第一步：选择要查找的文件夹。Lengrvis 只会扫描你选择的文件夹，清理前不会删除任何文件。</p>
-        ) : null}
-        <div className="file-scope-shortcuts" aria-label="常用文件夹">
-          {shortcuts.map((shortcut) => {
-            const Icon = shortcut.icon;
-            const active = Boolean(shortcut.path && shortcut.path === currentScope);
-            return (
-              <button
-                key={shortcut.id}
-                className={active ? "scope-chip scope-chip--active" : "scope-chip"}
-                type="button"
-                onClick={() => void setSearchScope(shortcut.path)}
-                disabled={!shortcut.path || isSavingScope}
-                aria-pressed={active}
-                title={shortcut.path ?? "暂时读不到这个常用文件夹。可以先用上方主按钮选择位置。"}
-              >
-                <Icon size={14} aria-hidden="true" />
-                {shortcut.label}
-              </button>
-            );
-          })}
-        </div>
-        {knownFoldersChecked && !hasKnownFolderShortcuts ? (
-          <p className="file-scope-note">暂时读不到桌面、下载、文档、图片。可以点“选择要查找的文件夹”，或直接粘贴文件夹路径。</p>
-        ) : null}
-        {currentScope ? (
-          <div className="file-scope-path-preview" aria-label="当前完整范围路径">
-            <span>完整路径</span>
-            <strong title={currentScope}>{compactPath(currentScope)}</strong>
-            <code>{currentScope}</code>
-          </div>
-        ) : null}
-        <div className="file-scope-manual">
-          <label className="field">
-            <span>粘贴文件夹位置</span>
-            <input
-              value={manualScope}
-              onChange={(event) => setManualScope(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void applyManualScope();
-              }}
-              placeholder="粘贴文件夹路径，例如 C:\\Users\\你\\Documents"
-            />
-          </label>
-          <button className="button button--ghost" type="button" onClick={() => void applyManualScope()} disabled={isSavingScope}>
-            使用这个文件夹
-          </button>
-        </div>
-        {scopeNotice ? <p className="file-status file-status--info">{scopeNotice}</p> : null}
-        {scopeError ? <p className="field-error">{scopeError}</p> : null}
-      </section>
+      <FileScopePanel
+        currentScope={currentScope}
+        hasKnownFolderShortcuts={hasKnownFolderShortcuts}
+        isSavingScope={isSavingScope}
+        knownFoldersChecked={knownFoldersChecked}
+        manualScope={manualScope}
+        scopeError={scopeError}
+        scopeNotice={scopeNotice}
+        scopePanelRef={scopePanelRef}
+        shortcuts={shortcuts}
+        onApplyManualScope={() => void applyManualScope()}
+        onChooseFolder={() => void chooseFolder()}
+        onManualScopeChange={setManualScope}
+        onSetSearchScope={(path) => void setSearchScope(path)}
+      />
 
       <div className="file-tool-tabs" role="tablist" aria-label="文件工具类型">
         {TOOL_TABS.map((tab) => {
@@ -922,112 +816,21 @@ export function FileSearchPanel({
           {searchNotice ? <p className={`file-status file-status--${searchNotice.tone}`} role={searchNotice.tone === "error" ? "alert" : "status"}>{searchNotice.text}</p> : null}
           {indexStatusNotice ? <p className={`file-status file-status--${indexStatusNotice.tone}`} role="status">{indexStatusNotice.text}</p> : null}
           <div className="file-results">
-            {searchStatus === "loading" || isSearching ? (
-              <p className="empty-state">正在查找当前范围里的匹配文件...</p>
-            ) : isSavingScope ? (
-              <div className="empty-state file-empty-guide">
-                <strong>正在切换范围</strong>
-                <p>切换完成后再输入关键词搜索，结果只会来自当前范围。</p>
-              </div>
-            ) : searchStatus === "success" && results.length ? (
-              results.map((result, index) => {
-                const pathParts = displayFilePath(result.path);
-                const matchText = displaySearchMatch(result.match, pathParts.name, result.path);
-                const documentSupported = isDocumentPathSupported(result.path);
-                return (
-                  <article className="file-result" key={`${result.id}-${result.path}-${result.line}-${index}`}>
-                    <FileText size={16} aria-hidden="true" />
-                    <div className="file-result__body">
-                      <div className="file-result__head">
-                        <div className="file-result__title" title={result.path}>
-                          <strong>{pathParts.name}</strong>
-                          {pathParts.parent ? <span>{pathParts.parent}</span> : null}
-                        </div>
-                        <span className="file-result__meta">{result.line > 1 ? `第 ${result.line} 行` : "文件名匹配"}</span>
-                      </div>
-                      {matchText ? <p>{matchText}</p> : null}
-                      <div className="file-result__actions" aria-label={`${pathParts.name} 的操作`}>
-                        {documentSupported ? (
-                          <>
-                            <button
-                              className="file-result-action file-result-action--read"
-                              type="button"
-                              data-loading={resultDocumentAction?.path === result.path && resultDocumentAction.action === "read" ? "true" : undefined}
-                              onClick={() => void useSearchResultAsDocument(result.path, "read")}
-                              disabled={Boolean(resultDocumentAction || revealingPath)}
-                            >
-                              {resultDocumentAction?.path === result.path && resultDocumentAction.action === "read" ? <Loader2 size={14} aria-hidden="true" /> : <BookOpenText size={14} aria-hidden="true" />}
-                              {resultDocumentAction?.path === result.path && resultDocumentAction.action === "read" ? "读取中" : "读取"}
-                            </button>
-                            <button
-                              className="file-result-action file-result-action--summarize"
-                              type="button"
-                              data-loading={resultDocumentAction?.path === result.path && resultDocumentAction.action === "summarize" ? "true" : undefined}
-                              onClick={() => void useSearchResultAsDocument(result.path, "summarize")}
-                              disabled={Boolean(resultDocumentAction || revealingPath)}
-                            >
-                              {resultDocumentAction?.path === result.path && resultDocumentAction.action === "summarize" ? <Loader2 size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
-                              {resultDocumentAction?.path === result.path && resultDocumentAction.action === "summarize" ? "总结中" : "总结"}
-                            </button>
-                          </>
-                        ) : (
-                          <span className="file-result__unsupported" title="这个格式暂不支持文档读取或总结">
-                            不支持读取/总结
-                          </span>
-                        )}
-                        <button className="file-result-action file-result-action--reveal" type="button" data-loading={revealingPath === result.path ? "true" : undefined} onClick={() => void revealSearchResult(result.path)} disabled={Boolean(resultDocumentAction) || revealingPath === result.path}>
-                          {revealingPath === result.path ? <Loader2 size={14} aria-hidden="true" /> : <FolderOpen size={14} aria-hidden="true" />}
-                          {revealingPath === result.path ? "打开中" : "打开位置"}
-                        </button>
-                      </div>
-                      {resultActionMessage?.path === result.path ? (
-                        <p className={`file-action-hint file-action-hint--${resultActionMessage.tone}`} role={resultActionMessage.tone === "error" ? "alert" : "status"}>
-                          <ResultActionIcon tone={resultActionMessage.tone} />
-                          {resultActionMessage.text}
-                        </p>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })
-            ) : searchStatus === "empty" ? (
-              <div className="empty-state file-empty-guide">
-                <strong>{searchMeta?.truncated ? "没有找到完整结果" : "没有找到结果"}</strong>
-                <p>
-                  {searchMeta?.truncated
-                    ? `已检查 ${formatCount(searchMeta.scanned)} 个文件，但当前范围还没扫完。可以缩小范围，或换一个更具体的关键词再试。`
-                    : hasKnownFolderShortcuts
-                      ? "换个关键词，或切换到桌面、下载、文档、图片再试。"
-                    : "换个关键词，或点“选择要查找的文件夹”/粘贴路径后再试。"}
-                </p>
-              </div>
-            ) : searchStatus === "error" ? (
-              <div className="empty-state file-empty-guide">
-                <strong>这次搜索未完成</strong>
-                <p>{searchMessage || "文件搜索失败，请稍后重试。"}</p>
-                <p>可以换一个小一点的范围，或只搜文件名、扩展名再试。</p>
-              </div>
-            ) : searchStatus === "missing_scope" ? (
-              <div className="empty-state file-empty-guide">
-                <strong>还没有选择要查找的文件夹</strong>
-                <p>先点“选择要查找的文件夹”，或从桌面、下载、文档、图片里选一个位置。</p>
-              </div>
-            ) : searchStatus === "missing_query" ? (
-              <div className="empty-state file-empty-guide">
-                <strong>还没有输入关键词</strong>
-                <p>输入文件名、扩展名或内容关键词后再搜索。</p>
-              </div>
-            ) : (
-              <div className="empty-state file-empty-guide">
-                <strong>{currentScope ? "已选择文件夹，输入关键词开始搜索" : "先选择文件夹，再输入关键词"}</strong>
-                <p>
-                  {currentScope
-                    ? "输入文件名、扩展名或内容关键词后，Lengrvis 只会在当前范围里查找。"
-                    : "可以从桌面、下载、文档、图片开始，也可以点“选择要查找的文件夹”指定位置。"}
-                </p>
-                <p>搜索、分组和清理只会查看当前范围；移动、重命名或删除前都会再次确认。</p>
-              </div>
-            )}
+            <FileSearchResults
+              currentScope={currentScope}
+              hasKnownFolderShortcuts={hasKnownFolderShortcuts}
+              isSavingScope={isSavingScope}
+              isSearching={isSearching}
+              results={results}
+              resultActionMessage={resultActionMessage}
+              resultDocumentAction={resultDocumentAction}
+              revealingPath={revealingPath}
+              searchMessage={searchMessage}
+              searchMeta={searchMeta}
+              searchStatus={searchStatus}
+              onRevealSearchResult={(path) => void revealSearchResult(path)}
+              onUseSearchResultAsDocument={(path, action) => void useSearchResultAsDocument(path, action)}
+            />
           </div>
           {clusters.length || clusterError ? (
             <section className="file-cluster" style={{ marginTop: 12 }}>
@@ -1233,425 +1036,4 @@ export function FileSearchPanel({
       {api && activeTool === "cleanup" ? cleanupWorkspace.pane : null}
     </Panel>
   );
-}
-
-function DocumentResultView({ document }: { document: DocumentIR }) {
-  const previewBlocks = document.blocks.filter((block) => block.text).slice(0, 4);
-  return (
-    <div className="document-preview">
-      <div className="row row--between">
-        <strong>{document.title}</strong>
-        <span className="muted">{document.tables.length} 张表</span>
-      </div>
-      {document.summary ? <p>{document.summary}</p> : null}
-      {previewBlocks.length ? (
-        <ul>
-          {previewBlocks.map((block) => (
-            <li key={block.id}>
-              <span className="muted">{block.page ? `第 ${block.page} 页` : block.type}</span>
-              <p>{block.text}</p>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {document.tables.length ? <TablePreview table={document.tables[0]} /> : null}
-    </div>
-  );
-}
-
-function DocumentAnswerView({ answer }: { answer: DocumentAskResponse }) {
-  return (
-    <div className="document-preview">
-      <strong>回答</strong>
-      <p>{answer.answer || "没有生成回答。"}</p>
-      {answer.citations.length ? (
-        <ul className="citation-list">
-          {answer.citations.slice(0, 4).map((citation) => (
-            <li key={citation.id}>
-              <span>{citation.label}</span>
-              <p>{citation.text}</p>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-function DocumentCompareView({ result }: { result: DocumentCompareResponse }) {
-  return (
-    <div className="document-preview">
-      <strong>对比结果</strong>
-      {result.summary ? <p>{result.summary}</p> : null}
-      {result.differences.length ? (
-        <ul>
-          {result.differences.slice(0, 5).map((difference) => (
-            <li key={difference.id}>
-              <span className="muted">{difference.severity || "差异"}</span>
-              <p><strong>{difference.title}</strong>：{difference.detail}</p>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">没有发现明显差异。</p>
-      )}
-    </div>
-  );
-}
-
-function TablePreview({ table }: { table: DocumentIR["tables"][number] }) {
-  return (
-    <div className="table-preview">
-      <div className="table-preview__title">
-        <Table2 size={14} aria-hidden="true" />
-        <span>{table.title || "表格结果"}</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            {(table.columns.length ? table.columns : table.rows[0] ?? []).slice(0, 4).map((column, index) => (
-              <th key={`${column}-${index}`}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {table.rows.slice(table.columns.length ? 0 : 1, 4).map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.slice(0, 4).map((cell, cellIndex) => (
-                <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function normalizedDirectories(settings: AppSettings): string[] {
-  return [
-    ...(settings.allowedDirectories ?? []),
-    settings.workspaceRoot
-  ].filter((path, index, values): path is string => Boolean(path?.trim()) && values.indexOf(path) === index);
-}
-
-function ResultActionIcon({ tone }: { tone: ResultActionMessage["tone"] }) {
-  if (tone === "success") return <CheckCircle2 size={14} aria-hidden="true" />;
-  if (tone === "error") return <AlertCircle size={14} aria-hidden="true" />;
-  return <Loader2 size={14} aria-hidden="true" />;
-}
-
-interface FileOnboardingStep {
-  id: "scope" | "search" | "document" | "cleanup";
-  label: string;
-  state: "done" | "current" | "next";
-  tool: FileToolTab;
-}
-
-function buildFileOnboardingSteps({
-  currentScope,
-  activeTool,
-  searchStatus,
-  resultsCount,
-  selectedDocumentPath,
-  documentReady,
-  cleanupReady
-}: {
-  currentScope: string;
-  activeTool: FileToolTab;
-  searchStatus: SearchStatus;
-  resultsCount: number;
-  selectedDocumentPath: string;
-  documentReady: boolean;
-  cleanupReady: boolean;
-}): FileOnboardingStep[] {
-  const scopeDone = Boolean(currentScope);
-  const searchDone = searchStatus === "success" || resultsCount > 0;
-  const documentDone = documentReady || Boolean(selectedDocumentPath);
-  const currentId: FileOnboardingStep["id"] =
-    !scopeDone
-      ? "scope"
-      : activeTool === "cleanup"
-        ? cleanupReady
-          ? "cleanup"
-          : "cleanup"
-        : activeTool === "document"
-          ? "document"
-          : searchDone
-            ? "document"
-            : "search";
-
-  return [
-    { id: "scope", label: "选文件夹", state: stepState("scope", currentId, scopeDone), tool: "search" },
-    { id: "search", label: "找文件", state: stepState("search", currentId, searchDone), tool: "search" },
-    { id: "document", label: "读文档", state: stepState("document", currentId, documentDone), tool: "document" },
-    { id: "cleanup", label: "先预览", state: stepState("cleanup", currentId, cleanupReady), tool: "cleanup" }
-  ];
-}
-
-function stepState(id: FileOnboardingStep["id"], currentId: FileOnboardingStep["id"], done: boolean): FileOnboardingStep["state"] {
-  if (done) return "done";
-  return id === currentId ? "current" : "next";
-}
-
-function fileOnboardingHeadline(steps: FileOnboardingStep[]) {
-  const current = steps.find((step) => step.state === "current") ?? steps.find((step) => step.state === "next");
-  if (!current) return "文件工具已准备好";
-  if (steps.some((step) => step.id === "cleanup" && step.state === "done")) return "清理预览已生成，下一步只等确认";
-  if (current.id === "scope") return "先给 Lengrvis 一个明确文件夹";
-  if (current.id === "search") return "输入关键词，只在已选文件夹里找";
-  if (current.id === "document") return "选中文档后读取、总结或提问";
-  return "清理前先预览，不直接删除";
-}
-
-function formatCount(value?: number): string {
-  if (!Number.isFinite(value)) return "0";
-  return Math.max(0, Number(value)).toLocaleString("zh-CN");
-}
-
-function displayFilePath(path: string): { name: string; parent: string } {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const parts = normalized.split("/").filter(Boolean);
-  const name = parts.at(-1) || path || "未命名文件";
-  const parentParts = parts.slice(0, -1);
-  const parent = parentParts.length > 3
-    ? `.../${parentParts.slice(-3).join("/")}`
-    : parentParts.join("/");
-  return { name, parent };
-}
-
-function displaySearchMatch(match: string, fileName: string, fullPath: string): string {
-  const value = match.trim();
-  if (!value || value === fileName || value === fullPath) return "";
-  return value;
-}
-
-function compactPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 2) return path;
-  return `${parts.at(-2)}/${parts.at(-1)}`;
-}
-
-function clusterDimensionOption(value: FileClusterDimension): FileClusterDimensionOption {
-  return CLUSTER_DIMENSION_OPTIONS.find((option) => option.value === value) ?? CLUSTER_DIMENSION_OPTIONS[0];
-}
-
-function shortcutsHaveAnyPath(folders: Record<KnownFolderShortcut["id"], string | null>): boolean {
-  return Object.values(folders).some((path) => Boolean(path?.trim()));
-}
-
-function noticeForSearchStatus(
-  status: SearchStatus,
-  message: string | null,
-  resultCount: number,
-  meta?: FileSearchMeta | null
-): { tone: SearchNoticeTone; text: string } | null {
-  switch (status) {
-    case "missing_scope":
-      return { tone: "error", text: message || "请先选择要查找的文件夹，再开始查找文件。" };
-    case "missing_query":
-      return { tone: "error", text: message || "请输入要查找的文件名或关键词。" };
-    case "loading":
-      return { tone: "info", text: "正在查找已选文件夹里的匹配文件..." };
-    case "empty":
-      return {
-        tone: "empty",
-        text: message || (
-          meta?.truncated
-            ? `已检查 ${formatCount(meta?.scanned)} 个文件，暂时没有找到匹配项；当前范围还没完全扫完，结果可能不完整。`
-            : meta?.scanned
-              ? `已检查 ${formatCount(meta.scanned)} 个文件，没有找到匹配项。可以换个关键词，或换一个文件夹再试。`
-              : "没有找到匹配文件。可以换个关键词，或换一个文件夹再试。"
-        )
-      };
-    case "success":
-      return {
-        tone: meta?.truncated ? "empty" : "success",
-        text: message || (
-          meta?.truncated
-            ? `已显示 ${resultCount} 条结果，已检查 ${formatCount(meta?.scanned)} 个文件；当前范围还没完全扫完，结果可能不完整。`
-            : meta?.scanned
-              ? `已在已选文件夹找到 ${resultCount} 条结果，检查了 ${formatCount(meta.scanned)} 个文件。`
-              : `已在已选文件夹找到 ${resultCount} 条结果。`
-        )
-      };
-    case "error":
-      return { tone: "error", text: message || "文件搜索失败，请稍后重试。" };
-    case "idle":
-    default:
-      return null;
-  }
-}
-
-function noticeForIndexStatus(status?: IndexStatus | null): { tone: SearchNoticeTone; text: string } | null {
-  if (!status) return null;
-  const latest = formatIndexTimestamp(status.lastIndexedAt);
-  const count = formatCount(status.filesIndexed);
-  if (status.status === "ready") {
-    return {
-      tone: "success",
-      text: latest
-        ? `全文索引已就绪：${count} 个文件，最近更新 ${latest}。`
-        : `全文索引已就绪：${count} 个文件。`
-    };
-  }
-  if (status.status === "degraded") {
-    const failure = status.latestFailure?.message ? `最近失败：${status.latestFailure.message}。` : "";
-    const retry = status.retryHint || "修复本地嵌入服务后，可重建索引或重新搜索。";
-    return {
-      tone: "empty",
-      text: `索引可用但需要留意：${count} 个文件${latest ? `，最近更新 ${latest}` : ""}。${failure}${retry}`
-    };
-  }
-  if (status.status === "empty") {
-    return {
-      tone: "info",
-      text: status.retryHint || "全文索引暂时为空；文件名搜索仍会实时扫描。重建索引后可搜索文档正文。"
-    };
-  }
-  if (status.status === "missing_scope") {
-    return {
-      tone: "info",
-      text: status.retryHint || "先选择授权文件夹，再开始索引或搜索文件。"
-    };
-  }
-  return null;
-}
-
-function formatIndexTimestamp(value?: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
-}
-
-function userFileError(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  const friendly = zhUserFacingError(raw);
-  return friendly || fallback;
-}
-
-function fileActionError(error: unknown, action: "read" | "summarize" | "reveal"): string {
-  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  const lower = raw.toLowerCase();
-  const prefix =
-    action === "reveal"
-      ? "暂时无法打开所在位置"
-      : action === "summarize"
-        ? "暂时无法总结这份文档"
-        : "暂时无法读取这份文档";
-
-  if (!raw) {
-    return `${prefix}。请稍后重试；如果仍失败，可以先换一份文档或重新选择文件夹范围。`;
-  }
-  if (/network|fetch|failed to fetch|connection|refused|aborted|timeout|超时|连接|后端|服务/i.test(raw)) {
-    return `${prefix}：Lengrvis 服务暂时没连接好。请先刷新或重启服务，连接恢复后再试。`;
-  }
-  if (
-    lower.includes("no authorized directories configured") ||
-    lower.includes("outside authorized directories") ||
-    lower.includes("not authorized") ||
-    raw.includes("不在你已选择的文件夹")
-  ) {
-    return `${prefix}：这个文件不在当前授权范围内。请先把它所在文件夹加入“当前范围”，再继续操作。`;
-  }
-  if (lower.includes("path is not a file") || lower.includes("not found") || lower.includes("does not exist") || raw.includes("不存在")) {
-    return `${prefix}：文件可能已移动、删除，或路径不是一个文件。请重新搜索或粘贴新的文件位置。`;
-  }
-  if (lower.includes("permission") || lower.includes("access is denied") || lower.includes("denied") || raw.includes("权限")) {
-    return `${prefix}：当前没有足够权限读取这个文件。请确认文件未受系统权限限制，或换到你有权限的文件夹。`;
-  }
-  if (lower.includes("being used") || lower.includes("in use") || lower.includes("locked") || raw.includes("占用")) {
-    return `${prefix}：文件可能正被其他应用占用。请关闭正在打开它的程序后再试。`;
-  }
-  if (lower.includes("unsupported") || lower.includes("format") || lower.includes("mime") || raw.includes("格式")) {
-    return `${prefix}：当前格式暂不支持。可以先转换为 PDF、Word、TXT 或常见表格格式后再试。`;
-  }
-
-  return userFileError(raw, `${prefix}。请确认文件存在、在当前范围内，并且格式受支持。`);
-}
-
-function searchErrorText(error: unknown, fallback: string): string {
-  const text = userFileError(error, fallback);
-  if (/等得有点久|timeout|aborted|超时/i.test(text)) {
-    return `${text} 这不是“没有结果”，是本次搜索未完成。`;
-  }
-  return text;
-}
-
-function validateDocumentPath(path: string): string | null {
-  const value = path.trim();
-  if (!value) return "请先填写文档位置。";
-  const hasWindowsDrive = /^[a-z]:[\\/]/i.test(value);
-  const hasUncPath = value.startsWith("\\\\");
-  const hasPosixRoot = value.startsWith("/");
-  if (!hasWindowsDrive && !hasUncPath && !hasPosixRoot) {
-    return "请填写完整的文档位置，例如 C:\\Users\\你\\Documents\\文件.pdf。";
-  }
-  const extension = value.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
-  if (!isDocumentPathSupported(value)) {
-    return "这个文件格式暂不支持文档读取。请换 PDF、Word、文本、表格、PPT 或常见代码/网页文件。";
-  }
-  return null;
-}
-
-function isDocumentPathSupported(path: string): boolean {
-  const extension = path.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
-  return Boolean(extension && SUPPORTED_DOCUMENT_EXTENSIONS.has(extension));
-}
-
-const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([
-  ".pdf",
-  ".docx",
-  ".txt",
-  ".md",
-  ".markdown",
-  ".log",
-  ".rst",
-  ".json",
-  ".yaml",
-  ".yml",
-  ".py",
-  ".ts",
-  ".tsx",
-  ".js",
-  ".csv",
-  ".xlsx",
-  ".pptx",
-  ".html",
-  ".htm",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".bmp",
-  ".tif",
-  ".tiff"
-]);
-
-function clusterPayloadFor(dimension: FileClusterDimension): FileClusterOptions {
-  switch (dimension) {
-    case "type":
-      return { groupBy: "type", clusterBy: "type" };
-    case "extension":
-      return { groupBy: "extension", clusterBy: "extension" };
-    case "image_auto":
-      return { groupBy: "image", clusterBy: "auto" };
-    case "scene":
-    case "people":
-    case "objects":
-    case "tags":
-    case "time":
-    case "location":
-      return { groupBy: dimension, clusterBy: dimension };
-    case "content":
-    default:
-      return {};
-  }
 }

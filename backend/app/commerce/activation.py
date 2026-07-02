@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.commerce import activation_store as _activation_store
 from app.commerce.activation_policy import (
     ACTIVATION_KEY_PEPPER_ENV_VAR,
     ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR,
@@ -38,7 +39,6 @@ from app.commerce.activation_policy import (
     ActivationPolicy,
     ActivationRefreshRequest,
     ActivationRequest,
-    hash_activation_key,
 )
 from app.commerce.activation_policy import (
     ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF_ENV_VAR as ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF_ENV_VAR,
@@ -54,9 +54,6 @@ from app.commerce.activation_policy import (
 )
 from app.commerce.activation_policy import (
     clean_activation_key as _clean_activation_key,
-)
-from app.commerce.activation_policy import (
-    decode_device_profile as _device_profile_payload,
 )
 from app.commerce.activation_policy import (
     device_binding_claim as _activation_device_binding_claim,
@@ -87,6 +84,16 @@ from app.core import audit as audit_core
 
 logger = logging.getLogger(__name__)
 
+ActivationStore = _activation_store.ActivationStore
+_UNSET = _activation_store.ACTIVATION_STORE_UNSET
+_iso = _activation_store.activation_iso
+_iso_optional = _activation_store.activation_iso_optional
+_clean_key_hash = _activation_store.clean_key_hash
+_normalize_subscription_status = _activation_store.normalize_subscription_status
+_parse_datetime = _activation_store.parse_activation_datetime
+_redact_identifier = _activation_store.redact_identifier
+_row_value = _activation_store.row_value
+
 ACTIVATION_BASE_URL_ENV_VAR = "LENGRVIS_ACTIVATION_BASE_URL"
 ACTIVATION_TIMEOUT_SECONDS_ENV_VAR = "LENGRVIS_ACTIVATION_TIMEOUT_SECONDS"
 ACTIVATION_ALLOW_INSECURE_HTTP_ENV_VAR = "LENGRVIS_ACTIVATION_ALLOW_INSECURE_HTTP"
@@ -102,12 +109,9 @@ ACTIVATION_RATE_LIMIT_WINDOW_SECONDS_ENV_VAR = "LENGRVIS_ACTIVATION_RATE_LIMIT_W
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _ALLOWED_SUBSCRIPTION_STATES = {"active", "trialing"}
-_DELETABLE_SUBSCRIPTION_STATES = {"canceled", "expired", "revoked"}
 _DEFAULT_TIMEOUT_SECONDS = 12.0
 _DEFAULT_RATE_LIMIT_MAX = 8
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 300
-_UNSET = object()
-"""Sentinel distinguishing "field omitted" from an explicit ``None`` (clear)."""
 
 
 class HttpClient(Protocol):
@@ -337,51 +341,7 @@ def _collect_local_identity(settings: Any) -> LocalDeviceIdentity:
 
 def initialize_activation_db(path: Path | None = None) -> Path:
     """Create the activation-server SQLite tables if needed."""
-    db_path = _activation_db_path(path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS subscription_keys (
-                key_hash TEXT PRIMARY KEY,
-                plan TEXT NOT NULL,
-                subscription_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                subject TEXT NOT NULL DEFAULT '',
-                seats INTEGER NOT NULL DEFAULT 1,
-                max_devices INTEGER NOT NULL DEFAULT 1,
-                expires_at TEXT,
-                renews_at TEXT,
-                cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
-                order_ref TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS activation_devices (
-                id TEXT PRIMARY KEY,
-                key_hash TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                server_device_ref TEXT NOT NULL DEFAULT '',
-                device_fingerprint TEXT NOT NULL DEFAULT '',
-                device_profile TEXT NOT NULL DEFAULT '{}',
-                first_activated_at TEXT NOT NULL,
-                last_activated_at TEXT NOT NULL,
-                app_version TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY (key_hash) REFERENCES subscription_keys(key_hash),
-                UNIQUE (key_hash, device_id)
-            )
-            """
-        )
-        _ensure_activation_device_columns(conn)
-        _backfill_activation_server_device_refs(conn)
-        _ensure_activation_rate_limit_table(conn)
-    return db_path
+    return ActivationStore(_activation_db_path(path)).initialize_database()
 
 
 def upsert_subscription_key(
@@ -402,62 +362,21 @@ def upsert_subscription_key(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Create/update one activation key without storing the raw key."""
-    normalized_plan = normalize_plan(plan)
-    normalized_status = _normalize_subscription_status(status)
-    key_hash = hash_activation_key(activation_key, pepper=pepper)
-    timestamp = _iso(now or _utc_now())
-    seats_value = max(1, int(seats or 1))
-    max_devices_value = max(1, int(max_devices or seats_value))
-    initialize_activation_db(db_path)
-    path = _activation_db_path(db_path)
-    with sqlite3.connect(path) as conn:
-        conn.execute(
-            """
-            INSERT INTO subscription_keys (
-                key_hash, plan, subscription_id, status, subject, seats, max_devices,
-                expires_at, renews_at, cancel_at_period_end, order_ref, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(key_hash) DO UPDATE SET
-                plan = excluded.plan,
-                subscription_id = excluded.subscription_id,
-                status = excluded.status,
-                subject = excluded.subject,
-                seats = excluded.seats,
-                max_devices = excluded.max_devices,
-                expires_at = excluded.expires_at,
-                renews_at = excluded.renews_at,
-                cancel_at_period_end = excluded.cancel_at_period_end,
-                order_ref = excluded.order_ref,
-                updated_at = excluded.updated_at
-            """,
-            (
-                key_hash,
-                normalized_plan.value,
-                _safe_label(subscription_id, max_length=128),
-                normalized_status,
-                _safe_label(subject, max_length=256),
-                seats_value,
-                max_devices_value,
-                _iso_optional(expires_at),
-                _iso_optional(renews_at),
-                1 if cancel_at_period_end else 0,
-                _safe_label(order_ref, max_length=128),
-                timestamp,
-                timestamp,
-            ),
-        )
-    return {
-        "key_hash": key_hash,
-        "plan": normalized_plan.value,
-        "subscription_id": _safe_label(subscription_id, max_length=128),
-        "status": normalized_status,
-        "seats": seats_value,
-        "max_devices": max_devices_value,
-        "expires_at": _iso_optional(expires_at),
-        "renews_at": _iso_optional(renews_at),
-        "cancel_at_period_end": bool(cancel_at_period_end),
-    }
+    return ActivationStore(_activation_db_path(db_path)).upsert_subscription_key(
+        activation_key=activation_key,
+        plan=plan,
+        subscription_id=subscription_id,
+        status=status,
+        subject=subject,
+        seats=seats,
+        max_devices=max_devices,
+        expires_at=expires_at,
+        renews_at=renews_at,
+        cancel_at_period_end=cancel_at_period_end,
+        order_ref=order_ref,
+        pepper=pepper,
+        now=now or _utc_now(),
+    )
 
 
 def activate_subscription_key(
@@ -795,7 +714,6 @@ def enforce_activation_rate_limit(
     path = initialize_activation_db(db_path)
     with sqlite3.connect(path, isolation_level=None) as conn:
         conn.execute("PRAGMA busy_timeout = 5000")
-        _ensure_activation_rate_limit_table(conn)
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM activation_rate_limits WHERE attempted_at <= ?", (cutoff,))
         count = conn.execute(
@@ -851,67 +769,6 @@ def activation_server_configured() -> bool:
         str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
         and str(os.getenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "")).strip()
         and _read_activation_private_key(required=False)
-    )
-
-
-def _ensure_activation_device_columns(conn: sqlite3.Connection) -> None:
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(activation_devices)").fetchall()}
-    if "server_device_ref" not in columns:
-        conn.execute("ALTER TABLE activation_devices ADD COLUMN server_device_ref TEXT NOT NULL DEFAULT ''")
-    if "device_fingerprint" not in columns:
-        conn.execute("ALTER TABLE activation_devices ADD COLUMN device_fingerprint TEXT NOT NULL DEFAULT ''")
-    if "device_profile" not in columns:
-        conn.execute("ALTER TABLE activation_devices ADD COLUMN device_profile TEXT NOT NULL DEFAULT '{}'")
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_activation_devices_key_server_ref
-        ON activation_devices(key_hash, server_device_ref)
-        WHERE server_device_ref != ''
-        """
-    )
-
-
-def _backfill_activation_server_device_refs(conn: sqlite3.Connection) -> None:
-    rows = conn.execute(
-        """
-        SELECT id, key_hash, device_id, device_fingerprint, server_device_ref
-        FROM activation_devices
-        WHERE server_device_ref = ''
-        """
-    ).fetchall()
-    policy = ActivationPolicy.from_environment()
-    for row in rows:
-        key_hash = str(row["key_hash"] or "")
-        fingerprint = str(row["device_fingerprint"] or "")
-        device_id = str(row["device_id"] or "")
-        try:
-            server_ref = policy.server_device_ref(
-                key_hash=key_hash,
-                device_fingerprint=fingerprint,
-                legacy_device_id=device_id,
-            )
-        except ActivationError:
-            continue
-        conn.execute(
-            "UPDATE activation_devices SET server_device_ref = ? WHERE id = ?",
-            (server_ref, str(row["id"] or "")),
-        )
-
-
-def _ensure_activation_rate_limit_table(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS activation_rate_limits (
-            scope TEXT NOT NULL,
-            attempted_at REAL NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_activation_rate_limits_scope_time
-        ON activation_rate_limits(scope, attempted_at)
-        """
     )
 
 
@@ -1087,38 +944,6 @@ def _activation_public_key_for_self_check() -> str:
     return str(os.getenv("LENGRVIS_LICENSE_PUBLIC_KEY", "")).strip()
 
 
-def _normalize_subscription_status(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    allowed = {"active", "trialing", "past_due", "canceled", "expired", "revoked"}
-    if text not in allowed:
-        raise ValueError("订阅状态必须是 active、trialing、past_due、canceled、expired 或 revoked。")
-    return text
-
-
-def _parse_datetime(value: Any) -> datetime | None:
-    if value in (None, ""):
-        return None
-    text = str(value).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(text)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _iso_optional(value: datetime | str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return _iso(value)
-    return _iso(_parse_datetime(value))
-
-
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -1156,24 +981,7 @@ def write_activation_key_once(path: Path, activation_key: str) -> None:
 
 def list_subscription_keys(*, db_path: Path | None = None, limit: int = 200) -> list[dict[str, Any]]:
     """Return redacted subscription/key records for the admin panel."""
-    path = initialize_activation_db(db_path)
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT
-                k.*,
-                COUNT(d.id) AS device_count,
-                MAX(d.last_activated_at) AS last_activated_at
-            FROM subscription_keys k
-            LEFT JOIN activation_devices d ON d.key_hash = k.key_hash
-            GROUP BY k.key_hash
-            ORDER BY k.updated_at DESC, k.created_at DESC
-            LIMIT ?
-            """,
-            (max(1, min(int(limit or 200), 500)),),
-        ).fetchall()
-        return [_subscription_admin_payload(conn, row) for row in rows]
+    return ActivationStore(_activation_db_path(db_path)).list_subscription_keys(limit=limit)
 
 
 def revoke_subscription_key(
@@ -1189,26 +997,10 @@ def revoke_subscription_key(
     signed revocation manifest for the listed license IDs before claiming the
     paid entitlement is disabled on those devices.
     """
-    record = update_subscription_key(
+    return ActivationStore(_activation_db_path(db_path)).revoke_subscription_key(
         key_hash=key_hash,
-        status="revoked",
-        cancel_at_period_end=False,
-        db_path=db_path,
-        now=now,
+        now=now or _utc_now(),
     )
-    revoked_license_ids = [
-        str(device.get("license_id") or "")
-        for device in record.get("devices", [])
-        if isinstance(device, dict) and device.get("license_id")
-    ]
-    if revoked_license_ids:
-        record["revoked_license_ids"] = revoked_license_ids
-        record["revocation_manifest_required"] = True
-        record["revocation_manifest_note"] = "已有激活设备需要发布签名吊销清单或交接替换许可证后，付费能力才会被停用。"
-    else:
-        record["revoked_license_ids"] = []
-        record["revocation_manifest_required"] = False
-    return record
 
 
 def delete_subscription_key(
@@ -1217,44 +1009,7 @@ def delete_subscription_key(
     db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Delete a terminal, device-free subscription record from the admin list."""
-    normalized_hash = _clean_key_hash(key_hash)
-    path = initialize_activation_db(db_path)
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM subscription_keys WHERE key_hash = ?", (normalized_hash,)).fetchone()
-        if row is None:
-            raise ActivationError(
-                _activation_message_for_code("activation_key_not_found"),
-                code="activation_key_not_found",
-                status_code=404,
-            )
-        status = _normalize_subscription_status(row["status"])
-        if status not in _DELETABLE_SUBSCRIPTION_STATES:
-            raise ActivationError(
-                _activation_message_for_code("subscription_delete_not_terminal"),
-                code="subscription_delete_not_terminal",
-                status_code=409,
-            )
-        device_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM activation_devices WHERE key_hash = ?",
-                (normalized_hash,),
-            ).fetchone()[0]
-            or 0
-        )
-        if device_count > 0:
-            raise ActivationError(
-                _activation_message_for_code("subscription_delete_has_devices"),
-                code="subscription_delete_has_devices",
-                status_code=409,
-            )
-        conn.execute("DELETE FROM subscription_keys WHERE key_hash = ?", (normalized_hash,))
-    return {
-        "removed": True,
-        "key_hash": normalized_hash,
-        "key_hash_prefix": normalized_hash[:12],
-    }
+    return ActivationStore(_activation_db_path(db_path)).delete_subscription_key(key_hash=key_hash)
 
 
 def renew_subscription_key(
@@ -1274,7 +1029,7 @@ def renew_subscription_key(
     Renewal always rewrites the expiry window, so an explicit ``None`` here
     means "clear the expiry (long-term valid)" rather than "leave unchanged".
     """
-    return update_subscription_key(
+    return ActivationStore(_activation_db_path(db_path)).renew_subscription_key(
         key_hash=key_hash,
         status=status,
         expires_at=expires_at,
@@ -1282,8 +1037,7 @@ def renew_subscription_key(
         cancel_at_period_end=cancel_at_period_end,
         max_devices=max_devices,
         seats=seats,
-        db_path=db_path,
-        now=now,
+        now=now or _utc_now(),
     )
 
 
@@ -1305,156 +1059,18 @@ def update_subscription_key(
     explicitly clear a column (pass ``None`` → store ``NULL``, e.g. "long-term
     valid") while omitting the argument leaves the existing value untouched.
     """
-    normalized_hash = _clean_key_hash(key_hash)
-    updates: list[str] = []
-    values: list[Any] = []
-    if status is not None:
-        updates.append("status = ?")
-        values.append(_normalize_subscription_status(status))
-    if expires_at is not _UNSET:
-        updates.append("expires_at = ?")
-        values.append(_iso_optional(expires_at))
-    if renews_at is not _UNSET:
-        updates.append("renews_at = ?")
-        values.append(_iso_optional(renews_at))
-    if cancel_at_period_end is not None:
-        updates.append("cancel_at_period_end = ?")
-        values.append(1 if cancel_at_period_end else 0)
-    if max_devices is not None:
-        updates.append("max_devices = ?")
-        values.append(max(1, int(max_devices)))
-    if seats is not None:
-        updates.append("seats = ?")
-        values.append(max(1, int(seats)))
-    updates.append("updated_at = ?")
-    values.append(_iso(now or _utc_now()))
-    values.append(normalized_hash)
-
-    path = initialize_activation_db(db_path)
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        result = conn.execute(
-            f"UPDATE subscription_keys SET {', '.join(updates)} WHERE key_hash = ?",  # noqa: S608
-            tuple(values),
-        )
-        if result.rowcount == 0:
-            raise ActivationError(
-                _activation_message_for_code("activation_key_not_found"),
-                code="activation_key_not_found",
-                status_code=404,
-            )
-        row = conn.execute("SELECT * FROM subscription_keys WHERE key_hash = ?", (normalized_hash,)).fetchone()
-        if row is None:
-            raise ActivationError(
-                _activation_message_for_code("activation_key_not_found"),
-                code="activation_key_not_found",
-                status_code=404,
-            )
-        return _subscription_admin_payload(conn, row)
+    return ActivationStore(_activation_db_path(db_path)).update_subscription_key(
+        key_hash=key_hash,
+        status=status,
+        expires_at=expires_at,
+        renews_at=renews_at,
+        cancel_at_period_end=cancel_at_period_end,
+        max_devices=max_devices,
+        seats=seats,
+        now=now or _utc_now(),
+    )
 
 
 def unbind_activation_device(*, license_id: str, db_path: Path | None = None) -> dict[str, Any]:
     """Remove one activated device so the seat can be reused."""
-    normalized = _safe_label(license_id, max_length=128)
-    if not normalized:
-        raise ActivationError(
-            _activation_message_for_code("license_id_required"), code="activation_device_required", status_code=422
-        )
-    path = initialize_activation_db(db_path)
-    with sqlite3.connect(path) as conn:
-        row = conn.execute(
-            "SELECT id, key_hash, device_id FROM activation_devices WHERE id = ?",
-            (normalized,),
-        ).fetchone()
-        if row is None:
-            raise ActivationError(
-                _activation_message_for_code("activation_device_not_found"),
-                code="activation_device_not_found",
-                status_code=404,
-            )
-        conn.execute("DELETE FROM activation_devices WHERE id = ?", (normalized,))
-    return {"license_id": normalized, "removed": True}
-
-
-def _subscription_admin_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
-    key_hash = str(row["key_hash"] or "")
-    devices = conn.execute(
-        """
-        SELECT id, device_id, server_device_ref, device_fingerprint, device_profile,
-               first_activated_at, last_activated_at, app_version
-        FROM activation_devices
-        WHERE key_hash = ?
-        ORDER BY last_activated_at DESC
-        """,
-        (key_hash,),
-    ).fetchall()
-    device_count = _row_value(row, "device_count")
-    last_activated_at = _row_value(row, "last_activated_at")
-    return {
-        "key_hash": key_hash,
-        "key_hash_prefix": key_hash[:12],
-        "plan": normalize_plan(row["plan"]).value,
-        "subscription_id": str(row["subscription_id"] or ""),
-        "status": _normalize_subscription_status(row["status"]),
-        "subject": str(row["subject"] or ""),
-        "seats": max(1, int(row["seats"] or 1)),
-        "max_devices": max(1, int(row["max_devices"] or row["seats"] or 1)),
-        "expires_at": row["expires_at"],
-        "renews_at": row["renews_at"],
-        "cancel_at_period_end": bool(row["cancel_at_period_end"]),
-        "order_ref": str(row["order_ref"] or ""),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "device_count": int(device_count or len(devices)),
-        "last_activated_at": last_activated_at,
-        "devices": [_device_admin_payload(device) for device in devices],
-    }
-
-
-def _device_admin_payload(row: sqlite3.Row) -> dict[str, Any]:
-    device_id = str(row["device_id"] or "")
-    server_device_ref = str(_row_value(row, "server_device_ref") or "")
-    fingerprint = str(_row_value(row, "device_fingerprint") or "")
-    profile = _device_profile_payload(_row_value(row, "device_profile"))
-    return {
-        "license_id": str(row["id"] or ""),
-        "device_label": _redact_identifier(device_id),
-        "server_device_ref_label": _redact_identifier(server_device_ref) if server_device_ref else "",
-        "device_fingerprint_label": _redact_identifier(fingerprint) if fingerprint else "",
-        "device_profile": profile,
-        "risk_label": "server_fingerprint_bound" if server_device_ref and fingerprint else "legacy_device_id_only",
-        "first_activated_at": row["first_activated_at"],
-        "last_activated_at": row["last_activated_at"],
-        "app_version": str(row["app_version"] or ""),
-    }
-
-
-def _redact_identifier(value: str) -> str:
-    """Mask an identifier so it is never surfaced verbatim in the admin panel.
-
-    Short ids used to be returned unchanged; now every value keeps only a short
-    recognizable head (and tail when long enough) with the middle redacted.
-    """
-    text = str(value or "").strip()
-    length = len(text)
-    if length == 0:
-        return ""
-    if length <= 3:
-        return "*" * length
-    head_len = min(8, max(2, length - 4))
-    head = text[:head_len]
-    tail = text[-2:] if length - head_len >= 4 else ""
-    return f"{head}...{tail}" if tail else f"{head}..."
-
-
-def _row_value(row: sqlite3.Row, key: str) -> Any:
-    return row[key] if key in row.keys() else None
-
-
-def _clean_key_hash(value: str) -> str:
-    text = str(value or "").strip().lower()
-    if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
-        raise ActivationError(
-            _activation_message_for_code("activation_key_invalid"), code="activation_key_invalid", status_code=422
-        )
-    return text
+    return ActivationStore(_activation_db_path(db_path)).unbind_activation_device(license_id=license_id)
