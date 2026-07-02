@@ -1,0 +1,129 @@
+
+@media (max-width: 1180px) {
+  body {
+    min-width: 0;
+  }
+
+  .lengrvis-shell {
+    height: auto;
+    min-height: 100vh;
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .lengrvis-workbench-layout {
+    grid-template-columns: 1fr;
+    padding-right: 0;
+    overflow: visible;
+  }
+
+  .workbench-panel {
+    display: none;
+  }
+
+  .lengrvis-sidebar {
+    grid-template-rows: auto auto auto;
+    height: auto;
+    padding: 14px;
+    overflow: visible;
+  }
+
+  .sidebar-section--dialogues,
+  .sidebar-user {
+    display: none;
+  }
+
+  .primary-nav,
+  .sidebar-section {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .primary-nav {
+    gap: 8px;
+  }
+
+  .primary-nav__group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .primary-nav__group + .primary-nav__group {
+    margin-top: 0;
+  }
+
+  .primary-nav__label {
+    width: 100%;
+    padding: 4px 6px 0;
+  }
+
+  .side-button {
+    width: auto;
+    max-width: 190px;
+  }
+
+  .detail-grid,
+  .conversation-view,
+  .browser-watch,
+  .file-tools,
+  .local-library-view,
+  .system-support-flow,
+  .system-grid,
+  .toggle-list,
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .library-inspector {
+    min-height: 260px;
+  }
+
+  .browser-watch {
+    overflow: auto;
+  }
+
+  .browser-watch__sessions,
+  .browser-watch__events {
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .browser-watch__stage-column {
+    grid-template-rows: auto minmax(320px, 52vh) auto;
+  }
+
+  .mobile-pairing {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .mobile-pairing__visual {
+    justify-items: start;
+  }
+
+  .detail-grid > .panel:nth-child(3),
+  .system-metric--wide {
+    grid-column: auto;
+  }
+
+  .window-bar,
+  .command-footer {
+    flex-wrap: wrap;
+  }
+
+  .command-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .lengrvis-main {
+    height: auto;
+    min-height: calc(100vh - 112px);
+    overflow: visible;
+  }
+
+  .lengrvis-home {
+    height: auto;
+    overflow: visible;
+  }
+}

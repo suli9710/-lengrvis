@@ -1,0 +1,155 @@
+
+/* ==========================================================================
+   主区域
+   ========================================================================== */
+
+.lengrvis-main {
+  min-width: 0;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  overflow: hidden;
+  padding: 14px 4px 10px 18px;
+}
+
+.window-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 4px;
+}
+
+.window-bar__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.window-bar__title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text);
+  animation: title-in 0.34s var(--ease-out);
+}
+
+@keyframes title-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.window-bar__title span,
+.window-bar__title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.window-bar__title small {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.window-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 顶栏图标按钮的轻量提示 */
+.window-actions .icon-button[aria-label] {
+  position: relative;
+}
+
+.window-actions .icon-button[aria-label]::before {
+  content: attr(aria-label);
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: rgba(22, 32, 58, 0.92);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 0.18s var(--ease-out) 0s, transform 0.18s var(--ease-out) 0s;
+  z-index: 30;
+}
+
+.window-actions .icon-button[aria-label]:hover::before {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 0.45s, 0.45s;
+}
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  max-width: 160px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: pill-in 0.32s var(--ease-spring);
+}
+
+@keyframes pill-in {
+  from { opacity: 0; transform: translateX(8px) scale(0.94); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.connection-pill__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted-soft);
+  box-shadow: 0 0 0 3px rgba(110, 122, 147, 0.16);
+}
+
+.connection-pill--online .connection-pill__dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(25, 163, 122, 0.22);
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+
+.connection-pill--checking .connection-pill__dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(210, 130, 0, 0.22);
+}
+
+.connection-pill--offline {
+  border-color: rgba(210, 130, 0, 0.28);
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.connection-pill--offline .connection-pill__dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(210, 130, 0, 0.2);
+}

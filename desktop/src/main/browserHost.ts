@@ -27,13 +27,21 @@ import {
   sanitizeSnapshotForRenderer
 } from "../shared/browserHostRedaction";
 import {
-  assertBrowserHostUrlAllowed,
   isBlockedBrowserHostNavigation,
   isBrowserHostRequestAllowed
 } from "./browserHostNetworkGuard";
 import { isReadOnlyBrowserHostAction } from "./browserHostBridge";
 import { domClickScript, domFillScript, domScrollScript, domSubmitScript, observeScript } from "./browserHostDomActions";
 import { confirmNativeDesktopAction, isTrustedRendererUrl } from "./ipc";
+import {
+  browserHostErrorMessage,
+  browserHostTimestamp,
+  normalizeBrowserHostBounds,
+  normalizeBrowserHostId,
+  normalizeBrowserHostUrl,
+  requireBrowserActionSelector,
+  requireBrowserActionUrl
+} from "./browserHostValidation";
 
 export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBackendUrl } from "./browserHostBridge";
 
@@ -75,7 +83,6 @@ type BrowserHostIpcTarget = Pick<
 
 const DEFAULT_HOME_URL = "about:blank";
 const MAX_EVENTS_PER_SESSION = 300;
-const MIN_BROWSER_SIZE = 80;
 
 export class BrowserHost {
   private sessions = new Map<string, HostedBrowserSession>();
@@ -121,17 +128,17 @@ export class BrowserHost {
   }
 
   async open(request: BrowserHostOpenRequest = {}): Promise<BrowserHostActionResult> {
-    const sessionId = normalizeId(request.sessionId) ?? randomUUID();
+    const sessionId = normalizeBrowserHostId(request.sessionId) ?? randomUUID();
 
     try {
       const current = this.sessions.get(sessionId);
-      const targetUrl = normalizeUrl(request.url) ?? current?.session.current_url ?? DEFAULT_HOME_URL;
+      const targetUrl = normalizeBrowserHostUrl(request.url) ?? current?.session.current_url ?? DEFAULT_HOME_URL;
       const entry = current ?? this.createHostedSession(sessionId, request);
       this.sessions.set(sessionId, entry);
       this.activeSessionId = sessionId;
       entry.session.status = "loading";
       entry.session.mode = request.mode ?? entry.session.mode;
-      entry.session.updated_at = timestamp();
+      entry.session.updated_at = browserHostTimestamp();
       this.attachActiveView();
       this.applyBounds();
       this.setViewVisible(true);
@@ -154,10 +161,10 @@ export class BrowserHost {
       return this.ok(entry, event);
     } catch (error) {
       const entry = this.sessions.get(sessionId);
-      const message = errorMessage(error);
+      const message = browserHostErrorMessage(error);
       if (entry) {
         entry.session.status = "error";
-        entry.session.updated_at = timestamp();
+        entry.session.updated_at = browserHostTimestamp();
         const event = this.addEvent(entry, {
           type: "session.open_failed",
           action: { kind: "open", url: request.url },
@@ -191,7 +198,7 @@ export class BrowserHost {
   }
 
   setBounds(bounds: BrowserHostBounds): BrowserHostActionResult {
-    this.bounds = normalizeBounds(bounds);
+    this.bounds = normalizeBrowserHostBounds(bounds);
     this.applyBounds();
     return { ok: true, snapshot: this.getSnapshot() };
   }
@@ -201,7 +208,7 @@ export class BrowserHost {
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.paused = true;
     entry.session.status = "paused";
-    entry.session.updated_at = timestamp();
+    entry.session.updated_at = browserHostTimestamp();
     const event = this.addEvent(entry, { type: "session.paused", ok: true });
     this.emitSnapshot();
     return this.ok(entry, event);
@@ -212,7 +219,7 @@ export class BrowserHost {
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.paused = false;
     entry.session.status = entry.container.view.webContents.isLoading() ? "loading" : "idle";
-    entry.session.updated_at = timestamp();
+    entry.session.updated_at = browserHostTimestamp();
     const event = this.addEvent(entry, { type: "session.resumed", ok: true });
     this.emitSnapshot();
     return this.ok(entry, event);
@@ -223,7 +230,7 @@ export class BrowserHost {
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.takeover = true;
     entry.session.mode = "takeover";
-    entry.session.updated_at = timestamp();
+    entry.session.updated_at = browserHostTimestamp();
     this.setInteractionBlocked(entry, false);
     this.show(sessionId);
     const event = this.addEvent(entry, { type: "session.takeover", ok: true });
@@ -236,7 +243,7 @@ export class BrowserHost {
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.takeover = false;
     entry.session.mode = "watch";
-    entry.session.updated_at = timestamp();
+    entry.session.updated_at = browserHostTimestamp();
     this.setInteractionBlocked(entry, true);
     const event = this.addEvent(entry, { type: "session.release", ok: true });
     this.emitSnapshot();
@@ -257,7 +264,7 @@ export class BrowserHost {
     this.emitSnapshot();
     return {
       ok: true,
-      session: sanitizeSessionForRenderer({ ...entry.session, status: "stopped", updated_at: timestamp() }),
+      session: sanitizeSessionForRenderer({ ...entry.session, status: "stopped", updated_at: browserHostTimestamp() }),
       event: sanitizeEventForRenderer(event),
       snapshot: this.getSnapshot()
     };
@@ -287,12 +294,12 @@ export class BrowserHost {
         type: "action.failed",
         action,
         ok: false,
-        error: errorMessage(error)
+        error: browserHostErrorMessage(error)
       });
       entry.session.status = "error";
-      entry.session.updated_at = timestamp();
+      entry.session.updated_at = browserHostTimestamp();
       this.emitSnapshot();
-      return this.fail(errorMessage(error), entry, event);
+      return this.fail(browserHostErrorMessage(error), entry, event);
     }
   }
 
@@ -300,13 +307,13 @@ export class BrowserHost {
     const partition = `lengrvis-watch-${sessionId}-${Date.now()}`;
     const container = createBrowserContainer(partition);
     const webContents = container.view.webContents;
-    const now = timestamp();
+    const now = browserHostTimestamp();
     const entry: HostedBrowserSession = {
       container,
       session: {
         id: sessionId,
         task_id: request.taskId,
-        current_url: normalizeUrl(request.url) ?? DEFAULT_HOME_URL,
+        current_url: normalizeBrowserHostUrl(request.url) ?? DEFAULT_HOME_URL,
         title: request.title ?? "Browser Watch",
         status: "idle",
         mode: request.mode ?? "watch",
@@ -364,7 +371,7 @@ export class BrowserHost {
 
     webContents.on("page-title-updated", (_event, title) => {
       entry.session.title = title;
-      entry.session.updated_at = timestamp();
+      entry.session.updated_at = browserHostTimestamp();
       this.emitSnapshot();
     });
 
@@ -372,7 +379,7 @@ export class BrowserHost {
       if (!isMainFrame || errorCode === -3) return;
       entry.session.status = "error";
       entry.session.current_url = validatedUrl || entry.session.current_url;
-      entry.session.updated_at = timestamp();
+      entry.session.updated_at = browserHostTimestamp();
       this.addEvent(entry, {
         type: "page.load_failed",
         ok: false,
@@ -385,7 +392,7 @@ export class BrowserHost {
 
     webContents.on("render-process-gone", (_event, details) => {
       entry.session.status = "error";
-      entry.session.updated_at = timestamp();
+      entry.session.updated_at = browserHostTimestamp();
       this.addEvent(entry, {
         type: "page.crashed",
         ok: false,
@@ -397,12 +404,12 @@ export class BrowserHost {
 
   private async executeAction(entry: HostedBrowserSession, action: BrowserAction): Promise<BrowserActivityEvent> {
     const webContents = entry.container.view.webContents;
-    const startedAt = timestamp();
+    const startedAt = browserHostTimestamp();
 
     switch (action.kind) {
       case "open":
       case "navigate": {
-        const url = requireActionUrl(action);
+        const url = requireBrowserActionUrl(action);
         entry.session.status = "loading";
         entry.session.updated_at = startedAt;
         await webContents.loadURL(url);
@@ -415,7 +422,7 @@ export class BrowserHost {
         });
       }
       case "click": {
-        await runDomAction(webContents, domClickScript(requireSelector(action)));
+        await runDomAction(webContents, domClickScript(requireBrowserActionSelector(action)));
         return this.addEvent(entry, { type: "action.click", action, ok: true });
       }
       case "fill": {
@@ -424,12 +431,12 @@ export class BrowserHost {
             await runDomAction(webContents, domFillScript(selector, text));
           }
         } else {
-          await runDomAction(webContents, domFillScript(requireSelector(action), action.text ?? ""));
+          await runDomAction(webContents, domFillScript(requireBrowserActionSelector(action), action.text ?? ""));
         }
         return this.addEvent(entry, { type: "action.fill", action, ok: true });
       }
       case "submit": {
-        await runDomAction(webContents, domSubmitScript(requireSelector(action)));
+        await runDomAction(webContents, domSubmitScript(requireBrowserActionSelector(action)));
         return this.addEvent(entry, { type: "action.submit", action, ok: true });
       }
       case "scroll": {
@@ -467,7 +474,7 @@ export class BrowserHost {
     entry.session.current_url = webContents.getURL() || entry.session.current_url;
     entry.session.title = webContents.getTitle() || entry.session.title;
     entry.session.status = status ?? (webContents.isLoading() ? "loading" : entry.session.paused ? "paused" : "idle");
-    entry.session.updated_at = timestamp();
+    entry.session.updated_at = browserHostTimestamp();
   }
 
   private addEvent(
@@ -478,7 +485,7 @@ export class BrowserHost {
       id: randomUUID(),
       session_id: entry.session.id,
       task_id: entry.session.task_id,
-      created_at: timestamp(),
+      created_at: browserHostTimestamp(),
       ...event
     };
     entry.events.unshift(activity);
@@ -720,53 +727,6 @@ function destroyWebContents(webContents: WebContents): void {
   if (!webContents.isDestroyed()) {
     webContents.close({ waitForBeforeUnload: false });
   }
-}
-
-function normalizeId(value?: string): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
-function normalizeUrl(value?: string): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed === "about:blank") return trimmed;
-  const withProtocol = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  const parsed = new URL(withProtocol);
-  if (!["https:", "http:"].includes(parsed.protocol)) {
-    throw new Error("Only http and https URLs can be opened in Watch Mode");
-  }
-  assertBrowserHostUrlAllowed(parsed);
-  return parsed.toString();
-}
-
-function normalizeBounds(bounds: BrowserHostBounds): BrowserHostBounds {
-  return {
-    x: Math.max(0, Math.round(bounds.x)),
-    y: Math.max(0, Math.round(bounds.y)),
-    width: Math.max(MIN_BROWSER_SIZE, Math.round(bounds.width)),
-    height: Math.max(MIN_BROWSER_SIZE, Math.round(bounds.height))
-  };
-}
-
-function timestamp(): string {
-  return new Date().toISOString();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Browser host action failed";
-}
-
-function requireActionUrl(action: BrowserAction): string {
-  const url = normalizeUrl(action.url);
-  if (!url) throw new Error("Browser action requires a URL");
-  return url;
-}
-
-function requireSelector(action: BrowserAction): string {
-  const selector = action.selector?.trim();
-  if (!selector) throw new Error("Browser action requires a selector");
-  return selector;
 }
 
 function runDomAction(webContents: WebContents, script: string): Promise<unknown> {
