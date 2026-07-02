@@ -45,14 +45,32 @@ from app.context.fallback_trim import (
 from app.context.fallback_trim import (
     trim_oldest_unprotected_blocks as _trim_oldest_unprotected_blocks,
 )
-from app.context.message_text import (
-    content_text as _content_text,
+from app.context.message_text import content_text as _content_text
+from app.context.message_text import json_text as _json
+from app.context.message_text import single_line as _single_line
+from app.context.micro_compact import (
+    empty_micro_compact_metadata as _empty_micro_compact_metadata,
 )
-from app.context.message_text import (
-    json_text as _json,
+from app.context.micro_compact import (
+    micro_compact_messages as _micro_compact_messages,
 )
-from app.context.message_text import (
-    single_line as _single_line,
+from app.context.micro_compact import (
+    micro_compact_messages_with_metadata as _micro_compact_messages_with_metadata,
+)
+from app.context.micro_compact import (
+    parse_tool_arguments as _parse_tool_arguments,
+)
+from app.context.micro_compact import (
+    projection_compact_metadata as _projection_compact_metadata,
+)
+from app.context.micro_compact import (
+    tool_call_name as _tool_call_name,
+)
+from app.context.micro_compact import (
+    tool_context_by_id as _tool_context_by_id,
+)
+from app.context.micro_compact import (
+    tool_result_collapse_summary as _tool_result_collapse_summary,
 )
 from app.context.prompt_errors import (
     PROMPT_TOO_LONG_MARKERS as PROMPT_TOO_LONG_MARKERS,
@@ -76,9 +94,6 @@ from app.context.prompt_errors import (
     prompt_too_long_error_from_exception as prompt_too_long_error_from_exception,
 )
 from app.context.tokens import (
-    ATTACHMENT_BLOCK_TYPES as ATTACHMENT_BLOCK_TYPES,
-)
-from app.context.tokens import (
     CHARS_PER_TOKEN as CHARS_PER_TOKEN,
 )
 from app.context.tokens import (
@@ -98,7 +113,6 @@ from app.context.tokens import (
 )
 from app.context.tokens import (
     auto_compact_threshold,
-    count_message_tokens,
     count_messages_tokens,
     effective_context_window,
     warning_state,
@@ -314,293 +328,7 @@ def project_ledger_for_llm(
 
 
 def micro_compact_messages(messages: list[dict[str, Any]], settings: AppSettings) -> tuple[list[dict[str, Any]], bool]:
-    result, changed, _metadata = _micro_compact_messages_with_metadata(messages, settings)
-    return result, changed
-
-
-def _micro_compact_messages_with_metadata(
-    messages: list[dict[str, Any]],
-    settings: AppSettings,
-) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
-    max_chars = max(0, int(settings.context_micro_compact_tool_result_chars))
-    age = max(0, int(settings.context_micro_compact_age))
-    metadata = _empty_micro_compact_metadata()
-    if max_chars <= 0 or not messages:
-        return messages, False, metadata
-
-    compactable_limit = max(0, len(messages) - age)
-    changed = False
-    result = list(messages)
-    tool_context_by_id = _tool_context_by_id(messages)
-    for index, message in enumerate(messages):
-        if index >= compactable_limit:
-            continue
-        role = str(message.get("role") or "")
-        if role in {"system", "developer"}:
-            continue
-
-        before_tokens = count_message_tokens(message)
-        cleared_attachment_ids: list[str] = []
-        collapsed_attachment_content, cleared_attachment_ids = _collapse_attachment_blocks(
-            message.get("content"),
-            message=message,
-        )
-
-        compacted_tool_id = ""
-        collapse_summary: dict[str, Any] = {}
-        if role == "tool":
-            tool_call_id = str(message.get("tool_call_id") or "").strip()
-            tool_context = tool_context_by_id.get(tool_call_id, {})
-            content = message.get("content") or ""
-            content_text = _content_text(content)
-            if len(content_text) > max_chars:
-                compacted_tool_id = tool_call_id or str(message.get("id") or "").strip()
-                collapse_summary = _tool_result_collapse_summary(
-                    message,
-                    content_text,
-                    max_chars=max_chars,
-                    tool_context=tool_context,
-                )
-                collapsed_attachment_content = collapse_summary["content"]
-
-        if not cleared_attachment_ids and not compacted_tool_id:
-            continue
-
-        updated = dict(message)
-        updated["content"] = collapsed_attachment_content
-        after_tokens = count_message_tokens(updated)
-        tokens_saved = max(0, before_tokens - after_tokens)
-        message_metadata = dict(updated.get("metadata") or {})
-        message_metadata["micro_compacted"] = True
-        message_metadata["original_tokens"] = before_tokens
-        message_metadata["projected_tokens"] = after_tokens
-        if tokens_saved:
-            message_metadata["tokens_saved"] = tokens_saved
-        if compacted_tool_id:
-            message_metadata["original_chars"] = collapse_summary.get("original_chars", len(_content_text(content)))
-            message_metadata["collapse_kind"] = collapse_summary.get("kind", "tool_result")
-            message_metadata["tool_name"] = collapse_summary.get("tool_name", "")
-            message_metadata["compacted_tool_id"] = compacted_tool_id
-            _append_unique(metadata["compacted_tool_ids"], compacted_tool_id)
-            metadata["collapsed_tool_results"].append(
-                {
-                    "message_id": str(message.get("id") or "").strip(),
-                    "tool_call_id": compacted_tool_id,
-                    "tool_name": collapse_summary.get("tool_name", ""),
-                    "kind": collapse_summary.get("kind", "tool_result"),
-                    "original_chars": collapse_summary.get("original_chars", 0),
-                    "projected_chars": len(str(updated.get("content") or "")),
-                    "tokens_saved": tokens_saved,
-                }
-            )
-        if cleared_attachment_ids:
-            message_metadata["cleared_attachment_ids"] = cleared_attachment_ids
-            for attachment_id in cleared_attachment_ids:
-                _append_unique(metadata["cleared_attachment_ids"], attachment_id)
-            metadata["cleared_attachments"].extend(
-                {
-                    "message_id": str(message.get("id") or "").strip(),
-                    "attachment_id": attachment_id,
-                }
-                for attachment_id in cleared_attachment_ids
-            )
-        updated["metadata"] = message_metadata
-        result[index] = updated
-        metadata["tokens_saved"] += tokens_saved
-        changed = True
-    return result, changed, metadata
-
-
-def _empty_micro_compact_metadata() -> dict[str, Any]:
-    return {
-        "tokens_saved": 0,
-        "compacted_tool_ids": [],
-        "cleared_attachment_ids": [],
-        "collapsed_tool_results": [],
-        "cleared_attachments": [],
-    }
-
-
-def _projection_compact_metadata(boundary: dict[str, Any], micro_metadata: dict[str, Any]) -> dict[str, Any]:
-    compact_metadata = _compact_metadata(boundary)
-    if not _has_micro_compact_metadata(micro_metadata):
-        return compact_metadata
-
-    merged = dict(compact_metadata)
-    merged["tokens_saved"] = max(0, int(merged.get("tokens_saved") or 0)) + max(
-        0,
-        int(micro_metadata.get("tokens_saved") or 0),
-    )
-    for key in ("compacted_tool_ids", "cleared_attachment_ids"):
-        values = list(merged.get(key) or [])
-        for value in micro_metadata.get(key) or []:
-            _append_unique(values, str(value))
-        merged[key] = values
-    merged["micro_compact"] = {
-        "tokens_saved": max(0, int(micro_metadata.get("tokens_saved") or 0)),
-        "compacted_tool_ids": list(micro_metadata.get("compacted_tool_ids") or []),
-        "cleared_attachment_ids": list(micro_metadata.get("cleared_attachment_ids") or []),
-        "collapsed_tool_results": list(micro_metadata.get("collapsed_tool_results") or []),
-        "cleared_attachments": list(micro_metadata.get("cleared_attachments") or []),
-    }
-    return merged
-
-
-def _has_micro_compact_metadata(metadata: dict[str, Any]) -> bool:
-    return bool(
-        int(metadata.get("tokens_saved") or 0) > 0
-        or metadata.get("compacted_tool_ids")
-        or metadata.get("cleared_attachment_ids")
-    )
-
-
-def _append_unique(values: list[str], value: str) -> None:
-    normalized = str(value or "").strip()
-    if normalized and normalized not in values:
-        values.append(normalized)
-
-
-def _tool_context_by_id(messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    context: dict[str, dict[str, Any]] = {}
-    for message in messages:
-        for tool_call in message.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
-                continue
-            tool_call_id = str(tool_call.get("id") or "").strip()
-            if not tool_call_id:
-                continue
-            function = tool_call.get("function") or {}
-            function = function if isinstance(function, dict) else {}
-            context[tool_call_id] = {
-                "tool_name": _tool_call_name(tool_call),
-                "arguments": _parse_tool_arguments(function.get("arguments")),
-            }
-    return context
-
-
-def _tool_call_name(tool_call: dict[str, Any]) -> str:
-    function = tool_call.get("function") or {}
-    if isinstance(function, dict) and function.get("name"):
-        return str(function.get("name") or "")
-    return str(tool_call.get("name") or tool_call.get("type") or "unknown")
-
-
-def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
-    if isinstance(arguments, dict):
-        return dict(arguments)
-    if not isinstance(arguments, str) or not arguments.strip():
-        return {}
-    try:
-        parsed = json.loads(arguments)
-    except json.JSONDecodeError:
-        return {"raw": arguments}
-    return dict(parsed) if isinstance(parsed, dict) else {"value": parsed}
-
-
-def _collapse_attachment_blocks(content: Any, *, message: dict[str, Any]) -> tuple[Any, list[str]]:
-    if isinstance(content, dict):
-        block_type = str(content.get("type") or "")
-        if block_type not in ATTACHMENT_BLOCK_TYPES:
-            return content, []
-        attachment_id = _attachment_id(content, message, 0)
-        return _attachment_placeholder(block_type, attachment_id), [attachment_id]
-
-    if not isinstance(content, list):
-        return content, []
-
-    collapsed: list[Any] = []
-    cleared_ids: list[str] = []
-    changed = False
-    for index, item in enumerate(content):
-        if not isinstance(item, dict):
-            collapsed.append(item)
-            continue
-        block_type = str(item.get("type") or "")
-        if block_type not in ATTACHMENT_BLOCK_TYPES:
-            collapsed.append(copy.deepcopy(item))
-            continue
-        attachment_id = _attachment_id(item, message, index)
-        cleared_ids.append(attachment_id)
-        collapsed.append({"type": "text", "text": _attachment_placeholder(block_type, attachment_id)})
-        changed = True
-    return (collapsed if changed else content), cleared_ids
-
-
-def _attachment_id(item: dict[str, Any], message: dict[str, Any], index: int) -> str:
-    for key in ("id", "attachment_id", "attachmentId", "file_id", "fileId", "name", "path", "source"):
-        value = str(item.get(key) or "").strip()
-        if value:
-            return value
-    message_id = str(message.get("id") or "").strip() or "message"
-    return f"{message_id}:attachment:{index}"
-
-
-def _attachment_placeholder(block_type: str, attachment_id: str) -> str:
-    return f"[{block_type} attachment cleared from projection: {attachment_id}]"
-
-
-def _tool_result_collapse_summary(
-    message: dict[str, Any],
-    content_text: str,
-    *,
-    max_chars: int,
-    tool_context: dict[str, Any],
-) -> dict[str, Any]:
-    metadata = message.get("metadata") or {}
-    tool_name = str(tool_context.get("tool_name") or metadata.get("tool_name") or "unknown")
-    arguments = tool_context.get("arguments") if isinstance(tool_context.get("arguments"), dict) else {}
-    kind = _tool_result_kind(tool_name)
-    detail = _tool_result_detail(kind, arguments)
-
-    lines = [
-        "[Tool result collapsed for projection]",
-        f"tool: {tool_name}",
-        f"kind: {kind}",
-        f"original_chars: {len(content_text)}",
-    ]
-    if detail:
-        lines.append(detail)
-    header = "\n".join(lines)
-    if len(header) > max_chars:
-        header = header[: max(1, max_chars - 24)].rstrip() + "\n[summary truncated]"
-    return {
-        "content": header,
-        "kind": kind,
-        "tool_name": tool_name,
-        "original_chars": len(content_text),
-    }
-
-
-def _tool_result_kind(tool_name: str) -> str:
-    normalized = tool_name.casefold()
-    if any(marker in normalized for marker in ("shell", "bash", "command", "terminal")):
-        return "bash"
-    if any(marker in normalized for marker in ("search", "grep", "glob", "query", "fetch_result", "summarize_results")):
-        return "search"
-    if any(marker in normalized for marker in ("read", "list", "metadata", "hash", "diff", "preview", "get")):
-        return "read"
-    return "tool_result"
-
-
-def _tool_result_detail(kind: str, arguments: dict[str, Any]) -> str:
-    if kind == "bash":
-        command = str(arguments.get("command") or arguments.get("raw") or "").strip()
-        return f"command: {_single_line(command)[:240]}" if command else ""
-    if kind == "search":
-        query = str(
-            arguments.get("query") or arguments.get("pattern") or arguments.get("q") or arguments.get("raw") or ""
-        ).strip()
-        return f"query: {_single_line(query)[:240]}" if query else ""
-    if kind == "read":
-        path = str(
-            arguments.get("path")
-            or arguments.get("paths")
-            or arguments.get("source")
-            or arguments.get("source_path")
-            or ""
-        ).strip()
-        return f"target: {_single_line(path)[:240]}" if path else ""
-    return ""
+    return _micro_compact_messages(messages, settings)
 
 
 def snip_history_if_needed(messages: list[dict[str, Any]], settings: AppSettings) -> tuple[list[dict[str, Any]], bool]:

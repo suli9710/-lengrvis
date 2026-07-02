@@ -3,7 +3,6 @@ import {
   BrowserWindow,
   WebContentsView,
   ipcMain,
-  type IpcMainInvokeEvent,
   type Rectangle,
   type WebContents
 } from "electron";
@@ -13,7 +12,6 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import type {
   BrowserAction,
   BrowserActivityEvent,
-  BrowserHostActionRequest,
   BrowserHostActionResult,
   BrowserHostBounds,
   BrowserHostOpenRequest,
@@ -21,18 +19,15 @@ import type {
   BrowserSession
 } from "../shared/types";
 import {
-  sanitizeActionResultForRenderer,
   sanitizeEventForRenderer,
-  sanitizeSessionForRenderer,
-  sanitizeSnapshotForRenderer
+  sanitizeSessionForRenderer
 } from "../shared/browserHostRedaction";
 import {
   isBlockedBrowserHostNavigation,
   isBrowserHostRequestAllowed
 } from "./browserHostNetworkGuard";
-import { isReadOnlyBrowserHostAction } from "./browserHostBridge";
 import { domClickScript, domFillScript, domScrollScript, domSubmitScript, observeScript } from "./browserHostDomActions";
-import { confirmNativeDesktopAction, isTrustedRendererUrl } from "./ipc";
+import { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 import {
   browserHostErrorMessage,
   browserHostTimestamp,
@@ -44,6 +39,7 @@ import {
 } from "./browserHostValidation";
 
 export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBackendUrl } from "./browserHostBridge";
+export { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 
 type BrowserContainer =
   | {
@@ -61,25 +57,6 @@ interface HostedBrowserSession {
   events: BrowserActivityEvent[];
   cssKey?: string;
 }
-
-type BrowserHostIpcRegistrar = {
-  handle: (channel: string, listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) => void;
-};
-
-type BrowserHostIpcTarget = Pick<
-  BrowserHost,
-  | "getSnapshot"
-  | "open"
-  | "show"
-  | "hide"
-  | "setBounds"
-  | "pause"
-  | "resume"
-  | "takeover"
-  | "release"
-  | "stop"
-  | "performAction"
->;
 
 const DEFAULT_HOME_URL = "about:blank";
 const MAX_EVENTS_PER_SESSION = 300;
@@ -603,75 +580,6 @@ export class BrowserHost {
   }
 }
 
-export function registerBrowserHostIpcHandlers({
-  handle,
-  host
-}: BrowserHostIpcRegistrar & { host: BrowserHostIpcTarget }): void {
-  handle(IPC_CHANNELS.browserHostSnapshot, (event) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeSnapshotForRenderer(host.getSnapshot());
-  });
-  handle(IPC_CHANNELS.browserHostOpen, async (event, request) => {
-    assertBrowserHostRenderer(event);
-    await confirmNativeDesktopAction(event, {
-      title: "Confirm browser session",
-      message: "Open a managed browser session?",
-      detail: "The session may navigate to external websites using the app's configured browser-network permissions."
-    });
-    return sanitizeActionResultForRenderer(await host.open(request as BrowserHostOpenRequest));
-  });
-  handle(IPC_CHANNELS.browserHostShow, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.show(String(sessionId)));
-  });
-  handle(IPC_CHANNELS.browserHostHide, (event) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.hide());
-  });
-  handle(IPC_CHANNELS.browserHostSetBounds, (event, bounds) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.setBounds(bounds as BrowserHostBounds));
-  });
-  handle(IPC_CHANNELS.browserHostPause, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.pause(String(sessionId)));
-  });
-  handle(IPC_CHANNELS.browserHostResume, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.resume(String(sessionId)));
-  });
-  handle(IPC_CHANNELS.browserHostTakeover, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    void sessionId;
-    return deniedRendererBrowserHostWrite(host, "BrowserHost takeover requires an approval grant.");
-  });
-  handle(IPC_CHANNELS.browserHostRelease, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.release(String(sessionId)));
-  });
-  handle(IPC_CHANNELS.browserHostStop, (event, sessionId) => {
-    assertBrowserHostRenderer(event);
-    return Promise.resolve(host.stop(String(sessionId))).then(sanitizeActionResultForRenderer);
-  });
-  handle(IPC_CHANNELS.browserHostAction, async (event, request) => {
-    assertBrowserHostRenderer(event);
-    const actionRequest = request as Partial<BrowserHostActionRequest> | undefined;
-    const action = actionRequest?.action;
-    if (!isReadOnlyBrowserHostAction(action)) {
-      return deniedRendererBrowserHostWrite(host, "BrowserHost input actions require an approval grant.");
-    }
-    return sanitizeActionResultForRenderer(await host.performAction(String(actionRequest?.sessionId ?? ""), action));
-  });
-}
-
-function deniedRendererBrowserHostWrite(host: Pick<BrowserHostIpcTarget, "getSnapshot">, error: string): BrowserHostActionResult {
-  return sanitizeActionResultForRenderer({
-    ok: false,
-    error,
-    snapshot: host.getSnapshot()
-  });
-}
-
 function createBrowserContainer(partition: string): BrowserContainer {
   const webPreferences = {
     contextIsolation: true,
@@ -737,11 +645,4 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, Math.max(0, Math.min(ms, 30_000)));
   });
-}
-
-function assertBrowserHostRenderer(event: IpcMainInvokeEvent): void {
-  const url = event.senderFrame?.url ?? "";
-  if (!BrowserWindow.fromWebContents(event.sender) || !isTrustedRendererUrl(url)) {
-    throw new Error("Browser host request came from an unknown renderer");
-  }
 }
