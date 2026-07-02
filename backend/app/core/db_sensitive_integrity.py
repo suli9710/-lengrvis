@@ -303,7 +303,9 @@ def require_sensitive_record_integrity_locked(conn: sqlite3.Connection, table: s
     ).fetchone()
     expected = sensitive_record_digest(table, record_id, data)
     if not row:
-        raise db.SensitiveRecordIntegrityError(f"Sensitive local record integrity proof missing for {table}:{record_id}")
+        raise db.SensitiveRecordIntegrityError(
+            f"Sensitive local record integrity proof missing for {table}:{record_id}"
+        )
     actual = str(row["digest"] or "")
     if not hmac.compare_digest(actual, expected):
         raise db.SensitiveRecordIntegrityError(f"Sensitive local record integrity check failed for {table}:{record_id}")

@@ -6,7 +6,7 @@ from urllib.parse import unquote
 import pytest
 
 from app.core.errors import SecurityError
-from app.core.paths import is_system_path, resolve_authorized
+from app.core.paths import is_system_path, path_within_explicit_scope, resolve_authorized, resolve_task_path
 
 
 def _resolve(root: Path, candidate: str):
@@ -54,6 +54,29 @@ def test_allows_normalized_child_path(workspace: Path):
 
     assert resolved == (workspace / "notes" / "safe.txt").resolve()
     assert resolved.is_relative_to(workspace.resolve())
+
+
+def test_explicit_file_scope_does_not_authorize_parent(tmp_path: Path):
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    target = folder / "target.txt"
+    target.write_text("delete only me", encoding="utf-8")
+    scope_text = f"delete {target}"
+
+    assert path_within_explicit_scope(target, scope_text) is True
+    assert path_within_explicit_scope(folder, scope_text) is False
+    with pytest.raises(SecurityError):
+        resolve_task_path(folder, [], explicit_scope_text=scope_text)
+
+
+def test_explicit_directory_scope_authorizes_children(tmp_path: Path):
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    child = folder / "child.txt"
+    scope_text = f"review files in {folder}"
+
+    assert path_within_explicit_scope(child, scope_text) is True
+    assert resolve_task_path(child, [], explicit_scope_text=scope_text) == child.resolve()
 
 
 @pytest.mark.parametrize(

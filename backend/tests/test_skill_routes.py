@@ -172,6 +172,97 @@ tools:
     assert refresh_response.json()["skill_count"] == 1
 
 
+def test_skill_route_rejects_reimport_from_installed_directory_without_deleting(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    db.init_db()
+
+    source = _write_skill(tmp_path / "source", name="self-import-demo")
+    client = TestClient(create_app())
+
+    import_response = client.post("/api/skills/import", json={"path": str(source)})
+    assert import_response.status_code == 200
+    installed_root = Path(import_response.json()["skill"]["root"])
+    assert installed_root.exists()
+
+    reimport_response = client.post("/api/skills/import", json={"path": str(installed_root)})
+
+    assert reimport_response.status_code == 400
+    assert reimport_response.json()["error"]["code"] == "skill_import_path_denied"
+    assert "overlaps the install destination" in reimport_response.json()["error"]["message"]
+    assert installed_root.exists()
+    assert (installed_root / "skill.yaml").exists()
+    list_response = client.get("/api/skills")
+    assert list_response.status_code == 200
+    assert list_response.json()["count"] == 1
+    assert list_response.json()["skills"][0]["status"] == "ready"
+
+
+def test_skill_route_restores_previous_install_when_refresh_fails(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    db.init_db()
+
+    source = _write_skill(tmp_path / "source", name="atomic-demo")
+    client = TestClient(create_app())
+    import_response = client.post("/api/skills/import", json={"path": str(source)})
+    assert import_response.status_code == 200
+    installed_root = Path(import_response.json()["skill"]["root"])
+    original_manifest = (installed_root / "skill.yaml").read_text(encoding="utf-8")
+    original_handler = (installed_root / "echo.py").read_text(encoding="utf-8")
+
+    (source / "skill.yaml").write_text(
+        """
+name: atomic-demo
+version: "1.0.0"
+agent_owner: FileAgent
+risk: R0_READ_ONLY
+permissions:
+  - filesystem.read
+tools:
+  - name: skill.atomic_demo.echo
+    description: Echo text from route demo.
+    execution:
+      type: python
+      entry: echo.py
+""".strip(),
+        encoding="utf-8",
+    )
+    (source / "echo.py").write_text("raise RuntimeError('new handler should not be installed')\n", encoding="utf-8")
+    refresh_calls = 0
+
+    async def fail_then_recover_refresh(settings=None):  # noqa: ARG001
+        nonlocal refresh_calls
+        refresh_calls += 1
+        if refresh_calls == 1:
+            raise RuntimeError("refresh exploded")
+        return {"ok": True, "tool_count": 0, "skill_count": 1}
+
+    monkeypatch.setattr(skill_service, "refresh_runtime_registry", fail_then_recover_refresh)
+
+    reimport_response = client.post("/api/skills/import", json={"path": str(source)})
+
+    assert reimport_response.status_code == 400
+    assert "Skill failed registry refresh" in reimport_response.json()["error"]["message"]
+    assert refresh_calls == 2
+    assert installed_root.exists()
+    assert (installed_root / "skill.yaml").read_text(encoding="utf-8") == original_manifest
+    assert (installed_root / "echo.py").read_text(encoding="utf-8") == original_handler
+    assert not any(installed_root.parent.glob(".*.backup-*"))
+    list_response = client.get("/api/skills")
+    assert list_response.status_code == 200
+    assert list_response.json()["count"] == 1
+    skill = list_response.json()["skills"][0]
+    assert skill["name"] == "atomic-demo"
+    assert skill["tools"][0]["permissions"] == ["legacy.unspecified"]
+
+
 def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
     monkeypatch,
     tmp_path: Path,

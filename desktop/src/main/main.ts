@@ -6,7 +6,6 @@ import {
   Tray,
   nativeImage,
   session,
-  shell,
   type MenuItemConstructorOptions,
   type PermissionCheckHandlerHandlerDetails,
   type PermissionRequest,
@@ -28,7 +27,8 @@ import { BrowserHost, BrowserHostWebSocketBridge } from "./browserHost";
 import { registerConsentIpcHandlers } from "./consentManager";
 import { setupCrashReporter } from "./crashReporter";
 import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
-import { isSafeExternalUrl, registerIpcHandlers } from "./ipc";
+import { openSafeExternalUrl } from "./externalUrl";
+import { registerIpcHandlers } from "./ipc";
 import { NotificationBridge } from "./notifications";
 import { closeLaunch, confirmHealthy, getLastGoodVersion, reconcileOnStartup } from "./updateHealthStore";
 
@@ -140,9 +140,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+    void openSafeExternalUrl(url).catch(() => undefined);
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, url) => {
@@ -153,9 +151,7 @@ function createMainWindow(): BrowserWindow {
       return;
     }
     event.preventDefault();
-    if (isSafeExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+    void openSafeExternalUrl(url).catch(() => undefined);
   });
 
   if (isDev && devServerUrl) {

@@ -1,11 +1,17 @@
 import { shell } from "electron";
+import { lookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
 
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "mailto:"]);
 const EXTERNAL_URL_MAX_CHARS = 2048;
 const MAILTO_DENIED_QUERY_KEYS = new Set(["bcc", "body", "cc"]);
+const EXTERNAL_BLOCKED_ADDRESSES = createExternalBlockedAddressList();
 
 export async function openSafeExternalUrl(rawUrl: string): Promise<void> {
   const parsed = validateSafeExternalUrl(rawUrl);
+  if (parsed.protocol === "https:" && (await externalHostnameResolvesToBlockedAddress(parsed.hostname))) {
+    throw new Error("External URL host resolved to a blocked address");
+  }
   await shell.openExternal(parsed.toString());
 }
 
@@ -54,34 +60,53 @@ function isBlockedExternalHost(hostname: string): boolean {
   if (normalized === "localhost" || normalized.endsWith(".localhost")) {
     return true;
   }
-  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
-    return true;
-  }
   const ipv4Mapped = normalized.match(/^::ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i);
   if (ipv4Mapped) {
     const mappedIpv4 = ipv4Mapped[1] ?? ipv4FromHexWords(ipv4Mapped[2] ?? "", ipv4Mapped[3] ?? "");
-    return isBlockedIpv4Host(mappedIpv4);
+    return isBlockedExternalIpAddress(mappedIpv4);
   }
-  if (normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd")) {
-    return true;
-  }
-  return isBlockedIpv4Host(normalized);
+  return isBlockedExternalIpAddress(normalized);
 }
 
-function isBlockedIpv4Host(hostname: string): boolean {
-  const octets = hostname.split(".").map((part) => Number(part));
-  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+async function externalHostnameResolvesToBlockedAddress(hostname: string): Promise<boolean> {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!normalized || isBlockedExternalHost(normalized) || isIP(normalized)) {
     return false;
   }
-  const [first = 0, second = 0] = octets;
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    first === 169 && second === 254 ||
-    first === 172 && second >= 16 && second <= 31 ||
-    first === 192 && second === 168
-  );
+  try {
+    const addresses = await lookup(normalized, { all: true, verbatim: false });
+    return addresses.length === 0 || addresses.some((item) => isBlockedExternalHost(item.address));
+  } catch {
+    return true;
+  }
+}
+
+function isBlockedExternalIpAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) {
+    return EXTERNAL_BLOCKED_ADDRESSES.check(address, "ipv4");
+  }
+  if (family === 6) {
+    return EXTERNAL_BLOCKED_ADDRESSES.check(address, "ipv6");
+  }
+  return false;
+}
+
+function createExternalBlockedAddressList(): BlockList {
+  const blockList = new BlockList();
+  blockList.addSubnet("0.0.0.0", 8, "ipv4");
+  blockList.addSubnet("10.0.0.0", 8, "ipv4");
+  blockList.addSubnet("100.64.0.0", 10, "ipv4");
+  blockList.addSubnet("127.0.0.0", 8, "ipv4");
+  blockList.addSubnet("169.254.0.0", 16, "ipv4");
+  blockList.addSubnet("172.16.0.0", 12, "ipv4");
+  blockList.addSubnet("192.168.0.0", 16, "ipv4");
+  blockList.addSubnet("198.18.0.0", 15, "ipv4");
+  blockList.addAddress("::", "ipv6");
+  blockList.addAddress("::1", "ipv6");
+  blockList.addSubnet("fc00::", 7, "ipv6");
+  blockList.addSubnet("fe80::", 10, "ipv6");
+  return blockList;
 }
 
 function ipv4FromHexWords(highWord: string, lowWord: string): string {

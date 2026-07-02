@@ -5,6 +5,7 @@ import { configureNativeTlsTrust } from "./nativeTlsTrust";
 import { REMOTE_INPUT_SCOPE } from "./types";
 
 const remoteInputGrantTokens = new Map<string, RemoteInputGrantToken>();
+const REMOTE_INPUT_APPROVAL_DESKTOP_ONLY_MESSAGE = "Remote input approvals must be approved on the desktop.";
 
 
 export async function pairWithBackend(
@@ -71,6 +72,7 @@ export async function submitApprovalDecision(
 ): Promise<BackendApproval> {
   const safeSession = await safeNetworkSession(session);
   if (decision === "approved") {
+    assertRemoteInputApprovalNotApprovedOnMobile(options.approval, options.approvalType);
     const remoteInputGrantToken = await remoteInputGrantTokenForApproval(safeSession, approvalId, options);
     if (remoteInputGrantToken) {
       const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/decision`, {
@@ -218,6 +220,7 @@ export async function remoteInputGrantTokenForApproval(
   approvalId: string,
   options: { approval?: BackendApproval; approvalType?: string; remoteInputGrant?: RemoteInputGrant | null },
 ): Promise<RemoteInputGrantToken | null> {
+  assertRemoteInputApprovalNotApprovedOnMobile(options.approval, options.approvalType);
   const explicitGrantId = options.remoteInputGrant?.id ?? "";
   if (explicitGrantId) {
     if (options.approval && !isRemoteInputApproval(options.approval)) {
@@ -243,6 +246,7 @@ export async function remoteInputGrantTokenForApproval(
   }
 
   const explicitRemoteInput = options.approvalType === "remote_input";
+  assertRemoteInputApprovalNotApprovedOnMobile(approval, options.approvalType);
   if (!approval && !explicitRemoteInput) return null;
   if (approval && !isRemoteInputApproval(approval) && !explicitRemoteInput) return null;
 
@@ -262,6 +266,12 @@ export async function remoteInputGrantTokenForApproval(
     throw new ForbiddenError("Remote input approval requires an active remote input grant.");
   }
   return grantToken;
+}
+
+function assertRemoteInputApprovalNotApprovedOnMobile(approval?: BackendApproval, approvalType?: string): void {
+  if ((approval && isRemoteInputApproval(approval)) || approvalType === "remote_input") {
+    throw new ForbiddenError(REMOTE_INPUT_APPROVAL_DESKTOP_ONLY_MESSAGE);
+  }
 }
 
 export function rememberRemoteInputGrantToken(payload: RemoteInputGrantToken): void {

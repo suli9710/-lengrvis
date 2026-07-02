@@ -4,14 +4,62 @@ import copy
 import hashlib
 import json
 import logging
-import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from app.config import AppSettings
 from app.context.agent_message_projection import llm_safe_agent_message
+from app.context.compact_boundaries import (
+    compact_metadata as _compact_metadata,
+)
+from app.context.compact_boundaries import (
+    expand_tool_pair_message_ids as _expand_tool_pair_message_ids,
+)
+from app.context.compact_boundaries import (
+    is_compact_boundary as _is_compact_boundary,
+)
+from app.context.compact_boundaries import (
+    latest_compact_boundary as _latest_compact_boundary,
+)
+from app.context.compact_boundaries import (
+    latest_compact_boundary_index as _latest_compact_boundary_index,
+)
+from app.context.compact_boundaries import (
+    preserved_segment_messages as _preserved_segment_messages,
+)
+from app.context.compact_boundaries import (
+    preserved_segment_with_tool_call_owners as _preserved_segment_with_tool_call_owners,
+)
+from app.context.compact_boundaries import (
+    redact_compact_metadata,
+)
+from app.context.compact_boundaries import (
+    retained_tail_message_ids as _retained_tail_message_ids,
+)
+from app.context.compact_boundaries import (
+    tool_call_ids as _tool_call_ids,
+)
+from app.context.prompt_errors import (
+    PROMPT_TOO_LONG_MARKERS as PROMPT_TOO_LONG_MARKERS,
+)
+from app.context.prompt_errors import (
+    PromptTooLongError as PromptTooLongError,
+)
+from app.context.prompt_errors import (
+    _error_text as _error_text,
+)
+from app.context.prompt_errors import (
+    _response_error_text as _response_error_text,
+)
+from app.context.prompt_errors import (
+    is_prompt_too_long_error,
+)
+from app.context.prompt_errors import (
+    parse_prompt_too_long_token_counts as parse_prompt_too_long_token_counts,
+)
+from app.context.prompt_errors import (
+    prompt_too_long_error_from_exception as prompt_too_long_error_from_exception,
+)
 from app.context.tokens import (
     ATTACHMENT_BLOCK_TYPES as ATTACHMENT_BLOCK_TYPES,
 )
@@ -55,21 +103,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-PROMPT_TOO_LONG_MARKERS = (
-    "context_length_exceeded",
-    "context window",
-    "context_window_exceeded",
-    "maximum context",
-    "model_context_window_exceeded",
-    "prompt is too long",
-    "prompt too long",
-    "prompt-too-long",
-    "too many tokens",
-    "input is too long",
-    "request too large",
-    "maximum prompt length",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,9 +191,6 @@ def _visible_tool_ids(tools: list[dict[str, Any]] | None) -> list[str]:
         elif tool.get("name"):
             result.append(str(tool.get("name")))
     return sorted({item for item in result if item})
-
-
-COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
 
 
 def project_messages_for_llm(
@@ -794,17 +824,6 @@ def _protected_head_end(messages: list[dict[str, Any]]) -> int:
     return index
 
 
-def _tool_call_ids(message: dict[str, Any]) -> set[str]:
-    ids: set[str] = set()
-    for tool_call in message.get("tool_calls") or []:
-        if not isinstance(tool_call, dict):
-            continue
-        tool_call_id = str(tool_call.get("id") or "").strip()
-        if tool_call_id:
-            ids.add(tool_call_id)
-    return ids
-
-
 def _valid_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         tool_call
@@ -1011,92 +1030,6 @@ def agent_messages_to_openai(
 ) -> ContextProjection:
     raw = [_message_to_llm_dict(message) for message in messages]
     return project_ledger_for_llm(raw, settings, source=source)
-
-
-def is_prompt_too_long_error(exc: BaseException) -> bool:
-    if isinstance(exc, PromptTooLongError):
-        return True
-    text = _error_text(exc).lower()
-    if any(marker in text for marker in PROMPT_TOO_LONG_MARKERS):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        if exc.response.status_code in {400, 413}:
-            body = _response_error_text(exc.response).lower()
-            return any(marker in body for marker in PROMPT_TOO_LONG_MARKERS)
-    return False
-
-
-class PromptTooLongError(RuntimeError):
-    """Raised for context-window errors that should trigger compaction, not circuit breaking."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        actual_tokens: int | None = None,
-        limit_tokens: int | None = None,
-        provider: str | None = None,
-        model: str | None = None,
-        raw: Any | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.actual_tokens = actual_tokens
-        self.limit_tokens = limit_tokens
-        self.provider = provider
-        self.model = model
-        self.raw = raw
-
-    @property
-    def token_gap(self) -> int | None:
-        if self.actual_tokens is None or self.limit_tokens is None:
-            return None
-        gap = self.actual_tokens - self.limit_tokens
-        return gap if gap > 0 else None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "message": str(self),
-            "actual_tokens": self.actual_tokens,
-            "limit_tokens": self.limit_tokens,
-            "token_gap": self.token_gap,
-            "provider": self.provider,
-            "model": self.model,
-        }
-
-
-def prompt_too_long_error_from_exception(
-    exc: BaseException,
-    *,
-    provider: str | None = None,
-    model: str | None = None,
-) -> PromptTooLongError:
-    actual, limit = parse_prompt_too_long_token_counts(_error_text(exc))
-    return PromptTooLongError(
-        str(exc),
-        actual_tokens=actual,
-        limit_tokens=limit,
-        provider=provider,
-        model=model,
-        raw=exc,
-    )
-
-
-def parse_prompt_too_long_token_counts(raw_message: str) -> tuple[int | None, int | None]:
-    text = str(raw_message or "")
-    patterns = [
-        r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)",
-        r"(\d+)\s*tokens?\s*>\s*(\d+)\s*(?:maximum|max|limit)",
-        r"requested\s+(\d+)\s*tokens?.*?(?:maximum|limit).*?(\d+)",
-        r"input.*?(\d+)\s*tokens?.*?(?:maximum|limit).*?(\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if not match:
-            continue
-        first = int(match.group(1))
-        second = int(match.group(2))
-        return max(first, second), min(first, second)
-    return None, None
 
 
 class LLMCapabilityError(RuntimeError):
@@ -1553,150 +1486,6 @@ def _system_context_message(content: str, metadata: dict[str, Any]) -> dict[str,
     }
 
 
-def _latest_compact_boundary_index(messages: list[dict[str, Any]]) -> int | None:
-    for index in range(len(messages) - 1, -1, -1):
-        if _is_compact_boundary(messages[index]):
-            return index
-    return None
-
-
-def _latest_compact_boundary(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    index = _latest_compact_boundary_index(messages)
-    if index is None:
-        return None
-    return messages[index]
-
-
-def _is_compact_boundary(message: dict[str, Any]) -> bool:
-    metadata = message.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        return False
-    boundary = str(metadata.get("context_boundary") or "")
-    compact_metadata = _compact_metadata(message)
-    compact_boundary = str(
-        compact_metadata.get("context_boundary")
-        or compact_metadata.get("boundary_type")
-        or compact_metadata.get("type")
-        or ""
-    )
-    return (
-        boundary in COMPACT_BOUNDARY_TYPES
-        or compact_boundary in COMPACT_BOUNDARY_TYPES
-        or bool(metadata.get("compact_boundary"))
-        or bool(compact_metadata.get("compact_boundary"))
-    )
-
-
-def _retained_tail_message_ids(boundary: dict[str, Any]) -> set[str]:
-    metadata = boundary.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        return set()
-    compact_metadata = metadata.get("compact_metadata") or metadata.get("compactMetadata") or {}
-    raw_values = [metadata.get("retained_tail_message_ids")]
-    if isinstance(compact_metadata, dict):
-        raw_values.extend(
-            [
-                compact_metadata.get("retained_tail_message_ids"),
-                compact_metadata.get("messages_to_keep_ids"),
-                compact_metadata.get("messagesToKeep"),
-                compact_metadata.get("preserved_message_ids"),
-                compact_metadata.get("preserved_segment_message_ids"),
-            ]
-        )
-        preserved = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment") or {}
-        if isinstance(preserved, dict):
-            raw_values.append(preserved.get("message_ids") or preserved.get("messageIds"))
-    message_ids: set[str] = set()
-    for raw_ids in raw_values:
-        if isinstance(raw_ids, list):
-            message_ids.update(str(item).strip() for item in raw_ids if str(item).strip())
-    return message_ids
-
-
-def _preserved_segment_with_tool_call_owners(
-    prior_messages: list[dict[str, Any]],
-    preserved_segment: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not preserved_segment:
-        return []
-    tool_call_owners: dict[str, dict[str, Any]] = {}
-    for message in prior_messages:
-        for tool_call_id in _tool_call_ids(message):
-            tool_call_owners[tool_call_id] = message
-
-    result: list[dict[str, Any]] = []
-    emitted_ids = {
-        str(message.get("id") or "").strip() for message in preserved_segment if str(message.get("id") or "").strip()
-    }
-    for message in preserved_segment:
-        tool_call_id = (
-            str(message.get("tool_call_id") or "").strip() if str(message.get("role") or "") == "tool" else ""
-        )
-        owner = tool_call_owners.get(tool_call_id)
-        owner_id = str((owner or {}).get("id") or "").strip()
-        if owner and owner_id not in emitted_ids:
-            result.append(copy.deepcopy(owner))
-            emitted_ids.add(owner_id)
-        result.append(copy.deepcopy(message))
-    return result
-
-
-def _compact_metadata(boundary: dict[str, Any]) -> dict[str, Any]:
-    metadata = boundary.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        return {}
-    compact_metadata = metadata.get("compact_metadata") or metadata.get("compactMetadata") or {}
-    if isinstance(compact_metadata, dict):
-        return dict(compact_metadata)
-    return {}
-
-
-def redact_compact_metadata(compact_metadata: dict[str, Any]) -> dict[str, Any]:
-    """Return compact metadata safe for API responses and telemetry."""
-
-    redacted = copy.deepcopy(compact_metadata)
-    preserved = redacted.get("preserved_segment") or redacted.get("preservedSegment")
-    if isinstance(preserved, dict):
-        raw_messages = preserved.pop("messages", [])
-        if isinstance(raw_messages, list):
-            preserved["message_count"] = len([message for message in raw_messages if isinstance(message, dict)])
-        redacted["preserved_segment"] = preserved
-        redacted.pop("preservedSegment", None)
-    return redacted
-
-
-def _preserved_segment_messages(boundary: dict[str, Any]) -> list[dict[str, Any]]:
-    compact_metadata = _compact_metadata(boundary)
-    preserved = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment") or []
-    raw_messages = preserved.get("messages") if isinstance(preserved, dict) else preserved
-    if not isinstance(raw_messages, list):
-        return []
-    return [copy.deepcopy(message) for message in raw_messages if isinstance(message, dict)]
-
-
-def _expand_tool_pair_message_ids(messages: list[dict[str, Any]], ids: set[str]) -> set[str]:
-    if not ids:
-        return set()
-    expanded = set(ids)
-    id_by_tool_call: dict[str, str] = {}
-    tool_call_owner_ids: dict[str, str] = {}
-    for message in messages:
-        message_id = str(message.get("id") or "").strip()
-        for tool_call_id in _tool_call_ids(message):
-            tool_call_owner_ids[tool_call_id] = message_id
-        if str(message.get("role") or "") == "tool":
-            tool_call_id = str(message.get("tool_call_id") or "").strip()
-            if tool_call_id and message_id:
-                id_by_tool_call[tool_call_id] = message_id
-    for tool_call_id, owner_id in tool_call_owner_ids.items():
-        result_id = id_by_tool_call.get(tool_call_id, "")
-        if owner_id in expanded and result_id:
-            expanded.add(result_id)
-        if result_id in expanded and owner_id:
-            expanded.add(owner_id)
-    return expanded
-
-
 def _message_to_llm_dict(message: AgentMessage) -> dict[str, Any]:
     payload = llm_safe_agent_message(message)
     metadata = dict(payload.get("metadata") or {})
@@ -1723,20 +1512,6 @@ def _record_event(event_type: str, actor: str, payload: dict[str, Any] | None = 
         record(event_type, actor, payload or {})
     except Exception as exc:  # noqa: BLE001 - audit failures are best-effort here.
         log_best_effort_failure(logger, "context.record_event", exc, actor=actor, event_type=event_type)
-
-
-def _error_text(exc: BaseException) -> str:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return f"{exc} {_response_error_text(exc.response)}"
-    return str(exc)
-
-
-def _response_error_text(response: httpx.Response) -> str:
-    try:
-        data = response.json()
-    except ValueError:
-        return response.text
-    return _json(data)
 
 
 def _safe_context_usage_snapshot(projection: ContextProjection, settings: AppSettings) -> dict[str, Any]:

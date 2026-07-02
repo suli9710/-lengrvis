@@ -951,6 +951,7 @@ async function returnToSearchTab(page) {
     const Module = require("node:module");
     const originalLoad = Module._load;
     let openedExternalUrls = 0;
+    const dnsLookups = [];
     Module._load = function patchedLoad(request, parent, isMain) {
       if (request === "electron") {
         return {
@@ -961,6 +962,20 @@ async function returnToSearchTab(page) {
           WebContentsView: class WebContentsView {},
           ipcMain: { handle: () => undefined },
           shell: { openExternal: async () => { openedExternalUrls += 1; } }
+        };
+      }
+      if (request === "node:dns/promises") {
+        return {
+          lookup: async (hostname) => {
+            dnsLookups.push(hostname);
+            if (hostname === "private.example.test") {
+              return [{ address: "127.0.0.1", family: 4 }];
+            }
+            if (hostname === "unresolved.example.test") {
+              throw new Error("dns unavailable");
+            }
+            return [{ address: "93.184.216.34", family: 4 }];
+          }
         };
       }
       return originalLoad.call(this, request, parent, isMain);
@@ -1013,6 +1028,7 @@ async function returnToSearchTab(page) {
 
       let windowOpenHandler;
       let willNavigateHandler;
+      let beforeRequestHandler;
       const hardenedWebContents = {
         setWindowOpenHandler: (handler) => {
           windowOpenHandler = handler;
@@ -1023,6 +1039,11 @@ async function returnToSearchTab(page) {
           }
         },
         session: {
+          webRequest: {
+            onBeforeRequest: (handler) => {
+              beforeRequestHandler = handler;
+            }
+          },
           setPermissionRequestHandler: () => undefined,
           setPermissionCheckHandler: () => undefined
         },
@@ -1031,6 +1052,7 @@ async function returnToSearchTab(page) {
       hardenEmbeddedWebContents(hardenedWebContents);
       assert.ok(windowOpenHandler, "embedded BrowserHost webContents should install a window.open handler");
       assert.ok(willNavigateHandler, "embedded BrowserHost webContents should install a will-navigate guard");
+      assert.ok(beforeRequestHandler, "embedded BrowserHost webContents should install a request guard");
       assert.deepEqual(
         windowOpenHandler({ url: "https://example.test" }),
         { action: "deny" },
@@ -1040,6 +1062,9 @@ async function returnToSearchTab(page) {
       let privatePrevented = false;
       willNavigateHandler({ preventDefault: () => { privatePrevented = true; } }, "http://127.0.0.1:8000/admin");
       assert.equal(privatePrevented, true, "BrowserHost must block loopback navigation by default");
+      let compressedIpv6Prevented = false;
+      willNavigateHandler({ preventDefault: () => { compressedIpv6Prevented = true; } }, "http://[0::1]:8000/admin");
+      assert.equal(compressedIpv6Prevented, true, "BrowserHost must block compressed IPv6 loopback navigation by default");
       process.env.LENGRVIS_BROWSER_HOST_ALLOW_PRIVATE_NETWORK = "1";
       let devPrivatePrevented = false;
       willNavigateHandler({ preventDefault: () => { devPrivatePrevented = true; } }, "http://127.0.0.1:8000/admin");
@@ -1048,6 +1073,30 @@ async function returnToSearchTab(page) {
       let publicPrevented = false;
       willNavigateHandler({ preventDefault: () => { publicPrevented = true; } }, "https://example.test/");
       assert.equal(publicPrevented, false, "BrowserHost must allow public http(s) navigation");
+      const browserHostRequestCanceled = (url) => new Promise((resolve) => {
+        beforeRequestHandler({ url }, (response) => resolve(Boolean(response.cancel)));
+      });
+      assert.equal(
+        await browserHostRequestCanceled("https://private.example.test/dashboard"),
+        true,
+        "BrowserHost must block hostnames that resolve to loopback/private addresses"
+      );
+      assert.equal(
+        await browserHostRequestCanceled("ws://127.0.0.1:8000/socket"),
+        true,
+        "BrowserHost must block non-HTTP requests to private-network hosts"
+      );
+      assert.equal(
+        await browserHostRequestCanceled("https://public.example.test/"),
+        false,
+        "BrowserHost must allow hostnames that resolve to public addresses"
+      );
+      assert.equal(
+        await browserHostRequestCanceled("https://unresolved.example.test/"),
+        true,
+        "BrowserHost must fail closed when DNS safety checks cannot verify a hostname"
+      );
+      assert.deepEqual(dnsLookups, ["private.example.test", "public.example.test", "unresolved.example.test"]);
 
       assert.equal(isLoopbackBackendUrl("http://127.0.0.1:8000"), true);
       assert.equal(isLoopbackBackendUrl("http://localhost:8000"), true);

@@ -144,9 +144,21 @@ def path_within_explicit_scope(path: str | Path, scope_text: str) -> bool:
         return False
     if candidate == explicit:
         return True
+    if not _explicit_scope_allows_children(explicit_raw, explicit):
+        return False
     try:
-        return candidate.is_relative_to(explicit) or explicit.is_relative_to(candidate)
+        return candidate.is_relative_to(explicit)
     except ValueError:
+        return False
+
+
+def _explicit_scope_allows_children(explicit_raw: str, explicit: Path) -> bool:
+    raw = str(explicit_raw).strip().strip("\"'")
+    if raw.endswith(("/", "\\")):
+        return True
+    try:
+        return explicit.exists() and explicit.is_dir()
+    except OSError:
         return False
 
 

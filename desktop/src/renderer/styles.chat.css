@@ -1,0 +1,418 @@
+
+/* Chat */
+.chat-log {
+  flex: 1;
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+.chat-message {
+  min-width: 0;
+  max-width: min(88%, 680px);
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  border-bottom-left-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  animation: msg-in 0.34s var(--ease-snappy);
+  transform-origin: bottom left;
+  overflow-wrap: anywhere;
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.chat-message--user {
+  align-self: flex-end;
+  color: #ffffff;
+  border-color: transparent;
+  border-radius: 14px;
+  border-bottom-right-radius: 6px;
+  background: linear-gradient(135deg, var(--brand) 0%, #6f5dff 100%);
+  box-shadow: 0 6px 18px rgba(74, 108, 247, 0.22);
+  transform-origin: bottom right;
+}
+
+/* 等待回复时的“正在输入”气泡 */
+.chat-message--pending {
+  max-width: max-content;
+}
+
+.chat-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 2px 2px;
+}
+
+.chat-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  opacity: 0.4;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.chat-typing span:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
+}
+
+.chat-message__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.78;
+}
+
+.chat-message__meta strong,
+.chat-message__meta time {
+  min-width: 0;
+}
+
+.chat-message__meta strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message--assistant .chat-message__meta strong::before,
+.chat-message--tool .chat-message__meta strong::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), #8b5cf6);
+  flex-shrink: 0;
+}
+
+.chat-message__meta time {
+  flex-shrink: 0;
+}
+
+.chat-message p,
+.timeline p,
+.step-row p,
+.agent-message p,
+.finding-row p,
+.file-result p,
+.plan-summary p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.chat-message__parts {
+  display: grid;
+  gap: 8px;
+}
+
+.message-part {
+  min-width: 0;
+}
+
+.message-part--text {
+  margin: 0;
+}
+
+.message-part--reasoning,
+.message-part--tool,
+.message-part--subagent,
+.message-part--error,
+.message-part--cancelled {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.chat-message--user .message-part--reasoning,
+.chat-message--user .message-part--tool,
+.chat-message--user .message-part--subagent,
+.chat-message--user .message-part--error,
+.chat-message--user .message-part--cancelled {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.message-part--reasoning {
+  border-color: rgba(74, 108, 247, 0.18);
+  background: rgba(234, 240, 255, 0.72);
+}
+
+.message-part--subagent {
+  border-color: rgba(30, 138, 160, 0.18);
+  background: rgba(222, 242, 246, 0.62);
+}
+
+.message-part--error,
+.message-part--cancelled,
+.message-part--tool-error {
+  border-color: rgba(216, 71, 92, 0.2);
+  background: rgba(252, 231, 235, 0.72);
+}
+
+.message-part--tool-success {
+  border-color: rgba(25, 163, 122, 0.2);
+  background: rgba(227, 247, 238, 0.72);
+}
+
+.message-part--tool-running {
+  border-color: rgba(74, 108, 247, 0.2);
+  background: rgba(234, 240, 255, 0.72);
+}
+
+.message-part__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-part__head svg {
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.message-part__head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-part__head .badge {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.message-part pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-soft);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-part__error {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.intent-suggestions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.intent-suggestion {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+}
+
+.intent-suggestion:hover {
+  border-color: var(--brand);
+  transform: translateY(-1px);
+}
+
+.intent-suggestion__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.intent-suggestion__head svg {
+  color: var(--brand);
+}
+
+.intent-suggestion__head strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.intent-suggestion__head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.intent-suggestion p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.intent-suggestion small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.intent-suggestion__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.composer textarea,
+.field textarea,
+.field input,
+.field select,
+.input-with-icon input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  font-family: inherit;
+  font-size: 13px;
+  box-shadow: inset 0 1px 2px rgba(20, 28, 50, 0.03);
+  transition:
+    border-color 0.18s var(--ease-out),
+    background 0.18s var(--ease-out),
+    box-shadow 0.18s var(--ease-out);
+}
+
+.composer textarea:hover:not(:focus),
+.field textarea:hover:not(:focus),
+.field input:hover:not(:focus),
+.field select:hover:not(:focus) {
+  border-color: var(--line-strong);
+}
+
+.composer textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.composer textarea:focus,
+.field textarea:focus,
+.field input:focus,
+.field select:focus,
+.input-with-icon:focus-within {
+  border-color: var(--brand);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 2px rgba(20, 28, 50, 0.02),
+    0 0 0 3px rgba(74, 108, 247, 0.13);
+}
+
+.composer textarea,
+.field textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.composer textarea {
+  max-height: 180px;
+}
+
+.composer__send {
+  align-self: end;
+  min-width: 96px;
+}
+
+.composer__actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.composer__voice {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+}
+
+.composer__voice--recording {
+  color: #fff;
+  background: var(--danger, #d64545);
+  border-color: var(--danger, #d64545);
+  animation: voice-recording-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes voice-recording-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(214, 69, 69, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(214, 69, 69, 0.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer__voice--recording {
+    animation: none;
+  }
+}
+
+.composer__error {
+  grid-column: 1 / -1;
+  margin: 0;
+}

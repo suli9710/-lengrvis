@@ -10,6 +10,8 @@ let dialogOpenResult = { canceled: false, filePaths: ["C:\\Users\\Suli\\Document
 let messageBoxCalls = [];
 let messageBoxResponses = [];
 let shellRevealCalls = [];
+let shellExternalCalls = [];
+let externalDnsLookups = [];
 let fileIconCalls = [];
 let fsExistsCalls = [];
 
@@ -75,10 +77,26 @@ Module._load = function patchedLoad(request, parent, isMain) {
       },
       ipcMain: { handle: (channel, listener) => ipcHandlers.set(channel, listener) },
       shell: {
-        openExternal: async () => undefined,
+        openExternal: async (url) => {
+          shellExternalCalls.push(url);
+        },
         showItemInFolder: (filePath) => {
           shellRevealCalls.push(filePath);
         }
+      }
+    };
+  }
+  if (request === "node:dns/promises") {
+    return {
+      lookup: async (hostname) => {
+        externalDnsLookups.push(hostname);
+        if (hostname === "private.example.test") {
+          return [{ address: "127.0.0.1", family: 4 }];
+        }
+        if (hostname === "unresolved.example.test") {
+          throw new Error("dns unavailable");
+        }
+        return [{ address: "93.184.216.34", family: 4 }];
       }
     };
   }
@@ -93,6 +111,7 @@ const {
   isTrustedRendererUrl,
   registerIpcHandlers
 } = require("../dist/main/ipc.js");
+const { openSafeExternalUrl } = require("../dist/main/externalUrl.js");
 const { BrowserHostWebSocketBridge, registerBrowserHostIpcHandlers } = require("../dist/main/browserHost.js");
 const { NotificationBridge } = require("../dist/main/notifications.js");
 
@@ -146,8 +165,27 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(isSafeExternalUrl("https://127.0.0.1:8000/docs"), false);
   assert.equal(isSafeExternalUrl("https://192.168.1.20/docs"), false);
   assert.equal(isSafeExternalUrl("https://169.254.169.254/latest/meta-data/"), false);
+  assert.equal(isSafeExternalUrl("https://100.64.0.1/docs"), false);
+  assert.equal(isSafeExternalUrl("https://198.18.0.1/docs"), false);
+  assert.equal(isSafeExternalUrl("https://[0::1]:8000/docs"), false);
+  assert.equal(isSafeExternalUrl("https://[fd00::1]/docs"), false);
   assert.equal(isSafeExternalUrl("https://[::ffff:7f00:1]:8000/docs"), false);
   assert.equal(isSafeExternalUrl("https://[::ffff:c0a8:114]/docs"), false);
+  shellExternalCalls = [];
+  externalDnsLookups = [];
+  await openSafeExternalUrl("https://public.example.test/docs");
+  assert.deepEqual(shellExternalCalls, ["https://public.example.test/docs"]);
+  await assert.rejects(
+    () => openSafeExternalUrl("https://private.example.test/docs"),
+    /resolved to a blocked address/,
+    "external navigation must block hostnames that resolve to private addresses"
+  );
+  await assert.rejects(
+    () => openSafeExternalUrl("https://unresolved.example.test/docs"),
+    /resolved to a blocked address/,
+    "external navigation must fail closed when DNS safety checks cannot verify a hostname"
+  );
+  assert.deepEqual(externalDnsLookups, ["public.example.test", "private.example.test", "unresolved.example.test"]);
   assert.equal(isSafeExternalUrl("https://[fd00::1]/docs"), false);
   assert.equal(isSafeExternalUrl("mailto:support@example.com?body=secret"), false);
   assert.equal(isSafeExternalUrl("mailto:support@example.com?subject=Hi%0D%0ABcc:evil@example.com"), false);

@@ -4,6 +4,7 @@ import logging
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -95,12 +96,13 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
         package = _load_or_service_error(source, effective)
         destination = _destination_for(install_dir, package)
         previous_package = _load_existing_package(destination, effective)
-        _copy_skill_directory(source, destination)
+        rollback = _copy_skill_directory(source, destination)
         return await _finalize_import(
             destination,
             package,
             source,
             previous_package=previous_package,
+            rollback=rollback,
             trusted_public_keys=effective.skill_trusted_public_keys,
         )
 
@@ -113,12 +115,13 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
             package = _load_or_service_error(package_root, effective)
             destination = _destination_for(install_dir, package)
             previous_package = _load_existing_package(destination, effective)
-            _copy_skill_directory(package_root, destination)
+            rollback = _copy_skill_directory(package_root, destination)
             return await _finalize_import(
                 destination,
                 package,
                 source,
                 previous_package=previous_package,
+                rollback=rollback,
                 trusted_public_keys=effective.skill_trusted_public_keys,
             )
 
@@ -247,6 +250,7 @@ async def _finalize_import(
     source: Path,
     *,
     previous_package: LoadedSkillPackage | None,
+    rollback: _SkillInstallRollback,
     trusted_public_keys: dict[str, str],
 ) -> dict[str, Any]:
     try:
@@ -259,20 +263,18 @@ async def _finalize_import(
             skill=package.definition.name,
             version=package.definition.version,
         )
-        _remove_installed_copy(destination)
-        try:
-            await refresh_runtime_registry()
-        except Exception as rollback_exc:  # noqa: BLE001
-            log_best_effort_failure(
-                logger,
-                "skill.finalize_import.rollback_refresh",
-                rollback_exc,
-                skill=package.definition.name,
-                version=package.definition.version,
-            )
+        await _rollback_failed_import(rollback, package)
         raise SkillServiceError(f"Skill failed registry refresh and was not installed: {exc}") from exc
 
-    installed = load_skill_package(destination, trusted_public_keys=trusted_public_keys)
+    try:
+        installed = load_skill_package(destination, trusted_public_keys=trusted_public_keys)
+    except SkillLoadError as exc:
+        await _rollback_failed_import(rollback, package)
+        raise SkillServiceError(
+            f"Skill failed validation after install and was not installed: {exc}",
+            code="skill_validation_error",
+        ) from exc
+    _discard_install_backup(rollback, package)
     upgrade_diff = _package_upgrade_diff(previous_package, installed)
     record(
         "skills.imported",
@@ -288,6 +290,42 @@ async def _finalize_import(
         },
     )
     return {"skill": _package_summary(installed, status="ready"), "refresh": refresh, "upgrade_diff": upgrade_diff}
+
+
+async def _rollback_failed_import(rollback: _SkillInstallRollback, package: LoadedSkillPackage) -> None:
+    try:
+        rollback.restore()
+    except Exception as restore_exc:  # noqa: BLE001
+        log_best_effort_failure(
+            logger,
+            "skill.finalize_import.rollback_restore",
+            restore_exc,
+            skill=package.definition.name,
+            version=package.definition.version,
+        )
+    try:
+        await refresh_runtime_registry()
+    except Exception as rollback_exc:  # noqa: BLE001
+        log_best_effort_failure(
+            logger,
+            "skill.finalize_import.rollback_refresh",
+            rollback_exc,
+            skill=package.definition.name,
+            version=package.definition.version,
+        )
+
+
+def _discard_install_backup(rollback: _SkillInstallRollback, package: LoadedSkillPackage) -> None:
+    try:
+        rollback.discard()
+    except Exception as cleanup_exc:  # noqa: BLE001
+        log_best_effort_failure(
+            logger,
+            "skill.finalize_import.backup_cleanup",
+            cleanup_exc,
+            skill=package.definition.name,
+            version=package.definition.version,
+        )
 
 
 def _load_existing_package(destination: Path, settings: AppSettings) -> LoadedSkillPackage | None:
@@ -448,20 +486,76 @@ def _safe_folder_name(value: str) -> str:
     return cleaned or "skill"
 
 
-def _copy_skill_directory(source: Path, destination: Path) -> None:
+@dataclass
+class _SkillInstallRollback:
+    destination: Path
+    backup_parent: Path | None = None
+    backup_path: Path | None = None
+
+    def restore(self) -> None:
+        if self.destination.exists():
+            _remove_installed_copy(self.destination)
+        if self.backup_path and self.backup_path.exists():
+            shutil.move(str(self.backup_path), str(self.destination))
+        self.discard()
+
+    def discard(self) -> None:
+        if self.backup_parent and self.backup_parent.exists():
+            shutil.rmtree(self.backup_parent)
+
+
+def _copy_skill_directory(source: Path, destination: Path) -> _SkillInstallRollback:
+    source_resolved = source.resolve(strict=False)
     destination_parent = destination.parent.resolve(strict=False)
     destination_resolved = destination.resolve(strict=False)
     try:
         destination_resolved.relative_to(destination_parent)
     except ValueError as exc:  # pragma: no cover - defensive guard.
         raise SecurityError("Skill install destination escapes the skills directory.") from exc
-    if destination_resolved.exists():
-        _remove_installed_copy(destination_resolved)
-    shutil.copytree(
-        source,
-        destination_resolved,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".venv", "node_modules"),
-    )
+    _raise_if_skill_copy_self_references(source_resolved, destination_resolved)
+    rollback = _prepare_skill_install_rollback(destination_resolved)
+    try:
+        shutil.copytree(
+            source_resolved,
+            destination_resolved,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".venv", "node_modules"),
+        )
+    except Exception:
+        try:
+            rollback.restore()
+        except Exception as restore_exc:  # noqa: BLE001
+            log_best_effort_failure(logger, "skill.copy.rollback_restore", restore_exc)
+        raise
+    return rollback
+
+
+def _prepare_skill_install_rollback(destination: Path) -> _SkillInstallRollback:
+    rollback = _SkillInstallRollback(destination=destination)
+    if destination.exists():
+        backup_parent = Path(
+            tempfile.mkdtemp(prefix=f".{destination.name}.backup-", dir=str(destination.parent))
+        ).resolve(strict=False)
+        backup_path = backup_parent / destination.name
+        shutil.move(str(destination), str(backup_path))
+        rollback.backup_parent = backup_parent
+        rollback.backup_path = backup_path
+    return rollback
+
+
+def _raise_if_skill_copy_self_references(source: Path, destination: Path) -> None:
+    try:
+        source_contains_destination = destination.is_relative_to(source)
+    except ValueError:
+        source_contains_destination = False
+    try:
+        destination_contains_source = source.is_relative_to(destination)
+    except ValueError:
+        destination_contains_source = False
+    if source == destination or source_contains_destination or destination_contains_source:
+        raise SkillServiceError(
+            "Skill import source overlaps the install destination; choose the original package or zip to reinstall.",
+            code="skill_import_path_denied",
+        )
 
 
 def _remove_installed_copy(destination: Path) -> None:

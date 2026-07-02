@@ -26,7 +26,11 @@ def requires_runtime_approval(step: PlanStep, tool: ToolDefinition, runtime: Tas
     return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
 
 
-def auto_approved_args(tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> dict[str, Any] | None:
+def auto_approved_args(
+    tool: ToolDefinition,
+    args: dict[str, Any],
+    runtime: TaskRuntimeContext,
+) -> dict[str, Any] | None:
     mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
     if mode not in {"trusted_edits", "auto_review"}:
         return None

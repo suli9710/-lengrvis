@@ -9,6 +9,12 @@ from typing import Any
 from app.config import AppSettings
 from app.core.schemas import AgentMessage, Plan, SafetyReview, ToolResult
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, settings_fingerprint, short_digest
+from app.policy.browser_content import (
+    browser_content_warning_hits as _browser_content_warning_hits,
+)
+from app.policy.browser_content import (
+    has_browser_content_trust_label as _has_browser_content_trust_label,
+)
 from app.policy.decision_cache import _INTERNAL_CACHE_SCOPE_MARKER, tool_decision_cache
 from app.policy.dynamic_risk import DynamicRiskAssessor
 from app.policy.permission_modes import (
@@ -1102,38 +1108,6 @@ class PolicyEngine:
             ],
             user_confirmation_message="Review the cleanup preview and approve the selected cleanup items?",
         )
-
-
-def _browser_content_warning_hits(value: Any) -> set[str]:
-    hits: set[str] = set()
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if str(key) == "browser_content_warnings":
-                hits.update(str(warning) for warning in _as_list(item))
-            else:
-                hits.update(_browser_content_warning_hits(item))
-    elif isinstance(value, list | tuple | set):
-        for item in value:
-            hits.update(_browser_content_warning_hits(item))
-    return hits
-
-
-def _has_browser_content_trust_label(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if str(key) == "content_trust" and str(item) == BROWSER_CONTENT_TRUST:
-                return True
-            if _has_browser_content_trust_label(item):
-                return True
-    elif isinstance(value, list | tuple | set):
-        return any(_has_browser_content_trust_label(item) for item in value)
-    return False
-
-
-def _as_list(value: Any) -> list[Any]:
-    if isinstance(value, list | tuple | set):
-        return list(value)
-    return [value]
 
 
 class _PermissionCheckDenied:

@@ -383,9 +383,9 @@ function assertApprovalListBeginnerSafety() {
     deviceId: DEVICE_ID,
     grantId: ACTIVE_GRANT_ID,
   });
-  assert.equal(remoteInputMatchingActiveGrant.label, "批准前核对");
-  assert.equal(remoteInputMatchingActiveGrant.tone, "warning");
-  assert.equal(remoteInputMatchingActiveGrant.approveBlockedReason, undefined);
+  assert.equal(remoteInputMatchingActiveGrant.label, "远控需电脑确认");
+  assert.equal(remoteInputMatchingActiveGrant.tone, "danger");
+  assert.match(remoteInputMatchingActiveGrant.approveBlockedReason, /电脑端/);
 
   const publicBindingApproval = {
     approval_type: "remote_input",
@@ -405,8 +405,8 @@ function assertApprovalListBeginnerSafety() {
       grantId: ACTIVE_GRANT_ID,
       bindingRef: "[remote-input-binding:test]",
     }).label,
-    "批准前核对",
-    "Mobile approval safety must accept backend public binding refs without raw device/grant ids",
+    "远控需电脑确认",
+    "Mobile approval safety must recognize backend public binding refs while still requiring desktop approval",
   );
   assert.equal(
     approvalSafety.approvalListSafety(publicBindingApproval, {
@@ -773,17 +773,15 @@ async function main() {
     assert.equal(grantToken.grant.scope, "remote:input");
     assert.equal(grantToken.expires_in, 300);
 
-    const decidedApproval = await client.submitApprovalDecision(session, "approval-active", "approved");
-    assert.equal(decidedApproval.id, "approval-active");
-    assert.equal(decidedApproval.status, "approved");
-    assert.equal(server.requests.length, 3);
+    await assert.rejects(
+      () => client.submitApprovalDecision(session, "approval-active", "approved"),
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval must direct approval back to desktop instead of self-approving with the active grant",
+    );
+    assert.equal(server.requests.length, 2);
     assert.equal(server.requests[1].method, "GET");
     assert.equal(server.requests[1].path, "/api/mobile/approvals/approval-active");
     assert.equal(server.requests[1].headers.authorization, `Bearer ${SESSION_TOKEN}`);
-    assert.equal(server.requests[2].method, "POST");
-    assert.equal(server.requests[2].path, "/api/mobile/approvals/approval-active/decision");
-    assert.equal(server.requests[2].headers.authorization, "Bearer grant-token-active");
-    assert.deepEqual(server.requests[2].json, { decision: "approved" });
     const otherDeviceSession = { ...session, deviceId: "device-2" };
     const pendingRemoteInputApproval = { ...state.approvals.get("approval-active"), status: "pending" };
     state.approvals.set("approval-active", pendingRemoteInputApproval);
@@ -792,38 +790,38 @@ async function main() {
         approval: pendingRemoteInputApproval,
         approvalType: "remote_input",
       }),
-      (error) => error.name === "ForbiddenError" && /active remote input grant/i.test(error.message),
-      "remote-input approval must not reuse a cached grant token from another paired mobile session",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval must be blocked on mobile before reusing any grant token",
     );
-    assert.equal(server.requests.length, 3, "cross-session cached grant token rejection must fail before HTTP");
+    assert.equal(server.requests.length, 2, "cross-session remote-input approval must fail before HTTP");
     client.clearRemoteInputGrantTokens();
     await assert.rejects(
       () => client.submitApprovalDecision(session, "approval-active", "approved"),
-      (error) => error.name === "ForbiddenError" && /active remote input grant/i.test(error.message),
-      "remote-input approval without a cached grant token must fail closed instead of using the generic mobile approval route",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval without a cached grant token must fail closed before decision",
     );
-    assert.equal(server.requests.length, 4);
-    assert.equal(server.requests[3].method, "GET");
-    assert.equal(server.requests[3].path, "/api/mobile/approvals/approval-active");
+    assert.equal(server.requests.length, 3);
+    assert.equal(server.requests[2].method, "GET");
+    assert.equal(server.requests[2].path, "/api/mobile/approvals/approval-active");
     await assert.rejects(
       () => client.submitApprovalDecision(session, "approval-active", "approved", {
         approval: pendingRemoteInputApproval,
         approvalType: "remote_input",
       }),
-      (error) => error.name === "ForbiddenError" && /active remote input grant/i.test(error.message),
-      "clearing mobile session state must forget cached remote-input grant bearer tokens",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval with details must fail before a network decision request",
     );
-    assert.equal(server.requests.length, 4, "cleared grant token cache must fail before a network decision request");
+    assert.equal(server.requests.length, 3, "remote-input approval with details must fail before a network decision request");
     const deniedWithoutGrant = await client.submitApprovalDecision(session, "approval-active", "denied", {
       approval: pendingRemoteInputApproval,
       approvalType: "remote_input",
     });
     assert.equal(deniedWithoutGrant.id, "approval-active");
     assert.equal(deniedWithoutGrant.status, "rejected");
-    assert.equal(server.requests.length, 5);
-    assert.equal(server.requests[4].method, "POST");
-    assert.equal(server.requests[4].path, "/api/mobile/approvals/approval-active/reject");
-    assert.equal(server.requests[4].headers.authorization, `Bearer ${SESSION_TOKEN}`);
+    assert.equal(server.requests.length, 4);
+    assert.equal(server.requests[3].method, "POST");
+    assert.equal(server.requests[3].path, "/api/mobile/approvals/approval-active/reject");
+    assert.equal(server.requests[3].headers.authorization, `Bearer ${SESSION_TOKEN}`);
     state.approvals.set("approval-active", pendingRemoteInputApproval);
 
     const explicitApprovalGrant = state.grants.get(APPROVAL_GRANT_ID);
@@ -833,8 +831,8 @@ async function main() {
         approvalType: "remote_input",
         remoteInputGrant: explicitApprovalGrant,
       }),
-      (error) => error.name === "ForbiddenError" && /matching approval details/i.test(error.message),
-      "explicit remote-input grants must require the matching approval details before claiming a token",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "explicit remote-input approvals must not claim a token for mobile approval",
     );
     await assert.rejects(
       () => client.submitApprovalDecision(session, "approval-explicit-grant", "approved", {
@@ -842,8 +840,8 @@ async function main() {
         approvalType: "remote_input",
         remoteInputGrant: explicitApprovalGrant,
       }),
-      (error) => error.name === "ForbiddenError" && /mobile device/i.test(error.message),
-      "remote-input approval submission must fail before HTTP when the approval device does not match the session",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval submission must fail before HTTP on mobile",
     );
     await assert.rejects(
       () => client.submitApprovalDecision(session, "approval-explicit-grant", "denied", {
@@ -860,8 +858,8 @@ async function main() {
         approvalType: "remote_input",
         remoteInputGrant: explicitApprovalGrant,
       }),
-      (error) => error.name === "ForbiddenError" && /active mobile grant/i.test(error.message),
-      "remote-input approval submission must fail before HTTP when the active grant does not match the approval",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval submission must fail before HTTP on mobile",
     );
     await assert.rejects(
       () => client.submitApprovalDecision(session, "approval-explicit-grant", "approved", {
@@ -869,25 +867,24 @@ async function main() {
         approvalType: "remote_input",
         remoteInputGrant: { ...explicitApprovalGrant, status: "revoked", revoked_at: new Date(START_TIME + 1).toISOString() },
       }),
-      (error) => error.name === "ForbiddenError" && /active remote input grant/i.test(error.message),
-      "remote-input approval submission must fail before HTTP when the active grant is already revoked",
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "remote-input approval submission must fail before HTTP on mobile",
     );
-    assert.equal(server.requests.length, 5, "client-side remote-input binding failures must not reach the smoke server");
-    const explicitDecision = await client.submitApprovalDecision(session, "approval-explicit-grant", "approved", {
-      approval: explicitRemoteInputApproval,
-      approvalType: "remote_input",
-      remoteInputGrant: explicitApprovalGrant,
-    });
-    assert.equal(explicitDecision.id, "approval-explicit-grant");
-    assert.equal(explicitDecision.status, "approved");
-    assert.equal(server.requests.length, 7);
-    assert.equal(server.requests[5].method, "POST");
-    assert.equal(server.requests[5].path, "/api/mobile/remote-input-grants/grant-approval/token");
-    assert.equal(server.requests[5].headers.authorization, `Bearer ${SESSION_TOKEN}`);
-    assert.equal(server.requests[6].method, "POST");
-    assert.equal(server.requests[6].path, "/api/mobile/approvals/approval-explicit-grant/decision");
-    assert.equal(server.requests[6].headers.authorization, "Bearer grant-token-grant-approval");
-    assert.deepEqual(server.requests[6].json, { decision: "approved" });
+    assert.equal(server.requests.length, 4, "client-side remote-input approval blocks must not reach the smoke server");
+    await assert.rejects(
+      () => client.submitApprovalDecision(session, "approval-explicit-grant", "approved", {
+        approval: explicitRemoteInputApproval,
+        approvalType: "remote_input",
+        remoteInputGrant: explicitApprovalGrant,
+      }),
+      (error) => error.name === "ForbiddenError" && /desktop/i.test(error.message),
+      "matching approval details still require desktop approval",
+    );
+    assert.equal(
+      server.requests.length,
+      4,
+      "client-side remote-input binding failures must not reach the smoke server",
+    );
 
     const inputInfo = client.remoteInputWebSocketConnectionInfo(session, grantToken.token);
     assert.equal(inputInfo.url, `${server.origin.replace("http:", "ws:")}/ws/remote/input`);
@@ -898,9 +895,9 @@ async function main() {
     assert.equal(wrongTokenHandshake.statusCode, 401);
 
     const revokedGrant = await client.revokeRemoteInputGrant(session, ACTIVE_GRANT_ID);
-    assert.equal(server.requests.length, 8);
-    assert.equal(server.requests[7].method, "DELETE");
-    assert.equal(server.requests[7].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
+    assert.equal(server.requests.length, 5);
+    assert.equal(server.requests[4].method, "DELETE");
+    assert.equal(server.requests[4].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
     assert.equal(revokedGrant.status, "revoked");
     assert.equal(reduceRemoteInputGrant(activeGrant, { type: "revoked", grantId: ACTIVE_GRANT_ID }, START_TIME), null);
 

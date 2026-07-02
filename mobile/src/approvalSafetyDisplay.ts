@@ -53,20 +53,24 @@ const FORBIDDEN_APPROVAL_REASON = "这类请求不能在手机上批准；请回
 const UNVERIFIED_HIGH_RISK_REASON = "此审批缺少可核对的试运行或影响范围，手机端不会批准；请回电脑端查看后处理。";
 const REMOTE_INPUT_BINDING_REASON = "远控输入审批必须绑定当前远控授权，手机端不会批准缺少授权绑定的请求。";
 const REMOTE_INPUT_ACTIVE_GRANT_REASON = "此审批没有匹配当前手机的远控授权，手机端不会批准；请回电脑端重新发起授权。";
+const REMOTE_INPUT_DESKTOP_APPROVAL_REASON = "远控输入审批不能在手机端批准；请回电脑端核对并处理，或直接拒绝。";
 const DANGEROUS_PERMISSION_REASON = "此审批会扩大电脑端执行权限，不能在手机上批准；请回电脑端核对后手动处理或拒绝。";
 
 export function approvalApproveBlockedReason(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): string | null {
   if (isForbiddenOrHandoff(approval) || isDesktopOnlyApproval(approval)) {
     return FORBIDDEN_APPROVAL_REASON;
   }
+  if (isRemoteInputApproval(approval)) {
+    if (!remoteInputApprovalHasBinding(approval)) {
+      return REMOTE_INPUT_BINDING_REASON;
+    }
+    if (!remoteInputApprovalMatchesActiveGrant(approval, activeGrant)) {
+      return REMOTE_INPUT_ACTIVE_GRANT_REASON;
+    }
+    return REMOTE_INPUT_DESKTOP_APPROVAL_REASON;
+  }
   if (hasDangerousPermissionMode(approval)) {
     return DANGEROUS_PERMISSION_REASON;
-  }
-  if (isRemoteInputApproval(approval) && !remoteInputApprovalHasBinding(approval)) {
-    return REMOTE_INPUT_BINDING_REASON;
-  }
-  if (isRemoteInputApproval(approval) && !remoteInputApprovalMatchesActiveGrant(approval, activeGrant)) {
-    return REMOTE_INPUT_ACTIVE_GRANT_REASON;
   }
   if (isHighRiskApproval(approval) && (!hasDryRunSummary(approval) || !hasDeclaredScope(approval))) {
     return UNVERIFIED_HIGH_RISK_REASON;
@@ -77,7 +81,11 @@ export function approvalApproveBlockedReason(approval: ApprovalSafetyInput, acti
 export function remoteInputMobileDecisionBlockedReason(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): string | null {
   if (!isRemoteInputApproval(approval)) return null;
   const reason = approvalApproveBlockedReason(approval, activeGrant);
-  return reason === REMOTE_INPUT_BINDING_REASON || reason === REMOTE_INPUT_ACTIVE_GRANT_REASON ? reason : null;
+  return reason === REMOTE_INPUT_BINDING_REASON ||
+    reason === REMOTE_INPUT_ACTIVE_GRANT_REASON ||
+    reason === REMOTE_INPUT_DESKTOP_APPROVAL_REASON
+    ? reason
+    : null;
 }
 
 export function approvalDecisionGuard(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): ApprovalDecisionGuardCopy {
@@ -106,6 +114,15 @@ export function approvalDecisionGuard(approval: ApprovalSafetyInput, activeGrant
         title: "远控授权不匹配",
         detail: "这项审批没有匹配当前手机正在使用的远控授权。不要用旧授权或其他授权批准。",
         nextStep: "回到电脑端重新发起远控授权；不确定就在电脑端拒绝。",
+        tone: "danger",
+        approveBlockedReason,
+      };
+    }
+    if (approveBlockedReason === REMOTE_INPUT_DESKTOP_APPROVAL_REASON) {
+      return {
+        title: "远控输入需电脑端确认",
+        detail: "手机端只能发起或拒绝这类远控输入请求，不能用同一远控授权批准自己触发的动作。",
+        nextStep: "回电脑端核对光标、窗口和动作后处理；不确定就在手机端拒绝。",
         tone: "danger",
         approveBlockedReason,
       };
@@ -175,6 +192,14 @@ export function approvalListSafety(approval: ApprovalSafetyInput, activeGrant?: 
       return {
         label: "远控授权不匹配",
         detail: "手机端不可批准；重新发起远控授权或在电脑端拒绝。",
+        tone: "danger",
+        approveBlockedReason: guard.approveBlockedReason,
+      };
+    }
+    if (guard.approveBlockedReason === REMOTE_INPUT_DESKTOP_APPROVAL_REASON) {
+      return {
+        label: "远控需电脑确认",
+        detail: "手机端不可批准；回电脑端核对动作后处理，或直接拒绝。",
         tone: "danger",
         approveBlockedReason: guard.approveBlockedReason,
       };
