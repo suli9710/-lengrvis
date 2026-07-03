@@ -191,7 +191,7 @@ def parse_advanced(
             except AdvancedParserUnavailable as exc:
                 warnings.append(f"{parser_name} parser unavailable: {_redacted_error(exc)}")
                 continue
-            except Exception as exc:  # noqa: BLE001 - parser plugins fail in many environment-specific ways.
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: parser plugins fail in many environment-specific ways.
                 _append_extraction_warning(
                     warnings,
                     f"{parser_name} parser failed",
@@ -1006,7 +1006,7 @@ def _coerce_docling_tables(raw_tables: Iterable[Any]) -> list[DocumentTable]:
                 dataframe = export()
                 rows = [list(map(_stringify_cell, dataframe.columns))]
                 rows.extend([list(map(_stringify_cell, row)) for row in dataframe.values.tolist()])
-            except Exception as exc:  # noqa: BLE001 - dataframe export is optional parser metadata.
+            except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 log_best_effort_failure(logger, "document_intelligence.docling_table", exc)
                 rows = []
         if not rows:

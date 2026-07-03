@@ -253,7 +253,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 launch_config=launch_config,
                 writes_enabled=writes_enabled,
             )
-        except Exception as exc:  # noqa: BLE001 - external CLI failures become run failures.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: external CLI failures become run failures.
             result = lengrvis_code_summary_to_turn_result(
                 state,
                 LengrvisCodeStreamSummary(
@@ -671,7 +671,7 @@ def _run_developer_coro_sync(
             pool.shutdown(wait=False, cancel_futures=True)
     except TimeoutError:
         return _developer_timeout_summary(timeout_seconds)
-    except Exception as exc:  # noqa: BLE001 - tool body failures should be reported inline.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: tool body failures should be reported inline.
         return LengrvisCodeStreamSummary(
             launch_error=f"{LENGRVIS_CODE_DISPLAY_NAME} run failed: {exc}",
             result={"is_error": True, "result": str(exc)},

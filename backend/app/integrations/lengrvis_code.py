@@ -650,7 +650,7 @@ async def run_lengrvis_code(
     try:
         command = build_lengrvis_code_command(prompt, cwd=cwd, settings=settings, config=launch_config)
         assert_safe_lengrvis_code_invocation(command, build_env=env)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return LengrvisCodeStreamSummary(
             launch_error=str(exc),
             runtime_health=runtime_health.as_payload(),
@@ -664,7 +664,7 @@ async def run_lengrvis_code(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return LengrvisCodeStreamSummary(
             command=_redacted_command(command),
             launch_error=str(exc),

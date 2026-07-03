@@ -126,7 +126,7 @@ def _store_suggestions(suggestions: list[IntentSuggestion]) -> None:
         }
         try:
             db.insert_perception_suggestion(payload)
-        except Exception:  # noqa: S112, BLE001
+        except Exception:  # noqa: S112, BLE001 - broad-exception-boundary
             continue
 
 
@@ -150,5 +150,5 @@ def _mark_suggestion_launched(suggestion: IntentSuggestion, run: Run) -> None:
     }
     try:
         db.insert_perception_suggestion(payload)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return

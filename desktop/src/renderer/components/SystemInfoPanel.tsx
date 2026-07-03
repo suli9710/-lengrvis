@@ -136,7 +136,7 @@ export function SystemInfoPanel({
     try {
       await onRefresh();
       setUpdateCheck({ status: "checked", checkedAt: new Date().toISOString() });
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setUpdateCheck({
         status: "error",
         checkedAt: new Date().toISOString(),
@@ -161,7 +161,7 @@ export function SystemInfoPanel({
         displayPath: result.filename || compactPath(result.path),
         bytes: result.bytes
       });
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDiagnosticExport({
         status: "error",
         message: error instanceof Error ? error.message : "诊断包导出失败，请刷新后再试。"
@@ -175,7 +175,7 @@ export function SystemInfoPanel({
     if (!diagnosticExport.path || !onRevealPath) return;
     try {
       await onRevealPath(diagnosticExport.path);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDiagnosticExport({
         status: "error",
         message: error instanceof Error ? error.message : "无法打开诊断包位置。",
@@ -191,7 +191,7 @@ export function SystemInfoPanel({
     setPathRevealError("");
     try {
       await onRevealPath(path);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPathRevealError(error instanceof Error ? error.message : "无法打开这个位置。");
     }
   };

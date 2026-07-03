@@ -170,7 +170,7 @@ async def create_run(
             _engine_selection(requested_engine),
             task_metadata=delegation_metadata or None,
         )
-    except Exception as exc:  # noqa: BLE001 - engine startup crosses provider, DB, policy, and tool setup.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: engine startup crosses provider, DB, policy, and tool setup.
         error = _redacted_error(exc)
         run = Run(
             message=message,
@@ -276,7 +276,7 @@ async def prepare_for_background(*, timeout_seconds: float = 8.0) -> dict[str, A
     for run_id in active_ids:
         try:
             pause_run(run_id)
-        except Exception as exc:  # noqa: BLE001 - backgrounding should keep draining other runs.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: backgrounding should keep draining other runs.
             log_best_effort_failure(logger, "prepare_for_background.pause_run", exc, run_id=run_id)
             continue
     deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
@@ -303,7 +303,7 @@ def recover_interrupted_runs() -> list[str]:
     recovered: list[str] = []
     try:
         rows = db.fetch_many("runs", "phase = ?", (RunPhase.RUNNING.value,), limit=1000)
-    except Exception as exc:  # noqa: BLE001 - startup recovery should not block backend startup.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: startup recovery should not block backend startup.
         log_best_effort_failure(logger, "recover_interrupted_runs.scan", exc)
         return recovered
     for row in rows:
@@ -339,7 +339,7 @@ async def shutdown_runs(*, timeout_seconds: float = 10.0) -> dict[str, Any]:
     for run_id in paused_ids:
         try:
             pause_run(run_id)
-        except Exception as exc:  # noqa: BLE001 - shutdown should continue draining other runs.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: shutdown should continue draining other runs.
             log_best_effort_failure(logger, "shutdown_runs.pause_run", exc, run_id=run_id)
             continue
     deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
@@ -380,7 +380,7 @@ def pause_run(run_id: str) -> Run:
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, "paused")
-        except Exception as exc:  # noqa: BLE001 - pausing the run should still proceed.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: pausing the run should still proceed.
             log_best_effort_failure(logger, "pause_run.set_task_status", exc, run_id=run.id, task_id=run.task_id)
     _sync_persisted_state_phase(run, RunPhase.PAUSED, "pause_requested")
     _update_run(run, phase=RunPhase.PAUSED)
@@ -448,21 +448,21 @@ def cancel_run(run_id: str) -> Run:
             from app.orchestration.lengrvis_code_runner import cancel_lengrvis_code_run
 
             _schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
-        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: cancellation still records run state below.
             log_best_effort_failure(logger, "cancel_run.schedule_developer_cancellation", exc, run_id=run.id)
     elif run.engine in {RunEngine.OS, RunEngine.AUTO}:
         try:
             settings = get_effective_settings()
             router = _router_for_run(run.id, settings)
             _schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
-        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: cancellation still records run state below.
             log_best_effort_failure(logger, "cancel_run.schedule_engine_cancellation", exc, run_id=run.id)
     if run.task_id:
         expired = _expire_pending_approvals(run.task_id, "cancel_requested")
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
-        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: cancellation still records run state below.
             log_best_effort_failure(logger, "cancel_run.set_task_cancelled", exc, run_id=run.id, task_id=run.task_id)
     _update_run(run, phase=RunPhase.CANCELLED)
     _cancel_active_run_task(run.id, grace_seconds=2.0)
@@ -488,7 +488,7 @@ def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
 
         for approval in approvals:
             publish_approval_decided(approval)
-    except Exception as exc:  # noqa: BLE001 - expiry already persisted; event fanout is best effort.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: expiry already persisted; event fanout is best effort.
         log_best_effort_failure(logger, "expire_pending_approvals.publish_events", exc, task_id=task_id)
     return approvals
 
@@ -575,7 +575,7 @@ async def _run_engine_loop(
             return
         _update_run(run, phase=RunPhase.FAILED, error=f"max turns reached ({max_turns})")
         run_event_bus.publish(run_id, "run.failed", {"reason": run.error, "max_turns": max_turns})
-    except Exception as exc:  # noqa: BLE001 - resident engine loop boundary: persist a failed run instead of leaking RUNNING.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: resident engine loop boundary: persist a failed run instead of leaking RUNNING.
         run = get_run(run_id)
         if run.phase == RunPhase.CANCELLED:
             return
@@ -591,7 +591,7 @@ async def _run_engine_loop(
                 await asyncio.wait_for(bridge_task, timeout=0.5)
             except (TimeoutError, asyncio.CancelledError):
                 bridge_task.cancel()
-            except Exception as exc:  # noqa: BLE001 - run cleanup must release active-run state below.
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: run cleanup must release active-run state below.
                 log_best_effort_failure(logger, "run_engine_loop.stop_bridge", exc, run_id=run_id)
         _untrack_active_run(run_id)
         _release_run_router(run_id)
@@ -610,7 +610,7 @@ def _release_terminal_orchestrator(run_id: str) -> None:
         run = get_run(run_id)
     except KeyError:
         return
-    except Exception as exc:  # noqa: BLE001 - cleanup should not affect terminal run completion.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: cleanup should not affect terminal run completion.
         log_best_effort_failure(logger, "release_terminal_orchestrator.get_run", exc, run_id=run_id)
         return
     if run.phase not in TERMINAL_PHASES:
@@ -680,14 +680,14 @@ async def _monitor_task_to_terminal(
             await asyncio.wait_for(bridge_task, timeout=0.5)
         except (TimeoutError, asyncio.CancelledError):
             bridge_task.cancel()
-        except Exception as exc:  # noqa: BLE001 - terminal monitor already persisted the task outcome.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: terminal monitor already persisted the task outcome.
             log_best_effort_failure(logger, "monitor_task_terminal_phase.stop_bridge", exc, run_id=run_id)
 
 
 async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState) -> None:
     try:
         resumed = await router.engines[state.engine].resume_run(state.run_id)
-    except Exception as exc:  # noqa: BLE001 - engine-specific resume may fail while persisted RunState is still usable.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: engine-specific resume may fail while persisted RunState is still usable.
         log_best_effort_failure(logger, "resume_engine_loop.resume_run", exc, run_id=run_id, engine=state.engine)
         resumed = state
     stop_event: asyncio.Event | None = None

@@ -83,7 +83,7 @@ export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManag
         });
 
         return { ok: true, id: socketId };
-      } catch (error) {
+      } catch (error) { // broad-exception-boundary
         return {
           ok: false,
           id: socketId,

@@ -153,7 +153,7 @@ class Scheduler:
         while not self._stop.is_set():
             try:
                 await self.tick()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 log_best_effort_failure(logger, "scheduler.run.tick", exc)
                 record("scheduler.tick_failed", "Scheduler", {"error": _safe_scheduler_error(exc)})
             try:
@@ -204,7 +204,7 @@ class Scheduler:
                 task = await orchestrator.handle_user_goal(schedule.goal, schedule.mode)
                 task_id = task.id
             last_task_id = str(task_id or "")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             safe_error = _safe_scheduler_error(exc)
             last_status = f"failed: {safe_error}"
             log_best_effort_failure(logger, "scheduler.execute", exc, schedule_id=schedule.id)
@@ -238,7 +238,7 @@ class Scheduler:
                 task_id=schedule.id,
                 severity="info" if ok else "error",
             )
-        except Exception as exc:  # noqa: BLE001 - notifications are best-effort after schedule persistence.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: notifications are best-effort after schedule persistence.
             log_best_effort_failure(logger, "scheduler.notification", exc, schedule_id=schedule.id)
             record(
                 "scheduler.notification_failed",

@@ -223,7 +223,7 @@ class PlannerAgent(BaseAgent):
                 message_type=MessageType.REVISION,
             )
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             if effective_mode == "privacy":
                 self.bus.publish_text(
                     task_id,

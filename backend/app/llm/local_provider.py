@@ -65,13 +65,13 @@ def detect_local_backend(*, timeout: float = _DEFAULT_TIMEOUT, client_factory=No
         try:
             with factory() as client:
                 response = client.get(probe_url)
-        except Exception:  # noqa: S112, BLE001
+        except (httpx.HTTPError, OSError, RuntimeError):  # noqa: S112
             continue
         if response.status_code != 200:
             continue
         try:
             payload = response.json()
-        except Exception:  # noqa: BLE001
+        except ValueError:
             payload = {}
         models = [name for name in _extract_models(kind, payload) if name]
         return LocalBackend(kind=kind, base_url=base_url, models=models)

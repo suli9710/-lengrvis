@@ -98,7 +98,7 @@ class BaseAgent:
                 **{k: payload.get(k, "") for k in ("kind", "tool_name", "rationale", "follow_up_question")},
                 args=payload.get("args") or {},
             )
-        except Exception as exc:  # noqa: BLE001 - provider/runtime failures become revision requests.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: provider/runtime failures become revision requests.
             return AgentAction(
                 kind="request_revision",
                 rationale=f"{self.name} failed to plan an action: {exc}",
@@ -184,7 +184,7 @@ class BaseAgent:
                 step_id=step.id,
                 structured_payload={"reflection": True, "step_id": step.id, "ok": result.ok},
             )
-        except Exception:  # noqa: BLE001 - bus failures should not break orchestration.
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: bus failures should not break orchestration.
             logger.exception("Failed to publish %s reflection for step %s", self.name, step.id)
         return summary
 

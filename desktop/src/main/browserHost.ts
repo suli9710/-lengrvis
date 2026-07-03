@@ -136,7 +136,7 @@ export class BrowserHost {
       this.updateSessionFromWebContents(entry, "idle");
       this.emitSnapshot();
       return this.ok(entry, event);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const entry = this.sessions.get(sessionId);
       const message = browserHostErrorMessage(error);
       if (entry) {
@@ -266,7 +266,7 @@ export class BrowserHost {
       this.updateSessionFromWebContents(entry);
       this.emitSnapshot();
       return this.ok(entry, event);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const event = this.addEvent(entry, {
         type: "action.failed",
         action,

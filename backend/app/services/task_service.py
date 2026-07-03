@@ -186,7 +186,7 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
         orchestrator = orchestrator_registry.get_or_create_for_task(task.id, OrchestratorAgent)
         task = get_task(task.id)
         return await orchestrator.run_task(task)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         task.final_summary = f"任务执行失败：{exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
@@ -229,7 +229,7 @@ async def _resume_task_through_orchestrator(task: Task) -> Task:
     try:
         await _run_existing_plan(task)
         return task
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         task.final_summary = f"Task resume failed: {exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
@@ -239,7 +239,7 @@ async def _resume_task_through_orchestrator(task: Task) -> Task:
 async def _resume_task_background(task: Task) -> None:
     try:
         await _run_existing_plan(task)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         task.final_summary = f"Task resume failed: {exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)

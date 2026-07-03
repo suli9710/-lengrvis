@@ -311,7 +311,7 @@ class PlanningHandler:
             else:
                 goal_stack.relate_task(task.id, related_goal.id)
             return goal_stack.get_context_for_planning(goal)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record(
                 "goal_stack.context_failed",
                 self.orchestrator.name,
@@ -327,7 +327,7 @@ class PlanningHandler:
         try:
             store.remember_task(task.id, workflow_state={"latest_goal": task.user_goal, "latest_task_id": task.id})
             return store.planning_context()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record(
                 "session_context.planning_context_failed",
                 self.orchestrator.name,

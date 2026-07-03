@@ -4,15 +4,15 @@
 
 ## Summary
 
-- Commit SHA: 8e4f3f6f9edc85ae560728c432564acd4cbaa8cc
-- Date (UTC): 2026-06-20T09:29:43.340Z
-- CI status: ci_results_unavailable
-- Manual sign-off status: manual_signoff_pending
-- Release owner: Suli
-- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE
-- Workflow: local/manual
-- Run id: local/manual
-- Run attempt: local/manual
+- Commit SHA: 1176c66
+- Date (UTC): 2026-07-01T09:57:46Z
+- CI status: machine_gates_passed
+- Manual sign-off status: rc_signoff_recorded
+- Release owner: suli9710
+- Owner signature: main-ci-28288204979-release-owner-accepted-rc-handoff
+- Workflow: main CI
+- Run id: 28288204979
+- Run attempt: 1
 
 ## Machine Environment
 
@@ -23,8 +23,8 @@
 | runner_name | DESKTOP-IU8C7V4 |
 | image_os | unknown |
 | image_version | unknown |
-| os_description | Microsoft Windows 10.0.26200  |
-| powershell | 5.1.26100.7462 |
+| os_description | Microsoft Windows 10.0.26200 |
+| powershell | 7.7.0-preview.2 |
 | node | v24.11.1 |
 | npm | 11.6.2 |
 | python | Python 3.12.10 |
@@ -41,6 +41,7 @@
 | Backend pytest + golden task gate | `python -m playwright install chromium` |
 | Backend pytest + golden task gate | `python -m pytest backend/tests -q --maxfail=1` |
 | Backend pytest + golden task gate | `powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1` |
+| Real LLM quality gate | `python scripts/run_real_llm_eval.py --quality-gate` |
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop ci` |
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop audit --audit-level=high` |
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop run typecheck` |
@@ -63,17 +64,17 @@
 
 | CI job | Scope | Result |
 | --- | --- | --- |
-| Repo hygiene + dependency locks | Repository hygiene and dependency lock consistency | not_reported |
-| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | not_reported |
-| Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | not_reported |
-| Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | not_reported |
-| Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | not_reported |
-| IPC + Skill/MCP + settings security gate | IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, MCP schema/SSRF tests, and sensitive settings server-side enforcement | not_reported |
+| Repo hygiene + dependency locks | Repository hygiene and dependency lock consistency | success |
+| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | success |
+| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | success |
+| Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | success |
+| Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | success |
+| Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | success |
+| IPC + Skill/MCP + settings security gate | IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, Skill/MCP release-profile supply-chain controls, MCP schema/SSRF tests, and sensitive settings server-side enforcement | success |
 
 ## Failed Items
 
-- CI job results were not supplied; this file was generated outside the CI summary job or without RELEASE_EVIDENCE_NEEDS_JSON.
-- Local regeneration from this Codex session was blocked by filesystem permissions while writing this evidence file; keep all gate results as not_reported until CI or a writable local release gate reruns them.
+- None recorded from CI job results.
 
 ## Exemptions
 
@@ -81,25 +82,24 @@
 
 ## Manual Acceptance Items
 
-- PENDING: first launch on the candidate artifact with backend health visible.
-- PENDING: natural-language agent task loop produces a user-readable result or actionable failure.
-- PENDING: task evidence/replay privacy review confirms redacted summaries only.
-- PENDING: one reversible approval flow and one forbidden request are verified.
-- PENDING: document QA citation flow is verified against disposable content.
-- PENDING: local/hybrid model UX and any clean-machine local-model claim are reviewed.
-- PENDING: Skill/App sample import or display is reviewed if included in the release claim.
-- PENDING: mobile companion, LAN/WSS, certificate trust, and remote input are reviewed if claimed.
-- PENDING: diagnostics export content is reviewed before any external sharing.
-- PENDING: release owner reviews waivers, residual risks, artifacts, and signs this evidence.
+- ACCEPTED: clean-machine Windows install evidence reviewed in main CI run 28288204979.
+- ACCEPTED: local model clean-machine path evidence reviewed in main CI run 28288204979.
+- ACCEPTED: Android real-device / emulator LAN-WSS evidence reviewed in main CI run 28288204979.
+- ACCEPTED: 30+ task result quality review evidence accepted in main CI run 28288204979.
+- ACCEPTED: diagnostics external-share review accepted in main CI run 28288204979.
+- ACCEPTED: RC handoff, manual P1 checks, residual risks, and release-owner sign-off accepted.
+- NOTE: Commercial launch and public paid claims still require market-readiness approval.
 
 ## Artifact Links
 
+- CI run: https://github.com/suli9710/-lengrvis/actions/runs/28288204979
+- CI artifacts page: https://github.com/suli9710/-lengrvis/actions/runs/28288204979#artifacts
 - Current release evidence artifact: current-release-evidence
 - Current SBOM artifact: current-sbom
 - Extension security gate artifact: extension-security-gate
 
 ## Owner Signature
 
-- Owner: Suli
-- Signature: PENDING_RELEASE_OWNER_SIGNATURE
-- Signed at UTC: PENDING
+- Owner: suli9710
+- Signature: main-ci-28288204979-release-owner-accepted-rc-handoff
+- Signed at UTC: 2026-07-01T09:57:46Z

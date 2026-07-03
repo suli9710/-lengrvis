@@ -940,7 +940,7 @@ _ADMIN_HTML = r"""<!doctype html>
       try {
         const expiry = expiryFromControls(selectId, dateId);
         $(previewId).textContent = '将设置为：' + expiry.label;
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         $(previewId).textContent = err.message || '';
       }
     }
@@ -971,7 +971,7 @@ _ADMIN_HTML = r"""<!doctype html>
         $('password').value = '';
         showAuthed(true);
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('loginMessage', err.message, 'error');
       }
     }
@@ -985,7 +985,7 @@ _ADMIN_HTML = r"""<!doctype html>
       let expiry;
       try {
         expiry = expiryFromControls('expiresPreset', 'expiresDate');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('createMessage', err.message, 'error');
         return;
       }
@@ -1007,7 +1007,7 @@ _ADMIN_HTML = r"""<!doctype html>
         $('newKeyWrap').classList.remove('hidden');
         setMessage('createMessage', '授权码已创建。这个值只显示一次，请立即保存。', 'ok');
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('createMessage', err.message, 'error');
       }
     }
@@ -1019,7 +1019,7 @@ _ADMIN_HTML = r"""<!doctype html>
         renderSubscriptions();
         renderMetrics();
         setMessage('listMessage', state.items.length ? '' : '暂无订阅记录。');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }
@@ -1178,7 +1178,7 @@ _ADMIN_HTML = r"""<!doctype html>
       let expiry;
       try {
         expiry = expiryFromControls('renewExpiresPreset', 'renewExpiresDate');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
         return;
       }
@@ -1196,7 +1196,7 @@ _ADMIN_HTML = r"""<!doctype html>
         });
         cancelRenew();
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }
@@ -1209,7 +1209,7 @@ _ADMIN_HTML = r"""<!doctype html>
         if (result?.record?.revocation_manifest_required) {
           setMessage('listMessage', '订阅授权码已撤销；仍需为 ' + ids.length + ' 个已激活设备发布签名吊销清单或换发许可。', 'error');
         }
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }
@@ -1218,7 +1218,7 @@ _ADMIN_HTML = r"""<!doctype html>
       try {
         await api('/api/admin/devices/' + licenseId, {method: 'DELETE'});
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }

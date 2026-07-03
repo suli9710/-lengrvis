@@ -59,7 +59,7 @@ def _run_async(coro, *, timeout_seconds: float | None = DEFAULT_LLM_TIMEOUT_SECO
 def _provider(task: str = "subagent"):
     try:
         return get_provider(task=task)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return None
 
 
@@ -84,7 +84,7 @@ def _call_chat(
         return None
     try:
         result = _run_async(provider.chat(messages, temperature=temperature), timeout_seconds=timeout_seconds)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return None
     result_text = str(result or "").strip()
     return result_text or None

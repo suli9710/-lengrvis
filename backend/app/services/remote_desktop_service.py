@@ -107,7 +107,7 @@ def _grab_screen() -> Image.Image:
     # _virtual_screen_origin() when the attribute is missing.
     try:
         converted._lengrvis_screen_origin = screen_origin
-    except Exception:  # noqa: S110, BLE001
+    except AttributeError:  # noqa: S110
         pass
     return converted
 
@@ -128,7 +128,7 @@ def _virtual_screen_origin() -> tuple[int, int]:
     try:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         return int(user32.GetSystemMetrics(76)), int(user32.GetSystemMetrics(77))
-    except Exception:  # noqa: BLE001
+    except (AttributeError, OSError, TypeError, ValueError):
         return 0, 0
 
 

@@ -199,7 +199,7 @@ def _limits(quota: CloudQuota) -> dict[str, Any]:
 def _status_for_window(quota: CloudQuota) -> dict[str, Any]:
     try:
         usage = _current_usage(quota.window_hours)
-    except Exception as exc:  # noqa: BLE001 - usage telemetry must never break the API
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: usage telemetry must never break the API
         logger.warning("Failed to read cloud usage for quota status: %s", exc)
         usage = _empty_usage(quota.window_hours)
     return {
@@ -263,7 +263,7 @@ def enforce_cloud_quota(settings: Any | None = None) -> None:
     for quota in quotas:
         try:
             usage = _current_usage(quota.window_hours)
-        except Exception as exc:  # noqa: BLE001 - fail closed when quota usage is unreadable
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: fail closed when quota usage is unreadable
             logger.warning("Cloud quota enforcement failed closed for %sh window: %s", quota.window_hours, exc)
             usage_errors.append({"key": quota.key, "window_hours": quota.window_hours})
             continue

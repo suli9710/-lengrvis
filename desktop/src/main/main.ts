@@ -295,7 +295,7 @@ function registerGlobalShortcut(): void {
     if (!registered) {
       console.warn(`Global shortcut ${GLOBAL_TOGGLE_SHORTCUT} is taken by another app; skipping.`);
     }
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("Failed to register global shortcut:", error);
   }
 }
@@ -326,7 +326,7 @@ function isOpenAtLoginEnabled(): boolean {
 function setOpenAtLogin(enabled: boolean): void {
   try {
     app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] });
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("Failed to update login item settings:", error);
   }
   rebuildTrayMenu();

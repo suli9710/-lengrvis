@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 try:
     import yaml
-except Exception:  # noqa: BLE001  # pragma: no cover - PyYAML is optional at import time.
+except ImportError:  # pragma: no cover - PyYAML is optional at import time.
     yaml = None
 
 from pydantic import ValidationError
@@ -74,6 +74,7 @@ def scan_skill_directories(
     *,
     allow_unsafe_local_skill_execution: bool | None = None,
     trusted_public_keys: Mapping[str, str] | None = None,
+    require_trusted_signature: bool = False,
 ) -> list[LoadedSkillPackage]:
     packages: list[LoadedSkillPackage] = []
     for raw_directory in skill_directories:
@@ -89,6 +90,7 @@ def scan_skill_directories(
                     manifest.parent,
                     allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
                     trusted_public_keys=trusted_public_keys,
+                    require_trusted_signature=require_trusted_signature,
                 )
             )
     return packages
@@ -99,6 +101,7 @@ def load_skill_package(
     *,
     allow_unsafe_local_skill_execution: bool | None = None,
     trusted_public_keys: Mapping[str, str] | None = None,
+    require_trusted_signature: bool = False,
 ) -> LoadedSkillPackage:
     root = Path(skill_root).expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -114,6 +117,12 @@ def load_skill_package(
     signature_report = verify_skill_signature(raw, definition, trusted_public_keys or {})
     if signature_report["severity"] == "error":
         raise SkillLoadError(f"Invalid skill signature: {signature_report['message']}", path=manifest)
+    if require_trusted_signature and signature_report["status"] != "verified":
+        raise SkillLoadError(
+            "Skill manifest must be signed by a trusted key for this profile "
+            f"(status: {signature_report['status']}).",
+            path=manifest,
+        )
 
     safety_report = review_skill_definition(definition, root)
     if not safety_report.ok:
@@ -151,6 +160,9 @@ def register_skills(
             getattr(settings, "allow_unsafe_local_skill_execution", None) if settings is not None else None
         ),
         trusted_public_keys=(getattr(settings, "skill_trusted_public_keys", {}) if settings is not None else {}),
+        require_trusted_signature=(
+            bool(getattr(settings, "skill_require_trusted_signatures", False)) if settings is not None else False
+        ),
     )
     existing_names = {tool.name for tool in registry.list()}
     for package in packages:
@@ -270,7 +282,7 @@ def _verify_ed25519_signature(public_key_text: str, signature_text: str, payload
     try:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    except Exception as exc:  # pragma: no cover - dependency is locked in production/test envs.
+    except ImportError as exc:  # pragma: no cover - dependency is locked in production/test envs.
         raise ValueError("cryptography is required to verify Skill signatures.") from exc
 
     try:

@@ -296,7 +296,7 @@ def provider_ocr_image(
         return OCRResult(ok=False, source="vision_provider", error="Provider OCR is not configured.")
     except LocalBackendUnavailable as exc:
         return OCRResult(ok=False, source="vision_provider", error=f"OCR unavailable: {exc}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return OCRResult(ok=False, source="vision_provider", error=f"OCR failed: {exc}")
     if not text:
         return OCRResult(ok=False, source="vision_provider", error="Provider OCR returned no text.")
@@ -337,7 +337,7 @@ def extract_pdf_text_with_ocr_fallback(
         if ocr_texts:
             return "\n".join(ocr_texts)
         return extracted
-    except Exception as exc:  # noqa: BLE001 - optional PDF/OCR stacks should fail closed with a message.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: optional PDF/OCR stacks should fail closed with a message.
         return f"[PDF extraction unavailable: {exc}]"
 
 
@@ -387,7 +387,7 @@ def _ocr_pdf_image(
 def _pdf_image_ocr_hint(image_file: Any) -> str:
     try:
         obj = image_file.indirect_reference.get_object()
-    except Exception:  # noqa: BLE001 - pypdf image metadata varies by backend.
+    except (AttributeError, KeyError, TypeError, ValueError, OSError):
         return ""
     for key in ("/LengrvisOCRText", "/LengrvisOCRText", "/OCRText"):
         value = obj.get(key)

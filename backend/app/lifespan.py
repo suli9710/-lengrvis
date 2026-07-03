@@ -62,7 +62,7 @@ def _prepare_run_runtime() -> None:
         recovered = recover_interrupted_runs()
         if recovered:
             record("lifespan.runs_recovered", "lifespan", {"run_ids": recovered})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         record("lifespan.run_recovery_failed", "lifespan", {"error": str(exc)})
 
 
@@ -98,7 +98,7 @@ def _register_runtime_cleanups(stack: AsyncExitStack) -> None:
 async def _drain_runs(shutdown_runs: AsyncCleanup) -> None:
     try:
         await shutdown_runs()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         record("lifespan.run_drain_failed", "lifespan", {"error": str(exc)})
 
 

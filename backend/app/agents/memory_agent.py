@@ -23,7 +23,7 @@ class MemoryAgent(BaseAgent):
             vectors = await embed_texts([text])
             if vectors and isinstance(vectors[0], list):
                 return [float(value) for value in vectors[0]]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record("memory.embed_failed", self.name, {"error": str(exc)})
         return []
 
@@ -64,7 +64,7 @@ class MemoryAgent(BaseAgent):
                     message_type=MessageType.OBSERVATION,
                     structured_payload={"memory_id": memory.id, "kind": kind, "tags": memory.tags},
                 )
-        except Exception as exc:  # noqa: BLE001 - bus failures should not block memory persistence.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: bus failures should not block memory persistence.
             record("memory.bus_publish_failed", self.name, {"error": str(exc)}, task_id=task_id)
         return memory
 

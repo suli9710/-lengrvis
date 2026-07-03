@@ -163,7 +163,7 @@ class ToolRuntimeLifecycleMixin:
                 error=str(exc),
                 observation=f"{step.tool_name} blocked because resource state changed or was not read.",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             error_text = _exception_error_text(exc, step)
             self._publish_tool_progress(
                 task,
@@ -298,7 +298,7 @@ class ToolRuntimeLifecycleMixin:
                 ),
                 metadata={"event_type": "tool.progress", "tool_name": tool.name, "tool_status": status},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record(
                 "tool.progress_publish_failed",
                 "ToolRuntime",
@@ -320,7 +320,7 @@ class ToolRuntimeLifecycleMixin:
             return
         try:
             hook(self._hook_snapshot(args), self._hook_snapshot(context))  # type: ignore[arg-type]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record(
                 "tool.lifecycle_hook_failed",
                 "ToolRuntime",

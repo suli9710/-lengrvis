@@ -124,7 +124,7 @@ def _dev_mode(settings: AppSettings | None = None) -> bool:
     if settings is None:
         try:
             settings = get_base_settings()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             settings = None
     dev = (getattr(settings, "mode", "") or "").lower() == "dev"
     if settings is not None:

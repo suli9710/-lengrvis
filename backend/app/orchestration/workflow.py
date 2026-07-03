@@ -127,7 +127,7 @@ class WorkflowRuntime:
                 results[step.id] = result
                 if not result.get("ok", False):
                     errors.append(_safe_workflow_error(result.get("error") or f"step {step.id} failed"))
-            except Exception as exc:  # noqa: BLE001 - workflow handlers are user-provided integrations.
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: workflow handlers are user-provided integrations.
                 error = _safe_workflow_error(exc)
                 results[step.id] = {"ok": False, "error": error, "focus_ok": focus_ok}
                 errors.append(error)

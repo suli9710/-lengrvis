@@ -74,7 +74,12 @@ def list_installed_skills(settings: AppSettings | None = None) -> dict[str, Any]
     }
 
 
-async def import_skill(source_path: str, settings: AppSettings | None = None) -> dict[str, Any]:
+async def import_skill(
+    source_path: str,
+    settings: AppSettings | None = None,
+    *,
+    permission_diff_reviewed: bool = False,
+) -> dict[str, Any]:
     effective = settings or get_effective_settings()
     raw_path = str(source_path or "").strip()
     if not raw_path:
@@ -96,6 +101,11 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
         package = _load_or_service_error(source, effective)
         destination = _destination_for(install_dir, package)
         previous_package = _load_existing_package(destination, effective)
+        _enforce_permission_diff_review(
+            _package_upgrade_diff(previous_package, package),
+            effective,
+            permission_diff_reviewed=permission_diff_reviewed,
+        )
         rollback = _copy_skill_directory(source, destination)
         return await _finalize_import(
             destination,
@@ -104,6 +114,8 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
             previous_package=previous_package,
             rollback=rollback,
             trusted_public_keys=effective.skill_trusted_public_keys,
+            require_trusted_signature=effective.skill_require_trusted_signatures,
+            permission_diff_reviewed=permission_diff_reviewed,
         )
 
     if source.is_file() and source.suffix.lower() == ".zip":
@@ -115,6 +127,11 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
             package = _load_or_service_error(package_root, effective)
             destination = _destination_for(install_dir, package)
             previous_package = _load_existing_package(destination, effective)
+            _enforce_permission_diff_review(
+                _package_upgrade_diff(previous_package, package),
+                effective,
+                permission_diff_reviewed=permission_diff_reviewed,
+            )
             rollback = _copy_skill_directory(package_root, destination)
             return await _finalize_import(
                 destination,
@@ -123,6 +140,8 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
                 previous_package=previous_package,
                 rollback=rollback,
                 trusted_public_keys=effective.skill_trusted_public_keys,
+                require_trusted_signature=effective.skill_require_trusted_signatures,
+                permission_diff_reviewed=permission_diff_reviewed,
             )
 
     raise SkillServiceError("Skill source must be a directory or .zip file.")
@@ -130,7 +149,11 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
 
 def _load_or_service_error(path: Path, settings: AppSettings) -> LoadedSkillPackage:
     try:
-        return load_skill_package(path, trusted_public_keys=settings.skill_trusted_public_keys)
+        return load_skill_package(
+            path,
+            trusted_public_keys=settings.skill_trusted_public_keys,
+            require_trusted_signature=settings.skill_require_trusted_signatures,
+        )
     except SkillLoadError as exc:
         raise SkillServiceError(str(exc), code="skill_validation_error") from exc
 
@@ -155,7 +178,11 @@ async def refresh_runtime_registry(settings: AppSettings | None = None) -> dict[
 
 def _skill_summary(root: Path, settings: AppSettings) -> dict[str, Any]:
     try:
-        package = load_skill_package(root, trusted_public_keys=settings.skill_trusted_public_keys)
+        package = load_skill_package(
+            root,
+            trusted_public_keys=settings.skill_trusted_public_keys,
+            require_trusted_signature=settings.skill_require_trusted_signatures,
+        )
     except SkillLoadError as exc:
         manifest = _manifest_path(root)
         return {
@@ -252,10 +279,12 @@ async def _finalize_import(
     previous_package: LoadedSkillPackage | None,
     rollback: _SkillInstallRollback,
     trusted_public_keys: dict[str, str],
+    require_trusted_signature: bool,
+    permission_diff_reviewed: bool,
 ) -> dict[str, Any]:
     try:
         refresh = await refresh_runtime_registry()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(
             logger,
             "skill.finalize_import.refresh",
@@ -267,7 +296,11 @@ async def _finalize_import(
         raise SkillServiceError(f"Skill failed registry refresh and was not installed: {exc}") from exc
 
     try:
-        installed = load_skill_package(destination, trusted_public_keys=trusted_public_keys)
+        installed = load_skill_package(
+            destination,
+            trusted_public_keys=trusted_public_keys,
+            require_trusted_signature=require_trusted_signature,
+        )
     except SkillLoadError as exc:
         await _rollback_failed_import(rollback, package)
         raise SkillServiceError(
@@ -286,6 +319,8 @@ async def _finalize_import(
             "version": installed.definition.version,
             "signature": _public_signature_summary(installed.definition, installed.signature_report),
             "upgrade_diff": upgrade_diff,
+            "permission_diff_reviewed": permission_diff_reviewed,
+            "permission_diff_review_required": _upgrade_diff_requires_review(upgrade_diff),
             "tools": [tool.name for tool in installed.tool_definitions],
         },
     )
@@ -295,7 +330,7 @@ async def _finalize_import(
 async def _rollback_failed_import(rollback: _SkillInstallRollback, package: LoadedSkillPackage) -> None:
     try:
         rollback.restore()
-    except Exception as restore_exc:  # noqa: BLE001
+    except Exception as restore_exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(
             logger,
             "skill.finalize_import.rollback_restore",
@@ -305,7 +340,7 @@ async def _rollback_failed_import(rollback: _SkillInstallRollback, package: Load
         )
     try:
         await refresh_runtime_registry()
-    except Exception as rollback_exc:  # noqa: BLE001
+    except Exception as rollback_exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(
             logger,
             "skill.finalize_import.rollback_refresh",
@@ -318,7 +353,7 @@ async def _rollback_failed_import(rollback: _SkillInstallRollback, package: Load
 def _discard_install_backup(rollback: _SkillInstallRollback, package: LoadedSkillPackage) -> None:
     try:
         rollback.discard()
-    except Exception as cleanup_exc:  # noqa: BLE001
+    except Exception as cleanup_exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(
             logger,
             "skill.finalize_import.backup_cleanup",
@@ -332,9 +367,39 @@ def _load_existing_package(destination: Path, settings: AppSettings) -> LoadedSk
     if not destination.exists():
         return None
     try:
-        return load_skill_package(destination, trusted_public_keys=settings.skill_trusted_public_keys)
+        return load_skill_package(
+            destination,
+            trusted_public_keys=settings.skill_trusted_public_keys,
+            require_trusted_signature=settings.skill_require_trusted_signatures,
+        )
     except SkillLoadError:
         return None
+
+
+def _enforce_permission_diff_review(
+    upgrade_diff: dict[str, Any],
+    settings: AppSettings,
+    *,
+    permission_diff_reviewed: bool,
+) -> None:
+    if not getattr(settings, "skill_require_permission_diff_review", False):
+        return
+    if permission_diff_reviewed:
+        return
+    if not _upgrade_diff_requires_review(upgrade_diff):
+        return
+    raise SkillServiceError(
+        "Skill import requires explicit permission diff review for this profile.",
+        code="skill_permission_diff_review_required",
+        status_code=409,
+    )
+
+
+def _upgrade_diff_requires_review(upgrade_diff: dict[str, Any]) -> bool:
+    return any(
+        bool(upgrade_diff.get(key))
+        for key in ("added_tools", "removed_tools", "changed_tools", "risk_increases", "permission_changes")
+    )
 
 
 def _package_upgrade_diff(previous: LoadedSkillPackage | None, current: LoadedSkillPackage) -> dict[str, Any]:
@@ -520,10 +585,10 @@ def _copy_skill_directory(source: Path, destination: Path) -> _SkillInstallRollb
             destination_resolved,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".venv", "node_modules"),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         try:
             rollback.restore()
-        except Exception as restore_exc:  # noqa: BLE001
+        except Exception as restore_exc:  # noqa: BLE001 - broad-exception-boundary
             log_best_effort_failure(logger, "skill.copy.rollback_restore", restore_exc)
         raise
     return rollback

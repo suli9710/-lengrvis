@@ -32,6 +32,9 @@ class MCPServerConfig:
     command: str = ""
     args: list[str] | None = None
     auth: dict[str, Any] | None = None
+    owner: str = ""
+    policy_id: str = ""
+    allowed_tools: list[str] | None = None
 
 
 class MCPClient:
@@ -181,6 +184,9 @@ class MCPClient:
             "error": unsupported,
             "auth_required": self._auth_required(),
             "tool_count": len(self._tools_cache or []),
+            "owner": self.config.owner,
+            "policy_id": self.config.policy_id,
+            "allowed_tools": list(self.config.allowed_tools or []),
         }
 
     async def list_resources(self) -> list[dict[str, Any]]:
@@ -219,7 +225,7 @@ def _validate_tool_arguments(arguments: Any, schema: dict[str, Any]) -> str:
     try:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import SchemaError, ValidationError
-    except Exception:  # pragma: no cover - exercised only when jsonschema is absent.  # noqa: BLE001
+    except ImportError:  # pragma: no cover - jsonschema may be absent in minimal installs.
         return _validate_tool_arguments_lightweight(arguments, schema)
     try:
         Draft202012Validator.check_schema(schema)

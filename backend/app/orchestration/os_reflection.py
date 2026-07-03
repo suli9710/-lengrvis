@@ -192,7 +192,7 @@ async def _consult_owner_for_reflection(
         return None
     try:
         action = await orchestrator._consult_subagent(task, step, observation=result)
-    except Exception:  # noqa: BLE001 - reflection is best-effort and must not mask the original failure.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: reflection is best-effort and must not mask the original failure.
         return None
     return action
 
@@ -222,7 +222,7 @@ def _step_from_action(
 def _risk_for_tool(orchestrator: Any | None, tool_name: str, fallback: RiskLevel) -> RiskLevel:
     try:
         return orchestrator.registry.get(tool_name).risk_level
-    except Exception:  # noqa: BLE001 - missing or partial registries should use the failed step risk.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: missing or partial registries should use the failed step risk.
         return fallback
 
 
@@ -287,7 +287,7 @@ def _publish_reflection(
                 "added_step_ids": added_step_ids,
             },
         )
-    except Exception:  # noqa: BLE001 - event publication must not affect reflection decisions.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: event publication must not affect reflection decisions.
         return
 
 

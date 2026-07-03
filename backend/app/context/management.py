@@ -188,7 +188,7 @@ def build_llm_request_snapshot(
         from app.policy.permissions import PermissionStore
 
         policy_version = permission_policy_version(PermissionStore().updated_at())
-    except Exception as exc:  # noqa: BLE001 - context snapshots tolerate policy-store failures.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: context snapshots tolerate policy-store failures.
         log_best_effort_failure(logger, "context_snapshot.policy_version", exc, purpose=purpose)
         policy_version = ""
     return {
@@ -822,7 +822,7 @@ class ContextAwareProvider(LLMProvider):
                 temperature=temperature,
                 tools=tools,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             if not isinstance(exc, PromptTooLongError) and not is_prompt_too_long_error(exc):
                 raise
             retry_projection = force_compact_for_retry(projection.messages, self.settings)
@@ -843,7 +843,7 @@ class ContextAwareProvider(LLMProvider):
                     tools=tools,
                 )
                 projection = retry_projection
-            except Exception as retry_exc:
+            except Exception as retry_exc:  # noqa: BLE001 - broad-exception-boundary
                 if not isinstance(retry_exc, PromptTooLongError) and not is_prompt_too_long_error(retry_exc):
                     raise
                 fallback_projection = provider_safe_projection_fallback(
@@ -894,7 +894,7 @@ class ContextAwareProvider(LLMProvider):
                 projection.messages,  # type: ignore[arg-type]
                 output_schema,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             if not isinstance(exc, PromptTooLongError) and not is_prompt_too_long_error(exc):
                 raise
             retry_projection = force_compact_for_retry(projection.messages, self.settings)
@@ -914,7 +914,7 @@ class ContextAwareProvider(LLMProvider):
                     output_schema,
                 )
                 projection = retry_projection
-            except Exception as retry_exc:
+            except Exception as retry_exc:  # noqa: BLE001 - broad-exception-boundary
                 if not isinstance(retry_exc, PromptTooLongError) and not is_prompt_too_long_error(retry_exc):
                     raise
                 fallback_projection = provider_safe_projection_fallback(
@@ -1170,7 +1170,7 @@ def _load_session_context() -> dict[str, Any] | None:
         from app.core.session_context import get_session_context_store
 
         return get_session_context_store().planning_context()
-    except Exception as exc:  # noqa: BLE001 - optional session context should not block projection.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: optional session context should not block projection.
         log_best_effort_failure(logger, "context.load_session_context", exc)
         return None
 
@@ -1180,7 +1180,7 @@ def _record_event(event_type: str, actor: str, payload: dict[str, Any] | None = 
         from app.core.audit import record
 
         record(event_type, actor, payload or {})
-    except Exception as exc:  # noqa: BLE001 - audit failures are best-effort here.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: audit failures are best-effort here.
         log_best_effort_failure(logger, "context.record_event", exc, actor=actor, event_type=event_type)
 
 
@@ -1197,7 +1197,7 @@ def _safe_context_usage_snapshot(projection: ContextProjection, settings: AppSet
                 include_projection=True,
             )
         )
-    except Exception as exc:  # noqa: BLE001 - context usage diagnostics should not block LLM calls.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: context usage diagnostics should not block LLM calls.
         log_best_effort_failure(logger, "context.safe_usage_snapshot", exc)
         return {"error": str(exc)}
 

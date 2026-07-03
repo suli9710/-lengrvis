@@ -130,7 +130,7 @@ function persistLocalSecretIfAbsent(
     mkdirSync(dirname(tokenPath), { recursive: true });
     writeTokenFile(tokenPath, token);
     return { secret: token, source };
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isFileAlreadyExistsError(error)) {
       const existing = readLocalSecretFile(tokenPath);
       if (existing) {
@@ -188,7 +188,7 @@ function readLocalSecretFile(tokenPath: string): string | null {
   let stored = "";
   try {
     stored = readFileSync(tokenPath, "utf-8").trim();
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     throw new DesktopApiTokenPersistError(
       `Failed to read desktop API token from ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`
     );
@@ -198,7 +198,7 @@ function readLocalSecretFile(tokenPath: string): string | null {
   }
   try {
     return unprotectLocalSecret(stored);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     throw new DesktopApiTokenPersistError(
       `Failed to decrypt desktop API token at ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`
     );

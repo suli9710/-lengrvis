@@ -93,6 +93,11 @@ $commands += Invoke-GateCommand "backend Skill/MCP/settings security tests" $pyt
     "backend/tests/test_state_machine_integration.py",
     "-q"
 )
+$commands += Invoke-GateCommand "Skill/MCP supply-chain release-profile gate" $python @(
+    "scripts/verify_skill_mcp_supply_chain.py",
+    "--output-root",
+    (Join-Path $runRoot "skill-mcp-supply-chain")
+)
 $commands += Invoke-GateCommand "desktop Electron build for IPC smoke" $npm @("--prefix", "desktop", "run", "build:electron")
 $commands += Invoke-GateCommand "desktop IPC security smoke" $node @("desktop/scripts/ipc-security-smoke.cjs")
 
@@ -114,6 +119,11 @@ $summary = [ordered]@{
         mcp_schema_and_ssrf_checked = $passed
         settings_sensitive_enforcement_checked = $passed
         ipc_policy_and_external_url_checked = $passed
+        skill_mcp_supply_chain_release_profile_checked = $passed
+        signed_skill_release_policy_checked = $passed
+        skill_permission_diff_review_checked = $passed
+        mcp_owner_policy_checked = $passed
+        skill_mcp_audit_artifact_written = $passed
         release_signoff = $false
     }
     mechanisms = [ordered]@{
@@ -122,14 +132,16 @@ $summary = [ordered]@{
         skill_signature_verification = "backend/app/skills/loader.py::verify_skill_signature"
         skill_upgrade_diff_audit = "backend/app/services/skill_service.py::_package_upgrade_diff"
         mcp_input_schema_validation = "backend/app/mcp/client.py::_validate_tool_arguments"
+        mcp_owner_policy = "backend/app/mcp/registry.py::_validate_mcp_owner_policy"
+        skill_permission_diff_review = "backend/app/services/skill_service.py::_enforce_permission_diff_review"
+        skill_mcp_supply_chain_gate = "scripts/verify_skill_mcp_supply_chain.py"
         settings_sensitive_confirmation = "backend/app/security/sensitive_confirmation.py::require_settings_confirmation"
     }
     commands = @($commands)
     failed_items = @($failed | ForEach-Object { "$($_.name): exit $($_.exit_code)" })
     manual_followups = @(
-        "Verify at least one signed production Skill package with the real release signing key.",
-        "Verify at least one third-party MCP server under an owner-approved permission policy.",
-        "Review the audit log chain for skills.imported and mcp.tool_call_blocked entries on the candidate profile."
+        "Attach the generated Skill/MCP supply-chain gate artifact to RC handoff.",
+        "Release owner still reviews candidate-specific Skill/MCP policy evidence before sign-off."
     )
 }
 

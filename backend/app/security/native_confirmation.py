@@ -188,7 +188,7 @@ def _local_native_confirmation_public_key() -> str:
         if not key_path.is_file():
             return ""
         return key_path.read_text(encoding="utf-8").strip()
-    except Exception:  # noqa: BLE001 - verifier should fail closed when the key is unavailable.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: verifier should fail closed when the key is unavailable.
         return ""
 
 

@@ -262,7 +262,7 @@ export function App() {
           ? `Lengrvis 服务还没连上：${status.message}${healthReason ? `，${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
           : `Lengrvis 服务还没连上${healthReason ? `：${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
       };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       return {
         ok: false,
         error: `Lengrvis 服务还没连上：${readableError(error, "连接检查失败")}。输入内容已保留，可以稍后重试。`
@@ -321,7 +321,7 @@ export function App() {
         }
       ]);
       return { ok: false, error: message };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = error instanceof Error ? error.message : "Lengrvis 暂时不可用，请稍后再试。";
       setMessages((current) => [
         ...current,
@@ -434,7 +434,7 @@ export function App() {
       setFileResults([]);
       setFileSearchMeta(null);
       setFileSearchError(result.error?.message ?? "文件搜索失败，请稍后重试。");
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setFileResults([]);
       setFileSearchMeta(null);
       setFileSearchError(error instanceof Error ? error.message : "文件搜索失败，请稍后重试。");
@@ -451,7 +451,7 @@ export function App() {
     let result: ApiResponse<AppSettings>;
     try {
       result = await api.saveSettings(nextSettings);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setSettings(previousSettings);
       setMode(previousMode);
       throw new Error(readableError(error, "无法保存设置"));

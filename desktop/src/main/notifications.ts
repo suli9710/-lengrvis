@@ -277,7 +277,7 @@ class NodeNotificationSocket implements NotificationSocket {
     let url: URL;
     try {
       url = new URL(rawUrl);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       this.fail(error);
       return;
     }

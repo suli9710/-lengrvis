@@ -28,7 +28,7 @@ async def build_approval_dry_run_preview_result(
             dry_run_context,
             threaded=threaded_tools,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         preview = {"error": str(exc)}
     finally:
         after_frame = await orchestrator._capture_step_frame(task, step, "after_dry_run")

@@ -328,7 +328,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 output_dir=output_dir,
                 timeout_seconds=timeout_seconds,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             return {"ok": False, "error": str(exc), "controlled": True, "background": True}
         snapshot = task.snapshot(preview_chars=_preview_limit(args))
         return {
@@ -621,7 +621,7 @@ def _path_candidate_error(value: str, allowed_directories: list[str], *, root: P
             return "Absolute shell path arguments require configured allowed_directories."
         try:
             resolve_authorized(path, allowed_directories)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             return f"Shell path argument is outside authorized directories: {exc}"
         return ""
     # Relative paths without ``..`` stay inside the subprocess cwd (the

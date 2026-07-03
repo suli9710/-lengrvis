@@ -50,7 +50,7 @@ def _run_ui_automation(
             pool.shutdown(wait=False, cancel_futures=True)
     except TimeoutError:
         return {"ok": False, "error": f"UIAutomation {action} timed out."}
-    except Exception as exc:  # noqa: BLE001 - UIAutomation adapters should fail inline for tool callers.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: UIAutomation adapters should fail inline for tool callers.
         return {"ok": False, "error": f"UIAutomation {action} failed: {exc}"}
 
 

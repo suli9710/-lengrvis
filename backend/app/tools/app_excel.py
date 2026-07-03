@@ -303,14 +303,14 @@ def _close_workbook(workbook: Any, *, save_changes: bool) -> None:
         return
     try:
         workbook.Close(SaveChanges=save_changes)
-    except Exception as exc:  # noqa: BLE001 - COM shutdown is best-effort after operation completion.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: COM shutdown is best-effort after operation completion.
         logger.debug("could not close Excel workbook cleanly: %s", exc, exc_info=True)
 
 
 def _quit_excel(excel: Any) -> None:
     try:
         excel.Quit()
-    except Exception as exc:  # noqa: BLE001 - COM shutdown is best-effort after operation completion.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: COM shutdown is best-effort after operation completion.
         logger.debug("could not quit Excel cleanly: %s", exc, exc_info=True)
 
 

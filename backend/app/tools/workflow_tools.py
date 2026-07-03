@@ -43,7 +43,7 @@ def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     workflow_data = args.get("workflow") or args
     try:
         workflow = Workflow.model_validate(workflow_data)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return {"ok": False, "error": f"Invalid workflow: {exc}"}
 
     if args.get("dry_run", True):

@@ -86,7 +86,7 @@ class GuardianScheduler:
         while not self._stop.is_set():
             try:
                 await self.tick()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 log_best_effort_failure(logger, "guardian_scheduler.run.tick", exc)
                 record("guardian_scheduler.tick_failed", "GuardianScheduler", {"error": str(exc)})
             try:
@@ -107,7 +107,7 @@ class GuardianScheduler:
             from app.services.guardian_runtime import runtime
 
             return await runtime._is_full_backend_healthy()
-        except Exception as exc:  # noqa: BLE001 - guardian mode should take over when health checks fail.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: guardian mode should take over when health checks fail.
             log_best_effort_failure(logger, "guardian_scheduler.full_backend_health", exc)
             return False
 

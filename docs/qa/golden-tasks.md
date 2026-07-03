@@ -41,7 +41,7 @@ npm run golden:gate
 
 - 本套件使用 MockProvider / 确定性规划器 / extractive fallback 离线运行。它证明的是**编排、路由、风险分级、审批与脱敏契约**在版本间不回归，**不证明**真实 LLM 下的结果质量。
 - 机器通过率 ≥95% 只是发布门禁的机器自证部分；不能写成"结果质量已验收"。
-- 真人结果质量基线仍需：对数据集中的高频任务（或在真实 LLM 配置下重放同样的输入）逐条记录 成功率 / 可读性 / 是否需返工，目标：综合成功率 ≥90%、需返工比例 ≤10%，结果报告归档并签字。评审打包入口：`npm run evidence:result-quality-review`。
+- 真人结果质量基线仍需：对数据集中的高频任务（或在真实 LLM 配置下重放同样的输入）逐条记录 成功率 / 可读性 / 是否需返工，目标：综合成功率 ≥90%、需返工比例 ≤10%，结果报告归档并签字。操作清单见 `docs/qa/manual-result-quality-review.md`；评审打包入口：`npm run evidence:result-quality-review`。
 - 不要把本套件结果写成 clean-machine 验收、真机验收或 RC sign-off。
 
 ## 如何新增黄金任务

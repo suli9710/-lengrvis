@@ -186,7 +186,7 @@ def _watch_process(task: BackgroundTask) -> None:
         with task._lock:
             if process_to_kill is not None and task.status == "timed_out":
                 task.returncode = returncode
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         with task._lock:
             _finish_task_if_running_locked(task, "failed", error=str(exc))
 

@@ -92,7 +92,7 @@ function parseJsonPayload(raw: string): PairingPayload | null {
       const parsed = JSON.parse(candidate) as unknown;
       const payload = payloadFromRecord(asRecord(parsed), "json");
       if (payload) return payload;
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       if (error instanceof PairingPayloadParseError) throw error;
       // Try URL and plain-text formats below.
     }

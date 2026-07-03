@@ -67,7 +67,7 @@ function persist(next: UpdateHealthRecord): void {
       mkdirSync(dir, { recursive: true });
     }
     writeFileSync(filePath, JSON.stringify(next, null, 2), "utf-8");
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("Failed to persist update health record:", error);
   }
 }

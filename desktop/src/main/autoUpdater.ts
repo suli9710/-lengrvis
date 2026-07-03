@@ -104,7 +104,7 @@ function loadUpdater(): ElectronAppUpdater | null {
     });
 
     cachedUpdater = autoUpdater;
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("electron-updater unavailable; auto update disabled:", error);
     setState("unsupported");
   }

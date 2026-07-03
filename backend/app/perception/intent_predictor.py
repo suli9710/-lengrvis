@@ -57,7 +57,7 @@ class IntentPredictor:
             return []
         try:
             raw_candidates = self.model.predict(features)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             return []
         return [
             _with_source_metadata(_coerce_suggestion(item), source=MODEL_SOURCE, model_enabled=True)

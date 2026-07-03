@@ -918,6 +918,64 @@ def test_current_release_evidence_ci_success_still_requires_manual_signature(
     assert "| IPC + Skill/MCP + settings security gate |" in text
 
 
+def test_current_release_evidence_accepts_explicit_manual_signoff_status(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "real-llm-quality",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    output_path = tmp_path / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-07-01T00:00:00Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+            "-OwnerSignature",
+            "release-owner-accepted-rc",
+            "-ManualSignoffStatus",
+            "rc_signoff_recorded",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- CI status: machine_gates_passed" in text
+    assert "- Manual sign-off status: rc_signoff_recorded" in text
+    assert "- Owner signature: release-owner-accepted-rc" in text
+    assert "Skill/MCP release-profile supply-chain controls" in text
+
+
 def test_current_release_evidence_requires_every_ci_gate_success(
     project_root: Path,
     tmp_path: Path,
@@ -2025,6 +2083,8 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:clean-machine-verify",
         "evidence:support-privacy-verify",
         "evidence:claims-launch-verify",
+        "evidence:commercial-operations-verify",
+        "evidence:commercial-operations-seal",
         "evidence:commercial-loop",
     }
     forbidden_name_pattern = re.compile(

@@ -217,7 +217,7 @@ export function useWorkspaceRefresh({
       } else {
         setLocalLlmHealth(null);
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       if (signal.aborted) return;
       setBackendStatus({
         ...backendStatusRef.current,

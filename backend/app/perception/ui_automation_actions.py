@@ -216,7 +216,7 @@ def list_windows() -> list[dict[str, Any]]:
                         "rect": rect.model_dump() if rect else None,
                     }
                 )
-        except Exception:  # noqa: BLE001 - exceptions must not cross a ctypes EnumWindows callback.
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: exceptions must not cross a ctypes EnumWindows callback.
             return True
         return True
 

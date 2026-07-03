@@ -26,7 +26,7 @@ function isStorageUnavailable(error: unknown): boolean {
 async function secureGet(key: string): Promise<string | null> {
   try {
     return await SecureStore.getItemAsync(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageUnavailable(error)) {
       return memoryStore.get(key) ?? null;
     }
@@ -37,7 +37,7 @@ async function secureGet(key: string): Promise<string | null> {
 async function secureSet(key: string, value: string): Promise<void> {
   try {
     await SecureStore.setItemAsync(key, value);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageUnavailable(error)) {
       memoryStore.set(key, value);
       return;
@@ -93,7 +93,7 @@ export async function clearConsent(): Promise<void> {
 async function secureDelete(key: string): Promise<void> {
   try {
     await SecureStore.deleteItemAsync(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageUnavailable(error)) {
       memoryStore.delete(key);
       return;

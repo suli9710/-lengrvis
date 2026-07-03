@@ -71,7 +71,7 @@ export async function proxyApiRequest<TData>(
       data: data as TData,
       receivedAt
     };
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     const message = error instanceof Error ? error.message : "Request failed";
     if (error instanceof ApiRequestValidationError) {
       return {
@@ -117,6 +117,10 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 function getErrorMessage(data: unknown, fallback: string): string {
+  const structured = structuredBackendErrorMessage(data);
+  if (structured) {
+    return userFacingBackendError(structured);
+  }
   if (data && typeof data === "object" && "message" in data) {
     const message = (data as { message?: unknown }).message;
     if (typeof message === "string") {
@@ -131,6 +135,25 @@ function getErrorMessage(data: unknown, fallback: string): string {
   }
 
   return userFacingBackendError(fallback || "Backend request failed");
+}
+
+function structuredBackendErrorMessage(data: unknown): string {
+  if (!data || typeof data !== "object" || !("detail" in data)) {
+    return "";
+  }
+  const detail = (data as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object") {
+    return "";
+  }
+  const message = (detail as { message?: unknown }).message;
+  if (typeof message !== "string" || !message.trim()) {
+    return "";
+  }
+  const nextAction = (detail as { next_action?: unknown }).next_action;
+  if (typeof nextAction === "string" && nextAction.trim()) {
+    return `${message.trim()} 下一步：${nextAction.trim()}`;
+  }
+  return message.trim();
 }
 
 function userFacingBackendError(message: string): string {

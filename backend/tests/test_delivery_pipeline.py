@@ -141,9 +141,11 @@ def test_paid_launch_adds_commercial_evidence_and_paid_market_gate():
     names = [s.name for s in stages]
     assert "support-privacy-evidence" in names
     assert "claims-launch-evidence" in names
+    assert "commercial-operations-evidence" in names
     assert names.index("commercial-loop") < names.index("support-privacy-evidence")
     assert names.index("support-privacy-evidence") < names.index("claims-launch-evidence")
-    assert names.index("claims-launch-evidence") < names.index("market-readiness")
+    assert names.index("claims-launch-evidence") < names.index("commercial-operations-evidence")
+    assert names.index("commercial-operations-evidence") < names.index("market-readiness")
     market = next(s for s in stages if s.name == "market-readiness")
     assert "--paid-launch" in market.command
     assert "--strict" not in market.command

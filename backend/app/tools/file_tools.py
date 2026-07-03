@@ -7,7 +7,7 @@ from typing import Any
 
 try:
     from send2trash import send2trash
-except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
+except ImportError:  # pragma: no cover - optional dependency guard
     send2trash = None
 
 from app.core.errors import SecurityError

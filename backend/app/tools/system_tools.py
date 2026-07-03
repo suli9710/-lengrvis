@@ -360,7 +360,7 @@ def local_ai_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
 
         timeout = float(args.get("timeout") or 0.25)
         snapshot = health_snapshot(get_effective_settings(), timeout=max(0.05, min(timeout, 1.5)))
-    except Exception as exc:  # noqa: BLE001 - diagnostics should report status, not fail the system check.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: diagnostics should report status, not fail the system check.
         return {
             "scope": "local_only",
             "available": False,
@@ -414,7 +414,7 @@ def _quick_local_ai_status() -> dict[str, Any]:
 
         readiness = hardware_readiness()
         error = unavailable_message()
-    except Exception as exc:  # noqa: BLE001 - diagnostics must remain read-only and fail closed.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: diagnostics must remain read-only and fail closed.
         readiness = {"can_install": False, "recommended_model": "", "reason": ""}
         error = f"Local AI readiness summary failed: {exc.__class__.__name__}"
     readiness_payload = readiness if isinstance(readiness, dict) else {}

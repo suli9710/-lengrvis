@@ -1108,7 +1108,7 @@ export class LengrvisApiClient {
         error: result.ok ? undefined : { message: result.error ?? "无法打开所在位置" },
         receivedAt
       };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       return {
         ok: false,
         status: 0,
@@ -1513,7 +1513,7 @@ export class LengrvisApiClient {
         },
         receivedAt
       };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       return {
         ok: false,
         status: 0,

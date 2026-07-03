@@ -185,7 +185,7 @@ async def _execute_approved_step(approval: Approval) -> Approval:
     db.require_sensitive_integrity_ok()
     try:
         await OrchestratorAgent().execute_approved_step(approval)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         latest = latest_approval(approval)
         if latest.status == ApprovalStatus.APPROVED and not latest.consumed_at:
             _restore_retryable_approval_state(latest)
@@ -311,7 +311,7 @@ def _reconcile_runs(task_id: str) -> None:
         from app.services.run_service import reconcile_task_runs
 
         reconcile_task_runs(task_id)
-    except Exception:  # noqa: BLE001 - run reconciliation is best-effort after approval changes.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: run reconciliation is best-effort after approval changes.
         return
 
 
@@ -362,5 +362,5 @@ def _resume_runs_after_approval(task_id: str) -> None:
         if not any(step.status == StepStatus.PENDING for step in plan.steps):
             return
         resume_runs_for_task(task_id, include_approval_continuations=True)
-    except Exception:  # noqa: BLE001 - approval response should not fail if resume scheduling fails.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: approval response should not fail if resume scheduling fails.
         return

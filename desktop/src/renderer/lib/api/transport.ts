@@ -245,7 +245,7 @@ export async function requestBackendDirect<TResponse, TBody = unknown>(
     }
 
     return { ok: true, status: response.status, data: data as TResponse, receivedAt };
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     return {
       ok: false,
       status: 0,
@@ -676,7 +676,7 @@ export function parseJsonRealtimeMessage<TMessage>(
   const rawMessage = rawRealtimeMessage(data);
   try {
     handlers.onMessage(JSON.parse(rawMessage) as TMessage);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     const status = createRealtimeStatus(request, "bad_message", {
       message: error instanceof Error ? error.message : "Malformed realtime message",
       rawMessage
@@ -807,12 +807,33 @@ export async function parseResponseBody(response: Response): Promise<unknown> {
 
 export function getErrorMessage(data: unknown, fallback: string): string {
   if (data && typeof data === "object") {
+    const structured = structuredBackendErrorMessage(data);
+    if (structured) return structured;
     const direct = (data as { message?: unknown }).message;
     if (typeof direct === "string") return direct;
     const nested = (data as { error?: { message?: unknown } }).error?.message;
     if (typeof nested === "string") return nested;
   }
   return fallback || "Backend request failed";
+}
+
+export function structuredBackendErrorMessage(data: unknown): string {
+  if (!data || typeof data !== "object" || !("detail" in data)) {
+    return "";
+  }
+  const detail = (data as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== "object") {
+    return "";
+  }
+  const message = (detail as { message?: unknown }).message;
+  if (typeof message !== "string" || !message.trim()) {
+    return "";
+  }
+  const nextAction = (detail as { next_action?: unknown }).next_action;
+  if (typeof nextAction === "string" && nextAction.trim()) {
+    return `${message.trim()} 下一步：${nextAction.trim()}`;
+  }
+  return message.trim();
 }
 
 export function mapResponse<TInput, TOutput>(

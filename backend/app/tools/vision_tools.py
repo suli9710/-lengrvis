@@ -198,7 +198,7 @@ def _run_vision(
         return f"[{provider.name}] vision not configured"
     except LocalBackendUnavailable as exc:
         return f"[vision unavailable: {exc}]"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return f"[vision unavailable: {exc}]"
 
 
@@ -292,7 +292,7 @@ def image_embedding(
                         "model": getattr(provider, "name", ""),
                         "fallback_used": False,
                     }
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 logger.debug("image provider profile failed for %s: %s", image_path, exc, exc_info=True)
 
     fallback_profile = profile or _embedding_fallback_profile(image_path, context, settings=settings)
@@ -597,7 +597,7 @@ def test_image_embedding(settings: Any | None = None, image_path: str | None = N
     try:
         target = Path(image_path) if image_path else _synthetic_image_for_smoke()
         result = _local_image_embedding(target, settings=effective)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         error = str(exc) or exc.__class__.__name__
         return {
             "ok": False,

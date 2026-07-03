@@ -32,6 +32,12 @@ def normalize_mcp_servers(value: Any) -> list[dict]:
         result: list[dict] = []
         for item in value:
             if isinstance(item, dict) and (item.get("url") or item.get("command")):
+                allowed_tools = _normalize_string_list(
+                    item.get("allowed_tools")
+                    or item.get("allowedTools")
+                    or item.get("approved_tools")
+                    or item.get("approvedTools")
+                )
                 result.append(
                     {
                         "name": str(item.get("name") or item.get("id") or "mcp"),
@@ -41,9 +47,22 @@ def normalize_mcp_servers(value: Any) -> list[dict]:
                         "transport": str(item.get("transport", "http")),
                         "enabled": bool(item.get("enabled", True)),
                         "auth": dict(item.get("auth") or {}),
+                        "owner": str(item.get("owner") or item.get("review_owner") or item.get("reviewOwner") or ""),
+                        "policy_id": str(item.get("policy_id") or item.get("policyId") or ""),
+                        "allowed_tools": allowed_tools,
                     }
                 )
         return result
+    return []
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
     return []
 
 

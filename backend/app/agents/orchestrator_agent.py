@@ -116,7 +116,7 @@ class OrchestratorAgent:
             task.final_summary = final_summary
         try:
             task = safe_transition(task, status, actor=self.name)
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             task.final_summary = original_summary
             raise
         if final_summary is not None and task.status == target_phase:
@@ -469,7 +469,7 @@ class OrchestratorAgent:
                 seen.add(item_id)
                 combined.append(item)
             return combined[:5]
-        except Exception as exc:  # noqa: BLE001 - memory recall must not break task execution.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: memory recall must not break task execution.
             record("memory.recall_failed", self.name, {"error": str(exc)})
             return []
 
@@ -489,7 +489,7 @@ class OrchestratorAgent:
             step_for_reflect = step
             step_for_reflect.task_id = step_for_reflect.task_id or task.id
             await agent.reflect(step_for_reflect, result)
-        except Exception as exc:  # noqa: BLE001 - reflection failures are recorded but non-fatal.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: reflection failures are recorded but non-fatal.
             record("subagent.reflect_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
 
     async def _consult_subagent(
@@ -519,7 +519,7 @@ class OrchestratorAgent:
         )
         try:
             action = await agent.act(step, context, observation=observation)
-        except Exception as exc:  # noqa: BLE001 - subagent crashes become recoverable observations.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: subagent crashes become recoverable observations.
             record("subagent.act_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
             return None
         if action is None:

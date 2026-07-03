@@ -236,7 +236,7 @@ export function SettingsPanel({
     setPrivacyModeStatus("");
     try {
       await onSave(draft);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setSaveError(readableError(error, "无法保存设置"));
     } finally {
       setIsSaving(false);
@@ -255,7 +255,7 @@ export function SettingsPanel({
       } else {
         setPairingError(response.error?.message ?? "无法生成配对码");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPairingError(readableError(error, "无法生成配对码"));
     } finally {
       setIsPairing(false);
@@ -296,7 +296,7 @@ export function SettingsPanel({
       } else {
         setPairingError(response.error?.message ?? "无法断开这台手机。");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPairingError(readableError(error, "无法断开这台手机。"));
     } finally {
       setRevokingDeviceId("");
@@ -315,7 +315,7 @@ export function SettingsPanel({
       } else {
         setPairingError(response.error?.message ?? "无法授权这台手机远程点击。");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPairingError(readableError(error, "无法授权这台手机远程点击。"));
     } finally {
       setRemoteInputGrantingDeviceId("");
@@ -334,7 +334,7 @@ export function SettingsPanel({
       } else {
         setPairingError(response.error?.message ?? "无法撤销这次远程点击授权。");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPairingError(readableError(error, "无法撤销这次远程点击授权。"));
     } finally {
       setRemoteInputRevokingGrantId("");
@@ -375,7 +375,7 @@ export function SettingsPanel({
       } else {
         setPermissionStatus(response.error?.message ?? "无法保存权限规则");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setPermissionStatus(readableError(error, "无法保存权限规则"));
     } finally {
       setIsPermissionSaving(false);
@@ -432,7 +432,7 @@ export function SettingsPanel({
       if (!refreshedHealth?.available) {
         setPrivacyModeStatus("隐私模式已开启，本地 AI 尚未就绪；后续隐私任务会停在本地修复步骤，不会静默回退云端。");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDraft(previousDraft);
       setPrivacyModeStatus("");
       setSaveError(readableError(error, "无法切换到隐私模式"));

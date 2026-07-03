@@ -526,7 +526,7 @@ def _category(
 def _current_session_context() -> dict[str, Any]:
     try:
         return get_session_context_store().planning_context()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return {}
 
 

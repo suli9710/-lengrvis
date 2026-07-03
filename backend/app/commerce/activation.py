@@ -331,7 +331,7 @@ def _collect_local_identity(settings: Any) -> LocalDeviceIdentity:
         return collect_activation_device_identity(settings)
     except DeviceIdentityError as exc:
         raise ActivationError(exc.message, code=exc.code, status_code=exc.status_code) from exc
-    except Exception as exc:  # noqa: BLE001 - keep raw host/device details out of API errors.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: keep raw host/device details out of API errors.
         raise ActivationError(
             _activation_message_for_code("activation_device_identity_unavailable"),
             code="activation_device_identity_unavailable",
@@ -760,7 +760,7 @@ def record_activation_audit(
         payload["code"] = _safe_label(code, max_length=64)
     try:
         audit_core.record(event_type, "activation_server", payload)
-    except Exception as exc:  # noqa: BLE001 - audit must not change activation outcomes.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: audit must not change activation outcomes.
         logger.warning("Activation audit write failed; continuing: %s", type(exc).__name__)
 
 

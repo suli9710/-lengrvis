@@ -449,7 +449,7 @@ def warmup(settings: AppSettings | None = None, *, model_path: str | None = None
     provider = OnnxProvider(settings, backend)
     try:
         provider._ensure_genai_model()
-    except Exception as exc:  # noqa: BLE001 - native/runtime errors must be returned to callers.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: native/runtime errors must be returned to callers.
         error = _safe_onnx_error(exc)
         return {
             "ok": False,
@@ -492,7 +492,7 @@ async def test_generate(
     provider = OnnxProvider(smoke_settings, backend)
     try:
         text = await provider.chat([{"role": "user", "content": prompt or "Say hello from ONNX."}])
-    except Exception as exc:  # noqa: BLE001 - route helper returns structured smoke status.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: route helper returns structured smoke status.
         error = _safe_onnx_error(exc)
         return {
             "ok": False,

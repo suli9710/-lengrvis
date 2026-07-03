@@ -43,7 +43,7 @@ export async function fetchWithTimeout(
   }
   try {
     return await fetch(input, { ...init, signal: controller.signal });
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (error instanceof Error && error.name === "AbortError") {
       if (upstreamSignal?.aborted) throw error;
       throw new FetchTimeoutError(timeoutMs);

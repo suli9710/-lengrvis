@@ -48,7 +48,7 @@ def insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
             store_audit_chain_head(stored["sequence"], stored["event_hash"], event_id=stored["id"])
-    except Exception:  # noqa: BLE001 - any failed audit write invalidates the cached chain head.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: any failed audit write invalidates the cached chain head.
         invalidate_audit_chain_head()
         raise
     return stored

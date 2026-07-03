@@ -331,7 +331,7 @@ def _extract_app_context(event: Any) -> AppContext | None:
         if isinstance(raw, dict):
             try:
                 return AppContext.model_validate(raw)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 return None
     return None
 
@@ -371,7 +371,7 @@ def _summary(event: Any) -> str:
     if callable(summary):
         try:
             return str(summary() or "")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             return ""
     if isinstance(event, dict):
         return str(event.get("summary") or event.get("summary_text") or event.get("title") or "")

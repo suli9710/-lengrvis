@@ -50,7 +50,7 @@ class TaskPool:
                     except asyncio.CancelledError:
                         self._record_completed(task.id, "cancelled")
                         raise
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                         self._record_completed(task.id, f"failed:{exc}")
                         log_best_effort_failure(logger, "task_pool.worker.run", exc, task_id=task.id)
                         record(

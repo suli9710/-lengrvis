@@ -141,7 +141,7 @@ def register_security_middleware(app: FastAPI) -> None:
             return JSONResponse(status_code=401, content=unified_error_body("Missing mobile bearer token"))
         try:
             decode_mobile_token(token, allowed_scopes={TOKEN_SCOPE, REMOTE_INPUT_SCOPE})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             status_code = getattr(exc, "status_code", 401)
             detail = getattr(exc, "detail", "Invalid mobile token")
             return JSONResponse(status_code=status_code, content=unified_error_body(detail))

@@ -82,7 +82,7 @@ def get_current_app_context() -> AppContext:
             focus_control=focus_control,
             metadata=metadata,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return AppContext(platform=sys.platform, error=str(exc))
 
 

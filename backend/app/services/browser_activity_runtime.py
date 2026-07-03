@@ -454,7 +454,7 @@ class BrowserActivityRuntime:
 
         try:
             result = self.adapter.perform(session, action, context)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             result = {"ok": False, "error": _safe_browser_error(exc)}
         ok = bool(result.get("ok"))
         self._update_session_from_result(session, result)
@@ -654,7 +654,7 @@ class BrowserActivityRuntime:
                 payload,
                 task_id=event.task_id,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             return
 
     def _session_dict(self, session: BrowserSession) -> dict[str, Any]:

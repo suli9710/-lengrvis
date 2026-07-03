@@ -867,7 +867,7 @@ ADMIN_HTML = r"""<!doctype html>
       try {
         const expiry = expiryFromControls(selectId, dateId, baseIso);
         $(previewId).textContent = '将设置为：' + expiry.label;
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         $(previewId).textContent = err.message || '';
       }
     }
@@ -898,7 +898,7 @@ ADMIN_HTML = r"""<!doctype html>
         $('password').value = '';
         showAuthed(true);
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('loginMessage', err.message, 'error');
       }
     }
@@ -921,7 +921,7 @@ ADMIN_HTML = r"""<!doctype html>
       let expiry;
       try {
         expiry = expiryFromControls('expiresPreset', 'expiresDate');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('createMessage', err.message, 'error');
         return;
       }
@@ -946,7 +946,7 @@ ADMIN_HTML = r"""<!doctype html>
         setMessage('createMessage', '授权码已创建。这个值只显示一次，请复制或下载交接文本。', 'ok');
         state.selectedKeyHash = result.record?.key_hash || state.selectedKeyHash;
         await loadSubscriptions();
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('createMessage', err.message, 'error');
       }
     }
@@ -958,7 +958,7 @@ ADMIN_HTML = r"""<!doctype html>
         renderMetrics();
         applyFilters();
         setMessage('listMessage', state.items.length ? '' : '暂无订阅记录。');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }
@@ -1241,7 +1241,7 @@ ADMIN_HTML = r"""<!doctype html>
       let expiry;
       try {
         expiry = expiryFromControls('renewExpiresPreset', 'renewExpiresDate', item.expires_at);
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
         return;
       }
@@ -1260,7 +1260,7 @@ ADMIN_HTML = r"""<!doctype html>
         cancelRenew();
         await loadSubscriptions();
         setMessage('listMessage', '订阅已更新。', 'ok');
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }
@@ -1342,7 +1342,7 @@ ADMIN_HTML = r"""<!doctype html>
           await loadSubscriptions();
           setMessage('listMessage', '订阅记录已删除。', 'ok');
         }
-      } catch (err) {
+      } catch (err) { // broad-exception-boundary
         setMessage('listMessage', err.message, 'error');
       }
     }

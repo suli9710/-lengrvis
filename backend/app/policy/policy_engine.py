@@ -459,7 +459,7 @@ class PolicyEngine:
             return result.output
         try:
             summary = summarizer(result.output if isinstance(result.output, dict) else {})
-        except Exception:  # noqa: BLE001 - fall back to fail-closed full-output review if a summarizer breaks.
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: fall back to fail-closed full-output review if a summarizer breaks.
             return result.output
         return {
             "ok": result.ok,
@@ -985,7 +985,7 @@ class PolicyEngine:
                 context=context,
                 policy_engine=self,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             return _PermissionCheckDenied(str(exc))
 
     def _review_cleanup_tool_call(

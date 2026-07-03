@@ -66,7 +66,7 @@ def capture_step_screenshot(
         }
         recording_id = persist_recording_frame(frame, png)
         return {**frame, "recording_id": recording_id}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(
             logger,
             "task_recording.capture_step_screenshot",

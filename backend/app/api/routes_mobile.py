@@ -658,7 +658,7 @@ def _delegate_mobile_task_or_error(
         return _delegate_mobile_task(goal, mode, reply=reply, agent_hint=agent_hint, metadata=metadata)
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         raise HTTPException(
             status_code=503,
             detail="Computer task service is unavailable. Please retry from the desktop task workspace.",

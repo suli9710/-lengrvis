@@ -125,7 +125,14 @@ def validate_sources(repo_root: Path) -> list[str]:
         repo_root / "docs" / "pricing.md",
         repo_root / "docs" / "business" / "pricing.md",
         repo_root / "docs" / "business" / "license-operations.md",
+        repo_root / "docs" / "business" / "commercial-operations.md",
+        repo_root / "docs" / "business" / "payment-tax-operations.md",
+        repo_root / "docs" / "business" / "support-refund-operations.md",
+        repo_root / "docs" / "business" / "public-claims-register.md",
         repo_root / "docs" / "business" / "support-privacy-operations.md",
+        repo_root / "docs" / "legal" / "commercial-legal-approval-checklist.md",
+        repo_root / "docs" / "legal" / "legal-source-register.md",
+        repo_root / "docs" / "legal" / "commercial-legal-risk-memo.md",
         repo_root / "docs" / "legal" / "README.md",
         repo_root / "scripts" / "license_admin.py",
     ]
@@ -145,6 +152,14 @@ def validate_sources(repo_root: Path) -> list[str]:
             errors.append("package.json license must be BUSL-1.1.")
         if package.get("scripts", {}).get("license:admin") != "python scripts/license_admin.py":
             errors.append("package.json must expose the offline license:admin command.")
+        if package.get("scripts", {}).get("evidence:commercial-operations-verify") != (
+            "python scripts/verify_commercial_operations_evidence.py"
+        ):
+            errors.append("package.json must expose the commercial operations evidence verifier.")
+        if package.get("scripts", {}).get("evidence:commercial-operations-seal") != (
+            "python scripts/seal_commercial_operations_evidence.py"
+        ):
+            errors.append("package.json must expose the commercial operations evidence sealing helper.")
 
     pricing_path = repo_root / "docs" / "pricing.md"
     pointer_path = repo_root / "docs" / "business" / "pricing.md"
@@ -178,6 +193,21 @@ def validate_sources(repo_root: Path) -> list[str]:
         for marker in ("Diagnostic package handling", "Data-subject and deletion requests", "Release rehearsal"):
             if marker not in support_text:
                 errors.append(f"Support/privacy runbook is missing required section: {marker}.")
+    operations_runbook = repo_root / "docs" / "business" / "commercial-operations.md"
+    if operations_runbook.exists():
+        operations_text = operations_runbook.read_text(encoding="utf-8")
+        for marker in (
+            "commercial-operations-evidence-reviewed",
+            "npm run evidence:commercial-operations-verify",
+            "npm run evidence:commercial-operations-seal",
+            "法务、税务、收款",
+            "payment-tax-operations.md",
+            "support-refund-operations.md",
+            "public-claims-register.md",
+            "commercial-legal-approval-checklist.md",
+        ):
+            if marker not in operations_text:
+                errors.append(f"Commercial operations runbook is missing required marker: {marker}.")
     return errors
 
 

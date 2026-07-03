@@ -333,7 +333,7 @@ def _onnx_containment_roots(raw: Path) -> list[Path]:
             data_dir = Path(settings.data_dir).expanduser()
             _append_unique_root(roots, data_dir / "models")
             _append_unique_root(roots, data_dir)
-    except Exception:  # noqa: BLE001, S110 - optional settings lookup must not block model resolution.
+    except Exception:  # noqa: BLE001, S110 - broad-exception-boundary: optional settings lookup must not block model resolution.
         pass
     return roots
 
@@ -478,7 +478,7 @@ def create_inference_session(backend: OnnxSessionBackend) -> Any:
             providers = [(backend.execution_provider, backend.provider_options)]
         try:
             session = ort.InferenceSession(backend.model_path, providers=providers)
-        except Exception as exc:  # noqa: BLE001 - optional native runtime failures should degrade.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: optional native runtime failures should degrade.
             raise OnnxAccelerationUnavailable(f"Failed to create ONNX Runtime session: {exc}") from exc
         _remember_session(key, session)
         return session
@@ -487,7 +487,7 @@ def create_inference_session(backend: OnnxSessionBackend) -> Any:
 def run_session(session: Any, inputs: dict[str, np.ndarray], output_names: list[str] | None = None) -> list[Any]:
     try:
         return list(session.run(output_names, inputs))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         raise OnnxAccelerationUnavailable(f"ONNX Runtime inference failed: {exc}") from exc
 
 

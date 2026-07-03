@@ -74,7 +74,7 @@ def check_output_schema(output_schema: dict[str, Any]) -> None:
     try:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import SchemaError
-    except Exception:  # noqa: BLE001 - jsonschema is optional; use lightweight validation if unavailable.
+    except ImportError:
         return
     try:
         Draft202012Validator.check_schema(output_schema)
@@ -90,7 +90,7 @@ def validate_structured_payload(payload: Any, output_schema: dict[str, Any]) -> 
     try:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import ValidationError
-    except Exception:  # noqa: BLE001 - jsonschema is optional; use lightweight validation if unavailable.
+    except ImportError:
         validate_structured_payload_lightweight(payload, output_schema)
         return
 

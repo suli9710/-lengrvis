@@ -79,6 +79,26 @@ def test_env_values_override_yaml(monkeypatch, tmp_path: Path):
     assert settings.llm_api_max_retries == 4
 
 
+def test_release_profile_extension_policy_settings_from_env(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_SKILL_REQUIRE_TRUSTED_SIGNATURES", "true")
+    monkeypatch.setenv("LENGRVIS_SKILL_REQUIRE_PERMISSION_DIFF_REVIEW", "true")
+    monkeypatch.setenv("LENGRVIS_MCP_REQUIRE_OWNER_POLICY", "true")
+    monkeypatch.setenv(
+        "LENGRVIS_MCP_SERVERS",
+        '[{"name":"demo","url":"https://api.example.com/mcp","owner":"sec","policy_id":"SEC-1","allowed_tools":["echo"]}]',
+    )
+
+    settings = AppSettings.from_sources()
+
+    assert settings.skill_require_trusted_signatures is True
+    assert settings.skill_require_permission_diff_review is True
+    assert settings.mcp_require_owner_policy is True
+    assert settings.mcp_servers[0]["owner"] == "sec"
+    assert settings.mcp_servers[0]["policy_id"] == "SEC-1"
+    assert settings.mcp_servers[0]["allowed_tools"] == ["echo"]
+
+
 def test_default_jwt_secret_is_reused_across_config_reloads(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))

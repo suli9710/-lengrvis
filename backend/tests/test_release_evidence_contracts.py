@@ -28,6 +28,8 @@ commercial = _load_script("verify_commercial_loop_evidence.py")
 result_quality = _load_script("verify_result_quality_reviewed_evidence.py")
 support_privacy = _load_script("verify_support_privacy_rehearsal_evidence.py")
 claims_launch = _load_script("verify_launch_claims_reviewed_evidence.py")
+commercial_operations = _load_script("verify_commercial_operations_evidence.py")
+commercial_operations_seal = _load_script("seal_commercial_operations_evidence.py")
 paid_launch_templates = _load_script("collect_paid_launch_evidence_templates.py")
 evidence_contracts = _load_script("evidence_contracts.py")
 TEST_EVIDENCE_SECRET = "test-release-evidence-secret"  # noqa: S105 - deterministic test signing key.
@@ -350,6 +352,105 @@ def _claims_launch_sample() -> dict:
     )
 
 
+def _commercial_operations_sample() -> dict:
+    return _signed(
+        {
+            "artifact_type": "commercial-operations-evidence-reviewed",
+            "candidate": {"commit": "abc123", "build_identifier": "ci-123"},
+            "operations": {"scope": "paid_public_launch"},
+            "contracting": {
+                "status": "passed",
+                "entity_label": "contracting-entity-redacted",
+                "public_business_address_or_exemption_label": "address-exemption-redacted",
+                "billing_descriptor_label": "billing-descriptor-redacted",
+                "legal_contact_label": "legal-contact-redacted",
+                "privacy_contact_label": "privacy-contact-redacted",
+                "support_contact_label": "support-contact-redacted",
+            },
+            "tax": {
+                "status": "passed",
+                "tax_owner_label": "tax-owner-redacted",
+                "tax_registration_or_exemption_label": "tax-registration-redacted",
+                "tax_jurisdiction_matrix_label": "tax-jurisdiction-redacted",
+                "product_taxability_review_label": "product-taxability-redacted",
+                "invoice_tax_display_label": "invoice-tax-redacted",
+                "remittance_accounting_runbook_label": "remittance-runbook-redacted",
+            },
+            "payment_collection": {
+                "status": "passed",
+                "collection_model_label": "collection-model-redacted",
+                "processor_or_manual_invoice_account_label": "processor-account-redacted",
+                "checkout_or_invoice_flow_label": "checkout-flow-redacted",
+                "receipt_invoice_sample_label": "receipt-sample-redacted",
+                "reconciliation_runbook_label": "reconciliation-runbook-redacted",
+                "webhook_or_manual_settlement_label": "settlement-redacted",
+                "chargeback_runbook_label": "chargeback-redacted",
+                "no_card_or_bank_secrets_in_repo_label": "no-payment-secrets-redacted",
+            },
+            "legal": {
+                "status": "passed",
+                "counsel_review_label": "counsel-review-redacted",
+                "legal_source_register_label": "legal-source-register-redacted",
+                "legal_risk_memo_label": "legal-review-memo-redacted",
+                "eula_final_label": "eula-final-redacted",
+                "privacy_policy_final_label": "privacy-final-redacted",
+                "refund_policy_final_label": "refund-final-redacted",
+                "dpa_sla_applicability_label": "dpa-sla-redacted",
+                "consumer_withdrawal_terms_label": "withdrawal-terms-redacted",
+                "supported_jurisdictions_label": "jurisdictions-redacted",
+                "public_contact_terms_label": "public-contact-terms-redacted",
+            },
+            "support": {
+                "status": "passed",
+                "support_privacy_evidence_label": "support-privacy-evidence-redacted",
+                "monitored_support_channel_label": "support-channel-redacted",
+                "owner_rota_label": "owner-rota-redacted",
+                "severity_sla_terms_label": "severity-sla-redacted",
+                "privacy_escalation_label": "privacy-escalation-redacted",
+                "diagnostic_retention_label": "diagnostic-retention-redacted",
+                "customer_script_label": "customer-script-redacted",
+            },
+            "refunds": {
+                "status": "passed",
+                "refund_policy_label": "refund-policy-redacted",
+                "refund_request_intake_label": "refund-intake-redacted",
+                "refund_decision_matrix_label": "refund-matrix-redacted",
+                "refund_to_license_revocation_label": "refund-revocation-redacted",
+                "refund_receipt_or_credit_note_label": "refund-receipt-redacted",
+                "chargeback_refund_collision_label": "chargeback-collision-redacted",
+                "refund_log_reconciliation_label": "refund-reconciliation-redacted",
+            },
+            "public_claims": {
+                "status": "passed",
+                "claims_launch_evidence_label": "claims-evidence-redacted",
+                "claims_register_label": "claims-register-redacted",
+                "pricing_page_label": "pricing-page-redacted",
+                "feature_matrix_entitlement_alignment_label": "feature-alignment-redacted",
+                "security_privacy_claims_review_label": "security-privacy-review-redacted",
+                "prohibited_claims_label": "prohibited-claims-redacted",
+                "launch_rollback_copy_label": "launch-rollback-copy-redacted",
+            },
+            "cross_evidence": {
+                "status": "passed",
+                "commercial_loop_evidence_label": "commercial-loop-evidence-redacted",
+                "support_privacy_evidence_label": "support-privacy-evidence-redacted",
+                "claims_launch_evidence_label": "claims-launch-evidence-redacted",
+                "market_dashboard_row_update_label": "market-dashboard-redacted",
+            },
+            "review": {
+                "status": "passed",
+                "reviewer_label": "reviewer-redacted",
+                "reviewed_at_utc": "2026-06-27T12:00:00Z",
+            },
+            "summary": {
+                "commercial_operations_ready": True,
+                "paid_public_launch_signoff": False,
+                "release_signoff": False,
+            },
+        }
+    )
+
+
 def _signed(payload: dict) -> dict:
     body = deepcopy(payload)
     body["evidence"] = {
@@ -418,6 +519,12 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     assert scripts["evidence:result-quality-verify"] == "python scripts/verify_result_quality_reviewed_evidence.py"
     assert scripts["evidence:support-privacy-verify"] == "python scripts/verify_support_privacy_rehearsal_evidence.py"
     assert scripts["evidence:claims-launch-verify"] == "python scripts/verify_launch_claims_reviewed_evidence.py"
+    assert scripts["evidence:commercial-operations-verify"] == (
+        "python scripts/verify_commercial_operations_evidence.py"
+    )
+    assert scripts["evidence:commercial-operations-seal"] == (
+        "python scripts/seal_commercial_operations_evidence.py"
+    )
     assert scripts["evidence:paid-launch-template"] == "python scripts/collect_paid_launch_evidence_templates.py"
     assert scripts["evidence:commercial-loop"] == "python scripts/verify_commercial_loop_evidence.py"
     assert scripts["activation:admin"] == "python scripts/activation_admin.py"
@@ -594,6 +701,88 @@ def test_claims_launch_rejects_missing_claim_review_and_release_signoff() -> Non
     assert any("summary.release_signoff must be false" in error for error in errors)
 
 
+def test_commercial_operations_reviewed_sample_passes() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    assert commercial_operations.validate_payload(_commercial_operations_sample(), repo_root=REPO_ROOT) == []
+    errors, contract = commercial_operations.validate_payload_with_contract(
+        _commercial_operations_sample(),
+        repo_root=REPO_ROOT,
+    )
+    assert errors == []
+    assert contract == {
+        "valid_hash": True,
+        "valid_signature": True,
+        "reviewed_pass": True,
+        "release_signoff": False,
+    }
+
+
+def test_commercial_operations_rejects_missing_tax_refund_and_release_signoff() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _commercial_operations_sample()
+    payload["tax"]["product_taxability_review_label"] = ""
+    payload["refunds"]["status"] = "blocked"
+    payload["summary"]["release_signoff"] = True
+    payload = _resign(payload)
+
+    errors = commercial_operations.validate_payload(payload, repo_root=REPO_ROOT)
+
+    assert any("tax.product_taxability_review_label" in error for error in errors)
+    assert any("refunds.status" in error for error in errors)
+    assert any("summary.release_signoff must be false" in error for error in errors)
+
+
+def test_commercial_operations_seal_writes_verifiable_reviewed_evidence(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    draft = deepcopy(_commercial_operations_sample())
+    draft.pop("evidence")
+    input_path = tmp_path / "commercial-operations.reviewed.draft.json"
+    output_path = tmp_path / "build" / "commercial-operations-evidence-reviewed.json"
+    input_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    sealed, errors = commercial_operations_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=REPO_ROOT,
+        force=False,
+        signing_key_fingerprint="reviewed-commercial-ops-key",
+    )
+
+    assert errors == []
+    assert sealed is not None
+    assert output_path.exists()
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["evidence"]["signing_key_fingerprint"] == "reviewed-commercial-ops-key"
+    assert commercial_operations.validate_payload(payload, repo_root=REPO_ROOT) == []
+
+
+def test_commercial_operations_seal_rejects_templates_and_unsafe_secret(monkeypatch) -> None:
+    unsafe_secret = "ci-release-evidence-hmac-secret"  # noqa: S105 - verifies unsafe release evidence secret rejection.
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", unsafe_secret)
+    template = paid_launch_templates.build_commercial_operations_template(
+        candidate_commit="abc123",
+        build_identifier="ci-123",
+    )
+
+    try:
+        commercial_operations_seal.seal_payload(template, secret=unsafe_secret)
+    except ValueError as exc:
+        assert "known unsafe" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("unsafe evidence secret was accepted")
+
+    try:
+        commercial_operations_seal.seal_payload(template, secret=TEST_EVIDENCE_SECRET)
+    except ValueError as exc:
+        assert "artifact_type" in str(exc) or "template" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("template evidence was accepted")
+
+
 def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path) -> None:
     paths = paid_launch_templates.write_templates(
         tmp_path,
@@ -602,14 +791,21 @@ def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path
     )
     support_payload = json.loads(Path(paths["support_privacy_template"]).read_text(encoding="utf-8"))
     claims_payload = json.loads(Path(paths["claims_launch_template"]).read_text(encoding="utf-8"))
+    operations_payload = json.loads(Path(paths["commercial_operations_template"]).read_text(encoding="utf-8"))
 
     assert support_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert claims_payload["claim_controls"]["paid_launch_claim_allowed"] is False
+    assert operations_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert any("paid-launch pass" in item for item in support_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in claims_payload["must_not_be_recorded_as"])
+    assert any("paid-launch pass" in item for item in operations_payload["must_not_be_recorded_as"])
     assert any("artifact_type" in error for error in support_privacy.validate_payload(support_payload))
     assert any(
         "artifact_type" in error for error in claims_launch.validate_payload(claims_payload, repo_root=REPO_ROOT)
+    )
+    assert any(
+        "artifact_type" in error
+        for error in commercial_operations.validate_payload(operations_payload, repo_root=REPO_ROOT)
     )
 
 

@@ -63,7 +63,7 @@ export function ChatPanel({
         setSubmitError(result.error ?? "消息没有发送成功，输入内容已保留，可以稍后重试。");
         window.setTimeout(() => inputRef.current?.focus(), 0);
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDraft(content);
       setSubmitError(formatSendError(error));
       window.setTimeout(() => inputRef.current?.focus(), 0);

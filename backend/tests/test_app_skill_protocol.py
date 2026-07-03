@@ -191,6 +191,30 @@ def test_skill_signature_verifies_with_trusted_ed25519_key(tmp_path: Path):
     assert package.signature_report["severity"] == "info"
 
 
+def test_release_profile_requires_trusted_skill_signature(tmp_path: Path):
+    skill_root = tmp_path / "unsigned_skill"
+    skill_root.mkdir()
+    (skill_root / "handler.py").write_text("print('{\"ok\": true}')\n", encoding="utf-8")
+    (skill_root / "skill.yaml").write_text(
+        """
+name: unsigned-skill
+version: "1.0"
+agent_owner: FileAgent
+permissions:
+  - filesystem.read
+tools:
+  - name: skill.unsigned.read
+    execution:
+      type: python
+      entry: handler.py
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillLoadError, match="signed by a trusted key"):
+        load_skill_package(skill_root, require_trusted_signature=True)
+
+
 def test_skill_signature_rejects_tampered_manifest_when_key_is_trusted(tmp_path: Path):
     manifest = {
         "name": "signed-skill",

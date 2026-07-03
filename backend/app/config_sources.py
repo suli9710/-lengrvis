@@ -15,7 +15,7 @@ from app.config_paths import (
 
 try:
     import yaml
-except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
+except ImportError:  # pragma: no cover - optional dependency guard
     yaml = None
 
 
@@ -91,7 +91,7 @@ def decrypt_windows_dpapi(value: str) -> str:
 
         blob = base64.b64decode(payload)
         return str(win32crypt.CryptUnprotectData(blob, None, None, None, 0)[1].decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 - callers need a clear config failure.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: callers need a clear config failure.
         raise RuntimeError("Failed to decrypt LENGRVIS_API_KEY_ENCRYPTED with Windows DPAPI.") from exc
 
 

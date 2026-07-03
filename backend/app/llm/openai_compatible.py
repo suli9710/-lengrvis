@@ -173,7 +173,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._last_transport_metadata = trace
         try:
             self._ensure_circuit_allows_request(circuit_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             trace["error_type"] = exc.__class__.__name__
             trace["error"] = _sanitize_error_message(str(exc))
             trace["circuit_open"] = isinstance(exc, LLMApiCircuitOpen)
@@ -209,7 +209,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 trace["circuit_after"] = circuit_snapshot(self.settings)
                 self._last_transport_metadata = trace
                 return data
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 last_error = exc
                 if is_prompt_too_long_error(exc):
                     prompt_error = prompt_too_long_error_from_exception(

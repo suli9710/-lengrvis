@@ -238,7 +238,7 @@ class RecoveryHandler:
     def _risk_for_tool(self, tool_name: str, fallback: RiskLevel) -> RiskLevel:
         try:
             return self.orchestrator.registry.get(tool_name).risk_level
-        except Exception:  # noqa: BLE001 - recovery falls back when registry adapters are unavailable.
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: recovery falls back when registry adapters are unavailable.
             return fallback
 
     def _risk_requires_approval(self, risk: RiskLevel) -> bool:

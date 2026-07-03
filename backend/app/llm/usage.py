@@ -122,7 +122,7 @@ def record_llm_response(
                     data["created_at"],
                 ),
             )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         # Usage telemetry must never make an LLM call fail.
         return
 

@@ -217,7 +217,7 @@ def register_all_tools(
             register_skills(reg, settings=settings, skill_directories=skill_directories)
         except SkillLoadError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             record("skills.load_failed", "ToolRegistry", {"error": str(exc)})
             raise SkillLoadError(f"Could not load configured skills: {exc}") from exc
     _mark_builtin_tools_authoritative(reg)

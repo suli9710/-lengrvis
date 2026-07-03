@@ -249,7 +249,7 @@ class ToolRuntime(
             return ""
         try:
             tool.validate_input(args, runtime.tool_context())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             error = _safe_runtime_error_text(exc)
             record(
                 "tool.validation_failed", "ToolRuntime", {"tool": tool.name, "error": error}, task_id=runtime.task.id
@@ -265,7 +265,7 @@ class ToolRuntime(
             return ""
         try:
             allowed = tool.permission_policy(args, runtime.tool_context())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             error = _safe_runtime_error_text(exc)
             record(
                 "tool.permission_failed", "ToolRuntime", {"tool": tool.name, "error": error}, task_id=runtime.task.id
@@ -301,7 +301,7 @@ class ToolRuntime(
                 context=runtime.tool_context(),
                 policy_engine=engine,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             error = _safe_runtime_error_text(exc)
             record(
                 "tool.permission_store_failed",
@@ -322,7 +322,7 @@ class ToolRuntime(
                 summary = tool.result_summary(output)
                 if summary:
                     return summary
-            except Exception as exc:  # noqa: BLE001 - result summarizers are best-effort diagnostics.
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: result summarizers are best-effort diagnostics.
                 logger.debug("tool result summary failed for %s: %s", tool.name, exc, exc_info=True)
         return step.expected_observation or f"{step.tool_name} completed."
 

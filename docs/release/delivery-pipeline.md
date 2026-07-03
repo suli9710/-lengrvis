@@ -27,8 +27,9 @@ passed. Strict RC mode (`delivery:rc`) always runs `signed-artifacts` and ignore
 Strict RC mode inserts additional required stages after golden/safety/artifact checks:
 `real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
 `clean-machine-evidence`, `result-quality-evidence`, `android-strict-gate`, and
-`commercial-loop`. Paid-launch mode adds `support-privacy-evidence` and
-`claims-launch-evidence`, then runs market readiness with `--paid-launch`.
+`commercial-loop`. Paid-launch mode adds `support-privacy-evidence`,
+`claims-launch-evidence`, and `commercial-operations-evidence`, then runs market
+readiness with `--paid-launch`.
 These stages require reviewed evidence JSON and real Android APK/device evidence;
 template/preflight outputs intentionally fail them.
 
@@ -107,6 +108,7 @@ Closes: ordering, fail-closed aggregation, a single verdict artifact, and a clea
 mapping from gates to release decision.
 
 Does not close on its own: real-world execution evidence (clean-machine, Android
-device, result-quality and diagnostics review) or commercial operations (legal
-entity, payment/tax, live activation/license issuer, support ownership). Those remain manual
-P0 rows and must be satisfied before `delivery:rc` can pass in strict mode.
+device, result-quality and diagnostics review) or the external substance behind
+commercial operations (lawyer, tax, payment processor, support staffing). Those
+remain manual P0 responsibilities, but paid launch mode now requires signed
+commercial operations evidence before `market:readiness:paid` can pass.

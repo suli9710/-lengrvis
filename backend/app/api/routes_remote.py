@@ -173,7 +173,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                         "screen_origin_y": int(getattr(frame, "screen_origin_y", 0) or 0),
                     }
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 _record_remote_exception(
                     "remote.screen.capture_failed",
                     exc,
@@ -257,7 +257,7 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
                     message="Remote input event was rejected.",
                     status_code=exc.status_code,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 _record_remote_exception(
                     "remote.input.failed",
                     exc,

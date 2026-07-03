@@ -233,7 +233,7 @@ class FileWatcher:
                             self._fts_index.remove_file,
                             normalized,
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                     record(
                         "file_watcher.error",
                         "FileWatcher",
@@ -246,7 +246,7 @@ class FileWatcher:
                 result = callback(path, action)
                 if inspect.isawaitable(result):
                     await result
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 record(
                     "file_watcher.change_callback_error",
                     "FileWatcher",

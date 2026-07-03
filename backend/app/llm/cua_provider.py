@@ -91,7 +91,7 @@ class CUAProvider:
                 )
                 response.raise_for_status()
                 data = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except (httpx.HTTPError, OSError, RuntimeError, TypeError, ValueError) as exc:
             return _unavailable_result(
                 f"CUA provider request failed or is unsupported: {_safe_error_message(exc)}",
                 self.source,
@@ -227,7 +227,7 @@ async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
                 }
             response.raise_for_status()
             data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except (httpx.HTTPError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return {
             "available": False,
             "reason": f"Responses computer-use preview probe failed: {_safe_error_message(exc)}",

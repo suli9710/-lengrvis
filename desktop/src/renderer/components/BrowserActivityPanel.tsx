@@ -163,7 +163,7 @@ export function BrowserActivityPanel({
         mode: "watch"
       });
       applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "打开浏览器会话失败"));
     } finally {
       setIsWorking(false);
@@ -193,7 +193,7 @@ export function BrowserActivityPanel({
           onSessionsChange(upsertSession(mergedSessions, backendResult.data));
         }
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, `${label} failed`));
     } finally {
       setIsWorking(false);
@@ -217,7 +217,7 @@ export function BrowserActivityPanel({
       } else if (!activeSessionHasHost && !backendResult.ok) {
         onErrorChange(backendResult.error?.message ?? "观察失败");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "观察失败"));
     } finally {
       setIsWorking(false);
@@ -238,7 +238,7 @@ export function BrowserActivityPanel({
       } else {
         onErrorChange(result.error?.message ?? "回放导出失败");
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "回放导出失败"));
     } finally {
       setIsWorking(false);
@@ -258,7 +258,7 @@ export function BrowserActivityPanel({
     try {
       const result = await api.showBrowserHost(sessionId);
       applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "显示浏览器会话失败"));
     }
   };

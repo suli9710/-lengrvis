@@ -13,6 +13,9 @@
 | 数据处理协议（DPA） | `docs/legal/data-processing-addendum.md` | 企业/Team 客户 | 草稿 v0.1 | ❌ 未完成 |
 | 服务等级协议（SLA） | `docs/legal/sla.md` | 付费云端组件用户 | 草稿 v0.1（生效条件未满足） | ❌ 未完成 |
 | 退款政策 | `docs/legal/refund-policy.md` | 付费用户 | 草稿 v0.1（支付未上线） | ❌ 未完成 |
+| 商业法务签收清单 | `docs/legal/commercial-legal-approval-checklist.md` | 付费/公开发布 | fail-closed 草案 | ❌ 未完成 |
+| 法规来源登记表 | `docs/legal/legal-source-register.md` | 内部法务审查 | fail-closed 草案 | ❌ 随目标市场复核 |
+| 商业法律风险 memo | `docs/legal/commercial-legal-risk-memo.md` | 内部法务审查 | fail-closed 草案 | ❌ 未完成 |
 | 子处理方清单 | `docs/legal/subprocessors.md` | 全体用户 | 草稿 v0.1 | ⚠️ 随接入更新 |
 | 安全政策 / VDP | `SECURITY.md` + `.well-known/security.txt` | 安全研究者 | 生效 | n/a |
 | 安全白皮书 | `docs/compliance/security-whitepaper.md` | 评估方/采购方 | 草稿 v0.1 | n/a |

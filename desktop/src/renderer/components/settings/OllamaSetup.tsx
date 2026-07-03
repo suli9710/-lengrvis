@@ -68,7 +68,7 @@ async function requestOllamaSetupDirect<TResponse, TBody = unknown>(
       };
     }
     return { ok: true, status: response.status, data: data as TResponse, receivedAt };
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     return {
       ok: false,
       status: 0,

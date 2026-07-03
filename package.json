@@ -58,6 +58,8 @@
     "evidence:result-quality-verify": "python scripts/verify_result_quality_reviewed_evidence.py",
     "evidence:support-privacy-verify": "python scripts/verify_support_privacy_rehearsal_evidence.py",
     "evidence:claims-launch-verify": "python scripts/verify_launch_claims_reviewed_evidence.py",
+    "evidence:commercial-operations-verify": "python scripts/verify_commercial_operations_evidence.py",
+    "evidence:commercial-operations-seal": "python scripts/seal_commercial_operations_evidence.py",
     "evidence:commercial-loop": "python scripts/verify_commercial_loop_evidence.py",
     "smoke:desktop-first-launch": "npm --prefix desktop run smoke:first-launch",
     "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1",

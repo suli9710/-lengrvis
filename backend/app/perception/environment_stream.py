@@ -353,7 +353,7 @@ class EnvironmentStream:
         while self._started:
             try:
                 await self.poll_app_context_once()
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception("Failed to poll app context")
             await asyncio.sleep(max(0.25, self.app_context_interval_seconds))
 
@@ -396,7 +396,7 @@ class EnvironmentStream:
                     event.environment_type,
                     DEFAULT_SINK_TIMEOUT_SECONDS,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception("Environment stream sink failed for %s", event.environment_type)
 
     def _store_observation(self, event: EnvironmentEvent) -> None:
@@ -434,7 +434,7 @@ class EnvironmentStream:
                 done.result()
             except concurrent.futures.CancelledError:
                 return
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception("Environment stream background task failed")
 
         future.add_done_callback(_forget)

@@ -112,7 +112,7 @@ class EventDispatcher:
                 else:
                     result = handler(event)
                 results.append(result)
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception(
                     "Handler %r failed for event %s",
                     handler,
@@ -131,7 +131,7 @@ class EventDispatcher:
                     message_type=MessageType.NOTIFICATION,
                     structured_payload=_event_to_dict_payload(event),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception("Failed to publish event %s to AgentBus", event_type)
 
         # Record in audit log.
@@ -141,7 +141,7 @@ class EventDispatcher:
             if isinstance(base_payload, dict) and base_payload:
                 payload.update(base_payload)
             record(event_type, source_agent, payload, task_id=task_id or None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             logger.exception("Failed to record audit for event %s", event_type)
 
         return results
@@ -175,7 +175,7 @@ class EventDispatcher:
                 break
             try:
                 await self.dispatch(event)
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-exception-boundary
                 logger.exception("Unhandled error while processing queued event")
             finally:
                 self._queue.task_done()

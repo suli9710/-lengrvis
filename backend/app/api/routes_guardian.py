@@ -307,7 +307,7 @@ async def approve_wakeup(
     wakeup = wakeup_service.approve_wakeup(wakeup_id)
     try:
         await _execute_wakeup(wakeup)
-    except Exception as exc:  # noqa: BLE001 - wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
         wakeup_service.complete_wakeup(wakeup, error=str(exc))
     refreshed = wakeup_service.get_wakeup(wakeup.id)
     if refreshed.status == "failed":
@@ -342,7 +342,7 @@ async def approve_mobile_wakeup(wakeup_id: str, token: dict = Depends(require_mo
     wakeup = wakeup_service.approve_wakeup(wakeup_id, token)
     try:
         await _execute_wakeup(wakeup)
-    except Exception as exc:  # noqa: BLE001 - wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
         wakeup_service.complete_wakeup(wakeup, error=str(exc))
     refreshed = wakeup_service.get_wakeup(wakeup.id)
     if refreshed.status == "failed":
@@ -548,7 +548,7 @@ async def proxy_websocket(websocket: WebSocket, path: str):
             )
     except WebSocketDisconnect:
         return
-    except Exception:  # noqa: BLE001 - websocket proxy errors are reported by closing the client socket.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: websocket proxy errors are reported by closing the client socket.
         with suppress(RuntimeError):
             await websocket.close(code=1011)
 

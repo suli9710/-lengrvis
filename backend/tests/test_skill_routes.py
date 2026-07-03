@@ -350,6 +350,38 @@ def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
     assert installed_package.definition.effective_permissions(installed_tool) == tool["permissions"]
 
 
+def test_skill_import_requires_permission_diff_review_in_release_profile(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    source = _write_skill(tmp_path / "source", name="review-demo")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    db.init_db()
+
+    async def fake_refresh(settings=None):  # noqa: ARG001
+        return {"ok": True, "tool_count": 0, "skill_count": 1}
+
+    monkeypatch.setattr(skill_service, "refresh_runtime_registry", fake_refresh)
+    settings = skill_service.AppSettings(
+        provider_name="mock",
+        data_dir=str(data_dir),
+        allowed_directories=[str(tmp_path)],
+        skill_directories=[str(data_dir / "skills")],
+        skill_require_permission_diff_review=True,
+    )
+
+    with pytest.raises(skill_service.SkillServiceError) as exc_info:
+        asyncio.run(skill_service.import_skill(str(source), settings=settings))
+    assert exc_info.value.code == "skill_permission_diff_review_required"
+
+    result = asyncio.run(skill_service.import_skill(str(source), settings=settings, permission_diff_reviewed=True))
+    audit_events = db.fetch_many_by_fields("audit_events", {"event_type": "skills.imported"}, limit=1)
+
+    assert result["upgrade_diff"]["kind"] == "new_install"
+    assert result["upgrade_diff"]["added_tools"] == ["skill.review_demo.echo"]
+    assert audit_events
+    assert audit_events[0]["payload"]["permission_diff_reviewed"] is True
+    assert audit_events[0]["payload"]["permission_diff_review_required"] is True
+
+
 def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))

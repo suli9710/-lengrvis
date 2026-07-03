@@ -59,7 +59,7 @@ const bridge: LengrvisDesktopBridge = {
     ): Promise<ApiResponse<TResponse>> => {
       try {
         return ipcRenderer.invoke(IPC_CHANNELS.apiRequest, sanitizeApiBridgeRequest(request));
-      } catch (error) {
+      } catch (error) { // broad-exception-boundary
         return Promise.reject(error);
       }
     },

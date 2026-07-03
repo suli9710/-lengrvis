@@ -89,7 +89,7 @@ class LocalEmbeddingProvider:
     def health(self) -> dict[str, Any]:
         try:
             self._ensure_ready()
-        except Exception as exc:  # noqa: BLE001 - health must not break fallback.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: health must not break fallback.
             return {"available": False, **asdict(self.backend), "error": _safe_local_embedding_error(exc)}
         return {"available": True, **asdict(self.backend)}
 
@@ -213,7 +213,7 @@ def test_embedding(settings: AppSettings | None = None, texts: list[str] | None 
         }
     try:
         vectors = provider.embed_sync(sample)
-    except Exception as exc:  # noqa: BLE001 - smoke result should not become a 500.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: smoke result should not become a 500.
         return {
             "ok": False,
             "available": False,

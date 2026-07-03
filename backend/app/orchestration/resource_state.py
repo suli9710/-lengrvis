@@ -242,7 +242,7 @@ def remember_read_states_for_tool(
             try:
                 runtime.remember_file(str(state["path"]), partial_view=False, size=int(state.get("size") or 0))
                 runtime.extra_context.setdefault("_resource_read_states", {})[key] = cached
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 logger.debug("could not cache read state for %s: %s", state.get("path"), exc, exc_info=True)
 
 
@@ -606,7 +606,7 @@ def _is_read_tool(tool: Any) -> bool:
         try:
             if tool.is_read_only():
                 return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             logger.debug("tool read-only check failed for %s: %s", getattr(tool, "name", ""), exc, exc_info=True)
     effects = {str(item).casefold() for item in (getattr(tool, "effects", None) or [])}
     if effects & {"read", "list", "search", "inspect"}:

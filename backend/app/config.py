@@ -208,7 +208,10 @@ class AppSettings(BaseSettings):
     data_dir: str = str(DEFAULT_DATA_DIR)
     skill_directories: list[str] = Field(default_factory=list)
     skill_trusted_public_keys: dict[str, str] = Field(default_factory=dict)
+    skill_require_trusted_signatures: bool = False
+    skill_require_permission_diff_review: bool = False
     mcp_servers: list[dict] = Field(default_factory=list)
+    mcp_require_owner_policy: bool = False
     allow_mock_fallback: bool = False
     # Non-strict (default): invalid transitions are audited but not persisted.
     # Strict: StateTransitionError on illegal phase/stage changes.
@@ -569,7 +572,22 @@ class AppSettings(BaseSettings):
             skill_trusted_public_keys=_normalize_skill_trusted_public_keys(
                 value("LENGRVIS_SKILL_TRUSTED_PUBLIC_KEYS", "skill_trusted_public_keys", {})
             ),
+            skill_require_trusted_signatures=flag(
+                "LENGRVIS_SKILL_REQUIRE_TRUSTED_SIGNATURES",
+                "skill_require_trusted_signatures",
+                False,
+            ),
+            skill_require_permission_diff_review=flag(
+                "LENGRVIS_SKILL_REQUIRE_PERMISSION_DIFF_REVIEW",
+                "skill_require_permission_diff_review",
+                False,
+            ),
             mcp_servers=_normalize_mcp_servers(value("LENGRVIS_MCP_SERVERS", "mcp_servers", [])),
+            mcp_require_owner_policy=flag(
+                "LENGRVIS_MCP_REQUIRE_OWNER_POLICY",
+                "mcp_require_owner_policy",
+                False,
+            ),
             allow_mock_fallback=flag("LENGRVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", False),
             strict_state_machine=flag("LENGRVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
             tool_timeout_seconds=float_value(

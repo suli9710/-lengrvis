@@ -67,7 +67,7 @@ def get_llm_profile() -> dict[str, Any]:
         profile = profile_for_provider(provider, settings)
         degraded = getattr(provider, "name", "") == "mock"
         error = ""
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(logger, "settings.llm_profile", exc, mode=settings.mode)
         profile = profile_for_settings(settings)
         degraded = True
@@ -95,7 +95,7 @@ def get_llm_health() -> dict[str, Any]:
             "profile": profile.to_dict(),
             "error": "",
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         log_best_effort_failure(logger, "settings.llm_health", exc, mode=settings.mode)
         profile = profile_for_settings(settings)
         active = {
@@ -324,7 +324,7 @@ async def test_llm_provider() -> dict[str, Any]:
         return {"ok": not degraded, "provider": provider.name, "message": text, "degraded": degraded}
     except LocalBackendUnavailable as exc:
         return {"ok": False, "provider": "local", "error": _safe_error(exc)}
-    except Exception as exc:  # noqa: BLE001 - provider probes surface user-facing diagnostics.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: provider probes surface user-facing diagnostics.
         log_best_effort_failure(
             logger,
             "settings.test_llm_provider",

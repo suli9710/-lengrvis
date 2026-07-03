@@ -270,6 +270,12 @@ def default_stages(
                         True,
                         "Reviewed paid-launch claims and asset evidence",
                     ),
+                    Stage(
+                        "commercial-operations-evidence",
+                        ["npm", "run", "evidence:commercial-operations-verify"],
+                        True,
+                        "Reviewed legal, payment, tax, support, refunds, and claims operations evidence",
+                    ),
                 ]
                 if paid_launch
                 else []

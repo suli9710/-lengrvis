@@ -224,7 +224,7 @@ export class BackendProcessManager {
       });
 
       return this.refreshStatus("starting", "Backend process started; waiting for health check");
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = error instanceof Error ? error.message : "无法启动后端进程";
       this.status = this.makeStatus("error", message);
       return this.status;
@@ -732,7 +732,7 @@ async function postRuntimeMode(
       throw new Error(`Runtime mode request failed: ${response.status} ${await runtimeModeErrorText(response)}`);
     }
     return null;
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     return error instanceof Error ? error : new Error("Runtime mode request failed");
   }
 }

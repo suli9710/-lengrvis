@@ -510,7 +510,7 @@ class StepExecutionHandler:
                 runtime.tool_context(),
                 threaded=False,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             return f"Could not refresh approved resource state: {exc}"
         current_state = binding_preview(current_preview).get("_resource_state")
         if current_state != approved_state:

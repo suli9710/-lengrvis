@@ -46,7 +46,7 @@ def span(name: str, attributes: dict[str, object] | None = None):
     status = "ok"
     try:
         yield current
-    except Exception:
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         status = "error"
         raise
     finally:

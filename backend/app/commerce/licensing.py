@@ -663,7 +663,7 @@ def _refresh_subscription_license(
     except LicenseError as exc:
         logger.warning("Subscription license online refresh returned an invalid license: %s", exc.message)
         return None, exc.code
-    except Exception as exc:  # noqa: BLE001 - runtime licensing must fail closed without crashing startup.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: runtime licensing must fail closed without crashing startup.
         logger.warning("Subscription license online refresh failed: %s", exc)
         return None, "subscription_confirmation_failed"
 
@@ -1136,9 +1136,9 @@ def apply_licensed_plan(settings: Any, *, now: datetime | None = None):
             return settings.model_copy(update={"plan": resolved_plan})
         settings.plan = resolved_plan
         return settings
-    except Exception:  # noqa: BLE001 - never let licensing break settings resolution
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: never let licensing break settings resolution
         try:
             settings.plan = resolved_plan
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             return settings
         return settings

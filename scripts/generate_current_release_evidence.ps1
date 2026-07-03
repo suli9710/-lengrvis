@@ -7,6 +7,7 @@ param(
     [string]$NeedsJson = "",
     [string]$ReleaseOwner = "",
     [string]$OwnerSignature = "",
+    [string]$ManualSignoffStatus = "",
     [string[]]$Waiver = @(),
     [string[]]$ManualAcceptance = @(),
     [string[]]$ArtifactLink = @()
@@ -297,7 +298,7 @@ $gates = @(
     [ordered]@{
         id = "extension-security"
         job = "IPC + Skill/MCP + settings security gate"
-        scope = "IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, MCP schema/SSRF tests, and sensitive settings server-side enforcement"
+        scope = "IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, Skill/MCP release-profile supply-chain controls, MCP schema/SSRF tests, and sensitive settings server-side enforcement"
         commands = @(
             "npm run security:extensions"
         )
@@ -332,7 +333,10 @@ else {
     "ci_results_unavailable"
 }
 
-$manualStatus = if ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE") {
+$manualStatus = if (-not [string]::IsNullOrWhiteSpace($ManualSignoffStatus)) {
+    $ManualSignoffStatus.Trim()
+}
+elseif ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE") {
     "manual_signoff_pending"
 }
 else {

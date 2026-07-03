@@ -148,7 +148,7 @@ class WhisperCppTranscriber:
     def available(cls) -> bool:
         try:
             cls._import_model_cls()
-        except Exception:  # noqa: BLE001 - optional dependency probe.
+        except (ImportError, OSError, RuntimeError):
             return False
         return True
 
@@ -382,7 +382,7 @@ def build_default_transcriber(*, model_path: str = "base.en") -> VoiceTranscribe
         transcriber = WhisperCppTranscriber(model_path)
         _ = transcriber.model
         return transcriber
-    except Exception as exc:  # noqa: BLE001 - optional dependency fallback.
+    except (ImportError, OSError, RuntimeError, ValueError, AttributeError, TypeError) as exc:
         logger.info("pywhispercpp unavailable; using deterministic voice fallback: %s", exc)
         return DeterministicFallbackTranscriber()
 

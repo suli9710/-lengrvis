@@ -15,7 +15,8 @@ def list_skills() -> dict:
 @router.post("/skills/import")
 async def import_skill_package(payload: dict) -> dict:
     source_path = str(payload.get("path") or "").strip()
-    return await import_skill(source_path)
+    permission_diff_reviewed = bool(payload.get("permission_diff_reviewed") or payload.get("permissionDiffReviewed"))
+    return await import_skill(source_path, permission_diff_reviewed=permission_diff_reviewed)
 
 
 @router.post("/skills/refresh")

@@ -44,7 +44,7 @@ async def embed_texts(
                 timeout_seconds,
             )
             return [_coerce_vector(vector) for vector in vectors]
-        except Exception as exc:  # noqa: BLE001 - local embeddings should degrade to the configured provider.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: local embeddings should degrade to the configured provider.
             logger.debug("Local embedding provider failed; falling back to configured provider: %s", exc, exc_info=True)
     try:
         vectors = await _with_timeout(
@@ -52,7 +52,7 @@ async def embed_texts(
             timeout_seconds,
         )
         return [_coerce_vector(vector) for vector in vectors]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return hashing_vectorize(normalized, dim=64)
 
 

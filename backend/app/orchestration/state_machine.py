@@ -133,7 +133,7 @@ def safe_transition(
             from app.llm.registry import get_effective_settings
 
             strict = bool(get_effective_settings().strict_state_machine)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             strict = False
     return transition(task, target, actor=actor, strict=strict)
 

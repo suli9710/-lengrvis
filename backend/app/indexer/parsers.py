@@ -12,7 +12,7 @@ def parse_file(path: Path) -> str:
     if path.suffix.lower() in IMAGE_EXTENSIONS:
         try:
             text = ocr_image(str(path), allowed_directories=[str(path.parent)])
-        except Exception:  # noqa: BLE001
+        except (OSError, RuntimeError, ValueError):
             text = ""
         return text
     return extract_text_from_path(path)

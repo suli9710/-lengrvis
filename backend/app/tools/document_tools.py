@@ -108,7 +108,7 @@ def extract_text_from_path(path: Path) -> str:
 
             doc = Document(str(path))
             return "\n".join(p.text for p in doc.paragraphs)
-        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: document extraction degrades gracefully per file type.
             return f"[DOCX extraction unavailable: {exc}]"
     if ext == ".xlsx":
         try:
@@ -121,7 +121,7 @@ def extract_text_from_path(path: Path) -> str:
                 for row in ws.iter_rows(values_only=True):
                     lines.append(",".join("" if value is None else str(value) for value in row))
             return "\n".join(lines)
-        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: document extraction degrades gracefully per file type.
             return f"[XLSX extraction unavailable: {exc}]"
     if ext == ".pptx":
         try:
@@ -135,7 +135,7 @@ def extract_text_from_path(path: Path) -> str:
                     if hasattr(shape, "text"):
                         lines.append(shape.text)
             return "\n".join(lines)
-        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: document extraction degrades gracefully per file type.
             return f"[PPTX extraction unavailable: {exc}]"
     return "[Unsupported document type]"
 

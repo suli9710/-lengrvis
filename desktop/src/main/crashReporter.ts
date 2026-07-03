@@ -62,7 +62,7 @@ export function setupCrashReporter(): void {
       // Only safe, non-PII metadata. Never attach paths, args, or user content.
       globalExtra: { app_version: app.getVersion() },
     });
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("crashReporter.start failed; continuing without it:", error);
   }
   registerProcessCrashListeners();
@@ -138,7 +138,7 @@ function appendCrashRecord(record: CrashRecord): void {
     records.push(record);
     const trimmed = records.slice(-MAX_CRASH_RECORDS);
     writeFileSync(filePath, `${trimmed.map((r) => JSON.stringify(r)).join("\n")}\n`, "utf-8");
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     console.warn("Failed to append crash record:", error);
   }
 }

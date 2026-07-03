@@ -82,7 +82,7 @@ export async function submitApprovalDecision(
       });
       try {
         return await parseRemoteInputGrantJson<BackendApproval>(response, "use");
-      } catch (error) {
+      } catch (error) { // broad-exception-boundary
         forgetRemoteInputGrantToken(remoteInputGrantToken.grant_id || remoteInputGrantToken.grant?.id || "");
         forgetRemoteInputGrantToken(remoteInputGrantToken.grant?.binding_ref || "");
         throw error;
@@ -240,7 +240,7 @@ export async function remoteInputGrantTokenForApproval(
   if (!approval) {
     try {
       approval = (await getApprovalDetail(session, approvalId)).approval;
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       if (error instanceof AuthExpiredError) throw error;
     }
   }

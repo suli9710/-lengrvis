@@ -90,7 +90,7 @@ export function validateApiEndpoint(
 function loopbackBackendUrlForApiRequest(baseUrl: string): URL {
   try {
     return assertLoopbackBackendUrl(baseUrl, "Desktop API token request");
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     throw new ApiRequestValidationError(
       error instanceof Error
         ? error.message

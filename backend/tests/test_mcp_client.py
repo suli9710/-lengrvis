@@ -216,6 +216,56 @@ def test_mcp_registry_adapts_to_tool_definitions(mcp_server):
         assert definition.fast_path_eligible is False
 
 
+def test_mcp_release_profile_requires_owner_policy():
+    registry = MCPRegistry()
+
+    with pytest.raises(ValueError, match="owner"):
+        registry.load_from_settings(
+            AppSettings(
+                provider_name="mock",
+                mcp_require_owner_policy=True,
+                mcp_servers=[
+                    {
+                        "name": "unowned",
+                        "url": "https://api.example.com/mcp",
+                        "transport": "http",
+                        "enabled": True,
+                        "policy_id": "SEC-1",
+                        "allowed_tools": ["echo"],
+                    }
+                ],
+            )
+        )
+
+
+def test_mcp_owner_policy_filters_unapproved_tools(monkeypatch, mcp_server):
+    monkeypatch.setattr("app.mcp.registry.record", lambda *args, **kwargs: None)
+    settings = AppSettings(
+        provider_name="mock",
+        mcp_require_owner_policy=True,
+        mcp_servers=[
+            {
+                "name": "demo",
+                "url": mcp_server,
+                "transport": "http",
+                "enabled": True,
+                "owner": "security-owner",
+                "policy_id": "SEC-MCP-1",
+                "allowed_tools": "echo",
+            }
+        ],
+    )
+    registry = MCPRegistry()
+    registry.load_from_settings(settings)
+
+    definitions = asyncio.run(registry.adapt_to_tool_definitions())
+
+    assert [definition.name for definition in definitions] == ["mcp.demo.echo"]
+    assert registry.list_servers()[0]["owner"] == "security-owner"
+    assert registry.list_servers()[0]["policy_id"] == "SEC-MCP-1"
+    assert registry.list_servers()[0]["allowed_tools"] == ["echo"]
+
+
 def test_mcp_executor_times_out_slow_tool_call():
     class SlowClient:
         timeout = 0.01

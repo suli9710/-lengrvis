@@ -450,7 +450,7 @@ def _run_cua_tool(coro, *, timeout_seconds: float | None = None) -> dict[str, An
             pool.shutdown(wait=False, cancel_futures=True)
     except TimeoutError:
         return {"ok": False, "status": "timeout", "error": "browser.cua_run timed out."}
-    except Exception as exc:  # noqa: BLE001 - browser CUA tools should fail inline for tool callers.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: browser CUA tools should fail inline for tool callers.
         return {"ok": False, "status": "failed", "error": f"browser.cua_run failed: {exc}"}
 
 

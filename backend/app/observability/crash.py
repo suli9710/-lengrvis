@@ -21,7 +21,7 @@ from app.config import get_env
 
 try:  # pragma: no cover - redaction is always present in the app
     from app.policy.redaction import redact_text
-except Exception:  # pragma: no cover - defensive fallback only  # noqa: BLE001
+except ImportError:  # pragma: no cover - defensive fallback only
 
     def redact_text(text, redact_generic_tokens=True):  # type: ignore[misc]
         return text
@@ -94,7 +94,7 @@ def _write_report(exc: BaseException, source: str, report_dir: Path | None) -> s
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         _prune_reports(target_dir)
         return str(path)
-    except Exception:  # pragma: no cover - reporting must never raise  # noqa: BLE001
+    except Exception:  # pragma: no cover - broad-exception-boundary: reporting must never raise  # noqa: BLE001
         _logger.warning("crash.report_write_failed")
         return None
 

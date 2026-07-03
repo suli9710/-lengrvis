@@ -425,7 +425,7 @@ def _image_semantic_vectors(
     embedder = args.get("embedder") or context.get("embedder")
     try:
         semantic_vectors = embed_texts_sync(label_texts, embedder=embedder)
-    except Exception:  # noqa: BLE001 - embedding providers vary; fall back to local hashing.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: embedding providers vary; fall back to local hashing.
         semantic_vectors = hashing_vectorize(label_texts, dim=64)
     if len(semantic_vectors) != len(profiles):
         semantic_vectors = hashing_vectorize(label_texts, dim=64)

@@ -299,7 +299,7 @@ export function FileSearchPanel({
         allowedDirectories: [nextPath]
       });
       setScopeNotice(`已切换范围：${compactPath(nextPath)}。接下来只会在这个文件夹里搜索、分组或清理。`);
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setScopeError(userFileError(error, "保存当前范围失败，请稍后重试。"));
     } finally {
       setIsSavingScope(false);
@@ -328,7 +328,7 @@ export function FileSearchPanel({
           : `已授权 ${missingScopes.length} 个文档所在文件夹。`
       );
       return true;
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setScopeError(userFileError(error, "保存文档所在文件夹范围失败，请稍后重试。"));
       setDocumentError("已选中文档，但当前范围保存失败。请手动选择文档所在文件夹后再继续。");
       return false;
@@ -480,7 +480,7 @@ export function FileSearchPanel({
         setClusters([]);
         setClusterError(userFileError(response.data?.error || response.error?.message, "分组失败，请稍后重试。"));
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setClusters([]);
       setClusterError(userFileError(error, "分组失败，请稍后重试。"));
     } finally {
@@ -526,7 +526,7 @@ export function FileSearchPanel({
         setDocumentError(message);
         return { ok: false, error: message };
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = fileActionError(error, "read");
       setDocumentNotice(null);
       setDocumentError(message);
@@ -568,7 +568,7 @@ export function FileSearchPanel({
         setDocumentError(message);
         return { ok: false, error: message };
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = fileActionError(error, "summarize");
       setDocumentNotice(null);
       setDocumentError(message);
@@ -616,7 +616,7 @@ export function FileSearchPanel({
         return;
       }
       setResultActionMessage({ path, tone: "success", text: "已切到文档操作区并生成总结。" });
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setResultActionMessage({ path, tone: "error", text: fileActionError(error, action) });
     } finally {
       setResultDocumentAction(null);
@@ -634,7 +634,7 @@ export function FileSearchPanel({
       } else {
         setResultActionMessage({ path, tone: "error", text: fileActionError(response.data?.error || response.error?.message, "reveal") });
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setResultActionMessage({ path, tone: "error", text: fileActionError(error, "reveal") });
     } finally {
       setRevealingPath(null);
@@ -698,7 +698,7 @@ export function FileSearchPanel({
       } else {
         setDocumentError(userFileError(response.error?.message, "文档对比失败，请确认两个文件都能打开。"));
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDocumentError(userFileError(error, "文档对比失败，请确认两个文件都能打开。"));
     } finally {
       setIsDocumentWorking(false);

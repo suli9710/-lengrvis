@@ -168,7 +168,7 @@ class ScreenMonitor(PerceptionProvider):
         while not self._stop_event.is_set():
             try:
                 self.poll_once()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 self.last_error = str(exc)
             self._stop_event.wait(max(0.1, float(self.config.interval_seconds or 5.0)))
 
@@ -209,7 +209,7 @@ class _temporary_image:
                 self.path = Path(handle.name)
                 handle.write(data)
             return self.path
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             if self.path is not None:
                 with suppress(OSError):
                     self.path.unlink(missing_ok=True)

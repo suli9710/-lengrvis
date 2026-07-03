@@ -44,7 +44,7 @@ class SafetyReviewAgent(BaseAgent):
         if effective is None:
             try:
                 effective = get_effective_settings()
-            except Exception:  # noqa: BLE001 - settings fallback should not block deterministic safety review.
+            except Exception:  # noqa: BLE001 - broad-exception-boundary: settings fallback should not block deterministic safety review.
                 effective = None
         self.policy = PolicyEngine(effective)
 

@@ -125,7 +125,7 @@ def execute_rollback(task_id: str) -> dict[str, Any]:
 def _rollback_context() -> dict[str, Any]:
     try:
         settings = get_effective_settings()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - broad-exception-boundary
         return {"allowed_directories": []}
     return {"allowed_directories": [str(path) for path in settings.allowed_directories or []], "settings": settings}
 
@@ -357,7 +357,7 @@ def _trash(
         return {"ok": True, "action": "trash", "path": str(path)}
     except ToolAbortedError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return {"ok": False, "action": "trash", "detail": _safe_rollback_detail(exc)}
 
 

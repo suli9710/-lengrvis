@@ -1381,7 +1381,7 @@ def _validate_lan_tls_material(cert_file: str, key_file: str) -> dict[str, Any]:
         cert_path = Path(cert_file).expanduser()
         context.load_cert_chain(str(cert_path), str(Path(key_file).expanduser()))
         fingerprint = _certificate_fingerprint_sha256(cert_path)
-    except Exception as exc:  # noqa: BLE001 - readiness should report a structured status.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: readiness should report a structured status.
         return {"ok": False, "error": _safe_tls_error(exc), "fingerprint_sha256": ""}
     return {"ok": True, "error": "", "fingerprint_sha256": fingerprint}
 

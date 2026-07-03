@@ -50,7 +50,7 @@ def _persist_worker() -> None:
             with db.using_data_dir(data_dir):
                 db.init_db()
                 db.upsert_model("agent_messages", message)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             logger.exception("agent_bus: failed to persist message %s", message.id)
         finally:
             with _PERSIST_STATE:

@@ -12,6 +12,7 @@ from typing import Any
 
 SUPPORT_TEMPLATE_TYPE = "support-privacy-operations-evidence-template"
 CLAIMS_TEMPLATE_TYPE = "claims-launch-evidence-template"
+OPERATIONS_TEMPLATE_TYPE = "commercial-operations-evidence-template"
 
 
 def _pending_check(label: str = "") -> dict[str, str]:
@@ -136,6 +137,132 @@ def build_claims_launch_template(*, candidate_commit: str, build_identifier: str
     }
 
 
+def build_commercial_operations_template(*, candidate_commit: str, build_identifier: str) -> dict[str, Any]:
+    return {
+        "artifact_type": OPERATIONS_TEMPLATE_TYPE,
+        "template_mode": "not_reviewed_evidence",
+        "candidate": {
+            "commit": candidate_commit,
+            "build_identifier": build_identifier,
+        },
+        "operations": {"scope": "paid_public_launch"},
+        "contracting": {
+            "status": "pending",
+            "entity_label": "",
+            "public_business_address_or_exemption_label": "",
+            "billing_descriptor_label": "",
+            "legal_contact_label": "",
+            "privacy_contact_label": "",
+            "support_contact_label": "",
+        },
+        "tax": {
+            "status": "pending",
+            "tax_owner_label": "",
+            "tax_registration_or_exemption_label": "",
+            "tax_jurisdiction_matrix_label": "",
+            "product_taxability_review_label": "",
+            "invoice_tax_display_label": "",
+            "remittance_accounting_runbook_label": "",
+        },
+        "payment_collection": {
+            "status": "pending",
+            "collection_model_label": "",
+            "processor_or_manual_invoice_account_label": "",
+            "checkout_or_invoice_flow_label": "",
+            "receipt_invoice_sample_label": "",
+            "reconciliation_runbook_label": "",
+            "webhook_or_manual_settlement_label": "",
+            "chargeback_runbook_label": "",
+            "no_card_or_bank_secrets_in_repo_label": "",
+        },
+        "legal": {
+            "status": "pending",
+            "counsel_review_label": "",
+            "legal_source_register_label": "",
+            "legal_risk_memo_label": "",
+            "eula_final_label": "",
+            "privacy_policy_final_label": "",
+            "refund_policy_final_label": "",
+            "dpa_sla_applicability_label": "",
+            "consumer_withdrawal_terms_label": "",
+            "supported_jurisdictions_label": "",
+            "public_contact_terms_label": "",
+        },
+        "support": {
+            "status": "pending",
+            "support_privacy_evidence_label": "",
+            "monitored_support_channel_label": "",
+            "owner_rota_label": "",
+            "severity_sla_terms_label": "",
+            "privacy_escalation_label": "",
+            "diagnostic_retention_label": "",
+            "customer_script_label": "",
+        },
+        "refunds": {
+            "status": "pending",
+            "refund_policy_label": "",
+            "refund_request_intake_label": "",
+            "refund_decision_matrix_label": "",
+            "refund_to_license_revocation_label": "",
+            "refund_receipt_or_credit_note_label": "",
+            "chargeback_refund_collision_label": "",
+            "refund_log_reconciliation_label": "",
+        },
+        "public_claims": {
+            "status": "pending",
+            "claims_launch_evidence_label": "",
+            "claims_register_label": "",
+            "pricing_page_label": "",
+            "feature_matrix_entitlement_alignment_label": "",
+            "security_privacy_claims_review_label": "",
+            "prohibited_claims_label": "",
+            "launch_rollback_copy_label": "",
+        },
+        "cross_evidence": {
+            "status": "pending",
+            "commercial_loop_evidence_label": "",
+            "support_privacy_evidence_label": "",
+            "claims_launch_evidence_label": "",
+            "market_dashboard_row_update_label": "",
+        },
+        "review": {
+            "status": "pending",
+            "reviewer_label": "",
+            "reviewed_at_utc": "",
+        },
+        "summary": {
+            "commercial_operations_ready": False,
+            "paid_public_launch_signoff": False,
+            "release_signoff": False,
+        },
+        "claim_controls": {
+            "template_is_reviewed_evidence": False,
+            "paid_launch_claim_allowed": False,
+            "release_signoff": False,
+        },
+        "repository_contracts": {
+            "market_dashboard": "docs/business/market-readiness.md",
+            "commercial_operations_runbook": "docs/business/commercial-operations.md",
+            "payment_tax_runbook": "docs/business/payment-tax-operations.md",
+            "support_refund_runbook": "docs/business/support-refund-operations.md",
+            "public_claims_register": "docs/business/public-claims-register.md",
+            "commercial_legal_checklist": "docs/legal/commercial-legal-approval-checklist.md",
+            "legal_source_register": "docs/legal/legal-source-register.md",
+            "commercial_legal_risk_memo": "docs/legal/commercial-legal-risk-memo.md",
+            "legal_index": "docs/legal/README.md",
+            "pricing_source": "docs/pricing.md",
+            "refund_policy": "docs/legal/refund-policy.md",
+        },
+        "must_not_be_recorded_as": [
+            "commercial operations pass",
+            "paid-launch pass",
+            "legal approval",
+            "tax approval",
+            "release sign-off",
+        ],
+    }
+
+
 def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier: str) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     support = build_support_privacy_template(
@@ -146,11 +273,17 @@ def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier
         candidate_commit=candidate_commit,
         build_identifier=build_identifier,
     )
+    operations = build_commercial_operations_template(
+        candidate_commit=candidate_commit,
+        build_identifier=build_identifier,
+    )
     support_path = output_dir / "support-privacy-operations-evidence.template.json"
     claims_path = output_dir / "claims-launch-evidence.template.json"
+    operations_path = output_dir / "commercial-operations-evidence.template.json"
     markdown_path = output_dir / "paid-launch-evidence-templates.md"
     support_path.write_text(json.dumps(support, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     claims_path.write_text(json.dumps(claims, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    operations_path.write_text(json.dumps(operations, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(
         "\n".join(
             [
@@ -159,12 +292,14 @@ def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier
                 f"- Generated at UTC: {datetime.now(UTC).isoformat()}",
                 f"- Support/privacy template: {support_path}",
                 f"- Claims template: {claims_path}",
+                f"- Commercial operations template: {operations_path}",
                 "",
                 "These files are templates only. They are not reviewed evidence, not a paid-launch pass, and not release sign-off.",
                 "Copy completed, reviewed, signed evidence to the verifier paths only after real artifacts and reviewer labels exist:",
                 "",
                 "- build/support-privacy-operations-evidence-reviewed.json",
                 "- build/claims-launch-evidence-reviewed.json",
+                "- build/commercial-operations-evidence-reviewed.json",
             ]
         )
         + "\n",
@@ -173,6 +308,7 @@ def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier
     return {
         "support_privacy_template": str(support_path),
         "claims_launch_template": str(claims_path),
+        "commercial_operations_template": str(operations_path),
         "markdown": str(markdown_path),
     }
 

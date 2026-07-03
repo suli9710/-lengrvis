@@ -19,7 +19,7 @@ _logger = logging.getLogger("lengrvis.observability.access")
 def _route_template(request) -> str:
     try:
         route = request.scope.get("route")
-    except Exception:  # pragma: no cover - scope is always a mapping in practice  # noqa: BLE001
+    except AttributeError:  # pragma: no cover
         route = None
     path = getattr(route, "path", None)
     if path:
@@ -45,7 +45,7 @@ def register_observability_middleware(app) -> None:
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Trace-ID"] = trace_id
             return response
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-exception-boundary
             route = _route_template(request)
             metrics.increment_counter(
                 "http_unhandled_exceptions_total",

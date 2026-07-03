@@ -22,7 +22,7 @@ class ParallelReviewAgent(BaseAgent):
         for step in steps:
             try:
                 tool = registry.get(step.tool_name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 reasons.append(f"Step {step.id} references unavailable tool {step.tool_name}: {exc}.")
                 max_level = RiskLevel.R4_FORBIDDEN_OR_HANDOFF
                 continue

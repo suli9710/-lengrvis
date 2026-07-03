@@ -214,7 +214,7 @@ class FTSIndex:
 
             try:
                 vectors = embed_texts_sync([item.text for item in pending_chunks], embedder=self.embedder)
-            except Exception as exc:  # noqa: BLE001 - lexical rebuild should survive embedding outages.
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: lexical rebuild should survive embedding outages.
                 logger.warning("embedding generation failed during index rebuild: %s", exc)
                 record(
                     "index.embedding_failed",
@@ -293,7 +293,7 @@ class FTSIndex:
                             flush_pending()
                         files += 1
                         bytes_indexed += int(stat.st_size)
-                    except Exception as exc:  # noqa: BLE001 - one bad parser/file must not stop rebuild.
+                    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: one bad parser/file must not stop rebuild.
                         del pending_files[pending_file_start:]
                         del pending_chunks[pending_chunk_start:]
                         chunks = chunks_start
@@ -419,7 +419,7 @@ class FTSIndex:
         try:
             embedding_model = get_effective_settings().embedding_model
             vectors = embed_texts_sync([item.text for item in chunks_data], embedder=self.embedder)
-        except Exception as exc:  # noqa: BLE001 - lexical indexing should survive embedding outages.
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: lexical indexing should survive embedding outages.
             logger.warning("embedding generation failed for %s: %s", normalized, exc)
             record(
                 "index.embedding_failed",

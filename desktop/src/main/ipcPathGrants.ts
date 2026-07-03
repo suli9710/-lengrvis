@@ -110,7 +110,7 @@ export function showItemInFolder(
   try {
     shell.showItemInFolder(resolved);
     return { ok: true, path: resolved, revealed: true, shown: true };
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     return {
       ok: false,
       path: resolved,

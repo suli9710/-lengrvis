@@ -680,7 +680,7 @@ class OSExecutionEngine(ExecutionEngine):
                         raw_outcome = task_work.result()
                     except asyncio.CancelledError as exc:
                         raw_outcome = exc
-                    except Exception as exc:  # noqa: BLE001 - step failures are normalized below.
+                    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: step failures are normalized below.
                         raw_outcome = exc
                     if not isinstance(raw_outcome, BaseException):
                         write_back_step(step, isolated)
@@ -776,7 +776,7 @@ class OSExecutionEngine(ExecutionEngine):
                 observation,
                 threaded_tools=threaded_tools,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             return self._normalize_step_outcome(task, step, exc)
         if outcome.result is not None:
             observations_by_step[step.id] = outcome.result
@@ -1148,7 +1148,7 @@ class OSExecutionEngine(ExecutionEngine):
                 continue
             try:
                 observations[step_id] = ToolResult.model_validate(result_payload)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 record(
                     "run.observation_payload_invalid",
                     self._orchestrator().name,

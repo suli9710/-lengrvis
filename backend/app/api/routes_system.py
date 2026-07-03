@@ -886,7 +886,7 @@ def _local_model_product_metrics(settings: Any) -> dict[str, Any]:
     readiness: dict[str, Any] = {}
     try:
         readiness = ollama_service.hardware_readiness()
-    except Exception as exc:  # noqa: BLE001 - diagnostics should degrade to evidence, not fail.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: diagnostics should degrade to evidence, not fail.
         readiness = {"can_install": False, "recommended_model": "", "error_type": exc.__class__.__name__}
 
     installed = _safe_bool_call(ollama_service.is_installed)
@@ -940,7 +940,7 @@ def _configured_path_evidence(value: Any) -> dict[str, bool]:
 def _safe_bool_call(func: Any) -> bool:
     try:
         return bool(func())
-    except Exception:  # noqa: BLE001 - local diagnostics are best-effort.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: local diagnostics are best-effort.
         return False
 
 
@@ -995,7 +995,7 @@ def _certificate_self_signed(cert_file: str) -> bool | None:
         return None
     try:
         cert = ssl._ssl._test_decode_cert(str(path))  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - diagnostics should report readiness, not fail.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: diagnostics should report readiness, not fail.
         return None
     return cert.get("subject") == cert.get("issuer")
 

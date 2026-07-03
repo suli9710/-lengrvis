@@ -78,7 +78,7 @@ class SupervisorAgent:
             decision = self._payload_to_decision(payload)
         except LocalBackendUnavailable:
             return fallback
-        except Exception:  # noqa: BLE001 - supervisor provider failures fall back to local delegation heuristics.
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: supervisor provider failures fall back to local delegation heuristics.
             return fallback
 
         if not decision.reply:
@@ -123,7 +123,7 @@ class SupervisorAgent:
         if history is None:
             try:
                 history = get_session_context_store().load_latest()
-            except Exception:  # noqa: BLE001 - context history is best-effort for proactive suggestions.
+            except Exception:  # noqa: BLE001 - broad-exception-boundary: context history is best-effort for proactive suggestions.
                 history = None
         return (predictor or IntentPredictor()).predict(
             screen_state=screen_state,

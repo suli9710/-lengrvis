@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 try:
     from send2trash import send2trash
-except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
+except ImportError:  # pragma: no cover - optional dependency guard
     send2trash = None
 
 from app.core import db
@@ -830,7 +830,7 @@ def _sha256_file(path: Path) -> str:
 def _record_cleanup_event(event_type: str, payload: dict[str, Any], context: dict[str, Any]) -> None:
     try:
         record(event_type, "CleanupPlannerService", payload, task_id=context.get("task_id"))
-    except Exception:  # noqa: BLE001 - cleanup audit recording must not block the cleanup response.
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: cleanup audit recording must not block the cleanup response.
         return
 
 

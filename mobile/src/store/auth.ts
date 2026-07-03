@@ -70,14 +70,14 @@ export async function loadSession(): Promise<PairingSession | null> {
         await eraseLegacyAsyncStorageSecrets();
       }
       return safeSession;
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       if (error instanceof AuthExpiredError || error instanceof InsecureLanBaseUrlError) {
         await clearStoredSessionStrict();
         return null;
       }
       throw error;
     }
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (error instanceof SessionRecoveryError) {
       throw error;
     }
@@ -110,7 +110,7 @@ export async function saveSession(session: PairingSession): Promise<void> {
     await secureStoreSetItem(TOKEN_KEY, safeSession.token);
     await asyncStorageSetItem(SESSION_KEY, JSON.stringify(metadata));
     await eraseLegacyAsyncStorageSecrets();
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     await clearSessionQuietly();
     throw error;
   }
@@ -133,7 +133,7 @@ async function eraseLegacyAsyncStorageSecrets(): Promise<void> {
 async function asyncStorageGetItem(key: string): Promise<string | null> {
   try {
     return await AsyncStorage.getItem(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       return memoryAsyncStorage.get(key) ?? null;
     }
@@ -144,7 +144,7 @@ async function asyncStorageGetItem(key: string): Promise<string | null> {
 async function asyncStorageSetItem(key: string, value: string): Promise<void> {
   try {
     await AsyncStorage.setItem(key, value);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       memoryAsyncStorage.set(key, value);
       return;
@@ -156,7 +156,7 @@ async function asyncStorageSetItem(key: string, value: string): Promise<void> {
 async function asyncStorageRemoveItem(key: string): Promise<void> {
   try {
     await AsyncStorage.removeItem(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       memoryAsyncStorage.delete(key);
       return;
@@ -168,7 +168,7 @@ async function asyncStorageRemoveItem(key: string): Promise<void> {
 async function secureStoreGetItem(key: string): Promise<string | null> {
   try {
     return await SecureStore.getItemAsync(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       return memorySecureStore.get(key) ?? null;
     }
@@ -179,7 +179,7 @@ async function secureStoreGetItem(key: string): Promise<string | null> {
 async function secureStoreSetItem(key: string, value: string): Promise<void> {
   try {
     await SecureStore.setItemAsync(key, value);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       memorySecureStore.set(key, value);
       return;
@@ -191,7 +191,7 @@ async function secureStoreSetItem(key: string, value: string): Promise<void> {
 async function secureStoreDeleteItem(key: string): Promise<void> {
   try {
     await SecureStore.deleteItemAsync(key);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     if (isStorageBackendUnavailable(error)) {
       memorySecureStore.delete(key);
       return;
@@ -230,7 +230,7 @@ async function clearSessionQuietly(): Promise<void> {
 async function clearStoredSessionStrict(): Promise<void> {
   try {
     await clearSession();
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     throw new SessionRecoveryError(error);
   }
 }

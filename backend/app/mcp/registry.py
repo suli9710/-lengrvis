@@ -20,12 +20,16 @@ class MCPRegistry:
 
     def __init__(self) -> None:
         self.clients: dict[str, MCPClient] = {}
+        self.require_owner_policy = False
 
     def load_from_settings(self, settings: AppSettings) -> None:
         self.clients.clear()
+        self.require_owner_policy = bool(getattr(settings, "mcp_require_owner_policy", False))
         for entry in settings.mcp_servers:
             if not entry.get("enabled", True):
                 continue
+            if self.require_owner_policy:
+                _validate_mcp_owner_policy(entry)
             config = MCPServerConfig(
                 name=str(entry.get("name") or "mcp"),
                 url=str(entry.get("url") or ""),
@@ -34,6 +38,9 @@ class MCPRegistry:
                 command=str(entry.get("command") or ""),
                 args=list(entry.get("args") or []),
                 auth=dict(entry.get("auth") or {}),
+                owner=str(entry.get("owner") or ""),
+                policy_id=str(entry.get("policy_id") or entry.get("policyId") or ""),
+                allowed_tools=_mcp_string_list(entry.get("allowed_tools") or entry.get("allowedTools")),
             )
             if not config.url and not config.command:
                 continue
@@ -48,7 +55,7 @@ class MCPRegistry:
         for server_name, client in self.clients.items():
             try:
                 discovered = await client.list_tools()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 record("mcp.list_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
                 continue
             for tool in discovered:
@@ -60,7 +67,7 @@ class MCPRegistry:
         for server_name, client in self.clients.items():
             try:
                 discovered = await client.list_resources()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                 record("mcp.resources_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
                 continue
             for resource in discovered:
@@ -72,6 +79,16 @@ class MCPRegistry:
         all_tools = await self.list_all_tools()
         for tool in all_tools:
             server = tool["server"]
+            client = self.clients.get(server)
+            if client is None:
+                continue
+            if client.config.allowed_tools and tool["name"] not in client.config.allowed_tools:
+                record(
+                    "mcp.tool_not_approved",
+                    "MCPRegistry",
+                    {"server": server, "tool": tool["name"], "policy_id": client.config.policy_id},
+                )
+                continue
             name = f"mcp.{server}.{tool['name']}"
             adapted.append(
                 ToolDefinition(
@@ -95,6 +112,29 @@ class MCPRegistry:
                 )
             )
         return adapted
+
+
+def _validate_mcp_owner_policy(entry: dict[str, Any]) -> None:
+    name = str(entry.get("name") or entry.get("id") or "mcp")
+    owner = str(entry.get("owner") or "").strip()
+    policy_id = str(entry.get("policy_id") or entry.get("policyId") or "").strip()
+    allowed_tools = _mcp_string_list(entry.get("allowed_tools") or entry.get("allowedTools"))
+    if not owner or owner.upper() == "TBD":
+        raise ValueError(f"MCP server '{name}' requires an owner in release profile.")
+    if not policy_id or policy_id.upper() == "TBD":
+        raise ValueError(f"MCP server '{name}' requires an owner-approved policy_id in release profile.")
+    if not allowed_tools or not all(str(tool).strip() for tool in allowed_tools):
+        raise ValueError(f"MCP server '{name}' requires non-empty allowed_tools in release profile.")
+
+
+def _mcp_string_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _build_executor(registry: MCPRegistry, server: str, tool_name: str):
@@ -133,7 +173,7 @@ def _run_mcp_call(client: MCPClient, tool_name: str, args: dict[str, Any]) -> di
             pool.shutdown(wait=False, cancel_futures=True)
     except TimeoutError:
         return {"ok": False, "error": "MCP tool call timed out.", "server": server}
-    except Exception as exc:  # noqa: BLE001 - third-party MCP tools should fail inline.
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: third-party MCP tools should fail inline.
         return {"ok": False, "error": f"MCP tool call failed: {exc}", "server": server}
 
 

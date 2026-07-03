@@ -30,7 +30,7 @@ export async function ensureBackendReadyForRendererSubmission(
       return null;
     }
     return backendNotReadyResponse(status, receivedAt);
-  } catch (error) {
+  } catch (error) { // broad-exception-boundary
     return {
       ok: false,
       status: 503,

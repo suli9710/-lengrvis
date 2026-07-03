@@ -59,7 +59,7 @@ def perception_suggestions() -> list[IntentSuggestion]:
 def capture_perception() -> PerceptionCaptureResponse:
     try:
         state = perception_suggestion_service.capture_once_summary()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         raise HTTPException(status_code=503, detail=f"Perception capture failed: {exc}") from exc
     return PerceptionCaptureResponse(screen_state=state)
 
