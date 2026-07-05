@@ -68,7 +68,6 @@ _REMOTE_INPUT_UNEXPECTED_ERROR_CODE = "remote_input.failed"
 _REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _REMOTE_INPUT_MAX_EVENTS_PER_WINDOW = 20
 _REMOTE_INPUT_PENDING_APPROVAL_LIMIT = 5
-_REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT = 1000
 _REMOTE_INPUT_RATE_LIMITERS = RemoteInputRateLimiterStore()
 _REMOTE_INPUT_TEXT_MAX_CHARS = 180
 _REMOTE_INPUT_ALLOWED_KEYS = {"enter", "escape", "tab", "backspace", "pageup", "pagedown"}
@@ -466,21 +465,7 @@ def _remote_input_pending_approval_count(claims: dict[str, Any]) -> int:
     device_id = str(claims.get("device_id") or "")
     if not grant_id or not device_id:
         return 0
-
-    count = 0
-    for approval in db.fetch_many(
-        "approvals",
-        "status = ?",
-        ("pending",),
-        limit=max(1, int(_REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT)),
-    ):
-        if (
-            approval.get("source") == "remote_input"
-            and approval.get("source_grant_id") == grant_id
-            and approval.get("source_device_id") == device_id
-        ):
-            count += 1
-    return count
+    return db.count_pending_remote_input_approvals(grant_id, device_id)
 
 
 async def _authorize_remote_websocket(websocket: WebSocket, token: str) -> dict[str, Any] | None:

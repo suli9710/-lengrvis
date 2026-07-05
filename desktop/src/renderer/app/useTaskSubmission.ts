@@ -138,7 +138,7 @@ export function useTaskSubmission({
         return { ok: true };
       }
       return { ok: false, error: backendTaskSubmitUnavailableMessage(status) };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       return {
         ok: false,
         error: `Lengrvis 服务还没连上：${readableError(error, "连接检查失败")}。输入内容已保留，可以稍后重试。`
@@ -179,7 +179,7 @@ export function useTaskSubmission({
       const message = result.error?.message ?? "Lengrvis 暂时不可用，请稍后再试。";
       appendFailedAssistantMessage(message);
       return { ok: false, error: message };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = error instanceof Error ? error.message : "Lengrvis 暂时不可用，请稍后再试。";
       appendFailedAssistantMessage(message);
       return { ok: false, error: message };

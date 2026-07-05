@@ -4,6 +4,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
+const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
 const previewUrl = "http://127.0.0.1:4173";
 const desktopRoot = path.resolve(__dirname, "..");
@@ -1197,7 +1198,7 @@ async function returnToSearchTab(page) {
     }
   } finally {
     if (browser) await browser.close();
-    preview.kill("SIGTERM");
+    await stopProcessTree(preview);
     releasePreviewPort();
   }
 })().catch((error) => {

@@ -127,6 +127,37 @@ def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str
     return expired
 
 
+def count_pending_remote_input_approvals(grant_id: str, device_id: str) -> int:
+    """Count active pending remote-input approvals for one grant/device binding."""
+    normalized_grant_id = str(grant_id or "").strip()
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_grant_id or not normalized_device_id:
+        return 0
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, data
+            FROM approvals
+            WHERE status = ?
+              AND json_extract(data, '$.status') = ?
+              AND json_extract(data, '$.source') = ?
+              AND json_extract(data, '$.source_grant_id') = ?
+              AND json_extract(data, '$.source_device_id') = ?
+              AND json_extract(data, '$.consumed_at') IS NULL
+            """,
+            (
+                "pending",
+                "pending",
+                "remote_input",
+                normalized_grant_id,
+                normalized_device_id,
+            ),
+        ).fetchall()
+        for row in rows:
+            db._require_sensitive_record_integrity(conn, "approvals", row["id"], row["data"])
+    return len(rows)
+
+
 def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -> dict[str, Any] | None:
     """Atomically move a pending, unconsumed approval to a terminal decision."""
     if status not in {"approved", "rejected"}:

@@ -10,11 +10,11 @@ from app.core.paths import resolve_authorized
 from app.tools.developer_tools import (
     DIFF_PREVIEW_LIMIT,
     TEST_OUTPUT_PREVIEW_LIMIT,
-    _guarded_git_command,
     _parse_test_command,
     _run_command,
     _run_test_foreground,
     _truncate_text,
+    _trusted_guarded_git_command,
 )
 
 WRITE_TOOL_NAMES = frozenset({"Write", "Edit"})
@@ -74,7 +74,22 @@ def git_worktree_diff_preview(
 ) -> dict[str, Any]:
     root = Path(workspace).expanduser().resolve(strict=False)
     allowed = list(allowed_directories or [str(root)])
-    command = _guarded_git_command(["diff", "--name-status", "HEAD"])
+    command, error = _trusted_guarded_git_command(
+        ["diff", "--name-status", "HEAD"],
+        root=root,
+        allowed_directories=allowed,
+    )
+    if command is None:
+        return {
+            "ok": False,
+            "dry_run": True,
+            "workspace": str(root),
+            "changed_files": [],
+            "diff_preview": "",
+            "diff_truncated": False,
+            "stderr": error,
+            "returncode": 127,
+        }
     result = _run_command(command, cwd=root, shell=False)
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")

@@ -1099,6 +1099,40 @@ def test_remote_input_websocket_pending_approval_limit_fails_closed(monkeypatch:
     assert rate_limited[0]["payload"]["reason"] == "pending_approvals"
 
 
+def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan_window():
+    device_id = "mobile_input_pending_count_db"
+    grant_id = "grant_pending_count_db"
+    db.upsert_model(
+        "approvals",
+        Approval(
+            task_id="task_remote_pending_count_db",
+            step_id="step_matching",
+            approval_type="remote_input",
+            message="Matching pending remote input",
+            source="remote_input",
+            source_device_id=device_id,
+            source_grant_id=grant_id,
+            created_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    for index in range(1001):
+        db.upsert_model(
+            "approvals",
+            Approval(
+                task_id=f"task_remote_pending_noise_{index}",
+                step_id="step_noise",
+                approval_type="remote_input",
+                message="Unrelated pending remote input",
+                source="remote_input",
+                source_device_id=f"other_device_{index}",
+                source_grant_id=f"other_grant_{index}",
+                created_at="2026-01-02T00:00:00+00:00",
+            ),
+        )
+
+    assert routes_remote._remote_input_pending_approval_count({"grant_id": grant_id, "device_id": device_id}) == 1
+
+
 def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_preview(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     private_text = "please type my private recovery phrase"

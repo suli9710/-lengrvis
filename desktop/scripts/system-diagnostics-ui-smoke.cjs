@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
+const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
 const desktopRoot = path.resolve(__dirname, "..");
 const previewHost = "127.0.0.1";
@@ -673,10 +674,7 @@ function getFreePort() {
 }
 
 async function stopProcess(child) {
-  if (!child || child.killed) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  child.kill();
-  await Promise.race([exited, delay(3_000)]);
+  await stopProcessTree(child);
 }
 
 function delay(ms) {

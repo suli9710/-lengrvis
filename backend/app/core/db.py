@@ -628,6 +628,12 @@ def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str
     return _expire_pending_approvals_for_task(task_id, expired_at, reason)
 
 
+def count_pending_remote_input_approvals(grant_id: str, device_id: str) -> int:
+    from app.core.db_approvals import count_pending_remote_input_approvals as _count_pending_remote_input_approvals
+
+    return _count_pending_remote_input_approvals(grant_id, device_id)
+
+
 def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -> dict[str, Any] | None:
     from app.core.db_approvals import decide_approval_atomically as _decide_approval_atomically
 

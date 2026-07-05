@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,6 +110,31 @@ tools:
         encoding="utf-8",
     )
     return skill_root
+
+
+def _create_directory_escape_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
+
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation failed: {completed.stderr or completed.stdout}")
+
+
+def _remove_directory_escape_link(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    elif hasattr(link, "is_junction") and link.is_junction():
+        link.rmdir()
 
 
 def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
@@ -416,6 +443,31 @@ def test_skill_route_imports_skill_directory_from_downloads(monkeypatch, tmp_pat
 
     assert response.status_code == 200
     assert response.json()["skill"]["name"] == "downloaded-demo"
+
+
+def test_skill_route_rejects_directory_import_with_link_escape(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    source = _write_skill(tmp_path / "source", name="linked-demo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside secret", encoding="utf-8")
+    link = source / "linked-outside"
+    _create_directory_escape_link(link, outside)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    db.init_db()
+
+    try:
+        response = TestClient(create_app()).post("/api/skills/import", json={"path": str(source)})
+    finally:
+        _remove_directory_escape_link(link)
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["code"] == "skill_import_path_denied"
+    assert "symlinks" in payload["error"]["message"]
+    assert not (data_dir / "skills" / "linked-demo-1.0.0" / "linked-outside" / "secret.txt").exists()
 
 
 def test_skill_route_imports_skill_zip_from_downloads(monkeypatch, tmp_path: Path):

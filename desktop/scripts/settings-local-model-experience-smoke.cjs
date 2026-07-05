@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
+const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
 const desktopRoot = path.resolve(__dirname, "..");
 const workspaceRoot = path.resolve(desktopRoot, "..");
@@ -473,15 +474,17 @@ function runSourceAssertions() {
   ]
     .join("\n");
   const apiClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "api", "client.ts"), "utf8");
+  const localModelClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "api", "localModelClient.ts"), "utf8");
 
   assert.match(
-    apiClientSource,
-    /installLocalModel\(request: LocalModelInstallRequest[\s\S]*window\.lengrvis\?\.localModel[\s\S]*\/api\/settings\/install-local-model/,
+    localModelClientSource,
+    /installLocalModelEndpoint\([\s\S]*window\.lengrvis\?\.localModel[\s\S]*\/api\/settings\/install-local-model/,
     "local model install should use the explicit desktop bridge before direct backend fallback"
   );
-  assert.match(apiClientSource, /installOllama\(\)[\s\S]*\/api\/settings\/ollama\/install/, "Ollama install helper should be explicit");
-  assert.match(apiClientSource, /startOllama\(\)[\s\S]*\/api\/settings\/ollama\/start/, "Ollama start helper should be explicit");
-  assert.match(apiClientSource, /pullOllama\(model\?: string\)[\s\S]*\/api\/settings\/ollama\/pull/, "Ollama pull helper should be explicit");
+  assert.match(apiClientSource, /installLocalModel\(request: LocalModelInstallRequest[\s\S]*installLocalModelEndpoint/, "api client should expose the one-click local model install helper");
+  assert.match(localModelClientSource, /installOllamaEndpoint\([\s\S]*\/api\/settings\/ollama\/install/, "Ollama install helper should be explicit");
+  assert.match(localModelClientSource, /startOllamaEndpoint\([\s\S]*\/api\/settings\/ollama\/start/, "Ollama start helper should be explicit");
+  assert.match(localModelClientSource, /pullOllamaEndpoint\([\s\S]*\/api\/settings\/ollama\/pull/, "Ollama pull helper should be explicit");
 
   assert.match(settingsModuleSources, /api\.installLocalModel\(\{ model \}\)/, "settings installer should call the apiClient one-click install method");
   assert.doesNotMatch(
@@ -1273,10 +1276,7 @@ function getFreePort() {
 }
 
 async function stopProcess(child) {
-  if (!child || child.killed) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  child.kill();
-  await Promise.race([exited, delay(3_000)]);
+  await stopProcessTree(child);
 }
 
 function delay(ms) {

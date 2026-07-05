@@ -165,6 +165,7 @@ def test_shell_readonly_reads_absolute_paths_inside_authorized_directories(tmp_p
 
 def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
+    trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
         calls.append({"command": command, "cwd": cwd, "shell": shell})
@@ -177,6 +178,7 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
         }
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: str(trusted_git))
 
     result = developer_tools.shell_readonly(
         {"cwd": str(tmp_path), "command": "git status --short"},
@@ -188,10 +190,12 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     assert result["stdout"] == "## main\n"
     assert result["summary"].startswith("Read-only shell command succeeded")
     assert calls == [{"command": calls[0]["command"], "cwd": tmp_path.resolve(), "shell": False}]
-    assert calls[0]["command"][0] == "git"
-    assert "core.fsmonitor=false" in calls[0]["command"]
-    assert "core.hooksPath=" in calls[0]["command"]
-    assert "diff.external=" in calls[0]["command"]
+    command = calls[0]["command"]
+    assert Path(command[0]).name.casefold().startswith("git")
+    assert Path(command[0]).is_absolute()
+    assert "core.fsmonitor=false" in command
+    assert "core.hooksPath=" in command
+    assert "diff.external=" in command
     assert calls[0]["command"][-2:] == ["status", "--short"]
 
 
@@ -221,6 +225,37 @@ def test_shell_readonly_executes_builtins_without_process_spawn(
     assert result["readonly"] is True
     assert result["stdout"] == "hello\n"
     assert calls == []
+
+
+def test_shell_readonly_rejects_workspace_hijacked_external_executable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_git = tmp_path / "git.exe"
+    fake_git.write_text("not really git", encoding="utf-8")
+    calls: list[Any] = []
+
+    monkeypatch.setattr(developer_tools, "_safe_command_env", lambda: {"PATH": str(tmp_path)})
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: str(fake_git))
+    monkeypatch.setattr(developer_tools, "_run_command", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "git status --short"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["readonly"] is False
+    assert "authorized workspace" in result["error"].lower()
+    assert calls == []
+
+
+def _trusted_test_executable(workspace: Path, name: str) -> Path:
+    trusted_dir = workspace.parent / f"{workspace.name}-trusted-bin"
+    trusted_dir.mkdir(exist_ok=True)
+    executable = trusted_dir / name
+    executable.write_text("trusted test executable", encoding="utf-8")
+    return executable
 
 
 @pytest.mark.parametrize(
@@ -620,12 +655,14 @@ def test_dev_test_run_background_returns_task_status(monkeypatch: pytest.MonkeyP
 def test_diff_preview_returns_summary_and_truncation_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     diff = "diff --git a/a.py b/a.py\n@@\n" + ("+" * developer_tools.DIFF_PREVIEW_LIMIT)
     calls: list[list[str]] = []
+    trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": diff, "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: str(trusted_git))
 
     result = developer_tools.diff_preview({"cwd": str(tmp_path)}, {"allowed_directories": [str(tmp_path)]})
 
@@ -642,12 +679,14 @@ def test_shell_readonly_wraps_git_diff_with_external_execution_guards(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[list[str]] = []
+    trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": "", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: str(trusted_git))
 
     result = developer_tools.shell_readonly(
         {"cwd": str(tmp_path), "command": "git diff -- backend/tests"}, {"allowed_directories": [str(tmp_path)]}
@@ -656,7 +695,9 @@ def test_shell_readonly_wraps_git_diff_with_external_execution_guards(
     assert result["ok"] is True
     assert calls
     command = calls[0]
-    assert command[:2] == ["git", "-c"]
+    assert Path(command[0]).name.casefold().startswith("git")
+    assert Path(command[0]).is_absolute()
+    assert command[1] == "-c"
     assert "--no-ext-diff" in command
     assert "--no-textconv" in command
     assert command[-2:] == ["--", "backend/tests"]

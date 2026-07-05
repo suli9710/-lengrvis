@@ -62,16 +62,19 @@ assert.deepEqual([...documentScopesForFiles([
   "C:\\A\\two.pdf"
 ], [])], ["C:\\A"]);
 
-const panelSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "FileSearchPanel.tsx"), "utf8");
-const compareStart = panelSource.indexOf("const compareDocuments = async () =>");
-const ensureBeforeCompare = panelSource.indexOf(
+const workspaceSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "renderer", "components", "file-search", "FileDocumentWorkspace.tsx"),
+  "utf8"
+);
+const compareStart = workspaceSource.indexOf("const compareDocuments = useCallback(async () =>");
+const ensureBeforeCompare = workspaceSource.indexOf(
   "ensureDocumentScopes([selectedDocumentPathValue, compareDocumentPathValue])",
   compareStart
 );
-const compareCall = panelSource.indexOf("api.compareDocuments", compareStart);
+const compareCall = workspaceSource.indexOf("api.compareDocuments", compareStart);
 assert.ok(compareStart >= 0, "compareDocuments handler should exist");
 assert.ok(ensureBeforeCompare > compareStart, "compareDocuments should ensure both document scopes");
 assert.ok(compareCall > ensureBeforeCompare, "compareDocuments should save scopes before calling the backend compare API");
-assert.match(panelSource, /const ensureDocumentScope = useCallback\([\s\S]*ensureDocumentScopes\(\[filePath\]\)/);
+assert.match(workspaceSource, /const ensureDocumentScope = useCallback\([\s\S]*ensureDocumentScopes\(\[filePath\]\)/);
 
 console.log("document-scope smoke passed");

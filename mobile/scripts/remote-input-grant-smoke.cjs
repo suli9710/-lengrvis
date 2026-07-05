@@ -91,7 +91,15 @@ function functionSource(source, name) {
 }
 
 function assertRemoteScreenBeginnerCopy() {
-  const source = fs.readFileSync(mobilePath("src/screens/RemoteScreen.tsx"), "utf8");
+  const remoteScreenSource = fs.readFileSync(mobilePath("src/screens/RemoteScreen.tsx"), "utf8");
+  const source = [
+    remoteScreenSource,
+    fs.readFileSync(mobilePath("src/screens/remoteScreenPresentation.ts"), "utf8"),
+    fs.readFileSync(mobilePath("src/screens/RemoteStatusPanels.tsx"), "utf8"),
+    fs.readFileSync(mobilePath("src/screens/RemoteControlDeck.tsx"), "utf8"),
+    fs.readFileSync(mobilePath("src/screens/RemoteViewerSurface.tsx"), "utf8"),
+    fs.readFileSync(mobilePath("src/screens/pairScreenNotices.ts"), "utf8"),
+  ].join("\n");
   const appConfig = JSON.parse(fs.readFileSync(mobilePath("app.json"), "utf8"));
   const beginnerCopy = [
     "只读观看",
@@ -125,7 +133,7 @@ function assertRemoteScreenBeginnerCopy() {
     "Remote transport notice must not expose protocol, host, token, or certificate internals to beginners",
   );
   assert.doesNotMatch(
-    source,
+    remoteScreenSource,
     /if \(error instanceof Error && error\.message\) return error\.message;|payload\.message \|\|/,
     "Remote input failure UI must not surface raw backend or token errors",
   );

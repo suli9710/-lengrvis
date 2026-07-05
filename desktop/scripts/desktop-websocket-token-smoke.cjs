@@ -98,15 +98,28 @@ for (const [name, query] of [
 }
 
 const transportSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "lib", "api", "transport.ts"), "utf8");
+const realtimeTransportSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "renderer", "lib", "api", "realtimeTransport.ts"),
+  "utf8"
+);
 assert.match(
-  transportSource,
+  realtimeTransportSource,
   /function subscribeDesktopJsonStream[\s\S]*window\.lengrvis(?:!|\?)?\.realtime\.subscribe/,
   "task/run streams should use preload realtime bridge in Electron"
 );
-assert.doesNotMatch(transportSource, /new WebSocket\(build(?:Task|Run)WebSocketUrl/, "task/run streams must not directly create protected WebSockets");
+assert.doesNotMatch(
+  realtimeTransportSource,
+  /new WebSocket\(build(?:Task|Run)WebSocketUrl/,
+  "task/run streams must not directly create protected WebSockets"
+);
+assert.match(
+  realtimeTransportSource,
+  /function isWebOnlyDevRealtimeFallbackEnabled[\s\S]*isWebOnlyDevBackendBridge/,
+  "renderer realtime fallback must delegate to the web-only dev backend bridge"
+);
 assert.match(
   transportSource,
-  /function isWebOnlyDev(?:RealtimeFallbackEnabled|BackendBridge)[\s\S]*import\.meta\.env\.DEV/,
+  /function isWebOnlyDevBackendBridge[\s\S]*import\.meta\.env\.DEV/,
   "renderer fallback must be web-only dev gated"
 );
 

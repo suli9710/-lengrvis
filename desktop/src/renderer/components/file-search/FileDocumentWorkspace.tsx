@@ -137,7 +137,7 @@ export function useFileDocumentWorkspace({
       setDocumentNotice(null);
       setDocumentError(message);
       return { ok: false, error: message };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = fileActionError(error, "read");
       setDocumentNotice(null);
       setDocumentError(message);
@@ -184,7 +184,7 @@ export function useFileDocumentWorkspace({
       setDocumentNotice(null);
       setDocumentError(message);
       return { ok: false, error: message };
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       const message = fileActionError(error, "summarize");
       setDocumentNotice(null);
       setDocumentError(message);
@@ -276,7 +276,7 @@ export function useFileDocumentWorkspace({
       } else {
         setDocumentError(userFileError(response.error?.message, "文档对比失败，请确认两个文件都能打开。"));
       }
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary
       setDocumentError(userFileError(error, "文档对比失败，请确认两个文件都能打开。"));
     } finally {
       setIsDocumentWorking(false);

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
+const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
 const root = path.resolve(__dirname, "..", "..");
 const desktopRoot = path.resolve(__dirname, "..");
@@ -62,7 +63,7 @@ function assertSourceBoundaries() {
   assertIncludes(service, '"supports_dry_run": tool.supports_dry_run', "backend skill catalog preview flag");
   assertIncludes(service, '"rollback_hint": tool.rollback_hint', "backend skill catalog rollback hint");
 
-  const sharedTypes = read("desktop/src/shared/types.ts");
+  const sharedTypes = read("desktop/src/shared/catalogTypes.ts");
   assertIncludes(sharedTypes, "permissions: string[];", "desktop skill type permissions");
   assertIncludes(sharedTypes, "supportsDryRun: boolean;", "desktop skill type preview flag");
   assertIncludes(sharedTypes, "rollbackHint: string;", "desktop skill type rollback hint");
@@ -592,10 +593,7 @@ function getFreePort() {
 }
 
 async function stopProcess(child) {
-  if (!child || child.killed) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  child.kill();
-  await Promise.race([exited, delay(3_000)]);
+  await stopProcessTree(child);
 }
 
 function delay(ms) {

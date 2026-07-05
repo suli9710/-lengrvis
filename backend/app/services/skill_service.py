@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -578,6 +580,7 @@ def _copy_skill_directory(source: Path, destination: Path) -> _SkillInstallRollb
     except ValueError as exc:  # pragma: no cover - defensive guard.
         raise SecurityError("Skill install destination escapes the skills directory.") from exc
     _raise_if_skill_copy_self_references(source_resolved, destination_resolved)
+    _raise_if_skill_source_contains_links(source_resolved)
     rollback = _prepare_skill_install_rollback(destination_resolved)
     try:
         shutil.copytree(
@@ -592,6 +595,37 @@ def _copy_skill_directory(source: Path, destination: Path) -> _SkillInstallRollb
             log_best_effort_failure(logger, "skill.copy.rollback_restore", restore_exc)
         raise
     return rollback
+
+
+def _raise_if_skill_source_contains_links(source: Path) -> None:
+    for current_root, dir_names, file_names in os.walk(source, topdown=True, followlinks=False):
+        current = Path(current_root)
+        for name in list(dir_names):
+            candidate = current / name
+            if _is_symlink_or_reparse_point(candidate):
+                raise SkillServiceError(
+                    "Skill import source must not contain symlinks, junctions, or reparse points.",
+                    code="skill_import_path_denied",
+                )
+        for name in file_names:
+            if _is_symlink_or_reparse_point(current / name):
+                raise SkillServiceError(
+                    "Skill import source must not contain symlinks, junctions, or reparse points.",
+                    code="skill_import_path_denied",
+                )
+
+
+def _is_symlink_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    try:
+        attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 def _prepare_skill_install_rollback(destination: Path) -> _SkillInstallRollback:

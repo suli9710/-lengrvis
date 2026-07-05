@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path, PureWindowsPath
@@ -202,7 +203,14 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
-    result = _run_command(_guarded_git_command(["status", "--short", "--branch"]), cwd=root)
+    command, error = _trusted_guarded_git_command(
+        ["status", "--short", "--branch"],
+        root=root,
+        allowed_directories=_allowed(context),
+    )
+    if command is None:
+        return {"ok": False, "cwd": str(root), "error": error}
+    result = _run_command(command, cwd=root)
     payload = {"ok": result["returncode"] == 0, "cwd": str(root), **result}
     payload["summary"] = _summarize_git_status(payload)
     return payload
@@ -214,7 +222,14 @@ def diff_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     pathspec_error = _path_candidate_error(pathspec, _allowed(context), root=root)
     if pathspec_error:
         return {"ok": False, "cwd": str(root), "error": pathspec_error}
-    result = _run_command(_guarded_git_command(["diff", "--", pathspec]), cwd=root)
+    command, error = _trusted_guarded_git_command(
+        ["diff", "--", pathspec],
+        root=root,
+        allowed_directories=_allowed(context),
+    )
+    if command is None:
+        return {"ok": False, "cwd": str(root), "error": error}
+    result = _run_command(command, cwd=root)
     diff, diff_truncated = _truncate_text(str(result.get("stdout") or ""), DIFF_PREVIEW_LIMIT)
     payload = {
         "ok": result["returncode"] == 0,
@@ -242,6 +257,13 @@ def shell_readonly(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         return {"ok": False, "error": reason, "readonly": False}
     result = _run_local_readonly_builtin(tokens, root, allowed_directories)
     if result is None:
+        tokens, reason = _trusted_readonly_external_command(
+            tokens,
+            root=root,
+            allowed_directories=allowed_directories,
+        )
+        if tokens is None:
+            return {"ok": False, "error": reason, "readonly": False}
         result = _run_command(tokens, cwd=root, shell=False)
     payload = {"ok": result["returncode"] == 0, "cwd": str(root), "readonly": True, **result}
     payload["summary"] = _summarize_shell_readonly(command, payload)
@@ -378,7 +400,7 @@ def _parse_readonly_shell(
         return None, "Missing command."
     tokens = [_strip_matching_quotes(token) for token in tokens]
     lowered = [token.casefold() for token in tokens]
-    executable = Path(lowered[0]).name
+    executable = _readonly_command_key(tokens[0])
     if executable not in READONLY_SHELL_COMMANDS:
         return None, f"Command '{tokens[0]}' is not in the read-only allowlist."
     if any(token in SHELL_WRITE_TOKENS or any(char in token for char in SHELL_METACHARS) for token in lowered):
@@ -399,7 +421,7 @@ def _parse_readonly_shell(
 
 
 def _run_local_readonly_builtin(tokens: list[str], root: Path, allowed_directories: list[str]) -> dict[str, Any] | None:
-    executable = Path(tokens[0]).name.casefold()
+    executable = _readonly_command_key(tokens[0])
     if executable not in LOCAL_READONLY_BUILTINS:
         return None
     try:
@@ -659,15 +681,112 @@ def _git_readonly_flag_error(args: list[str]) -> str:
     return ""
 
 
-def _guarded_git_command(args: list[str]) -> list[str]:
+def _guarded_git_command(args: list[str], *, git_executable: str = "git") -> list[str]:
     if not args:
-        return ["git", *GIT_CONFIG_GUARDS]
+        return [git_executable, *GIT_CONFIG_GUARDS]
     subcommand = args[0].casefold()
-    guarded = ["git", *GIT_CONFIG_GUARDS, args[0], *args[1:]]
+    guarded = [git_executable, *GIT_CONFIG_GUARDS, args[0], *args[1:]]
     if subcommand in {"diff", "log", "show"}:
-        insert_at = len(["git", *GIT_CONFIG_GUARDS, args[0]])
+        insert_at = len([git_executable, *GIT_CONFIG_GUARDS, args[0]])
         guarded[insert_at:insert_at] = GIT_DIFF_GUARD_FLAGS
     return guarded
+
+
+def _trusted_guarded_git_command(
+    args: list[str],
+    *,
+    root: Path,
+    allowed_directories: list[str],
+) -> tuple[list[str] | None, str]:
+    git_executable, error = _trusted_external_executable(
+        "git",
+        root=root,
+        allowed_directories=allowed_directories,
+    )
+    if git_executable is None:
+        return None, error
+    return _guarded_git_command(args, git_executable=git_executable), ""
+
+
+def _trusted_readonly_external_command(
+    tokens: list[str],
+    *,
+    root: Path,
+    allowed_directories: list[str],
+) -> tuple[list[str] | None, str]:
+    if not tokens:
+        return None, "Missing command."
+    command_key = _readonly_command_key(tokens[0])
+    executable, error = _trusted_external_executable(
+        command_key,
+        root=root,
+        allowed_directories=allowed_directories,
+    )
+    if executable is None:
+        return None, error
+    return [executable, *tokens[1:]], ""
+
+
+def _trusted_external_executable(
+    command_name: str,
+    *,
+    root: Path,
+    allowed_directories: list[str],
+) -> tuple[str | None, str]:
+    command_key = _readonly_command_key(command_name)
+    if command_key not in READONLY_SHELL_COMMANDS:
+        return None, f"Command '{command_name}' is not in the read-only allowlist."
+    env = _safe_command_env()
+    search_path = env.get("PATH") or ""
+    resolved = shutil.which(command_key, path=search_path)
+    if not resolved:
+        return None, f"Trusted executable for '{command_key}' was not found on PATH."
+    resolved_path = Path(resolved).expanduser().resolve(strict=False)
+    if _path_is_under_any(resolved_path, _trusted_executable_blocked_roots(root, allowed_directories)):
+        return None, f"Trusted executable for '{command_key}' resolves inside an authorized workspace."
+    return str(resolved_path), ""
+
+
+def _trusted_executable_blocked_roots(root: Path, allowed_directories: list[str]) -> list[Path]:
+    roots = [root, *(Path(raw) for raw in allowed_directories or [])]
+    blocked: list[Path] = []
+    seen: set[str] = set()
+    for raw_root in roots:
+        resolved = raw_root.expanduser().resolve(strict=False)
+        if resolved.parent == resolved:
+            continue
+        key = str(resolved).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        blocked.append(resolved)
+    return blocked
+
+
+def _path_is_under_any(path: Path, roots: list[Path]) -> bool:
+    normalized = path.resolve(strict=False)
+    for root in roots:
+        try:
+            if normalized == root or normalized.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _readonly_command_key(value: str) -> str:
+    name = _command_token_name(value).casefold()
+    for suffix in (".exe", ".cmd", ".bat", ".com"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _command_token_name(value: str) -> str:
+    text = _strip_matching_quotes(str(value or "").strip())
+    if "\\" in text or ":" in text:
+        return PureWindowsPath(text).name
+    return Path(text).name
 
 
 def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) -> dict[str, Any]:
