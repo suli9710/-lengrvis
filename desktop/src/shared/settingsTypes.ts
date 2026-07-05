@@ -1,0 +1,74 @@
+import type { PermissionMode } from "./executionTypes";
+
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  enabled: boolean;
+  id?: string;
+  command?: string;
+  args?: string[];
+  transport?: string;
+  auth?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface AppSettings {
+  apiBaseUrl: string;
+  autoStartBackend: boolean;
+  telemetryEnabled: boolean;
+  compactMode: boolean;
+  theme: "system" | "light" | "dark";
+  providerName: string;
+  model: string;
+  reviewModel: string;
+  wireApi: "chat_completions" | "responses";
+  requiresOpenAiAuth: boolean;
+  modelReasoningEffort: string;
+  disableResponseStorage: boolean;
+  temperature: number;
+  maxTokens: number;
+  timeout: number;
+  llmApiMaxRetries: number;
+  llmApiRetryBackoffSeconds: number;
+  llmApiCircuitFailureThreshold: number;
+  llmApiCircuitCooldownSeconds: number;
+  modelContextWindow: number;
+  modelAutoCompactTokenLimit: number;
+  workspaceRoot: string;
+  allowedDirectories?: string[];
+  allowBrowserNetwork: boolean;
+  remoteDesktopEnabled: boolean;
+  appAllowlist: string[];
+  browserMaxPageBytes: number;
+  browserScreenshotDir: string;
+  onnxModelPath: string;
+  onnxExecutionProvider: "Auto" | "WinML" | "DirectML" | "OpenVINO" | "CPU" | string;
+  onnxProviderPreference: string;
+  onnxDirectmlDeviceId: string;
+  onnxOpenvinoDevice: string;
+  onnxOpenvinoCacheDir: string;
+  onnxWarmOnStartup: boolean;
+  onnxModelFamily: string;
+  onnxEmbeddingBackend: string;
+  onnxEmbeddingModelPath: string;
+  onnxEmbeddingExecutionProvider: string;
+  onnxEmbeddingModelId: string;
+  onnxEmbeddingMaxBatchSize: number;
+  imageEmbeddingBackend: string;
+  onnxImageEmbeddingModelPath: string;
+  onnxImageEmbeddingExecutionProvider: string;
+  onnxImageEmbeddingModelId: string;
+  onnxImageEmbeddingMaxBatchSize: number;
+  ocrBackend: string;
+  ocrExecutionProvider: string;
+  ocrOpenvinoModelDir: string;
+  ocrOpenvinoDevice: string;
+  ocrLang: string;
+  ocrMinConfidence: number;
+  ocrBatchSize: number;
+  mode: "privacy" | "efficiency" | "hybrid";
+  permissionMode: PermissionMode;
+  allowCloudContext: boolean;
+  allowFileContentUpload: boolean;
+  mcpServers: McpServerConfig[];
+}

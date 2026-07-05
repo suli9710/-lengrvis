@@ -303,6 +303,22 @@ def test_lengrvis_code_public_failure_payload_redacts_diagnostics() -> None:
     assert payload["invalid_lines"] == ["not-json from [REDACTED_LOCAL_PATH] token=[REDACTED]"]
 
 
+def test_lengrvis_code_split_helpers_remain_available_from_legacy_module() -> None:
+    from app.integrations import lengrvis_code as legacy_module
+    from app.integrations.lengrvis_code_events import _summary_payload
+    from app.integrations.lengrvis_code_redaction import _public_lengrvis_code_text
+
+    summary = LengrvisCodeStreamSummary(
+        events=[{"type": "streamlined_text", "text": "hello"}],
+        assistant_text=["hello"],
+        result={"type": "result", "subtype": "success", "is_error": False, "result": "done"},
+    )
+
+    assert legacy_module._summary_payload is _summary_payload
+    assert legacy_module._public_lengrvis_code_text is _public_lengrvis_code_text
+    assert legacy_module._summary_payload(summary)["adapter_name"] == "lengrvis_code"
+
+
 @pytest.mark.asyncio
 async def test_launch_failure_returns_health_diagnostic(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("LENGRVIS_CODE_COMMAND", raising=False)

@@ -1,6 +1,7 @@
-import type { AgentConversation, CleanupPlan, TaskEvent } from "../../../shared/types";
+import type { CleanupPlan } from "../../../shared/cleanupTypes";
+import type { AgentConversation, TaskEvent } from "../../../shared/executionTypes";
 import { zhBackendTaskStatus, zhBackendText } from "../zh";
-import type { BackendAgentMessage, BackendStepRecordingFrame, BackendStepRecordingPayload, BackendTask, BackendTimeline } from "./backendTypes";
+import type { BackendAgentMessage, BackendStepRecordingFrame, BackendStepRecordingPayload, BackendTask, BackendTimeline } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
 import { mapBoundaryEvents, mapTaskState } from "./runMappers";

@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 
-import type { AppSettings, BackendStatus, LocalLLMHealth } from "../../shared/types";
+import type { BackendStatus } from "../../shared/types";
+import type { LocalLLMHealth } from "../../shared/localModelTypes";
+import type { AppSettings } from "../../shared/settingsTypes";
 import type { RealtimeConnectionStatus } from "../lib/apiClient";
 import type { AssistantMode } from "../store";
 import {

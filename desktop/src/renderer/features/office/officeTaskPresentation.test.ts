@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TaskEvent } from "../../../shared/types";
+import type { TaskEvent } from "../../../shared/executionTypes";
 import {
   deriveOfficeTaskPresentation,
   taskDisplayState,

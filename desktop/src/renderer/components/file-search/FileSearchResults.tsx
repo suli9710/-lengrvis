@@ -8,7 +8,7 @@ import {
   Sparkles
 } from "lucide-react";
 
-import type { FileSearchMeta, FileSearchResult } from "../../../shared/types";
+import type { FileSearchMeta, FileSearchResult } from "../../../shared/fileLibraryTypes";
 import {
   displayFilePath,
   displaySearchMatch,

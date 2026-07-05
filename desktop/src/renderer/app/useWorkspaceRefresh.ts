@@ -1,24 +1,23 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import type {
-  AgentConversation,
-  AppSettings,
-  ApprovalRequest,
   AuditLogEntry,
   BackendStatus,
   BrowserHostSnapshot,
-  BrowserSession,
-  ChatMessage,
-  ContextUsage,
-  IntentSuggestion,
-  LLMCostSummary,
-  LLMHealthStatus,
-  LocalLLMHealth,
+  BrowserSession
+} from "../../shared/types";
+import type { ChatMessage, IntentSuggestion } from "../../shared/catalogTypes";
+import type { SystemInfo } from "../../shared/systemTypes";
+import type {
+  AgentConversation,
+  ApprovalRequest,
   Plan,
   SafetyReview,
-  SystemInfo,
   TaskEvent
-} from "../../shared/types";
+} from "../../shared/executionTypes";
+import type { ContextUsage, LLMCostSummary, LLMHealthStatus } from "../../shared/llmContextTypes";
+import type { LocalLLMHealth } from "../../shared/localModelTypes";
+import type { AppSettings } from "../../shared/settingsTypes";
 import { preserveStreamedRunConversations as preserveStreamedRunConversationsFromEvents } from "../events";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import type { AssistantMode } from "../store";

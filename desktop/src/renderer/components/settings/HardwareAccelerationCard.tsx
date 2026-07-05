@@ -2,11 +2,14 @@ import { Download, Loader2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useState } from "react";
 
-import type { AppSettings, HardwareAccelerationSmokePayload, HardwareAccelerationStatusPayload } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type {
+  HardwareAccelerationRuntime,
+  HardwareAccelerationSmokePayload,
+  HardwareAccelerationStatusPayload
+} from "../../../shared/hardwareAccelerationTypes";
 import type { LengrvisApiClient } from "../../lib/apiClient";
 import { Badge } from "../Panel";
-
-type HardwareRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
 
 interface HardwareAccelerationCardProps {
   api: LengrvisApiClient;
@@ -17,7 +20,7 @@ interface HardwareAccelerationCardProps {
   smokeStatus: string;
   smoke: HardwareAccelerationSmokePayload | null;
   runtime: string;
-  onRuntimeChange: (runtime: HardwareRuntime) => void;
+  onRuntimeChange: (runtime: HardwareAccelerationRuntime) => void;
   onSmokeStatusChange: Dispatch<SetStateAction<string>>;
   onSmokeChange: Dispatch<SetStateAction<HardwareAccelerationSmokePayload | null>>;
 }
@@ -202,7 +205,7 @@ function hardwareSmokeLabel(operation: HardwareAccelerationSmokePayload["operati
 }
 
 
-function providerToRuntime(value: string): HardwareRuntime {
+function providerToRuntime(value: string): HardwareAccelerationRuntime {
   const lowered = value.trim().toLowerCase();
   if (!lowered) return "auto";
   if (lowered === "winml" || lowered === "windowsml" || lowered === "windows_ml") return "winml";

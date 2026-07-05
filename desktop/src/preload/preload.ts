@@ -4,10 +4,6 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import type {
   ApiRequest,
   ApiResponse,
-  BrowserHostActionRequest,
-  BrowserHostBounds,
-  BrowserHostOpenRequest,
-  BrowserHostSnapshot,
   DesktopBrowserSessionRequest,
   DesktopCommerceLicenseActivateRequest,
   DesktopCommerceLicenseInstallRequest,
@@ -15,9 +11,6 @@ import type {
   DesktopHardwareAccelerationSmokeRequest,
   DesktopMemoryRecallRequest,
   DesktopMemorySaveRequest,
-  DocumentAskRequest,
-  DocumentCompareRequest,
-  DocumentParseRequest,
   LengrvisDesktopBridge,
   DesktopPerceptionSuggestionLaunchRequest,
   DesktopPermissionPolicyRelaxationRequest,
@@ -33,6 +26,13 @@ import type {
   MobilePairingRevokeRemoteInputGrantRequest,
   NotificationPayload
 } from "../shared/types";
+import type {
+  BrowserHostActionRequest,
+  BrowserHostBounds,
+  BrowserHostOpenRequest,
+  BrowserHostSnapshot
+} from "../shared/browserTypes";
+import type { DocumentAskRequest, DocumentCompareRequest, DocumentParseRequest } from "../shared/documentTypes";
 import type {
   AcceptConsentRequest,
   ConsentRecord,

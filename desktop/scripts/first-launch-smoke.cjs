@@ -163,7 +163,7 @@ function runSourceAssertions() {
   );
   assert.match(
     appSource,
-    /catch \(error\) \{\s*setSettings\(previousSettings\);\s*setMode\(previousMode\);\s*throw new Error\(readableError\(error,/,
+    /catch \(error\) \{\s*(?:\/\/[^\n]*\s*)?setSettings\(previousSettings\);\s*setMode\(previousMode\);\s*throw new Error\(readableError\(error,/,
     "thrown settings-save errors should restore the previous renderer settings and mode"
   );
   assert.match(
@@ -255,7 +255,7 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     assert.ok(await quickEntries.count() >= 1, "first screen should expose at least one task entry button");
     const firstEntryText = await quickEntries.first().innerText();
     assert.match(firstEntryText, /检查电脑状态/, "first visible task template should be the safest no-input entry");
-    assert.match(firstEntryText, /无需输入|一句话可选/, "first task entry should explain how to start immediately");
+    assert.match(firstEntryText, /点发送开始|一句话可选/, "first task entry should explain how to start explicitly");
     assert.match(firstEntryText, /只读快照|只读取/, "first task entry should make the read-only preflight visible");
     assert.match(firstEntryText, /30 秒/, "first task entry should show a short first-run estimate");
 
@@ -263,23 +263,36 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     await checkComputerEntry.waitFor({ timeout: 15_000 });
     assert.equal(await checkComputerEntry.isEnabled(), true, "read-only computer check entry should be clickable");
 
-    const entryText = await checkComputerEntry.innerText();
-    assert.match(entryText, /只读/, "computer check entry should explain that it is read-only");
-    assert.match(entryText, /不上云|本机状态/, "computer check entry should make the local/privacy boundary visible");
-    assert.match(entryText, /无改动/, "computer check entry should explain that it does not modify the system");
+    await checkComputerEntry.hover();
+    const expandedEntryText = await checkComputerEntry.innerText();
+    assert.match(expandedEntryText, /只读/, "computer check entry should explain that it is read-only");
+    assert.match(expandedEntryText, /不上云|本机状态/, "computer check entry should make the local/privacy boundary visible");
+    assert.match(expandedEntryText, /无改动/, "computer check entry should explain that it does not modify the system");
 
     await assertComputerTemplateHomeEvidence(page, { hasRecentResult: true });
     await assertHomeTrustBoundary(page);
 
+    const systemInfoRequestsBefore = counters.systemInfoRequests ?? 0;
+    const commandInput = page.locator(".office-command-dock textarea");
     await checkComputerEntry.click();
-    await page.getByText(/正在进行只读电脑检查|只读检查启动中/).first().waitFor({ timeout: 1_500 }).catch(() => undefined);
-    await page.getByText(/系统信息/).first().waitFor({ timeout: 15_000 });
-    await page.getByText(/立即只读检查|刷新本机状态|桌面诊断支持流/).first().waitFor({ timeout: 15_000 });
-    await page.getByText(/只读诊断，不改设置/).first().waitFor({ timeout: 15_000 });
-    await page.getByText(/Lengrvis 服务：已连接/).first().waitFor({ timeout: 15_000 });
+    assert.equal(await commandInput.inputValue(), "帮我检查这台电脑", "computer template click should fill the command bar");
+    assert.equal(counters.taskLaunchRequests ?? 0, 0, "template selection must not create a chat/run task");
+    assert.equal(counters.systemInfoRequests ?? 0, systemInfoRequestsBefore, "template selection should not refresh system info yet");
 
-    assert.equal(counters.taskLaunchRequests ?? 0, 0, "read-only first-launch entry must not create a chat/run task");
-    assert.ok(counters.systemInfoRequests >= 1, "read-only first-launch entry should refresh system info");
+    const wizardText = await page.getByTestId("office-template-wizard").innerText();
+    assert.match(wizardText, /点击发送后启动只读电脑检查/, "computer wizard should tell users to send explicitly");
+    const commandStatus = await page.locator("#office-command-status").innerText();
+    assert.match(commandStatus, /下一步点“发送”开始/, "computer template should make the explicit start action clear");
+
+    const sendButton = page.locator("button.command-footer__send").first();
+    assert.equal(await sendButton.isEnabled(), true, "selected computer template should be submit-ready");
+    await sendButton.click();
+    await waitForCounter(() => (counters.runLaunchRequests ?? 0) >= 1, "computer template /api/runs launch request");
+
+    const launch = counters.taskLaunchPayloads?.[0] ?? {};
+    assert.equal(counters.taskLaunchRequests ?? 0, 1, "computer template send should create exactly one task/run request");
+    assert.equal(counters.taskLaunchEndpoints?.[0], "/api/runs", "computer template should submit through /api/runs");
+    assert.equal(launch.message, "帮我检查这台电脑", "computer template should submit the filled command text");
   } finally {
     await context.close();
     removeTempDir(profileDir);
@@ -585,10 +598,11 @@ async function revealHomeMoreDetails(page) {
 async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
   const templateButton = page.getByTestId("office-template-check-computer");
   await templateButton.waitFor({ timeout: 15_000 });
-  const templateText = await templateButton.innerText();
-  assert.match(templateText, /产出/, "computer template should show its expected output on the first screen");
-  assert.match(templateText, /健康状态|缺失依赖|下一步修复入口/, "computer template should name the visible result");
-  assert.match(templateText, /只读|不上云|无改动/, "computer template should expose the local read-only boundary");
+  await templateButton.hover();
+  const expandedTemplateText = await templateButton.innerText();
+  assert.match(expandedTemplateText, /产出/, "computer template should show its expected output when expanded");
+  assert.match(expandedTemplateText, /健康状态|缺失依赖|下一步修复入口/, "computer template should name the visible result");
+  assert.match(expandedTemplateText, /只读|不上云|无改动/, "computer template should expose the local read-only boundary");
 
   const outcomeCard = page.getByTestId("home-outcome-computer");
   await outcomeCard.waitFor({ timeout: 15_000 });
@@ -604,7 +618,7 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
     assert.match(workspaceText, /已完成|按任务类型启用/, "Task Workspace should show local task evidence without faking a new run");
   } else {
     assert.match(outcomeText, /等待只读快照/, "computer template should have a clear fallback while no result exists");
-    assert.match(outcomeText, /可一键启动只读检查/, "computer fallback should tell the user the next safe action");
+    assert.match(outcomeText, /选择模板后点击发送/, "computer fallback should tell the user the next safe action");
   }
 }
 

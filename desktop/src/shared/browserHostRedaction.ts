@@ -4,7 +4,7 @@ import type {
   BrowserHostActionResult,
   BrowserHostSnapshot,
   BrowserSession
-} from "./types";
+} from "./browserTypes";
 
 const SENSITIVE_QUERY_KEY_NAMES = [
   "access_token",

@@ -1,7 +1,7 @@
 import { AlertTriangle, CheckCircle2, FolderPlus, PackagePlus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { InstalledSkill, SkillsCatalog } from "../../shared/types";
+import type { InstalledSkill, SkillsCatalog } from "../../shared/catalogTypes";
 import { LengrvisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "../components/Panel";
 

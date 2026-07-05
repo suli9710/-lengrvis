@@ -11,6 +11,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.llm.registry import get_effective_settings
+from app.orchestration import os_execution_state as os_state
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
 from app.orchestration.execution_models import (
     NON_EXECUTABLE_RUN_PHASES,
@@ -22,9 +23,7 @@ from app.orchestration.execution_models import (
     RunPhase,
     RunState,
 )
-from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
-from app.orchestration.observations import summarize_result
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.os_reflection import (
     OSReflectionDecider,
@@ -35,7 +34,6 @@ from app.orchestration.os_reflection import (
 from app.orchestration.plan_snapshot import snapshot_step, write_back_step
 from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.step_phase import set_step_status
-from app.policy.risk import RiskLevel
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -50,15 +48,6 @@ _CURRENT_RUN_ORCHESTRATOR: ContextVar[OrchestratorAgent | None] = ContextVar(
     "os_engine_current_run_orchestrator",
     default=None,
 )
-
-_TERMINAL_STEP_STATUSES = {
-    StepStatus.SUCCEEDED,
-    StepStatus.SKIPPED,
-    StepStatus.FAILED,
-    StepStatus.DENIED,
-    StepStatus.WAITING_USER_APPROVAL,
-}
-
 
 class OSExecutionEngine(ExecutionEngine):
     """Turn-based OS/app/browser execution engine.
@@ -1012,16 +1001,7 @@ class OSExecutionEngine(ExecutionEngine):
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=message)
 
     def _stop_outcome(self, step_outcomes: list[tuple[PlanStep, StepExecutionOutcome]]) -> str:
-        kinds = {outcome.kind for _step, outcome in step_outcomes}
-        if "waiting_user_approval" in kinds:
-            return "waiting_approval"
-        if "revision_requested" in kinds:
-            return "paused"
-        if kinds & {"step_denied", "fatal_denied"}:
-            return "denied"
-        if kinds & {"fatal_failed"}:
-            return "failed"
-        return "continue"
+        return os_state.stop_outcome(step_outcomes)
 
     def _normalize_step_outcome(
         self,
@@ -1131,7 +1111,7 @@ class OSExecutionEngine(ExecutionEngine):
         return context
 
     def _pending_step_ids(self, plan: Plan) -> set[str]:
-        return {step.id for step in plan.steps if step.status not in _TERMINAL_STEP_STATUSES}
+        return os_state.pending_step_ids(plan)
 
     def _parallel_batch_allowed(self, task: Task, ready: list[PlanStep]) -> bool:
         return self._orchestrator().step_scheduler_handler._parallel_batch_allowed(task, ready)
@@ -1140,51 +1120,13 @@ class OSExecutionEngine(ExecutionEngine):
         return self._orchestrator()._dependency_observation(step, observations_by_step)
 
     def _observations_by_step(self, state: RunState) -> dict[str, ToolResult]:
-        observations: dict[str, ToolResult] = {}
-        for observation in state.observations:
-            step_id = str(observation.payload.get("step_id") or "")
-            result_payload = observation.payload.get("tool_result")
-            if not step_id or not isinstance(result_payload, dict):
-                continue
-            try:
-                observations[step_id] = ToolResult.model_validate(result_payload)
-            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-                record(
-                    "run.observation_payload_invalid",
-                    self._orchestrator().name,
-                    {"step_id": step_id, "error": str(exc)},
-                    task_id=state.task_id,
-                )
-                continue
-        return observations
+        return os_state.observations_by_step(state, orchestrator_name=self._orchestrator().name)
 
     def _run_observation(self, turn: int, step: PlanStep, outcome: StepExecutionOutcome) -> RunObservation:
-        result = outcome.result
-        if result is None:
-            raise ValueError("Run observation requires a tool result.")
-        return RunObservation(
-            turn=turn,
-            source=step.agent_name or "ToolRuntime",
-            message=summarize_result(result),
-            payload={
-                "step_id": step.id,
-                "tool_name": step.tool_name,
-                "outcome": outcome.kind,
-                "tool_result": result.model_dump(mode="json"),
-            },
-        )
+        return os_state.run_observation(turn, step, outcome)
 
     def _large_result_ref(self, result: ToolResult) -> LargeResultRef | None:
-        output = result.output or {}
-        if not output.get("persisted_result"):
-            return None
-        return LargeResultRef(
-            ref_id=result.id,
-            path=str(output.get("path") or ""),
-            original_size=int(output.get("original_size") or 0),
-            preview=str(output.get("preview") or ""),
-            has_more=bool(output.get("has_more")),
-        )
+        return os_state.large_result_ref(result)
 
     def _initial_state_for_plan(self, task: Task, plan: Plan) -> RunState:
         state = RunState(
@@ -1209,94 +1151,36 @@ class OSExecutionEngine(ExecutionEngine):
         reason: str,
         turn_count: int | None = None,
     ) -> RunState:
-        updated = state.model_copy(
-            update={
-                "phase": phase,
-                "turn_count": state.turn_count if turn_count is None else turn_count,
-                "transition_reason": reason,
-                "current_plan": self._plan_snapshot(task, plan),
-                "goal": task.user_goal or state.goal,
-                "mode": task.mode or state.mode,
-                "task_id": task.id,
-                "paused": phase == RunPhase.PAUSED,
-            },
-            deep=True,
+        updated = os_state.state_from_task_plan(
+            state,
+            task,
+            plan,
+            phase=phase,
+            reason=reason,
+            turn_count=turn_count,
         )
         return self.store.trim_state_history(updated)
 
     def _plan_snapshot(self, task: Task, plan: Plan) -> dict[str, Any]:
-        return {
-            "task_id": task.id,
-            "task_status": str(task.status.value if hasattr(task.status, "value") else task.status),
-            "execution_stage": str(
-                task.execution_stage.value if hasattr(task.execution_stage, "value") else task.execution_stage
-            ),
-            "plan_id": plan.id,
-            "goal": plan.goal,
-            "step_status_counts": self._step_status_counts(plan),
-            "steps": [step.model_dump(mode="json") for step in plan.steps],
-        }
+        return os_state.plan_snapshot(task, plan)
 
     def _step_status_counts(self, plan: Plan) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for step in plan.steps:
-            key = step.status.value if hasattr(step.status, "value") else str(step.status)
-            counts[key] = counts.get(key, 0) + 1
-        return counts
+        return os_state.step_status_counts(plan)
 
     def _recent_failure_count(self, plan: Plan) -> int:
-        return sum(1 for step in plan.steps if step.status == StepStatus.FAILED)
+        return os_state.recent_failure_count(plan)
 
     def _step_outcome_payload(self, step: PlanStep, outcome: StepExecutionOutcome) -> dict[str, Any]:
-        return {
-            "step_id": step.id,
-            "tool_name": step.tool_name,
-            "kind": outcome.kind,
-            "status": step.status.value if hasattr(step.status, "value") else str(step.status),
-            "result_id": outcome.result.id if outcome.result is not None else "",
-        }
+        return os_state.step_outcome_payload(step, outcome)
 
     def _phase_for_task(self, task: Task) -> RunPhase:
-        if task.execution_stage == ExecutionStage.AWAITING_APPROVAL:
-            return RunPhase.AWAITING_APPROVAL
-        if task.execution_stage == ExecutionStage.PAUSED:
-            return RunPhase.PAUSED
-        if task.status == TaskStatus.FAILED:
-            return RunPhase.FAILED
-        if task.status == TaskStatus.CANCELLED:
-            return RunPhase.CANCELLED
-        if task.status == TaskStatus.DENIED:
-            return RunPhase.DENIED
-        if task.status == TaskStatus.COMPLETED:
-            return RunPhase.COMPLETED
-        return RunPhase.RUNNING
+        return os_state.phase_for_task(task)
 
     def _phase_for_task_plan(self, task: Task, plan: Plan) -> RunPhase:
-        phase = self._phase_for_task(task)
-        if phase != RunPhase.CANCELLED:
-            return phase
-        summary = (task.final_summary or "").casefold()
-        if "cancel" in summary or "rejected" in summary:
-            return RunPhase.CANCELLED
-        if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
-            return RunPhase.DENIED
-        if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
-            return RunPhase.DENIED
-        if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):
-            return RunPhase.DENIED
-        if any(step.status == StepStatus.DENIED for step in plan.steps):
-            return RunPhase.DENIED
-        return RunPhase.CANCELLED
+        return os_state.phase_for_task_plan(task, plan)
 
     def _event_name_for_outcome(self, outcome: str) -> str:
-        return {
-            "cancelled": "run.cancelled",
-            "waiting_approval": "run.waiting_approval",
-            "completed": "run.completed",
-            "failed": "run.failed",
-            "denied": "run.denied",
-            "paused": "run.paused",
-        }.get(outcome, "")
+        return os_state.event_name_for_outcome(outcome)
 
     def _orchestrator(self) -> OrchestratorAgent:
         # Prefer the orchestrator bound to the currently executing run turn

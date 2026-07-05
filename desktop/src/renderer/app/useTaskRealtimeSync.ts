@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
-import type { AgentConversation, ApprovalRequest, ChatMessage, Plan, SafetyReview, TaskEvent } from "../../shared/types";
+import type { ChatMessage } from "../../shared/catalogTypes";
+import type { AgentConversation, ApprovalRequest, Plan, SafetyReview, TaskEvent } from "../../shared/executionTypes";
 import {
   latestStreamableTaskId as latestStreamableTaskIdFromEvents,
   mergeRunStreamEventIntoConversations,

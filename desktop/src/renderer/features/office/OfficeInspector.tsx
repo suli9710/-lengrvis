@@ -83,27 +83,32 @@ export function OfficeInspector({
               onClick={() => onQuickSkillClick(skill)}
               aria-pressed={selectedQuickSkill?.id === skill.id}
             >
-              <skill.icon className="office-quick-card__icon" size={15} aria-hidden="true" />
+              <span className="office-quick-card__icon" aria-hidden="true" />
               <span className="office-quick-card__body">
                 <span className="office-quick-card__title">
                   <strong>{skill.title}</strong>
                   <em>{skill.summary || quickSkillHint(skill)}</em>
                 </span>
-                <span className="office-quick-card__wizard-line">
-                  <b>输入</b>{skill.wizard.input}
+                <span className="office-quick-card__meta">
+                  <b>{skill.trust.estimate}</b>
+                  <b>{skill.trust.approval}</b>
+                  <b>{skill.kind === "view" ? "选文件后继续" : "点发送开始"}</b>
                 </span>
-                <span className="office-quick-card__wizard-line">
-                  <b>预检</b>{skill.wizard.preflight}
-                </span>
-                <span className="office-quick-card__wizard-line">
-                  <b>产出</b>{skill.wizard.output}
+                <span className="office-quick-card__details">
+                  <span className="office-quick-card__wizard-line">
+                    <b>输入</b>{skill.wizard.input}
+                  </span>
+                  <span className="office-quick-card__wizard-line">
+                    <b>预检</b>{skill.wizard.preflight}
+                  </span>
+                  <span className="office-quick-card__wizard-line">
+                    <b>产出</b>{skill.wizard.output}
+                  </span>
                 </span>
                 <small className="office-quick-card__trust">
                   <b>{skill.trust.local}</b>
                   <b>{skill.trust.cloud}</b>
-                  <b>{skill.trust.approval}</b>
                   <b>{skill.trust.rollback}</b>
-                  <b>{skill.trust.estimate}</b>
                 </small>
               </span>
             </button>
@@ -133,7 +138,7 @@ export function OfficeInspector({
               </span>
             </div>
             <div className="home-skill-wizard__next" data-testid="office-template-next-step">
-              <span>{selectedQuickSkill.kind === "prompt" ? "已填入输入框" : selectedQuickSkill.kind === "view" ? "正在打开工具区" : "只读检查启动中"}</span>
+              <span>{selectedQuickSkill.kind === "prompt" ? "已填入输入框" : selectedQuickSkill.kind === "view" ? "等待打开工具区" : "等待开始"}</span>
               <strong>{selectedQuickSkill.wizard.nextStep}</strong>
             </div>
           </div>
@@ -348,7 +353,6 @@ export function OfficeInspector({
 }
 
 function quickSkillHint(skill: OfficeQuickSkill): string {
-  if (skill.kind === "action" && skill.action === "system-check") return "立即只读检查";
   if (skill.kind === "view" && skill.id === "summarize-document") return "打开文档操作区";
   return skill.kind === "prompt" ? "填好后点发送" : "打开页面";
 }

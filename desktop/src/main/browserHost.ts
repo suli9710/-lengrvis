@@ -17,15 +17,11 @@ import type {
   BrowserHostOpenRequest,
   BrowserHostSnapshot,
   BrowserSession
-} from "../shared/types";
+} from "../shared/browserTypes";
 import {
   sanitizeEventForRenderer,
   sanitizeSessionForRenderer
 } from "../shared/browserHostRedaction";
-import {
-  isBlockedBrowserHostNavigation,
-  isBrowserHostRequestAllowed
-} from "./browserHostNetworkGuard";
 import { domClickScript, domFillScript, domScrollScript, domSubmitScript, observeScript } from "./browserHostDomActions";
 import { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 import {
@@ -37,9 +33,11 @@ import {
   requireBrowserActionSelector,
   requireBrowserActionUrl
 } from "./browserHostValidation";
+import { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
 
 export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBackendUrl } from "./browserHostBridge";
 export { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
+export { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
 
 type BrowserContainer =
   | {
@@ -599,36 +597,6 @@ function createBrowserContainer(partition: string): BrowserContainer {
     kind: "browserView",
     view: new BrowserView({ webPreferences })
   };
-}
-
-export function hardenEmbeddedWebContents(webContents: WebContents): void {
-  webContents.setWindowOpenHandler(() => {
-    return { action: "deny" };
-  });
-  webContents.on("will-navigate", (event, url) => {
-    if (isBlockedBrowserHostNavigation(url)) {
-      event.preventDefault();
-    }
-  });
-  webContents.session.webRequest.onBeforeRequest((details, callback) => {
-    void handleBrowserHostBeforeRequest(details, callback);
-  });
-  webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-  });
-  webContents.session.setPermissionCheckHandler(() => false);
-  webContents.setAudioMuted(true);
-}
-
-async function handleBrowserHostBeforeRequest(
-  details: { url: string },
-  callback: (response: { cancel?: boolean }) => void
-): Promise<void> {
-  try {
-    callback({ cancel: !(await isBrowserHostRequestAllowed(details.url)) });
-  } catch {
-    callback({ cancel: true });
-  }
 }
 
 function destroyWebContents(webContents: WebContents): void {

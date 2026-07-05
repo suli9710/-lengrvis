@@ -1,4 +1,5 @@
-import type { AppSettings, BackendStatus } from "../../../shared/types";
+import type { BackendStatus } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
 
 export function displayMode(mode: AppSettings["mode"]): string {
   if (mode === "efficiency") return "快速";

@@ -1,5 +1,5 @@
-import type { CommandExecutionResult, CommandInfo } from "../../../shared/types";
-import type { BackendCommandExecutionResult, BackendCommandInfo } from "./backendTypes";
+import type { CommandExecutionResult, CommandInfo } from "../../../shared/executionTypes";
+import type { BackendCommandExecutionResult, BackendCommandInfo } from "./executionBackendTypes";
 
 export function mapCommandInfo(command: BackendCommandInfo): CommandInfo {
   return {

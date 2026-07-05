@@ -1,4 +1,4 @@
-import type { LocalLLMHealth, LocalModelReadiness, LocalModelSetupPlan } from "../../../shared/types";
+import type { LocalLLMHealth, LocalModelReadiness, LocalModelSetupPlan } from "../../../shared/localModelTypes";
 import type {
   BackendLocalLlmHealth,
   BackendLocalModelBundleManifest,
@@ -7,7 +7,7 @@ import type {
   BackendLocalModelRepairAction,
   BackendLocalModelSetupPlan,
   BackendLocalModelVerification
-} from "./backendTypes";
+} from "./localModelBackendTypes";
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -166,4 +166,3 @@ export function mapLocalModelSetupStepState(value: unknown): LocalModelSetupPlan
   }
   return "pending";
 }
-

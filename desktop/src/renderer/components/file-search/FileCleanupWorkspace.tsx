@@ -1,7 +1,7 @@
 import { RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
-import type { CleanupPlan } from "../../../shared/types";
+import type { CleanupPlan } from "../../../shared/cleanupTypes";
 import type { LengrvisApiClient } from "../../lib/apiClient";
 import { zhUserFacingError } from "../../lib/zh";
 import { Badge } from "../Panel";

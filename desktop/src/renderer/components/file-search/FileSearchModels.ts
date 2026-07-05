@@ -1,4 +1,5 @@
-import type { AppSettings, FileSearchMeta, IndexStatus } from "../../../shared/types";
+import type { FileSearchMeta, IndexStatus } from "../../../shared/fileLibraryTypes";
+import type { AppSettings } from "../../../shared/settingsTypes";
 import type { FileClusterOptions } from "../../lib/apiClient";
 import { zhUserFacingError } from "../../lib/zh";
 

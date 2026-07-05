@@ -18,3 +18,20 @@ Rules:
    the marker when they catch `error`, `err`, or `e`.
 5. `python scripts/check_exception_boundaries.py` fails when a broad boundary is
    unmarked.
+
+The checker also prints a reviewed-boundary summary when it passes:
+
+- scanned source files;
+- total marked broad boundaries;
+- marked broad boundaries by area: backend, desktop, mobile, and other.
+
+Use this summary as a maintenance-complexity trend, not as a quality score. A
+new broad boundary should either replace a less safe failure mode, sit at a real
+runtime/process/integration edge, or come with a follow-up to narrow the catch
+once the concrete failure classes are known.
+
+Record the summary alongside source-size output when reviewing large-file or
+module-complexity work. The source-size report includes total source lines, p95
+file size, largest file, and per-area line totals, so a useful paired trend is:
+large files shrink or stabilize while broad boundaries move toward real
+runtime/process/integration edges.

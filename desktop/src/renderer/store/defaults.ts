@@ -1,4 +1,7 @@
-import type { AppSettings, BackendStatus, Plan, SafetyReview, SystemInfo } from "../../shared/types";
+import type { BackendStatus } from "../../shared/types";
+import type { AppSettings } from "../../shared/settingsTypes";
+import type { Plan, SafetyReview } from "../../shared/executionTypes";
+import type { SystemInfo } from "../../shared/systemTypes";
 
 export const defaultApiBaseUrl = "http://127.0.0.1:8000";
 

@@ -1,6 +1,6 @@
 import { Bot, CircleDot } from "lucide-react";
 
-import type { AgentConversation } from "../../shared/types";
+import type { AgentConversation } from "../../shared/executionTypes";
 import { zhAgentName, zhConversationStatus, zhMessageKind, zhRole, zhToolName } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 

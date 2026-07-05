@@ -1,10 +1,10 @@
-import type { CleanupExecutionResult, CleanupItem, CleanupPlan, CleanupScanRequest } from "../../../shared/types";
+import type { CleanupExecutionResult, CleanupItem, CleanupPlan, CleanupScanRequest } from "../../../shared/cleanupTypes";
 import type {
   BackendCleanupExecutionResult,
   BackendCleanupItem,
   BackendCleanupPlan,
   BackendCleanupScanRequest
-} from "./backendTypes";
+} from "./cleanupBackendTypes";
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -184,4 +184,3 @@ export function looksLikeCleanupItem(value: unknown): value is BackendCleanupIte
     action.includes("recycle")
   ));
 }
-

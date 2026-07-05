@@ -6,8 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,9 @@ from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_
 from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
 from app.policy.redaction import redact_public_text, redact_value
-from app.services import document_service
+from app.services import document_intelligence_qa as _qa_helpers
+from app.services import document_intelligence_text as _text_helpers
+from app.services.document_intelligence_models import DocumentBlock, DocumentIR, DocumentTable, ProviderResolver
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe,
     path_exists_or_reparse_point,
@@ -55,86 +56,52 @@ class AdvancedParserUnavailable(RuntimeError):
     """Raised when an optional advanced parser cannot be used."""
 
 
-@dataclass(slots=True)
-class DocumentBlock:
-    id: str
-    text: str
-    kind: str = "paragraph"
-    page: int | None = 1
-    index: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
+_blocks_are_changed_pair = _text_helpers._blocks_are_changed_pair
+_blocks_from_pages = _text_helpers._blocks_from_pages
+_coerce_docling_tables = _text_helpers._coerce_docling_tables
+_guess_block_kind = _text_helpers._guess_block_kind
+_headers_from_rows = _text_helpers._headers_from_rows
+_meaningful_diff_tokens = _text_helpers._meaningful_diff_tokens
+_normalize_for_diff = _text_helpers._normalize_for_diff
+_normalize_pages = _text_helpers._normalize_pages
+_paragraph_blocks = _text_helpers._paragraph_blocks
+_rows_from_plain_table_text = _text_helpers._rows_from_plain_table_text
+_rows_to_text = _text_helpers._rows_to_text
+_split_text_blocks = _text_helpers._split_text_blocks
+_stringify_cell = _text_helpers._stringify_cell
+_tables_to_text = _text_helpers._tables_to_text
 
-    @property
-    def citation(self) -> str:
-        if self.page is None:
-            return f"[block {self.index + 1}]"
-        return f"[p{self.page}:b{self.index + 1}]"
+_call_chat = _qa_helpers._call_chat
+_document_qa_messages = _qa_helpers._document_qa_messages
+_document_report_messages = _qa_helpers._document_report_messages
+_fallback_cited_answer = _qa_helpers._fallback_cited_answer
+_fallback_cited_report = _qa_helpers._fallback_cited_report
+_format_cited_blocks = _qa_helpers._format_cited_blocks
+_rank_blocks = _qa_helpers._rank_blocks
+_source_block_payload = _qa_helpers._source_block_payload
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "text": self.text,
-            "kind": self.kind,
-            "page": self.page,
-            "index": self.index,
-            "citation": self.citation,
-            "metadata": dict(self.metadata),
-        }
-
-
-@dataclass(slots=True)
-class DocumentTable:
-    id: str
-    rows: list[list[str]]
-    headers: list[str] = field(default_factory=list)
-    page: int | None = 1
-    caption: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "headers": list(self.headers),
-            "rows": [list(row) for row in self.rows],
-            "page": self.page,
-            "caption": self.caption,
-            "metadata": dict(self.metadata),
-        }
-
-
-@dataclass(slots=True)
-class DocumentIR:
-    document_id: str
-    path: str
-    kind: str
-    pages: list[dict[str, Any]]
-    blocks: list[DocumentBlock]
-    tables: list[DocumentTable]
-    metadata: dict[str, Any]
-    parse_engine: str
-    ocr_engine: str = ""
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def text(self) -> str:
-        return "\n\n".join(block.text for block in self.blocks if block.text)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "document_id": self.document_id,
-            "path": self.path,
-            "kind": self.kind,
-            "pages": list(self.pages),
-            "blocks": [block.as_dict() for block in self.blocks],
-            "tables": [table.as_dict() for table in self.tables],
-            "metadata": dict(self.metadata),
-            "parse_engine": self.parse_engine,
-            "ocr_engine": self.ocr_engine,
-            "warnings": list(self.warnings),
-        }
-
-
-ProviderResolver = Callable[[str], Any]
+__all__ = [
+    "AdvancedParserUnavailable",
+    "DEFAULT_PREVIEW_CHARS",
+    "DEFAULT_REPORT_BLOCKS",
+    "DEFAULT_TOP_K",
+    "DocumentBlock",
+    "DocumentIR",
+    "DocumentTable",
+    "DocumentTooLargeError",
+    "ProviderResolver",
+    "answer_ir_with_citations",
+    "apply_redaction",
+    "ask_with_citations",
+    "compare_documents",
+    "edit_docx",
+    "edit_pptx",
+    "edit_xlsx",
+    "extract_tables",
+    "generate_cited_report",
+    "parse_advanced",
+    "redact_preview",
+]
 
 
 def _append_extraction_warning(
@@ -843,57 +810,6 @@ def _build_ir(
     )
 
 
-def _normalize_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for index, page in enumerate(pages or [], start=1):
-        page_number = int(page.get("page") or index)
-        normalized.append(
-            {
-                "page": page_number,
-                "text": str(page.get("text") or ""),
-                "metadata": dict(page.get("metadata") or {}),
-            }
-        )
-    return normalized or [{"page": 1, "text": "", "metadata": {}}]
-
-
-def _blocks_from_pages(pages: list[dict[str, Any]]) -> list[DocumentBlock]:
-    blocks: list[DocumentBlock] = []
-    for page in pages:
-        page_number = int(page.get("page") or 1)
-        page_metadata = dict(page.get("metadata") or {})
-        for part in _split_text_blocks(str(page.get("text") or "")):
-            blocks.append(
-                DocumentBlock(
-                    id=f"block-{len(blocks) + 1}",
-                    text=part,
-                    kind=_guess_block_kind(part),
-                    page=page_number,
-                    index=len(blocks),
-                    metadata=page_metadata,
-                )
-            )
-    return blocks
-
-
-def _split_text_blocks(text: str) -> list[str]:
-    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if "\n\n" in cleaned:
-        candidates = re.split(r"\n\s*\n+", cleaned)
-    else:
-        candidates = cleaned.splitlines()
-    return [candidate.strip() for candidate in candidates if candidate.strip()]
-
-
-def _guess_block_kind(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith(("# ", "## ", "### ")):
-        return "heading"
-    if stripped.startswith(("- ", "* ", "1. ")):
-        return "list"
-    return "paragraph"
-
-
 def _document_id(path: Path, warnings: list[str]) -> str:
     data = path.read_bytes()
     try:
@@ -956,205 +872,6 @@ def _read_json_text(path: Path, warnings: list[str]) -> tuple[str, dict[str, Any
         warnings.append(f"JSON parse failed, returned raw text: {exc}")
         return raw, {}
     return json.dumps(parsed, ensure_ascii=False, indent=2), {"json_type": type(parsed).__name__}
-
-
-def _stringify_cell(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _headers_from_rows(rows: list[list[str]]) -> list[str]:
-    return list(rows[0]) if rows else []
-
-
-def _rows_to_text(rows: list[list[str]], *, title: str = "") -> str:
-    lines = [f"# {title}"] if title else []
-    lines.extend("\t".join(row) for row in rows)
-    return "\n".join(line for line in lines if line)
-
-
-def _tables_to_text(tables: Iterable[DocumentTable]) -> str:
-    chunks = []
-    for table in tables:
-        chunks.append(_rows_to_text(table.rows, title=table.caption or table.id))
-    return "\n\n".join(chunks)
-
-
-def _rows_from_plain_table_text(text: str) -> list[list[str]]:
-    rows: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if "\t" in stripped:
-            rows.append([part.strip() for part in stripped.split("\t")])
-        elif "|" in stripped:
-            rows.append([part.strip() for part in stripped.strip("|").split("|")])
-        else:
-            rows.append([part.strip() for part in re.split(r"\s{2,}", stripped) if part.strip()])
-    return [row for row in rows if row]
-
-
-def _coerce_docling_tables(raw_tables: Iterable[Any]) -> list[DocumentTable]:
-    tables: list[DocumentTable] = []
-    for raw in raw_tables:
-        rows: list[list[str]] = []
-        export = getattr(raw, "export_to_dataframe", None)
-        if callable(export):
-            try:
-                dataframe = export()
-                rows = [list(map(_stringify_cell, dataframe.columns))]
-                rows.extend([list(map(_stringify_cell, row)) for row in dataframe.values.tolist()])
-            except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-                log_best_effort_failure(logger, "document_intelligence.docling_table", exc)
-                rows = []
-        if not rows:
-            text = str(raw or "").strip()
-            rows = _rows_from_plain_table_text(text)
-        if rows:
-            tables.append(
-                DocumentTable(
-                    id=f"table-{len(tables) + 1}",
-                    rows=rows,
-                    headers=_headers_from_rows(rows),
-                    page=1,
-                    metadata={"source": "docling"},
-                )
-            )
-    return tables
-
-
-def _rank_blocks(query: str, blocks: list[DocumentBlock], *, top_k: int) -> list[DocumentBlock]:
-    candidates = [block for block in blocks if block.text.strip()]
-    if not candidates:
-        return []
-    ranked_chunks = document_service.rank_chunks(query, [block.text for block in candidates], top_k=max(1, top_k))
-    return [candidates[item.index] for item in ranked_chunks]
-
-
-def _format_cited_blocks(blocks: list[DocumentBlock], *, max_chars: int) -> str:
-    parts: list[str] = []
-    used = 0
-    for block in blocks:
-        prefix = f"{block.citation}\n"
-        remaining = max_chars - used - len(prefix)
-        if remaining <= 0:
-            break
-        body = block.text[:remaining]
-        parts.append(f"{prefix}{body}")
-        used += len(prefix) + len(body)
-    return "\n\n---\n\n".join(parts)
-
-
-def _document_qa_messages(question: str, source_blocks: str) -> list[dict[str, str]]:
-    return [
-        dict(
-            role="system",
-            content=(
-                "Answer the question using only the cited source blocks. "
-                "Keep citations in square brackets next to supported claims."
-            ),
-        ),
-        dict(
-            role="user",
-            content=f"Question: {question}\n\nSource blocks:\n{source_blocks}",
-        ),
-    ]
-
-
-def _document_report_messages(title: str, source_blocks: str) -> list[dict[str, str]]:
-    return [
-        dict(
-            role="system",
-            content=(
-                "Write a concise report grounded in the cited source blocks. "
-                "Every factual bullet or paragraph must keep a citation."
-            ),
-        ),
-        dict(
-            role="user",
-            content=f"Title: {title}\n\nSource blocks:\n{source_blocks}",
-        ),
-    ]
-
-
-def _source_block_payload(block: DocumentBlock) -> dict[str, Any]:
-    return {
-        "id": block.id,
-        "citation": block.citation,
-        "kind": block.kind,
-        "page": block.page,
-        "index": block.index,
-        "text": block.text[:1200],
-        "metadata": dict(block.metadata),
-    }
-
-
-def _fallback_cited_answer(question: str, blocks: list[DocumentBlock]) -> str:
-    excerpts = []
-    for block in blocks[:2]:
-        excerpt = " ".join(block.text.split())[:420]
-        excerpts.append(f"{block.citation} {excerpt}")
-    return f"Relevant source excerpts for '{question}':\n\n" + "\n\n".join(excerpts)
-
-
-def _fallback_cited_report(title: str, blocks: list[DocumentBlock]) -> str:
-    bullets = []
-    for block in blocks:
-        excerpt = " ".join(block.text.split())[:360]
-        bullets.append(f"- {excerpt} {block.citation}")
-    return f"# {title}\n\n## Source-Grounded Findings\n\n" + "\n".join(bullets)
-
-
-def _call_chat(messages: list[dict[str, str]], *, provider_resolver: ProviderResolver | None) -> str | None:
-    return document_service._call_chat(  # noqa: SLF001 - shared service helper keeps provider behavior consistent.
-        messages,
-        task="subagent",
-        temperature=0.2,
-        provider_resolver=provider_resolver,
-    )
-
-
-def _paragraph_blocks(ir: DocumentIR) -> list[DocumentBlock]:
-    return [block for block in ir.blocks if block.text.strip() and block.kind in {"paragraph", "heading", "list"}]
-
-
-def _normalize_for_diff(text: str) -> str:
-    return " ".join((text or "").split()).casefold()
-
-
-def _blocks_are_changed_pair(left: str, right: str) -> bool:
-    left_norm = _normalize_for_diff(left)
-    right_norm = _normalize_for_diff(right)
-    if not left_norm or not right_norm:
-        return False
-    left_tokens = _meaningful_diff_tokens(left_norm)
-    right_tokens = _meaningful_diff_tokens(right_norm)
-    if not left_tokens or not right_tokens:
-        return difflib.SequenceMatcher(None, left_norm, right_norm, autojunk=False).ratio() >= 0.75
-    overlap = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
-    return overlap >= 0.45
-
-
-def _meaningful_diff_tokens(text: str) -> set[str]:
-    stop_words = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "be",
-        "for",
-        "in",
-        "is",
-        "of",
-        "or",
-        "the",
-        "this",
-        "to",
-        "with",
-    }
-    return {token for token in re.findall(r"[\w\u4e00-\u9fff]+", text, flags=re.UNICODE) if token not in stop_words}
 
 
 def _backup_document(path: Path, abort_context: dict[str, Any] | None = None) -> dict[str, str | int | bool] | None:

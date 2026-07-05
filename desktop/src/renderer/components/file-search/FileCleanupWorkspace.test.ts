@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { CleanupPlan } from "../../../shared/types";
+import type { CleanupPlan } from "../../../shared/cleanupTypes";
 import { buildCleanupPreviewModel, useFileCleanupWorkspace } from "./FileCleanupWorkspace";
 
 function cleanupPlan(overrides: Partial<CleanupPlan> = {}): CleanupPlan {

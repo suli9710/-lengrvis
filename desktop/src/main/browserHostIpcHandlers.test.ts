@@ -6,7 +6,7 @@ import type {
   BrowserAction,
   BrowserHostActionResult,
   BrowserHostSnapshot
-} from "../shared/types";
+} from "../shared/browserTypes";
 import { sanitizeActionResultForRenderer } from "../shared/browserHostRedaction";
 import {
   assertBrowserHostRenderer,

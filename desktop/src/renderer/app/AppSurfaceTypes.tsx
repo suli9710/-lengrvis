@@ -1,25 +1,23 @@
 import type {
-  AgentConversation,
-  AppSettings,
-  ApprovalRequest,
   AuditLogEntry,
   BackendStatus,
   BrowserActivityEvent,
   BrowserHostSnapshot,
-  BrowserSession,
-  ChatMessage,
-  DiagnosticExportResult,
-  FileSearchMeta,
-  FileSearchResult,
-  IntentSuggestion,
-  LLMCostSummary,
-  LLMHealthStatus,
-  LocalLLMHealth,
+  BrowserSession
+} from "../../shared/types";
+import type { ChatMessage, IntentSuggestion } from "../../shared/catalogTypes";
+import type { DiagnosticExportResult, SystemInfo } from "../../shared/systemTypes";
+import type {
+  AgentConversation,
+  ApprovalRequest,
   Plan,
   SafetyReview,
-  SystemInfo,
   TaskEvent
-} from "../../shared/types";
+} from "../../shared/executionTypes";
+import type { FileSearchMeta, FileSearchResult } from "../../shared/fileLibraryTypes";
+import type { LLMCostSummary, LLMHealthStatus } from "../../shared/llmContextTypes";
+import type { LocalLLMHealth } from "../../shared/localModelTypes";
+import type { AppSettings } from "../../shared/settingsTypes";
 import type { DocumentIntentAction, FileToolTab } from "../components/FileSearchPanel";
 import type { HomeReadinessItem, HomeTrustItem, OfficeQuickSkill } from "../features/office";
 import type { LengrvisApiClient, RealtimeConnectionStatus } from "../lib/apiClient";

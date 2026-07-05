@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
+import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../shared/fileLibraryTypes";
 import { absoluteRendererLoopbackBackendUrl, type LengrvisApiClient } from "../lib/apiClient";
 import {
   gallerySectionKeys,

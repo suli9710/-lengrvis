@@ -1,0 +1,195 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  mapApproval,
+  mapCommandExecutionResult,
+  mapCommandInfo,
+  mapRunCreateResponse,
+  mapRunTaskEvent
+} from "../mappers";
+
+describe("execution mapper contracts", () => {
+  it("maps run create responses from nested run state and falls back to backend capabilities", () => {
+    const response = mapRunCreateResponse(
+      {
+        run: {
+          run_id: "run_123",
+          engine: "developer",
+          phase: "awaiting_approval",
+          message: "Review generated edits",
+          mode: "efficiency",
+          requested_engine: "auto",
+          created_at: "2026-06-20T08:00:00Z",
+          updated_at: "2026-06-20T08:01:00Z",
+          engine_capabilities: {
+            writes_enabled: false
+          }
+        }
+      },
+      "Fallback title"
+    );
+
+    expect(response.runId).toBe("run_123");
+    const taskUpdates = response.taskUpdates ?? [];
+    expect(taskUpdates).toHaveLength(1);
+    expect(taskUpdates[0]).toMatchObject({
+      id: "run_123",
+      runId: "run_123",
+      title: "Review generated edits",
+      state: "blocked",
+      agent: "开发引擎（只读）",
+      createdAt: "2026-06-20T08:00:00Z",
+      updatedAt: "2026-06-20T08:01:00Z"
+    });
+  });
+
+  it("maps run task events with cleanup payload and completion-evidence fallback fields", () => {
+    const event = mapRunTaskEvent({
+      run_id: "run_cleanup",
+      engine: "developer",
+      phase: "completed",
+      message: "Clean temporary files",
+      mode: "efficiency",
+      requested_engine: "developer",
+      created_at: "2026-06-20T09:00:00Z",
+      updated_at: "2026-06-20T09:02:00Z",
+      engine_capabilities: {
+        writes_enabled: true
+      },
+      diff_preview: {
+        cleanup_plan: {
+          id: "cleanup_1",
+          title: "Temp cleanup",
+          risk_warnings: ["Permanent delete requires review"],
+          items: [
+            {
+              id: "item_1",
+              path: "C:\\Temp\\old.log",
+              action: "delete",
+              disposition: "permanent_delete",
+              size_bytes: 42
+            }
+          ]
+        }
+      },
+      result_verified: true,
+      completed_result: {
+        summary: "Removed the selected temporary file"
+      }
+    });
+
+    expect(event).toMatchObject({
+      id: "run_cleanup",
+      runId: "run_cleanup",
+      title: "Clean temporary files",
+      state: "completed",
+      agent: "开发执行引擎",
+      createdAt: "2026-06-20T09:00:00Z",
+      updatedAt: "2026-06-20T09:02:00Z"
+    });
+    expect(event.cleanupPlan).toMatchObject({
+      id: "cleanup_1",
+      title: "Temp cleanup",
+      riskWarnings: ["Permanent delete requires review"],
+      items: [
+        {
+          id: "item_1",
+          path: "C:\\Temp\\old.log",
+          disposition: "permanent_delete",
+          sizeBytes: 42
+        }
+      ]
+    });
+    expect(event.completionEvidence).toMatchObject({
+      resultVerified: true,
+      missing: []
+    });
+  });
+
+  it("maps rejected cleanup approvals to denied requests with cleanup plan payloads", () => {
+    const approval = mapApproval({
+      id: "approval_1",
+      task_id: "task_1",
+      step_id: "step_1",
+      approval_type: "cleanup_plan",
+      message: "Please review cleanup",
+      diff_preview: {
+        plan: {
+          id: "cleanup_approval",
+          title: "Cleanup review",
+          items: [
+            {
+              id: "delete_1",
+              path: "C:\\Temp\\cache.bin",
+              action: "delete",
+              disposition: "permanent_delete"
+            }
+          ]
+        }
+      },
+      risk_level: "R1_LOW",
+      status: "rejected",
+      created_at: "2026-06-20T10:00:00Z"
+    });
+
+    expect(approval).toMatchObject({
+      id: "approval_1",
+      taskId: "task_1",
+      stepId: "step_1",
+      title: "清理计划审批",
+      status: "denied",
+      riskLevel: "high",
+      createdAt: "2026-06-20T10:00:00Z"
+    });
+    expect(approval.cleanupPlan).toMatchObject({
+      id: "cleanup_approval",
+      items: [
+        {
+          id: "delete_1",
+          path: "C:\\Temp\\cache.bin",
+          disposition: "permanent_delete"
+        }
+      ]
+    });
+  });
+
+  it("maps command info and execution results to the shared execution shape", () => {
+    expect(
+      mapCommandInfo({
+        name: "workspace.cleanup.preview",
+        description: "Preview cleanup",
+        category: "cleanup",
+        input_schema: {
+          type: "object",
+          properties: {
+            root: { type: "string" }
+          }
+        }
+      })
+    ).toMatchObject({
+      name: "workspace.cleanup.preview",
+      title: "workspace.cleanup.preview",
+      description: "Preview cleanup",
+      category: "cleanup",
+      inputSchema: {
+        type: "object"
+      }
+    });
+
+    expect(
+      mapCommandExecutionResult({
+        ok: true,
+        command: "workspace.cleanup.preview",
+        result: { count: 2 },
+        diagnostics: ["dry-run", 2],
+        next_action: "review_cleanup_plan"
+      })
+    ).toEqual({
+      ok: true,
+      command: "workspace.cleanup.preview",
+      result: { count: 2 },
+      diagnostics: ["dry-run", "2"],
+      nextAction: "review_cleanup_plan"
+    });
+  });
+});

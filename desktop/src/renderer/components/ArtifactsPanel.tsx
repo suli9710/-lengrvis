@@ -1,7 +1,7 @@
 import { FileText, FolderOpen, PackageOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { TaskArtifact, TaskArtifactsSummary, TaskEvent } from "../../shared/types";
+import type { TaskArtifact, TaskArtifactsSummary, TaskEvent } from "../../shared/executionTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import { zhRelativeTime, zhToolName } from "../lib/zh";
 import { Badge, Panel } from "./Panel";

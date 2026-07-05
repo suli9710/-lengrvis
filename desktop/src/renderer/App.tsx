@@ -7,42 +7,33 @@ import {
 } from "react";
 
 import type {
-  AppSettings,
   ApiResponse,
-  ApprovalRequest,
-  ChatMessage,
-  FileSearchMeta,
-  IntentSuggestion,
-  SystemInfo,
-  TaskEvent
+  FileSearchMeta
 } from "../shared/types";
+import type { SystemInfo } from "../shared/systemTypes";
+import type { ApprovalRequest, TaskEvent } from "../shared/executionTypes";
+import type { AppSettings } from "../shared/settingsTypes";
 import type { DocumentIntentAction, FileToolTab } from "./components/FileSearchPanel";
 import { AppSurface } from "./app/AppSurface";
 import { useAppStoreSnapshot } from "./app/useAppStoreSnapshot";
 import { useHomeSignals } from "./app/useHomeSignals";
 import { useRealtimeStatusHandlers } from "./app/useRealtimeStatusHandlers";
+import { useTaskSubmission } from "./app/useTaskSubmission";
 import { useTaskRealtimeSync } from "./app/useTaskRealtimeSync";
 import { useWorkspaceRefresh } from "./app/useWorkspaceRefresh";
 import {
   type HomeReadinessItem,
   type OfficeQuickSkill
 } from "./features/office";
-import { taskStarterManifestById } from "./features/office/taskStarterManifest";
 import { LengrvisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
 import type { AssistantMode } from "./store";
 import {
-  isBackendTaskSubmitReady,
-  isReadOnlySystemDiagnosticsPrompt,
-  mergeTaskSnapshots,
   readableError,
   recentReadableChatMessages,
   requiresLocalLlmHealth,
   selectedPendingApproval,
-  withTimeout,
   type RealtimeBadMessageNotice
 } from "./appViewModel";
-
-const TASK_SUBMIT_BACKEND_READY_TIMEOUT_MS = 5_000;
 
 export function App() {
   const api = useMemo(() => new LengrvisApiClient(), []);
@@ -103,7 +94,6 @@ export function App() {
     browserError,
     setBrowserError
   } = useAppStoreSnapshot();
-  const [draft, setDraft] = useState("");
   const [fileSearchError, setFileSearchError] = useState<string | null>(null);
   const [fileSearchMeta, setFileSearchMeta] = useState<FileSearchMeta | null>(null);
   const [fileToolTab, setFileToolTab] = useState<FileToolTab>("search");
@@ -117,12 +107,9 @@ export function App() {
   const settingsIntentNonce = useRef(0);
   const [isCheckingComputer, setIsCheckingComputer] = useState(false);
   const [hasLoadedBackendTasks, setHasLoadedBackendTasks] = useState(false);
-  const [heroSubmitting, setHeroSubmitting] = useState(false);
-  const [heroSubmitError, setHeroSubmitError] = useState<string | null>(null);
   const [approvalSelectionContext, setApprovalSelectionContext] = useState<"task" | "queue">("task");
   const [approvalQueueCursor, setApprovalQueueCursor] = useState(0);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus | null>(null);
-  const heroSubmitInFlight = useRef(false);
   const backendStatusRef = useRef(backendStatus);
   const realtimeBadMessageNotice = useRef<RealtimeBadMessageNotice>({
     count: 0,
@@ -214,205 +201,26 @@ export function App() {
     onRealtimeBadMessage: handleRealtimeBadMessage
   });
 
-  const markBackendResponsive = (message = "后端已响应任务请求") => {
-    const currentStatus = backendStatusRef.current;
-    if (currentStatus.state === "running" && currentStatus.health?.ok) return;
-    const nextStatus = {
-      ...currentStatus,
-      state: "running" as const,
-      message,
-      health: {
-        ...currentStatus.health,
-        ok: true
-      },
-      lastCheckedAt: new Date().toISOString()
-    };
-    backendStatusRef.current = nextStatus;
-    setBackendStatus(nextStatus);
-  };
-
-  const ensureBackendReadyForTaskSubmit = async (): Promise<{ ok: boolean; error?: string }> => {
-    try {
-      const status = await withTimeout(
-        api.getBackendStatus(),
-        TASK_SUBMIT_BACKEND_READY_TIMEOUT_MS,
-        "连接检查超时"
-      );
-      backendStatusRef.current = status;
-      setBackendStatus(status);
-      if (status.health?.ok || (status.state === "running" && !status.health)) {
-        markBackendResponsive(status.message ?? "后端已连接，可以启动任务");
-        return { ok: true };
-      }
-      const healthProbeStatus = await api.probeBackendHealth(status.baseUrl);
-      if (isBackendTaskSubmitReady(healthProbeStatus)) {
-        backendStatusRef.current = {
-          ...status,
-          ...healthProbeStatus,
-          message: healthProbeStatus.message ?? status.message ?? "后端已连接，可以启动任务"
-        };
-        setBackendStatus(backendStatusRef.current);
-        markBackendResponsive(backendStatusRef.current.message);
-        return { ok: true };
-      }
-      const healthReason = status.health && !status.health.ok ? "健康检查还没通过" : "";
-      return {
-        ok: false,
-        error: status.message
-          ? `Lengrvis 服务还没连上：${status.message}${healthReason ? `，${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
-          : `Lengrvis 服务还没连上${healthReason ? `：${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
-      };
-    } catch (error) { // broad-exception-boundary
-      return {
-        ok: false,
-        error: `Lengrvis 服务还没连上：${readableError(error, "连接检查失败")}。输入内容已保留，可以稍后重试。`
-      };
-    }
-  };
-
-  const sendMessage = async (content: string): Promise<{ ok: boolean; error?: string }> => {
-    const readiness = await ensureBackendReadyForTaskSubmit();
-    if (!readiness.ok) {
-      return readiness;
-    }
-
-    const userMessage: ChatMessage = {
-      id: `local-${crypto.randomUUID()}`,
-      role: "user",
-      author: "你",
-      content,
-      createdAt: new Date().toISOString(),
-      status: "sent"
-    };
-
-    setMessages((current) => [...current, userMessage]);
-    try {
-      const preferRun = isReadOnlySystemDiagnosticsPrompt(content);
-      let result = preferRun
-        ? await api.startRun({ content, mode })
-        : await api.sendChat({ content, mode });
-      if (!result.ok && !preferRun) {
-        result = await api.startRun({ content, mode });
-      }
-
-      const response = result.data;
-      if (result.ok && response) {
-        markBackendResponsive();
-        setMessages((current) => [...current, response.message]);
-        if (response.taskUpdates?.length) {
-          response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
-          setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
-          setFocusedTaskId(response.taskUpdates[0]?.id ?? null);
-          void refreshTaskSnapshot();
-        }
-        return { ok: true };
-      }
-
-      const message = result.error?.message ?? "Lengrvis 暂时不可用，请稍后再试。";
-      setMessages((current) => [
-        ...current,
-        {
-          id: `local-${crypto.randomUUID()}`,
-          role: "assistant",
-          author: "Lengrvis",
-          content: message,
-          createdAt: new Date().toISOString(),
-          status: "failed"
-        }
-      ]);
-      return { ok: false, error: message };
-    } catch (error) { // broad-exception-boundary
-      const message = error instanceof Error ? error.message : "Lengrvis 暂时不可用，请稍后再试。";
-      setMessages((current) => [
-        ...current,
-        {
-          id: `local-${crypto.randomUUID()}`,
-          role: "assistant",
-          author: "Lengrvis",
-          content: message,
-          createdAt: new Date().toISOString(),
-          status: "failed"
-        }
-      ]);
-      return { ok: false, error: message };
-    }
-  };
-
-  const executeSuggestion = async (suggestion: IntentSuggestion) => {
-    const readiness = await ensureBackendReadyForTaskSubmit();
-    if (!readiness.ok) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: `local-${crypto.randomUUID()}`,
-          role: "assistant",
-          author: "Lengrvis",
-          content: readiness.error ?? "建议任务没有启动成功，输入内容未发送，可以稍后重试。",
-          createdAt: new Date().toISOString(),
-          status: "failed"
-        }
-      ]);
-      return;
-    }
-
-    const userMessage: ChatMessage = {
-      id: `local-${crypto.randomUUID()}`,
-      role: "user",
-      author: "你",
-      content: suggestion.prompt,
-      createdAt: new Date().toISOString(),
-      status: "sent"
-    };
-
-    setMessages((current) => [...current, userMessage]);
-
-    const result = await api.launchPerceptionSuggestion({
-      suggestionId: suggestion.id,
-      prompt: suggestion.prompt,
-      mode
-    });
-
-    const response = result.data;
-    if (result.ok && response) {
-      setMessages((current) => [...current, response.message]);
-      if (response.taskUpdates?.length) {
-        setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
-      }
-      setFocusedTaskId(response.runId ?? response.taskUpdates?.[0]?.id ?? null);
-      void refreshTaskSnapshot();
-      return;
-    }
-
-    setMessages((current) => [
-      ...current,
-      {
-        id: `local-${crypto.randomUUID()}`,
-        role: "assistant",
-        author: "Lengrvis",
-        content: result.error?.message ?? "建议任务启动失败，请稍后再试。",
-        createdAt: new Date().toISOString(),
-        status: "failed"
-      }
-    ]);
-  };
-
-  const submitHeroPrompt = async () => {
-    const value = draft.trim();
-    if (!value || heroSubmitInFlight.current) return;
-
-    heroSubmitInFlight.current = true;
-    setHeroSubmitting(true);
-    setHeroSubmitError(null);
-    const result = await sendMessage(value);
-    if (result.ok) {
-      setDraft("");
-    } else {
-      setDraft(value);
-      setHeroSubmitError(result.error ?? "任务没有启动成功，输入内容已保留，可以重试。");
-    }
-    setHeroSubmitting(false);
-    heroSubmitInFlight.current = false;
-  };
+  const {
+    draft,
+    setDraft,
+    heroSubmitting,
+    heroSubmitError,
+    sendMessage,
+    executeSuggestion,
+    submitHeroPrompt,
+    requestCleanupApproval
+  } = useTaskSubmission({
+    api,
+    mode,
+    backendStatusRef,
+    chatStartedTaskIds,
+    setMessages,
+    setTasks,
+    setFocusedTaskId,
+    setBackendStatus,
+    refreshTaskSnapshot
+  });
 
   const searchFiles = async (query: string) => {
     if (!query.trim()) {
@@ -587,13 +395,6 @@ export function App() {
   };
 
   const handleQuickSkill = (skill: OfficeQuickSkill) => {
-    const starterManifest = taskStarterManifestById(skill.id);
-    if (skill.kind === "action") {
-      if (skill.action === "system-check") {
-        void runComputerCheck();
-      }
-      return;
-    }
     if (skill.kind === "view") {
       if (skill.id === "summarize-document") {
         setFileSearchError(null);
@@ -609,10 +410,7 @@ export function App() {
       return;
     }
 
-    const manifestHint = starterManifest
-      ? `\n\n任务向导：输入要求：${starterManifest.inputHint}；预检：${starterManifest.preflight.join(" / ")}；预期产出：${starterManifest.outputType}。`
-      : "";
-    setDraft(`${skill.prompt}${manifestHint}`);
+    setDraft(skill.prompt);
   };
 
   const runComputerCheck = async () => {
@@ -674,13 +472,6 @@ export function App() {
       const input = document.querySelector<HTMLTextAreaElement>(".office-command-dock textarea");
       input?.focus();
     }, 0);
-  };
-
-  const requestCleanupApproval = async (scope: string) => {
-    await sendMessage(
-      `请基于这个文件范围生成清理确认任务：${scope}。先生成可清理项预览和审批请求；在我明确批准前不要移动或删除任何文件。`
-    );
-    void refreshTaskSnapshot();
   };
 
   return (

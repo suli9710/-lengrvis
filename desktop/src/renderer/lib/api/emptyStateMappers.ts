@@ -1,4 +1,5 @@
-import type { BrowserHostSnapshot, BrowserSession, Plan, SafetyReview } from "../../../shared/types";
+import type { BrowserHostSnapshot, BrowserSession } from "../../../shared/types";
+import type { Plan, SafetyReview } from "../../../shared/executionTypes";
 
 export function emptyBrowserHostSnapshot(hostAvailable: boolean): BrowserHostSnapshot {
   return {

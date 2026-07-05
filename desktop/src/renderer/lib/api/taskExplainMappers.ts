@@ -5,7 +5,7 @@ import type {
   TaskExplainMessage,
   TaskExplainReview,
   TaskExplainStep
-} from "../../../shared/types";
+} from "../../../shared/executionTypes";
 import type {
   BackendTaskExplain,
   BackendTaskExplainChainItem,
@@ -13,7 +13,7 @@ import type {
   BackendTaskExplainMessage,
   BackendTaskExplainReview,
   BackendTaskExplainStep
-} from "./backendTypes";
+} from "./executionBackendTypes";
 import { mapTaskCompletionEvidence } from "./completionEvidenceMappers";
 import { zhBackendText } from "../zh";
 
@@ -146,4 +146,3 @@ export function mapExplainEvidence(item: BackendTaskExplainEvidence): TaskExplai
     summary: zhBackendText(String(item.summary ?? ""))
   };
 }
-

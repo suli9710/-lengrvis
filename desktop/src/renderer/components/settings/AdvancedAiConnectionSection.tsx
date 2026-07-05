@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import type { AppSettings, BackendStatus, LLMCostSummary, LLMHealthStatus } from "../../../shared/types";
+import type { BackendStatus } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { LLMCostSummary, LLMHealthStatus } from "../../../shared/llmContextTypes";
 import { zhBackendState } from "../../lib/zh";
 
 type SetDraft = Dispatch<SetStateAction<AppSettings>>;

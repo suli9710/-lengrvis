@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import type { AppSettings, LLMHealthStatus } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { LLMHealthStatus } from "../../../shared/llmContextTypes";
 
 type SetDraft = Dispatch<SetStateAction<AppSettings>>;
 

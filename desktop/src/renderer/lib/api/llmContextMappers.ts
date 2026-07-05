@@ -1,5 +1,5 @@
-import type { ContextUsage, LLMCostSummary, LLMHealthStatus, LLMProfile } from "../../../shared/types";
-import type { BackendContextUsage, BackendLlmCostSummary, BackendLlmHealth, BackendLlmProfile } from "./backendTypes";
+import type { ContextUsage, LLMCostSummary, LLMHealthStatus, LLMProfile } from "../../../shared/llmContextTypes";
+import type { BackendContextUsage, BackendLlmCostSummary, BackendLlmHealth, BackendLlmProfile } from "./llmContextBackendTypes";
 
 export function mapLlmHealth(health: BackendLlmHealth): LLMHealthStatus {
   return {
@@ -203,4 +203,3 @@ export function objectRecord(value: unknown): Record<string, number> {
     Object.entries(value).map(([key, item]) => [key, Number(item ?? 0)])
   );
 }
-

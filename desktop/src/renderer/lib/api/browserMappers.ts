@@ -4,17 +4,17 @@ import type {
   BrowserHostSnapshot,
   BrowserLinkResult,
   BrowserPageSnapshot,
+  BrowserReplayExport,
   BrowserSession
-} from "../../../shared/types";
+} from "../../../shared/browserTypes";
 import type {
   BackendBrowserActivityEnvelope,
   BackendBrowserActivityEvent,
   BackendBrowserLink,
   BackendBrowserPage,
   BackendBrowserReplayExport,
-  BackendBrowserSession,
-  BrowserReplayExport
-} from "./backendTypes";
+  BackendBrowserSession
+} from "./browserBackendTypes";
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -103,4 +103,3 @@ export function mapBrowserReplayExport(data: BackendBrowserReplayExport): Browse
 export function isBrowserAction(value: unknown): value is BrowserAction {
   return Boolean(value && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string");
 }
-

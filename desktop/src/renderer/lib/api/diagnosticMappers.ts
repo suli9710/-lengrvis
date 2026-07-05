@@ -1,17 +1,51 @@
 import type {
   DiagnosticExportResult,
+  LocalMetricsSummary,
   StartupItem,
   SystemDiagnostic,
   SystemProcess
-} from "../../../shared/types";
+} from "../../../shared/systemTypes";
 import type {
   BackendDiagnosticExportResult,
+  BackendLocalMetrics,
   BackendProcess,
   BackendStartupItem,
   BackendSupportPackageRedaction,
   BackendSystemDiagnostics
-} from "./backendTypes";
+} from "./systemBackendTypes";
 import { zhBackendText } from "../zh";
+
+export function mapLocalMetrics(data: BackendLocalMetrics, fallbackWindowDays = 7): LocalMetricsSummary {
+  return {
+    windowDays: Number(data.window_days ?? fallbackWindowDays),
+    generatedAt: data.generated_at ?? "",
+    tasks: {
+      total: Number(data.tasks?.total ?? 0),
+      terminal: Number(data.tasks?.terminal ?? 0),
+      succeeded: Number(data.tasks?.succeeded ?? 0),
+      successRate: data.tasks?.success_rate ?? null,
+      byStatus: data.tasks?.by_status ?? {}
+    },
+    runs: {
+      total: Number(data.runs?.total ?? 0),
+      byPhase: data.runs?.by_phase ?? {}
+    },
+    recovery: {
+      reflectionsStarted: Number(data.recovery?.reflections_started ?? 0),
+      runsWithReflection: Number(data.recovery?.runs_with_reflection ?? 0),
+      recoveryTriggerRate: data.recovery?.recovery_trigger_rate ?? null,
+      decidedActions: data.recovery?.decided_actions ?? {},
+      askUserShare: data.recovery?.ask_user_share ?? null
+    },
+    llm: {
+      calls: Number(data.llm?.calls ?? 0),
+      anomalies: Number(data.llm?.anomalies ?? 0),
+      anomalyRate: data.llm?.anomaly_rate ?? null,
+      estimatedCalls: Number(data.llm?.estimated_calls ?? 0),
+      byFinishReason: data.llm?.by_finish_reason ?? {}
+    }
+  };
+}
 
 export function mapProcess(process: BackendProcess): SystemProcess {
   return {
@@ -224,4 +258,3 @@ export function numberRecord(value: Record<string, unknown> | undefined): Record
       .filter(([, item]) => Number.isFinite(item))
   );
 }
-

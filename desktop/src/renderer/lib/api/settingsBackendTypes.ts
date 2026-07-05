@@ -1,0 +1,73 @@
+export interface BackendSettings {
+  provider_name?: string;
+  base_url?: string;
+  model?: string;
+  review_model?: string;
+  wire_api?: string;
+  requires_openai_auth?: boolean;
+  model_reasoning_effort?: string;
+  disable_response_storage?: boolean;
+  temperature?: number;
+  max_tokens?: number;
+  timeout?: number;
+  llm_api_max_retries?: number;
+  llm_api_retry_backoff_seconds?: number;
+  llm_api_circuit_failure_threshold?: number;
+  llm_api_circuit_cooldown_seconds?: number;
+  model_context_window?: number;
+  model_auto_compact_token_limit?: number;
+  allowed_directories?: string[];
+  allow_browser_network?: boolean;
+  remote_desktop_enabled?: boolean;
+  app_allowlist?: string[];
+  browser_max_page_bytes?: number;
+  browser_screenshot_dir?: string;
+  onnx_model_path?: string;
+  onnx_execution_provider?: string;
+  onnx_provider_preference?: string;
+  onnx_directml_device_id?: string;
+  onnx_openvino_device?: string;
+  onnx_openvino_cache_dir?: string;
+  onnx_warm_on_startup?: boolean;
+  onnx_model_family?: string;
+  embedding_backend?: string;
+  onnx_embedding_model_path?: string;
+  onnx_embedding_execution_provider?: string;
+  onnx_embedding_model_id?: string;
+  onnx_embedding_max_batch_size?: number;
+  image_embedding_backend?: string;
+  onnx_image_embedding_model_path?: string;
+  onnx_image_embedding_execution_provider?: string;
+  onnx_image_embedding_model_id?: string;
+  onnx_image_embedding_max_batch_size?: number;
+  ocr_backend?: string;
+  ocr_execution_provider?: string;
+  ocr_openvino_model_dir?: string;
+  ocr_openvino_device?: string;
+  ocr_lang?: string;
+  ocr_min_confidence?: number;
+  ocr_batch_size?: number;
+  mode?: string;
+  permission_mode?: string;
+  allow_cloud_context?: boolean;
+  allow_file_content_upload?: boolean;
+  confirmation_nonce?: string;
+  mcp_servers?: Array<{
+    id?: string;
+    name?: string;
+    url?: string;
+    command?: string;
+    args?: string[];
+    enabled?: boolean;
+    transport?: string;
+    auth?: Record<string, unknown>;
+    [key: string]: unknown;
+  }>;
+}
+
+export interface SensitiveChangeConfirmation {
+  required?: boolean;
+  nonce?: string;
+  expires_at?: string;
+  changes?: Array<Record<string, unknown>>;
+}

@@ -1,6 +1,5 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Sparkles } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { OfficeTaskPresentation } from "./officeTaskPresentation";
@@ -9,9 +8,8 @@ import type { HomeReadinessItem, HomeTrustItem, OfficeQuickSkill } from "./Offic
 
 const quickSkill: OfficeQuickSkill = {
   id: "check-computer",
-  kind: "action",
-  action: "system-check",
-  icon: Sparkles,
+  kind: "prompt",
+  prompt: "帮我检查这台电脑",
   title: "检查电脑",
   summary: "只读检查",
   trust: {

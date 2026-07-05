@@ -1,24 +1,23 @@
 import type {
-  AgentConversation,
-  AppSettings,
-  ApprovalRequest,
   AuditLogEntry,
   BackendStatus,
   BrowserActivityEvent,
   BrowserHostSnapshot,
-  BrowserSession,
-  ChatMessage,
-  ContextUsage,
-  FileSearchResult,
-  IntentSuggestion,
-  LLMCostSummary,
-  LLMHealthStatus,
-  LocalLLMHealth,
+  BrowserSession
+} from "../../shared/types";
+import type { ChatMessage, IntentSuggestion } from "../../shared/catalogTypes";
+import type { SystemInfo } from "../../shared/systemTypes";
+import type {
+  AgentConversation,
+  ApprovalRequest,
   Plan,
   SafetyReview,
-  SystemInfo,
   TaskEvent
-} from "../../shared/types";
+} from "../../shared/executionTypes";
+import type { FileSearchResult } from "../../shared/fileLibraryTypes";
+import type { ContextUsage, LLMCostSummary, LLMHealthStatus } from "../../shared/llmContextTypes";
+import type { LocalLLMHealth } from "../../shared/localModelTypes";
+import type { AppSettings } from "../../shared/settingsTypes";
 
 export type AssistantMode = "privacy" | "efficiency" | "hybrid";
 export type ViewKey =

@@ -8,7 +8,7 @@ import type {
   BrowserHostBounds,
   BrowserHostOpenRequest,
   BrowserHostSnapshot
-} from "../shared/types";
+} from "../shared/browserTypes";
 import {
   sanitizeActionResultForRenderer,
   sanitizeSnapshotForRenderer

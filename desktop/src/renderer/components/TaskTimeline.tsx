@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { CleanupPlan } from "../../shared/cleanupTypes";
 import type {
-  CleanupPlan,
   TaskBoundaryEvent,
   TaskCompletionEvidenceStatus,
   TaskEvent,
@@ -22,7 +22,7 @@ import type {
   TaskExplainEvidence,
   TaskState,
   TaskStepRecording
-} from "../../shared/types";
+} from "../../shared/executionTypes";
 import { LengrvisApiClient } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import {

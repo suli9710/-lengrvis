@@ -1,4 +1,5 @@
-import type { AgentConversation, ChatMessage, TaskEvent } from "../../shared/types";
+import type { ChatMessage } from "../../shared/catalogTypes";
+import type { AgentConversation, TaskEvent } from "../../shared/executionTypes";
 
 export type RunUiEventKind =
   | "run_started"

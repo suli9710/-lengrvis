@@ -52,8 +52,19 @@ function assertSourceMatches(source, pattern, message) {
   assert.match(source, pattern, message);
 }
 
+function readPairScreenHelperSource() {
+  const screensDir = mobilePath("src/screens");
+  return fs
+    .readdirSync(screensDir)
+    .filter((name) => /^pairScreen(?!Styles).*\.ts$/.test(name))
+    .sort()
+    .map((name) => fs.readFileSync(path.join(screensDir, name), "utf8"))
+    .join("\n");
+}
+
 function assertPairScreenQrSourceAssertions() {
   const source = fs.readFileSync(mobilePath("src/screens/PairScreen.tsx"), "utf8");
+  const pairScreenSources = `${source}\n${readPairScreenHelperSource()}`;
   assertSourceMatches(
     source,
     /import\s+\{[\s\S]*\bCameraView\b[\s\S]*\buseCameraPermissions\b[\s\S]*\bBarcodeScanningResult\b[\s\S]*\}\s+from "expo-camera";/,
@@ -115,7 +126,7 @@ function assertPairScreenQrSourceAssertions() {
     "Manual computer address input must use the shared sanitizer handler",
   );
   assertSourceIncludes(
-    source,
+    pairScreenSources,
     'return value.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, MAX_PAIRING_CODE_LENGTH);',
     "Manual pairing code input must be normalized and capped to the 16-character backend contract",
   );
@@ -170,7 +181,7 @@ function assertPairScreenQrSourceAssertions() {
     "电脑端未打开",
   ];
   for (const copy of beginnerCopy) {
-    assertSourceIncludes(source, copy, `PairScreen beginner copy must explain ${copy}`);
+    assertSourceIncludes(pairScreenSources, copy, `PairScreen beginner copy must explain ${copy}`);
   }
 
   assertSourceIncludes(source, 'testID="pair-open-scanner-button"', "Scan entry must have a stable test id");
@@ -190,17 +201,17 @@ function assertPairScreenQrSourceAssertions() {
   );
   assertSourceIncludes(source, "protectPairingPayloadInput(result.data)", "Scanned QR payloads must share length and control-character protection with pasted payloads");
   assertSourceIncludes(
-    source,
+    pairScreenSources,
     'const withoutUnsafeCharacters = value.replace(/[\\u0000-\\u001f\\u007f]+/g, " ");',
     "Pairing payload input must replace C0/DEL controls with spaces before parsing or echoing",
   );
   assertSourceIncludes(
-    source,
+    pairScreenSources,
     "notice: withoutUnsafeCharacters.length > MAX_BASE_URL_LENGTH ? pairingInputTooLongNotice(\"baseUrl\") : baseUrlInputCleanedNotice(),",
     "Manual address cleanup must only show the length warning when the sanitized address exceeds the limit",
   );
-  assert.doesNotMatch(source, /等待 HTTPS\/WSS 配对信息|需要启用 HTTPS\/WSS|手机 token|后端未启动|无法信任电脑证书/);
-  assert.doesNotMatch(source, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
+  assert.doesNotMatch(pairScreenSources, /等待 HTTPS\/WSS 配对信息|需要启用 HTTPS\/WSS|手机 token|后端未启动|无法信任电脑证书/);
+  assert.doesNotMatch(pairScreenSources, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
 }
 
 function assertAppShellSourceAssertions() {

@@ -1,6 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-import type { ChatMessage } from "../../shared/types";
+import type { ChatMessage } from "../../shared/catalogTypes";
 import type { RealtimeConnectionStatus } from "../lib/apiClient";
 import {
   appendUniqueMessage,

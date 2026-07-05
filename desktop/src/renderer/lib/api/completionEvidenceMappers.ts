@@ -1,5 +1,5 @@
-import type { TaskCompletionEvidence } from "../../../shared/types";
-import type { BackendTaskCompletionEvidenceFallback } from "./backendTypes";
+import type { TaskCompletionEvidence } from "../../../shared/executionTypes";
+import type { BackendTaskCompletionEvidenceFallback } from "./executionBackendTypes";
 import { zhBackendText } from "../zh";
 
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
@@ -183,4 +183,3 @@ export function booleanOrUndefined(value: unknown): boolean | undefined {
   }
   return undefined;
 }
-

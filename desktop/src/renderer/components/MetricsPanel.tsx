@@ -1,7 +1,7 @@
 import { Activity, RefreshCw, ShieldQuestion } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import type { LocalMetricsSummary } from "../../shared/types";
+import type { LocalMetricsSummary } from "../../shared/systemTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "./Panel";
 

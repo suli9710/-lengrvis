@@ -1,7 +1,8 @@
 import { CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, Trash2, Undo2, XCircle } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
-import type { ApprovalRequest, CleanupPlan } from "../../shared/types";
+import type { CleanupPlan } from "../../shared/cleanupTypes";
+import type { ApprovalRequest } from "../../shared/executionTypes";
 import { zhAgentName, zhSeverity } from "../lib/zh";
 import { Badge } from "./Panel";
 

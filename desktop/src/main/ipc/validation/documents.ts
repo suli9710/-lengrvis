@@ -1,4 +1,4 @@
-import type { DocumentAskRequest, DocumentCompareRequest, DocumentParseRequest } from "../../../shared/types";
+import type { DocumentAskRequest, DocumentCompareRequest, DocumentParseRequest } from "../../../shared/documentTypes";
 import {
   ApiRequestValidationError,
   rejectUnexpectedBridgeKeys,

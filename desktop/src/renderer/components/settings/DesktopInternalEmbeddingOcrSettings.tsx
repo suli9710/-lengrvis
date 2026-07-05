@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import type { AppSettings } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
 
 type SetDraft = Dispatch<SetStateAction<AppSettings>>;
 

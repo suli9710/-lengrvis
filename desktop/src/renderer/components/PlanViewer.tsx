@@ -1,6 +1,6 @@
 import { ClipboardList } from "lucide-react";
 
-import type { Plan, PlanStepState } from "../../shared/types";
+import type { Plan, PlanStepState } from "../../shared/executionTypes";
 import { zhAgentName, zhStepState } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 

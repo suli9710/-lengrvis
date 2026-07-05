@@ -10,6 +10,7 @@ import pytest
 
 from app.config import AppSettings
 from app.services import document_intelligence_service as svc
+from app.services.document_intelligence_models import DocumentBlock
 from app.tools import document_tools
 from app.tools.registry import ToolRegistry
 from app.tools.tool_abort import ToolAbortedError
@@ -99,6 +100,20 @@ def test_extract_tables_from_csv(tmp_path: Path):
 
     assert result["tables"][0]["headers"] == ["Region", "Revenue"]
     assert result["tables"][0]["rows"][1] == ["North", "100"]
+
+
+def test_service_keeps_document_intelligence_helper_compatibility():
+    block = svc.DocumentBlock(id="b1", text="Alpha source text", page=2, index=0)
+
+    assert svc.DocumentBlock is DocumentBlock
+    assert block.citation == "[p2:b1]"
+    assert svc._split_text_blocks("Heading\n\nBody") == ["Heading", "Body"]
+    assert svc._rows_from_plain_table_text("Region | Revenue\nNorth | 100") == [
+        ["Region", "Revenue"],
+        ["North", "100"],
+    ]
+    assert svc._format_cited_blocks([block], max_chars=100).startswith("[p2:b1]\nAlpha")
+    assert "Source blocks" in svc._document_qa_messages("What?", "[p2:b1]\nAlpha")[1]["content"]
 
 
 def test_extract_csv_tables_does_not_swallow_unexpected_reader_bug(monkeypatch, tmp_path: Path):

@@ -15,12 +15,54 @@ from threading import RLock
 from typing import Any
 
 from app.config import PROJECT_ROOT, AppSettings, get_env
+from app.integrations.lengrvis_code_constants import (  # noqa: F401
+    ERROR_BAD_NDJSON,
+    ERROR_CANCELLED,
+    ERROR_LAUNCH_FAILURE,
+    ERROR_LENGRVIS_RESULT,
+    ERROR_NON_ZERO_EXIT,
+    ERROR_PERMISSION_DENIAL,
+    LENGRVIS_CODE_ADAPTER_NAME,
+    LENGRVIS_CODE_DISPLAY_NAME,
+    MAX_ADAPTER_EVENTS,
+    TERMINAL_ERROR_TYPES,
+)
+from app.integrations.lengrvis_code_errors import classify_lengrvis_code_error
+from app.integrations.lengrvis_code_events import (  # noqa: F401
+    _adapter_events,
+    _assistant_text,
+    _assistant_tool_names,
+    _assistant_tool_uses,
+    _base_event_payload,
+    _diagnostics,
+    _error_reason,
+    _event_summary,
+    _lengrvis_events,
+    _lengrvis_events_for_source_event,
+    _record_event,
+    _result_output_payload,
+    _stderr_diagnostics,
+    _summary_message,
+    _summary_payload,
+    _terminal_lengrvis_event,
+    _terminal_status,
+    _tool_input_summary,
+    _tool_name_from_summary_event,
+    _tool_result_message,
+    _tool_use_summary_message,
+    _user_tool_results,
+)
+from app.integrations.lengrvis_code_redaction import (  # noqa: F401
+    _public_lengrvis_code_json,
+    _public_lengrvis_code_result,
+    _public_lengrvis_code_text,
+    _public_lengrvis_code_value,
+    _redacted_command,
+    _short_json,
+)
 from app.orchestration.execution_models import EngineTurnResult, RunObservation, RunPhase, RunState
-from app.policy.redaction import redact_public_text, redact_value
 
 VENDORED_LENGRVIS_CODE_ROOT = PROJECT_ROOT / "vendor" / "lengrvis-code"
-LENGRVIS_CODE_DISPLAY_NAME = "Lengrvis Code"
-LENGRVIS_CODE_ADAPTER_NAME = "lengrvis_code"
 VENDOR_ROOT_ENV = "LENGRVIS_CODE_VENDOR_ROOT"
 COMMAND_ENV = "LENGRVIS_CODE_COMMAND"
 DEFAULT_PERMISSION_MODE = "default"
@@ -37,7 +79,6 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(npm test:*)",
     "Bash(pnpm test:*)",
 )
-MAX_ADAPTER_EVENTS = 500
 FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
 WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
@@ -83,22 +124,6 @@ _SENSITIVE_ENV_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"API_KEY", re.IGNORECASE),
     re.compile(r"PRIVATE_KEY", re.IGNORECASE),
 )
-
-ERROR_LAUNCH_FAILURE = "launch_failure"
-ERROR_BAD_NDJSON = "bad_ndjson"
-ERROR_NON_ZERO_EXIT = "non_zero_exit"
-ERROR_LENGRVIS_RESULT = "lengrvis_result_error"
-ERROR_PERMISSION_DENIAL = "permission_denial"
-ERROR_CANCELLED = "cancelled"
-TERMINAL_ERROR_TYPES: tuple[str, ...] = (
-    ERROR_LAUNCH_FAILURE,
-    ERROR_BAD_NDJSON,
-    ERROR_NON_ZERO_EXIT,
-    ERROR_LENGRVIS_RESULT,
-    ERROR_PERMISSION_DENIAL,
-    ERROR_CANCELLED,
-)
-
 
 @dataclass(slots=True)
 class LengrvisCodeRuntime:
@@ -880,595 +905,6 @@ def _parse_ndjson_line(raw_line: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
-
-
-def classify_lengrvis_code_error(summary: LengrvisCodeStreamSummary) -> str | None:
-    if summary.cancelled:
-        return ERROR_CANCELLED
-    if summary.launch_error:
-        return ERROR_LAUNCH_FAILURE
-    if summary.permission_denials:
-        return ERROR_PERMISSION_DENIAL
-    if summary.result and summary.result.get("is_error"):
-        return ERROR_LENGRVIS_RESULT
-    if summary.result and summary.result.get("is_error") is False:
-        return None
-    if summary.returncode not in {None, 0}:
-        return ERROR_NON_ZERO_EXIT
-    if summary.invalid_lines:
-        return ERROR_BAD_NDJSON
-    return None
-
-
-def _record_event(summary: LengrvisCodeStreamSummary, event: dict[str, Any]) -> None:
-    summary.events.append(event)
-    event_type = str(event.get("type") or "")
-    if event_type == "assistant":
-        summary.assistant_text.extend(_assistant_text(event))
-        summary.tool_events.extend(_assistant_tool_uses(event))
-    elif event_type == "streamlined_text":
-        text = event.get("text")
-        if isinstance(text, str):
-            summary.assistant_text.append(text)
-    elif event_type == "streamlined_tool_use_summary":
-        summary.tool_events.append(event)
-    elif event_type == "system":
-        summary.system_events.append(event)
-    elif event_type == "result":
-        summary.result = event
-
-
-def _assistant_text(event: Mapping[str, Any]) -> list[str]:
-    message = event.get("message")
-    if not isinstance(message, Mapping):
-        return []
-    content = message.get("content")
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    texts: list[str] = []
-    for block in content:
-        if isinstance(block, Mapping) and block.get("type") == "text" and isinstance(block.get("text"), str):
-            texts.append(str(block["text"]))
-    return texts
-
-
-def _assistant_tool_uses(event: Mapping[str, Any]) -> list[dict[str, Any]]:
-    message = event.get("message")
-    if not isinstance(message, Mapping):
-        return []
-    content = message.get("content")
-    if not isinstance(content, list):
-        return []
-    tools: list[dict[str, Any]] = []
-    for block in content:
-        if isinstance(block, Mapping) and block.get("type") == "tool_use":
-            tools.append(dict(block))
-    return tools
-
-
-def _summary_message(summary: LengrvisCodeStreamSummary) -> str:
-    if summary.cancelled:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} run was cancelled."
-    if summary.is_error:
-        return _error_reason(summary)
-    if summary.final_text:
-        return summary.final_text[:500]
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} emitted {len(summary.events)} stream-json event(s)."
-
-
-def _error_reason(summary: LengrvisCodeStreamSummary) -> str:
-    if summary.launch_error:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {_public_lengrvis_code_text(summary.launch_error)}"
-    if summary.permission_denials:
-        denials = _public_lengrvis_code_json(summary.permission_denials)
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {denials}"
-    if summary.result and isinstance(summary.result.get("errors"), list) and summary.result["errors"]:
-        return "; ".join(_public_lengrvis_code_text(item) for item in summary.result["errors"])
-    if summary.result and isinstance(summary.result.get("subtype"), str):
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {summary.result['subtype']}"
-    if summary.stderr.strip():
-        return _public_lengrvis_code_text(summary.stderr.strip(), limit=500)
-    if summary.returncode not in {None, 0}:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} exited with code {summary.returncode}."
-    if summary.invalid_lines:
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} emitted malformed stream-json line(s): {len(summary.invalid_lines)}."
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} run failed."
-
-
-def _summary_payload(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
-    adapter_events = _adapter_events(summary)
-    lengrvis_events = _lengrvis_events(summary, adapter_events)
-    error_classification = classify_lengrvis_code_error(summary)
-    payload: dict[str, Any] = {
-        "ok": error_classification is None,
-        "cancelled": summary.cancelled,
-        "display_name": LENGRVIS_CODE_DISPLAY_NAME,
-        "adapter_name": LENGRVIS_CODE_ADAPTER_NAME,
-        "error_classification": error_classification,
-        "returncode": summary.returncode,
-        "event_count": len(summary.events),
-        "assistant_text": _public_lengrvis_code_text(summary.final_text) if summary.is_error else summary.final_text,
-        "tool_events": summary.tool_events,
-        "system_events": summary.system_events,
-        "result": _public_lengrvis_code_result(summary.result),
-        "usage": summary.usage,
-        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
-        "invalid_line_count": len(summary.invalid_lines),
-        "diagnostics": _diagnostics(summary),
-        "adapter_events": adapter_events,
-        "lengrvis_events": lengrvis_events,
-        "command": summary.command,
-        "runtime_health": summary.runtime_health,
-        "stderr_diagnostics": _stderr_diagnostics(summary),
-    }
-    if summary.permission_denials:
-        payload["awaiting_write_approval"] = True
-    if summary.launch_error:
-        payload["launch_error"] = _public_lengrvis_code_text(summary.launch_error)
-    if summary.stderr:
-        payload["stderr"] = _public_lengrvis_code_text(summary.stderr[-4000:])
-    if summary.invalid_lines:
-        payload["invalid_lines"] = [_public_lengrvis_code_text(line, limit=500) for line in summary.invalid_lines[:10]]
-    return payload
-
-
-def _diagnostics(summary: LengrvisCodeStreamSummary) -> list[str]:
-    diagnostics: list[str] = []
-    if summary.launch_error:
-        launch_error = _public_lengrvis_code_text(summary.launch_error)
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} launch failure: {launch_error}")
-    health_diagnostic = summary.runtime_health.get("diagnostic") if summary.runtime_health else ""
-    if isinstance(health_diagnostic, str) and health_diagnostic:
-        diagnostics.append(_public_lengrvis_code_text(health_diagnostic))
-    if summary.stderr.strip():
-        stderr = _public_lengrvis_code_text(summary.stderr.strip(), limit=500)
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} stderr: {stderr}")
-    if summary.invalid_lines:
-        diagnostics.append(f"Malformed {LENGRVIS_CODE_DISPLAY_NAME} stream-json lines: {len(summary.invalid_lines)}")
-    if summary.returncode not in {None, 0}:
-        diagnostics.append(f"{LENGRVIS_CODE_DISPLAY_NAME} exited with code {summary.returncode}.")
-    if summary.permission_denials:
-        diagnostics.append(
-            f"{LENGRVIS_CODE_DISPLAY_NAME} permission denied: {_public_lengrvis_code_json(summary.permission_denials)}"
-        )
-    if summary.result and isinstance(summary.result.get("errors"), list):
-        diagnostics.extend(_public_lengrvis_code_text(item) for item in summary.result["errors"])
-    return diagnostics
-
-
-def _adapter_events(summary: LengrvisCodeStreamSummary) -> list[dict[str, Any]]:
-    start = max(0, len(summary.events) - MAX_ADAPTER_EVENTS)
-    events: list[dict[str, Any]] = []
-    for offset, event in enumerate(summary.events[start:], start=start + 1):
-        event_type = str(event.get("type") or "unknown")
-        message = _event_summary(event)
-        events.append(
-            {
-                "sequence": offset,
-                "event_type": event_type,
-                "summary": message,
-                "lengrvis_events": _lengrvis_events_for_source_event(
-                    event,
-                    message,
-                    source_event_index=offset,
-                    summary=summary,
-                ),
-            }
-        )
-    return events
-
-
-def _lengrvis_events(summary: LengrvisCodeStreamSummary, adapter_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    for adapter_event in adapter_events:
-        event_payload = adapter_event.get("lengrvis_event")
-        if isinstance(event_payload, dict):
-            events.append(event_payload)
-        for event in adapter_event.get("lengrvis_events") or []:
-            if isinstance(event, dict):
-                events.append(event)
-    events.append(_terminal_lengrvis_event(summary))
-    return events
-
-
-def _event_summary(event: Mapping[str, Any]) -> str:
-    event_type = str(event.get("type") or "unknown")
-    if event_type == "system":
-        subtype = event.get("subtype")
-        if subtype == "init":
-            tools = event.get("tools") if isinstance(event.get("tools"), list) else []
-            return f"{LENGRVIS_CODE_DISPLAY_NAME} initialized with {len(tools)} tools."
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} system event: {subtype or 'unknown'}."
-    if event_type == "assistant":
-        texts = _assistant_text(event)
-        if texts:
-            return "\n".join(texts).strip()[:500]
-        tools = _assistant_tool_names(event)
-        if tools:
-            return f"{LENGRVIS_CODE_DISPLAY_NAME} requested tool(s): {', '.join(tools)}."
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} assistant message."
-    if event_type == "result":
-        if isinstance(event.get("result"), str) and event.get("result"):
-            return str(event["result"])[:500]
-        if isinstance(event.get("errors"), list) and event["errors"]:
-            return "; ".join(str(item) for item in event["errors"])[:500]
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'}."
-    if event_type in {"streamlined_text", "text"} and isinstance(event.get("text"), str):
-        return str(event["text"]).strip()[:500]
-    if event_type in {"streamlined_tool_use_summary", "tool_use_summary"}:
-        return _tool_use_summary_message(event)
-    if event_type == "user":
-        tool_results = _user_tool_results(event)
-        if tool_results:
-            names = [item.get("tool_name") or item.get("tool_use_id") or "tool" for item in tool_results]
-            return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result(s): {', '.join(str(name) for name in names)}."
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} user event."
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} event: {event_type}."
-
-
-def _lengrvis_events_for_source_event(
-    event: Mapping[str, Any],
-    message: str,
-    *,
-    source_event_index: int,
-    summary: LengrvisCodeStreamSummary,
-) -> list[dict[str, Any]]:
-    event_type = str(event.get("type") or "unknown")
-    base = _base_event_payload(
-        source_event_index=source_event_index,
-        source_event_type=event_type,
-        summary=summary,
-    )
-    if event_type == "assistant":
-        events: list[dict[str, Any]] = []
-        texts = [text for text in _assistant_text(event) if text.strip()]
-        for text in texts:
-            events.append(
-                {
-                    "name": "agent.message",
-                    "payload": {
-                        **base,
-                        "agent": LENGRVIS_CODE_DISPLAY_NAME,
-                        "agent_display_name": LENGRVIS_CODE_DISPLAY_NAME,
-                        "message": text.strip(),
-                        "source": LENGRVIS_CODE_ADAPTER_NAME,
-                    },
-                }
-            )
-        for tool in _assistant_tool_uses(event):
-            tool_name = str(tool.get("name") or "unknown")
-            tool_input_summary = _tool_input_summary(tool.get("input"))
-            payload = {
-                **base,
-                "tool_name": tool_name,
-                "adapter_tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                "status": "proposed",
-                "message": f"{LENGRVIS_CODE_DISPLAY_NAME} proposed {tool_name}.",
-                "tool_input_summary": tool_input_summary,
-                "tool_use_id": tool.get("id"),
-            }
-            events.append({"name": "tool.proposed", "payload": payload})
-            events.append(
-                {
-                    "name": "tool.progress",
-                    "payload": {
-                        **payload,
-                        "status": "running",
-                        "message": f"{LENGRVIS_CODE_DISPLAY_NAME} running {tool_name}.",
-                    },
-                }
-            )
-        if events:
-            return events
-        return [
-            {
-                "name": "agent.message",
-                "payload": {
-                    **base,
-                    "agent": LENGRVIS_CODE_DISPLAY_NAME,
-                    "agent_display_name": LENGRVIS_CODE_DISPLAY_NAME,
-                    "message": message,
-                    "source": LENGRVIS_CODE_ADAPTER_NAME,
-                },
-            }
-        ]
-    if event_type in {"streamlined_text", "text"}:
-        text = str(event.get("text") or "").strip()
-        if text:
-            return [
-                {
-                    "name": "agent.message",
-                    "payload": {
-                        **base,
-                        "agent": LENGRVIS_CODE_DISPLAY_NAME,
-                        "agent_display_name": LENGRVIS_CODE_DISPLAY_NAME,
-                        "message": text,
-                        "source": LENGRVIS_CODE_ADAPTER_NAME,
-                    },
-                }
-            ]
-    if event_type in {"streamlined_tool_use_summary", "tool_use_summary"}:
-        return [
-            {
-                "name": "tool.progress",
-                "payload": {
-                    **base,
-                    "tool_name": _tool_name_from_summary_event(event),
-                    "adapter_tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                    "status": "running",
-                    "message": _tool_use_summary_message(event),
-                    "tool_input_summary": _tool_input_summary(event.get("summary")),
-                    "preceding_tool_use_ids": event.get("preceding_tool_use_ids"),
-                },
-            }
-        ]
-    if event_type == "user":
-        events = []
-        for tool_result in _user_tool_results(event):
-            tool_name = str(tool_result.get("tool_name") or LENGRVIS_CODE_ADAPTER_NAME)
-            events.append(
-                {
-                    "name": "tool.result",
-                    "payload": {
-                        **base,
-                        "tool_name": tool_name,
-                        "adapter_tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                        "status": "failed" if tool_result.get("is_error") else "completed",
-                        "message": _tool_result_message(tool_result),
-                        "tool_use_id": tool_result.get("tool_use_id"),
-                        "output": tool_result.get("content"),
-                    },
-                }
-            )
-        return events
-    if event_type == "result":
-        status = _terminal_status(summary)
-        return [
-            {
-                "name": "tool.result",
-                "payload": {
-                    **base,
-                    "tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                    "status": status,
-                    "message": message,
-                    "output": _result_output_payload(event, summary),
-                },
-            }
-        ]
-    if event_type == "system":
-        return [
-            {
-                "name": "tool.progress",
-                "payload": {
-                    **base,
-                    "tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                    "status": "running",
-                    "message": message,
-                    "system_subtype": event.get("subtype"),
-                },
-            }
-        ]
-    return [
-        {
-            "name": "tool.progress",
-            "payload": {
-                **base,
-                "tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-                "status": "running",
-                "message": message,
-                "event_type": event_type,
-            },
-        }
-    ]
-
-
-def _terminal_lengrvis_event(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
-    classification = classify_lengrvis_code_error(summary)
-    if classification == ERROR_CANCELLED:
-        name = "run.cancelled"
-    elif classification is None:
-        name = "run.completed"
-    else:
-        name = "run.failed"
-    return {
-        "name": name,
-        "payload": {
-            **_base_event_payload(
-                source_event_index=len(summary.events) + 1,
-                source_event_type="adapter_terminal",
-                summary=summary,
-            ),
-            "tool_name": LENGRVIS_CODE_ADAPTER_NAME,
-            "status": _terminal_status(summary),
-            "message": _summary_message(summary),
-            "error_classification": classification,
-            "returncode": summary.returncode,
-            "cancelled": summary.cancelled,
-        },
-    }
-
-
-def _base_event_payload(
-    *,
-    source_event_index: int,
-    source_event_type: str,
-    summary: LengrvisCodeStreamSummary,
-) -> dict[str, Any]:
-    return {
-        "source_event_index": source_event_index,
-        "source_event_type": source_event_type,
-        "adapter_name": LENGRVIS_CODE_ADAPTER_NAME,
-        "adapter_display_name": LENGRVIS_CODE_DISPLAY_NAME,
-        "usage": summary.usage,
-        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
-        "stderr_diagnostics": _stderr_diagnostics(summary),
-    }
-
-
-def _stderr_diagnostics(summary: LengrvisCodeStreamSummary) -> list[str]:
-    stderr = summary.stderr.strip()
-    if not stderr:
-        return []
-    return [_public_lengrvis_code_text(line.strip(), limit=500) for line in stderr.splitlines() if line.strip()][:10]
-
-
-def _short_json(value: Any, *, limit: int = 500) -> str:
-    try:
-        text = json.dumps(value, ensure_ascii=True, sort_keys=True)
-    except (TypeError, ValueError):
-        text = str(value)
-    return text[:limit]
-
-
-def _public_lengrvis_code_text(value: Any, *, limit: int | None = None) -> str:
-    redacted = redact_public_text(str(redact_value(str(value or "")) or ""))
-    return redacted[:limit] if limit is not None else redacted
-
-
-def _public_lengrvis_code_json(value: Any, *, limit: int = 500) -> str:
-    return _public_lengrvis_code_text(_short_json(value, limit=limit * 2), limit=limit)
-
-
-def _public_lengrvis_code_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _public_lengrvis_code_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_public_lengrvis_code_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_public_lengrvis_code_value(item) for item in value]
-    if isinstance(value, set):
-        return [_public_lengrvis_code_value(item) for item in sorted(value, key=str)]
-    if isinstance(value, str):
-        return _public_lengrvis_code_text(value)
-    return value
-
-
-def _public_lengrvis_code_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
-    if result is None:
-        return None
-    if not result.get("is_error"):
-        safe = dict(result)
-        if isinstance(safe.get("permission_denials"), list):
-            safe["permission_denials"] = _public_lengrvis_code_value(safe["permission_denials"])
-        return safe
-    return _public_lengrvis_code_value(result)
-
-
-def _tool_input_summary(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value[:500]
-    if isinstance(value, Mapping):
-        parts: list[str] = []
-        for key, item in list(value.items())[:8]:
-            text = str(item)
-            if len(text) > 80:
-                text = f"{text[:77]}..."
-            parts.append(f"{key}={text}")
-        return ", ".join(parts)[:500]
-    if isinstance(value, list):
-        return f"{len(value)} item(s): {_short_json(value[:5], limit=420)}"
-    return str(value)[:500]
-
-
-def _tool_name_from_summary_event(event: Mapping[str, Any]) -> str:
-    for key in ("tool_name", "name"):
-        value = event.get(key)
-        if value:
-            return str(value)
-    summary = event.get("summary")
-    if isinstance(summary, Mapping):
-        for key in ("tool_name", "name"):
-            value = summary.get(key)
-            if value:
-                return str(value)
-    return LENGRVIS_CODE_ADAPTER_NAME
-
-
-def _tool_use_summary_message(event: Mapping[str, Any]) -> str:
-    summary = event.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        return summary.strip()[:500]
-    if isinstance(summary, Mapping):
-        for key in ("summary", "message", "description"):
-            value = summary.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()[:500]
-        return _tool_input_summary(summary)
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} tool progress."
-
-
-def _user_tool_results(event: Mapping[str, Any]) -> list[dict[str, Any]]:
-    message = event.get("message")
-    if not isinstance(message, Mapping):
-        return []
-    content = message.get("content")
-    if not isinstance(content, list):
-        return []
-    results: list[dict[str, Any]] = []
-    for block in content:
-        if isinstance(block, Mapping) and block.get("type") == "tool_result":
-            results.append(dict(block))
-    return results
-
-
-def _tool_result_message(tool_result: Mapping[str, Any]) -> str:
-    content = tool_result.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()[:500]
-    if isinstance(content, list):
-        texts = [
-            str(item.get("text")) for item in content if isinstance(item, Mapping) and isinstance(item.get("text"), str)
-        ]
-        if texts:
-            return "\n".join(texts).strip()[:500]
-    if tool_result.get("is_error"):
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result failed."
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result completed."
-
-
-def _terminal_status(summary: LengrvisCodeStreamSummary) -> str:
-    classification = classify_lengrvis_code_error(summary)
-    if classification == ERROR_CANCELLED:
-        return "cancelled"
-    if classification is None:
-        return "completed"
-    return "failed"
-
-
-def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
-    payload = {
-        "result": _public_lengrvis_code_text(event.get("result")) if event.get("is_error") else event.get("result"),
-        "subtype": event.get("subtype"),
-        "is_error": bool(event.get("is_error")),
-        "errors": _public_lengrvis_code_value(event.get("errors")) if isinstance(event.get("errors"), list) else [],
-        "usage": summary.usage,
-        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
-        "error_classification": classify_lengrvis_code_error(summary),
-        "returncode": summary.returncode,
-        "stderr_diagnostics": _stderr_diagnostics(summary),
-    }
-    if summary.permission_denials:
-        payload["awaiting_write_approval"] = True
-    return payload
-
-
-def _assistant_tool_names(event: Mapping[str, Any]) -> list[str]:
-    return [str(tool.get("name")) for tool in _assistant_tool_uses(event) if tool.get("name")]
-
-
-def _redacted_command(command: Sequence[str]) -> list[str]:
-    redacted: list[str] = []
-    for token in command:
-        text = str(token)
-        if text.startswith("sk-"):
-            redacted.append("[REDACTED]")
-        else:
-            redacted.append(text)
-    return redacted
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

@@ -1,4 +1,5 @@
-import type { ApiRequest, ApiResponse } from "../shared/types";
+import type { ApiRequest, ApiResponse } from "../shared/desktopBridgeTypes";
+import { backendErrorMessage } from "../shared/backendError";
 import {
   ApiRequestValidationError,
   type ApiRequestValidationOptions,
@@ -117,43 +118,7 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 function getErrorMessage(data: unknown, fallback: string): string {
-  const structured = structuredBackendErrorMessage(data);
-  if (structured) {
-    return userFacingBackendError(structured);
-  }
-  if (data && typeof data === "object" && "message" in data) {
-    const message = (data as { message?: unknown }).message;
-    if (typeof message === "string") {
-      return userFacingBackendError(message);
-    }
-  }
-  if (data && typeof data === "object" && "detail" in data) {
-    const detail = (data as { detail?: unknown }).detail;
-    if (typeof detail === "string") {
-      return userFacingBackendError(detail);
-    }
-  }
-
-  return userFacingBackendError(fallback || "Backend request failed");
-}
-
-function structuredBackendErrorMessage(data: unknown): string {
-  if (!data || typeof data !== "object" || !("detail" in data)) {
-    return "";
-  }
-  const detail = (data as { detail?: unknown }).detail;
-  if (!detail || typeof detail !== "object") {
-    return "";
-  }
-  const message = (detail as { message?: unknown }).message;
-  if (typeof message !== "string" || !message.trim()) {
-    return "";
-  }
-  const nextAction = (detail as { next_action?: unknown }).next_action;
-  if (typeof nextAction === "string" && nextAction.trim()) {
-    return `${message.trim()} 下一步：${nextAction.trim()}`;
-  }
-  return message.trim();
+  return userFacingBackendError(backendErrorMessage(data, fallback || "Backend request failed"));
 }
 
 function userFacingBackendError(message: string): string {

@@ -1,6 +1,7 @@
 import type { Ref } from "react";
 
-import type { AppSettings, LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/localModelTypes";
 import type { LengrvisApiClient } from "../../lib/apiClient";
 import { LocalModelInstaller, PrivacyFlowHint, PrivacyReadinessPanel } from "./LocalModelInstaller";
 

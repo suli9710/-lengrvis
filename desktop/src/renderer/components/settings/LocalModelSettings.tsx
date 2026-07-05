@@ -1,10 +1,6 @@
-import type {
-  AppSettings,
-  HardwareAccelerationStatusPayload,
-  LocalLLMHealth,
-  LocalModelReadiness,
-  LocalModelSetupPlan
-} from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { HardwareAccelerationStatusPayload } from "../../../shared/hardwareAccelerationTypes";
+import type { LocalLLMHealth, LocalModelReadiness, LocalModelSetupPlan } from "../../../shared/localModelTypes";
 
 export function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
   const backend = health?.selectedBackend;

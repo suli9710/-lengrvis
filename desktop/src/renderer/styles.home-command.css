@@ -26,6 +26,7 @@
 .office-command-dock__hint {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
   font-size: 11px;
@@ -83,8 +84,17 @@
     transform 0.18s var(--ease-out);
 }
 
-.command-preview__step svg {
+.command-preview__index {
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.78);
+  color: currentColor;
+  font-size: 10px;
+  font-weight: 900;
 }
 
 .command-preview__step span {
@@ -162,10 +172,6 @@
 .command-footer__note--warning {
   color: var(--amber);
   font-weight: 800;
-}
-
-.command-footer__send--hint {
-  animation: send-hint-pulse 0.9s ease-out 2;
 }
 
 .command-footer__send {
@@ -246,4 +252,3 @@
 .send-orb:active {
   transform: scale(0.96);
 }
-

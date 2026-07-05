@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { AppWindow, FolderOpen, Globe2, Laptop, Search, ShieldCheck, Sparkles } from "lucide-react";
 
-import type { AgentConversation, Plan, SafetyReview, TaskEvent } from "../../../shared/types";
+import type { AgentConversation, Plan, SafetyReview, TaskEvent } from "../../../shared/executionTypes";
 import { zhAgentName } from "../../lib/zh";
 
 export type OfficeAgentPose = "working" | "coffee" | "treadmill" | "restroom" | "nap" | "wander" | "review";

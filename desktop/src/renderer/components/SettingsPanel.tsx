@@ -1,16 +1,11 @@
 import { Save } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
-import type {
-  AppSettings,
-  BackendStatus,
-  LLMCostSummary,
-  LLMHealthStatus,
-  HardwareAccelerationStatusPayload,
-  HardwareAccelerationSmokePayload,
-  LocalLLMHealth,
-  LocalModelSetupPlan,
-} from "../../shared/types";
+import type { BackendStatus } from "../../shared/types";
+import type { HardwareAccelerationSmokePayload, HardwareAccelerationStatusPayload } from "../../shared/hardwareAccelerationTypes";
+import type { LLMCostSummary, LLMHealthStatus } from "../../shared/llmContextTypes";
+import type { LocalLLMHealth, LocalModelSetupPlan } from "../../shared/localModelTypes";
+import type { AppSettings } from "../../shared/settingsTypes";
 import { buildMobilePairingQrContent } from "../../shared/mobilePairingPayload";
 import {
   type LengrvisApiClient,

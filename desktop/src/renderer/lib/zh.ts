@@ -1,16 +1,18 @@
 import type {
-  AgentMessage,
-  AgentConversation,
-  ApprovalRequest,
   AuditLogEntry,
   BackendState,
-  ChatRole,
+} from "../../shared/types";
+import type { ChatRole } from "../../shared/catalogTypes";
+import type {
+  AgentConversation,
+  AgentMessage,
+  ApprovalRequest,
+  PlanStepState,
   SafetyFinding,
   SafetyReview,
   SafetySeverity,
-  TaskState,
-  PlanStepState
-} from "../../shared/types";
+  TaskState
+} from "../../shared/executionTypes";
 
 export function zhBackendState(state: BackendState) {
   const labels: Record<BackendState, string> = {

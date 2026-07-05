@@ -19,14 +19,16 @@ import {
 import { useState } from "react";
 
 import type {
-  BackendStatus,
+  BackendStatus
+} from "../../shared/types";
+import type {
   DiagnosticExportResult,
   DiskInfo,
   SystemDiagnostic,
   SystemDiagnosticUpdateChannel,
   SystemInfo,
   SystemProcess
-} from "../../shared/types";
+} from "../../shared/systemTypes";
 import { zhBackendState, zhSource, zhSystemSuggestion } from "../lib/zh";
 import { Panel } from "./Panel";
 

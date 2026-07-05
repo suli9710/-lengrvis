@@ -1,5 +1,5 @@
-import type { AppSettings } from "../../../shared/types";
-import type { BackendSettings } from "./backendTypes";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { BackendSettings } from "./settingsBackendTypes";
 import { normalizeExecutionProvider } from "./hardwareAccelerationMappers";
 
 export function settingsPatchFor(settings: AppSettings, baseline: AppSettings | null): Partial<BackendSettings> {
@@ -253,4 +253,3 @@ export function normalizePermissionMode(value?: string): AppSettings["permission
   }
   return "default";
 }
-

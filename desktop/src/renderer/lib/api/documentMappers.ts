@@ -1,4 +1,4 @@
-import type { DocumentAskResponse, DocumentCitation, DocumentCompareResponse, DocumentIR, DocumentTable } from "../../../shared/types";
+import type { DocumentAskResponse, DocumentCitation, DocumentCompareResponse, DocumentIR, DocumentTable } from "../../../shared/documentTypes";
 import type {
   BackendDocumentAskResponse,
   BackendDocumentBlock,
@@ -6,7 +6,7 @@ import type {
   BackendDocumentCompareResponse,
   BackendDocumentIR,
   BackendDocumentTable
-} from "./backendTypes";
+} from "./documentBackendTypes";
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;

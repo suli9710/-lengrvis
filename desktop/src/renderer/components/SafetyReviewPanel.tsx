@@ -1,6 +1,6 @@
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 
-import type { SafetyFinding, SafetyReview, SafetySeverity, TaskBoundaryEvent } from "../../shared/types";
+import type { SafetyFinding, SafetyReview, SafetySeverity, TaskBoundaryEvent } from "../../shared/executionTypes";
 import { zhFindingStatus, zhSafetyStatus, zhSeverity } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 

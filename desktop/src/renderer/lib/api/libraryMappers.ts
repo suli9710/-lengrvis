@@ -1,5 +1,18 @@
-import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../../shared/types";
-import type { BackendIndexStatus, BackendLocalLibraryItem, BackendLocalLibraryResponse } from "./backendTypes";
+import type {
+  FileClusterOptions,
+  FileSearchResponse,
+  FileSearchResult,
+  IndexStatus,
+  LocalLibraryItem,
+  LocalLibraryResponse
+} from "../../../shared/fileLibraryTypes";
+import type {
+  BackendClusterRequest,
+  BackendFileSearchResponse,
+  BackendIndexStatus,
+  BackendLocalLibraryItem,
+  BackendLocalLibraryResponse
+} from "./fileLibraryBackendTypes";
 import { numberOrZero } from "./mapperPrimitives";
 
 export function mapIndexStatus(status?: BackendIndexStatus | null): IndexStatus | undefined {
@@ -70,4 +83,53 @@ export function mapLocalLibraryItem(item: BackendLocalLibraryItem): LocalLibrary
     width: Number(item.width ?? 0),
     height: Number(item.height ?? 0)
   };
+}
+
+export function mapFileSearchResponse(data: BackendFileSearchResponse): FileSearchResponse {
+  const results: FileSearchResult[] = [
+    ...(data.index_results ?? []).map((item, index) => ({
+      id: item.file_id ?? `index-${index}`,
+      path: item.path,
+      match: item.snippet ?? "",
+      line: 1,
+      score: 0.9
+    })),
+    ...(data.name_results ?? []).map((item, index) => ({
+      id: item.path ?? `name-${index}`,
+      path: item.path,
+      match: item.name ?? item.path,
+      line: 1,
+      score: 0.75
+    }))
+  ];
+  const meta = data.name_search ?? {};
+  return {
+    results,
+    meta: {
+      count: numberOrZero(meta.count),
+      scanned: numberOrZero(meta.scanned),
+      truncated: Boolean(meta.truncated),
+      status: meta.status ?? "ok",
+      indexStatus: mapIndexStatus(data.index_status)
+    }
+  };
+}
+
+export function fileClusterRequestFor(options: FileClusterOptions = {}): BackendClusterRequest {
+  const body: BackendClusterRequest = {};
+  const groupBy = options.group_by ?? options.groupBy;
+  const clusterBy = options.cluster_by ?? options.clusterBy;
+  const metadataWeight = options.metadata_weight ?? options.metadataWeight;
+  const imagePaths = options.image_paths ?? options.imagePaths;
+
+  if (typeof options.k === "number") body.k = options.k;
+  if (groupBy) body.group_by = groupBy;
+  if (clusterBy) body.cluster_by = clusterBy;
+  if (options.paths?.length) body.paths = options.paths;
+  if (imagePaths?.length) body.image_paths = imagePaths;
+  if (options.images?.length) body.images = options.images;
+  if (typeof options.limit === "number") body.limit = options.limit;
+  if (typeof metadataWeight === "number") body.metadata_weight = metadataWeight;
+
+  return body;
 }

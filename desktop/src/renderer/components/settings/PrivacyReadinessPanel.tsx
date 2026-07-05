@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Download, Loader2, Play, ShieldCheck } from "lucide-react";
 
-import type { AppSettings, LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/localModelTypes";
 import { Badge } from "../Panel";
 import { localModelUserMessage, modelDisplayName } from "./LocalModelSettings";
 

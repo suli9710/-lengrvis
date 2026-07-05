@@ -1,1432 +1,249 @@
 import type { AcceptConsentRequest, ConsentRecord, ConsentStatusResult, LegalDocId } from "./consent";
-
-export type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-
-export type ApiQueryValue = string | number | boolean | null | undefined;
-
-export interface ApiRequest<TBody = unknown> {
-  endpoint: string;
-  method?: ApiMethod;
-  query?: Record<string, ApiQueryValue>;
-  body?: TBody;
-  headers?: never;
-  timeoutMs?: number;
-  /** Groups in-flight IPC fetches so a new batch can abort the previous one. */
-  abortGroup?: string;
-}
-
-export interface ApiError {
-  code?: string;
-  message: string;
-  details?: unknown;
-}
-
-export interface ApiResponse<TData = unknown> {
-  ok: boolean;
-  status: number;
-  data?: TData;
-  error?: ApiError;
-  receivedAt: string;
-}
-
-export type DesktopRunMode = "privacy" | "efficiency" | "hybrid";
-export type DesktopRunEngine = "auto" | "os" | "developer";
-
-export interface DesktopRunStartRequest {
-  message: string;
-  mode?: DesktopRunMode;
-  engine?: DesktopRunEngine;
-}
-
-export interface DesktopPerceptionSuggestionLaunchRequest {
-  suggestionId: string;
-  mode?: DesktopRunMode;
-}
-
-export interface DesktopHardwareAccelerationSmokeRequest {
-  operation?: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
-  prompt?: string;
-  maxTokens?: number;
-  texts?: string[];
-  modelPath?: string;
-  imagePath?: string;
-}
-
-export interface DesktopCommerceLicenseInstallRequest {
-  token: string;
-}
-
-export interface DesktopCommerceLicenseActivateRequest {
-  activationKey: string;
-  appVersion?: string;
-}
-
-export interface DesktopCommercePolicyImportRequest {
-  policy: {
-    rules?: DesktopPermissionRule[];
-  };
-  confirmationNonce?: string;
-}
-
-export interface DesktopBrowserSessionRequest {
-  sessionId: string;
-}
-
-export interface DesktopMemorySaveRequest {
-  content: string;
-  tags?: string[];
-  taskId?: string;
-  kind?: string;
-}
-
-export interface DesktopMemoryRecallRequest {
-  query: string;
-  k?: number;
-  tags?: string[];
-}
-
-export interface DesktopScheduleCreateRequest {
-  cron: string;
-  goal: string;
-  mode: DesktopRunMode;
-  note?: string;
-}
-
-export interface DesktopScheduleEnableRequest {
-  scheduleId: string;
-  enabled: boolean;
-}
-
-export interface DesktopOpenSettingsRequest {
-  uri: string;
-}
-
-export interface DesktopPrivacyEraseRequest {
-  confirmationText: string;
-  includeSettings: boolean;
-}
-
-export interface DesktopPrivacyEraseResponse {
-  ok: boolean;
-  scope: "local_only";
-  deleted: {
-    rows_by_table: Record<string, number>;
-    rows_total: number;
-    diagnostic_packages: number;
-  };
-  preserved: string[];
-  manual_cleanup: {
-    log_dirs: string;
-  };
-  audit: string;
-}
-
-export type DesktopSettingsPatch = Record<string, unknown>;
-
-export interface DesktopSensitiveChangeConfirmation {
-  required?: boolean;
-  nonce?: string;
-  expires_at?: string;
-  changes?: Array<Record<string, unknown>>;
-}
-
-export interface DesktopPermissionTimeWindow {
-  days?: Array<number | string>;
-  start?: string;
-  end?: string;
-  timezone?: string;
-}
-
-export interface DesktopPermissionRule {
-  id?: string;
-  name?: string;
-  effect?: "allow" | "deny";
-  tool?: string;
-  tools?: string[];
-  path_pattern?: string;
-  path_patterns?: string[];
-  time_window?: DesktopPermissionTimeWindow | null;
-  time_windows?: DesktopPermissionTimeWindow[];
-  enabled?: boolean;
-  reason?: string;
-}
-
-export type DesktopPermissionPolicyRelaxationRequest =
-  | { action: "upsert_rule"; rule: DesktopPermissionRule }
-  | { action: "delete_rule"; ruleId: string }
-  | { action: "replace_policy"; policy: { rules?: DesktopPermissionRule[] } };
-
-export interface DesktopPermissionRuleUpsertRequest {
-  rule: DesktopPermissionRule;
-  confirmationNonce?: string;
-}
-
-export interface DesktopPermissionRuleDeleteRequest {
-  ruleId: string;
-  confirmationNonce?: string;
-}
-
-export interface DesktopWebSocketSubscribeRequest {
-  endpoint: string;
-  query?: Record<string, ApiQueryValue>;
-}
-
-export interface DesktopWebSocketOpenRequest extends DesktopWebSocketSubscribeRequest {
-  id: string;
-}
-
-export interface DesktopWebSocketOpenResult {
-  ok: boolean;
-  id: string;
-  error?: string;
-}
-
-export type DesktopWebSocketBridgeEvent =
-  | { id: string; type: "open" }
-  | { id: string; type: "message"; data: string }
-  | { id: string; type: "error"; message?: string }
-  | { id: string; type: "close"; code?: number; reason?: string; wasClean?: boolean };
-
-export interface DesktopWebSocketSubscribeHandlers {
-  onOpen?: () => void;
-  onMessage?: (data: string) => void;
-  onError?: (error: { message?: string }) => void;
-  onClose?: (event: { code?: number; reason?: string; wasClean?: boolean }) => void;
-}
-
-export interface MobilePairingRemoteInputGrantRequest {
-  deviceId: string;
-  expiresInSeconds?: number;
-}
-
-export interface MobilePairingRevokeRemoteInputGrantRequest {
-  deviceId: string;
-  grantId: string;
-}
-
-export interface NotificationPayload {
-  title: string;
-  body: string;
-  taskId?: string;
-  severity: "info" | "warning" | "error";
-}
-
-export type BackendState = "not_configured" | "starting" | "running" | "stopped" | "error";
-
-export interface BackendStatus {
-  state: BackendState;
-  baseUrl: string;
-  pid?: number;
-  message?: string;
-  lastCheckedAt: string;
-  shellMode?: "foreground" | "background";
-  guardianState?: "running" | "starting" | "stopped" | "error" | string;
-  fullBackendState?: "running" | "starting" | "stopped" | "error" | string;
-  fullBackendPort?: number;
-  lastWakeReason?: string;
-  runtimeModeError?: string;
-  health?: {
-    ok: boolean;
-    latencyMs?: number;
-  };
-}
-
-export type CommercePlan = "free" | "pro" | "max";
-
-export type CommerceFeature =
-  | "local_read_only"
-  | "basic_tasks"
-  | "cloud_quota"
-  | "document_ai"
-  | "scheduling"
-  | "remote_view"
-  | "remote_control"
-  | "audit_export"
-  | "policy_management"
-  | "private_deployment";
-
-export interface CommercePlanStatus {
-  plan: CommercePlan;
-  remoteDesktopEnabled: boolean;
-  features: Record<CommerceFeature, boolean>;
-  highRiskFeatures: CommerceFeature[];
-}
-
-export type CommerceLicenseState =
-  | "absent"
-  | "active"
-  | "expired"
-  | "revoked"
-  | "revocation_required"
-  | "revocation_stale"
-  | "device_mismatch"
-  | "device_unverified"
-  | "device_fingerprint_missing"
-  | "device_fingerprint_mismatch"
-  | "device_proof_missing"
-  | "device_proof_mismatch"
-  | "device_proof_weak"
-  | "subscription_inactive"
-  | "subscription_confirmation_required"
-  | "subscription_confirmation_failed"
-  | "invalid"
-  | "revocation_data_invalid"
-  | "verifier_unconfigured";
-
-export interface CommerceLicenseStatus {
-  state: CommerceLicenseState;
-  present: boolean;
-  active: boolean;
-  expired: boolean;
-  revoked?: boolean;
-  verifierConfigured: boolean;
-  managedBy?: "environment" | "file";
-  requestedEnvPlan?: CommercePlan;
-  planEnvIgnored?: boolean;
-  licenseId?: string;
-  issuer?: string;
-  replaces?: string;
-  revocationCapable?: boolean;
-  revocationSource?: "environment" | "file";
-  revocationGeneratedAt?: string;
-  plan?: CommercePlan;
-  subject?: string;
-  seats?: number;
-  subscriptionId?: string;
-  subscriptionStatus?: "active" | "trialing" | "past_due" | "canceled" | "expired" | "revoked";
-  renewsAt?: string;
-  cancelAtPeriodEnd?: boolean;
-  deviceId?: string;
-  orderRef?: string;
-  issuedAt?: string;
-  expiresAt?: string;
-  errorCode?: string;
-}
-
-export interface CommerceQuotaWindow {
-  key: string;
-  windowHours: number;
-  limits: {
-    totalTokens: number | null;
-    calls: number | null;
-    totalCostUsd: number | null;
-  };
-  usage?: {
-    calls: number;
-    totalTokens: number;
-    totalCostUsd: number;
-    windowHours: number;
-    lastEventAt?: string;
-  };
-  exceeded: string[];
-}
-
-export interface CommerceQuotaStatus {
-  plan: CommercePlan;
-  enforced: boolean;
-  unlimited: boolean;
-  windowHours: number;
-  limits: {
-    totalTokens: number | null;
-    calls: number | null;
-    totalCostUsd: number | null;
-  };
-  usage?: {
-    calls: number;
-    totalTokens: number;
-    totalCostUsd: number;
-    windowHours: number;
-    lastEventAt?: string;
-  };
-  exceeded: string[];
-  windows: CommerceQuotaWindow[];
-}
-
-export interface LocalLLMBackend {
-  kind: string;
-  baseUrl: string;
-  models: string[];
-  model?: string;
-}
-
-export interface LocalModelReadinessCheck {
-  key: string;
-  label: string;
-  ok: boolean;
-  actual: string;
-  required: string;
-}
-
-export interface LocalModelReadiness {
-  canInstall: boolean;
-  recommendedModel: string;
-  reason: string;
-  checks: LocalModelReadinessCheck[];
-  memoryTotalBytes: number;
-  diskFreeBytes: number;
-  cpuLogicalCores: number;
-  gpuSummary?: string;
-}
-
-export interface LocalLLMHealth {
-  available: boolean;
-  selectedBackend: LocalLLMBackend | null;
-  probeOrder: string[];
-  error?: string;
-  readiness?: LocalModelReadiness;
-}
-
-export type LocalModelSetupStepState = "pending" | "current" | "done" | "blocked";
-
-export interface LocalModelSetupStep {
-  key: string;
-  label: string;
-  state: LocalModelSetupStepState;
-  detail: string;
-}
-
-export interface LocalModelRepairAction {
-  code: string;
-  label: string;
-  detail: string;
-}
-
-export interface LocalModelEvidenceItem {
-  key: string;
-  ok: boolean;
-  detail: string;
-  valueLabel: string;
-}
-
-export interface LocalModelVerificationSummary {
-  ready: boolean;
-  nextAction: string;
-  pathsRedacted: boolean;
-  privacyFallback: string;
-}
-
-export interface LocalModelSetupPlan {
-  ready: boolean;
-  canInstall: boolean;
-  model: string;
-  readiness?: LocalModelReadiness;
-  installed: boolean;
-  running: boolean;
-  models: string[];
-  hasModel: boolean;
-  runtimeSource: "bundled" | "system" | "missing" | string;
-  bundledRuntimeAvailable: boolean;
-  bundledRuntimePath: string;
-  bundledModelsAvailable: boolean;
-  bundledModelsPath: string;
-  bundledModelAvailable: boolean;
-  bundledModelConfigured: boolean;
-  bundleManifest: {
-    present: boolean;
-    valid?: boolean;
-    path?: string;
-    model?: string;
-    acceptedLicenses?: boolean;
-    runtimeSha256?: string;
-    modelsSha256?: string;
-    runtimeFiles?: number;
-    modelsFiles?: number;
-    error?: string;
-  };
-  steps: LocalModelSetupStep[];
-  nextAction: "hardware_blocked" | "install_runtime" | "start_runtime" | "use_bundled_model" | "download_model" | "ready" | string;
-  repairAction?: LocalModelRepairAction;
-  verification?: LocalModelVerificationSummary;
-  evidence: LocalModelEvidenceItem[];
-}
-
-export interface LLMCapabilities {
-  tools: boolean;
-  structuredJson: boolean;
-  vision: boolean;
-  embeddings: boolean;
-  promptCache: boolean;
-  responsesApi: boolean;
-  reasoningEffort: boolean;
-  usageBreakdown: boolean;
-  local: boolean;
-  cloud: boolean;
-}
-
-export interface LLMProfile {
-  providerName: string;
-  model: string;
-  baseUrl: string;
-  wireApi: string;
-  location: "local" | "cloud" | string;
-  activeBackend: string;
-  capabilities: LLMCapabilities;
-  modelProfile: {
-    model: string;
-    contextWindow: number;
-    maxOutputTokens: number;
-    known: boolean;
-    family: string;
-  };
-}
-
-export interface LLMRetryStatus {
-  maxRetries: number;
-  backoffSeconds: number;
-  circuitFailureThreshold: number;
-  circuitCooldownSeconds: number;
-  circuit: {
-    state: "open" | "closed" | string;
-    failures: number;
-    retryAfterSeconds: number;
-  };
-}
-
-export interface LLMHealthStatus {
-  active: {
-    available: boolean;
-    degraded: boolean;
-    provider: string;
-    model: string;
-    profile: LLMProfile;
-    error: string;
-  };
-  retry: LLMRetryStatus;
-}
-
-export interface LLMCostSummary {
-  windowHours: number;
-  calls: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  totalCostUsd: number | null;
-  estimated: boolean;
-  lastEventAt: string;
-  byModel: Array<{
-    provider: string;
-    model: string;
-    calls: number;
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    totalCostUsd: number;
-    estimated: boolean;
-  }>;
-}
-
-export interface ContextUsageHealth {
-  status: "healthy" | "managed" | "watch" | "critical" | "blocked" | "unknown";
-  severity: "ok" | "warning" | "error" | "unknown";
-  reason: string;
-  usedPercent: number;
-  freePercent: number;
-  freeTokens: number;
-  projectedTokens: number;
-  projectedPercent: number;
-  projectedFreeTokens: number;
-  isHealthy: boolean;
-}
-
-export interface ContextProjectionSummary {
-  enabled: boolean;
-  strategy: string;
-  compacted: boolean;
-  originalTokens: number;
-  projectedTokens: number;
-  tokensSaved: number;
-  messagesRemoved: number;
-  adjustments: string[];
-  description: string;
-}
-
-export interface ContextUsageLineage {
-  taskId: string;
-  historySource: string;
-  messageCount: number;
-  systemMessageCount: number;
-  agentMessageCount: number;
-  messageRoles: Record<string, number>;
-  localToolCount: number;
-  mcpToolCount: number;
-  sessionMemoryItemCount: number;
-  includeRegisteredTools: boolean;
-  includeSessionMemory: boolean;
-  includeProjection: boolean;
-  projection: {
-    source: string;
-    strategy: string;
-    boundaryId: string;
-    retainedTailCount: number;
-  };
-}
-
-export interface ContextUsage {
-  totalTokens: number;
-  usedTokens: number;
-  freeTokens: number;
-  effectiveContextWindow: number;
-  modelContextWindow: number;
-  autoCompactThreshold: number;
-  manualCompactLimit: number;
-  reservedOutputTokens: number;
-  warning: {
-    tokenCount: number;
-    threshold: number;
-    percentLeft: number;
-    isAboveWarningThreshold: boolean;
-    isAboveErrorThreshold: boolean;
-    isAboveAutoCompactThreshold: boolean;
-    isAtBlockingLimit: boolean;
-  };
-  health: ContextUsageHealth;
-  projection: ContextProjectionSummary;
-  lineage: ContextUsageLineage;
-}
-
-export type ChatRole = "system" | "developer" | "user" | "assistant" | "tool";
-export type ChatMessagePart =
-  | {
-      type: "text" | "reasoning" | "subagent" | "error" | "cancelled";
-      text: string;
-      title?: string;
-      agent?: string;
-      status?: "streaming" | "completed" | "error" | "cancelled";
-    }
-  | {
-      type: "tool_call";
-      toolName: string;
-      status: "running" | "success" | "error";
-      input?: string;
-      output?: string;
-      error?: string;
-      title?: string;
-    };
-export type ChatMessageContent = string | ChatMessagePart[];
-export type ChatMessageStatus = "sent" | "streaming" | "completed" | "failed" | "error" | "cancelled";
-
-export interface ChatMessage {
-  id: string;
-  role: ChatRole;
-  author: string;
-  content: ChatMessageContent;
-  createdAt: string;
-  status?: ChatMessageStatus;
-}
-
-export interface ChatRequest {
-  content: string;
-  contextTaskId?: string;
-  mode?: "privacy" | "efficiency" | "hybrid";
-}
-
-export interface ChatResponse {
-  message: ChatMessage;
-  taskUpdates?: TaskEvent[];
-  runId?: string;
-  engine?: "auto" | "os" | "developer" | string;
-}
-
-export interface CleanupPlan {
-  id: string;
-  contentHash?: string;
-  title: string;
-  summary?: string;
-  status?: "draft" | "needs_approval" | "approved" | "executed" | "rolled_back" | string;
-  createdAt?: string;
-  updatedAt?: string;
-  totalBytes?: number;
-  reclaimableBytes?: number;
-  permanentDeleteBytes?: number;
-  trashBytes?: number;
-  riskWarnings: string[];
-  items: CleanupItem[];
-}
-
-export interface RunEventPayload {
-  id: string;
-  run_id: string;
-  name: string;
-  event?: string;
-  event_type?: string;
-  sequence: number;
-  payload: Record<string, unknown>;
-  created_at: string;
-  replay?: boolean;
-}
-
-export interface IntentSuggestion {
-  id: string;
-  title: string;
-  prompt: string;
-  confidence: number;
-  agentHint?: string;
-  reason?: string;
-}
-
-export interface PerceptionSuggestionLaunchRequest {
-  suggestionId: string;
-  prompt?: string;
-  mode?: "privacy" | "efficiency" | "hybrid";
-}
-
-export interface PerceptionSuggestionLaunchResponse {
-  message: ChatMessage;
-  taskUpdates?: TaskEvent[];
-  runId?: string;
-  engine?: "auto" | "os" | "developer" | string;
-}
-
-export type TaskState = "queued" | "running" | "blocked" | "paused" | "completed" | "failed";
-
-export interface TaskBoundaryEvent {
-  id: string;
-  kind: string;
-  title: string;
-  detail: string;
-  severity: "info" | "warning" | "danger" | "success" | string;
-  stepId?: string;
-  createdAt: string;
-  payload?: Record<string, unknown>;
-}
-
-export interface TaskEvent {
-  id: string;
-  runId?: string;
-  title: string;
-  description: string;
-  state: TaskState;
-  agent: string;
-  createdAt: string;
-  updatedAt: string;
-  recordings?: TaskStepRecording[];
-  cleanupPlan?: CleanupPlan;
-  boundaryEvents?: TaskBoundaryEvent[];
-  completionEvidence?: TaskCompletionEvidence;
-}
-
-export interface TaskArtifact {
-  path: string;
-  kind: "changed" | "output" | string;
-  toolName: string;
-  stepId: string;
-  createdAt: string;
-  exists: boolean;
-  isDir: boolean;
-  sizeBytes: number;
-}
-
-export interface TaskArtifactsSummary {
-  taskId: string;
-  artifacts: TaskArtifact[];
-  counts: {
-    total: number;
-    existing: number;
-    missing: number;
-    changed: number;
-    generated: number;
-  };
-}
-
-export interface LocalMetricsSummary {
-  windowDays: number;
-  generatedAt: string;
-  tasks: {
-    total: number;
-    terminal: number;
-    succeeded: number;
-    successRate: number | null;
-    byStatus: Record<string, number>;
-  };
-  runs: {
-    total: number;
-    byPhase: Record<string, number>;
-  };
-  recovery: {
-    reflectionsStarted: number;
-    runsWithReflection: number;
-    recoveryTriggerRate: number | null;
-    decidedActions: Record<string, number>;
-    askUserShare: number | null;
-  };
-  llm: {
-    calls: number;
-    anomalies: number;
-    anomalyRate: number | null;
-    estimatedCalls: number;
-    byFinishReason: Record<string, number>;
-  };
-}
-
-export interface TaskStepRecordingFrame {
-  phase: string;
-  ok: boolean;
-  capturedAt: string;
-  url?: string;
-  width?: number;
-  height?: number;
-  error?: string;
-}
-
-export interface TaskStepRecording {
-  stepId: string;
-  toolName: string;
-  agent: string;
-  frames: TaskStepRecordingFrame[];
-}
-
-export type TaskCompletionEvidenceLevel =
-  | "submission"
-  | "task_created"
-  | "visible_progress"
-  | "completed_result"
-  | "safe_failure";
-
-export type TaskCompletionEvidenceStatus =
-  | "unverified"
-  | "task_evidence_only"
-  | "visible_progress"
-  | "safe_failure"
-  | "verified_completed_result";
-
-export interface TaskCompletionArtifact {
-  kind: string;
-  label: string;
-  redacted: boolean;
-  count?: number;
-}
-
-export interface TaskCompletionEvidence {
-  level: TaskCompletionEvidenceLevel;
-  status: TaskCompletionEvidenceStatus;
-  evidenceKind: string;
-  resultVerified: boolean;
-  resultArtifacts: TaskCompletionArtifact[];
-  missing: string[];
-  signoff: boolean;
-  summary: string;
-  privacyNote?: string;
-}
-
-export interface TaskExplainEvidence {
-  source: string;
-  id: string;
-  createdAt?: string;
-  actor?: string;
-  eventType?: string;
-  stepId?: string;
-  summary: string;
-}
-
-export interface TaskExplainReview {
-  id: string;
-  stepId?: string | null;
-  targetType: string;
-  verdict: string;
-  riskLevel: string;
-  reasons: string[];
-  requiredChanges: string[];
-  userConfirmationMessage: string;
-  safeAlternative: string;
-  createdAt: string;
-  evidence: TaskExplainEvidence[];
-}
-
-export interface TaskExplainMessage {
-  id: string;
-  stepId?: string | null;
-  fromAgent: string;
-  toAgent?: string | null;
-  messageType: string;
-  content: string;
-  createdAt: string;
-  evidence: TaskExplainEvidence[];
-  action?: {
-    kind: string;
-    toolName: string;
-    rationale: string;
-    followUpQuestion: string;
-  };
-}
-
-export interface TaskExplainStep {
-  id: string;
-  stepId: string;
-  order: number;
-  agentName: string;
-  toolName: string;
-  description: string;
-  status: string;
-  riskLevel: string;
-  requiresApproval: boolean;
-  expectedObservation: string;
-  rollbackStrategy: string;
-  plannerReason: string;
-  safetyReviews: TaskExplainReview[];
-  subagentSuggestions: TaskExplainMessage[];
-  observations: TaskExplainMessage[];
-}
-
-export interface TaskExplainChainItem {
-  stage: string;
-  title: string;
-  summary: string;
-  evidence: TaskExplainEvidence[];
-}
-
-export interface TaskExplain {
-  taskId: string;
-  userGoal: string;
-  status: string;
-  mode: string;
-  generatedAt: string;
-  complete: boolean;
-  missingSections: string[];
-  dataSources: Record<string, number>;
-  userGoalRecord: {
-    text: string;
-    evidence: TaskExplainEvidence[];
-  };
-  supervisorJudgment: {
-    summary: string;
-    delegate: boolean;
-    agentHint: string;
-    inferred: boolean;
-    evidence: TaskExplainEvidence[];
-  };
-  plannerReasoning: {
-    summary: string;
-    planId: string;
-    goal: string;
-    assumptions: string[];
-    stepCount: number;
-    globalRiskLevel: string;
-    requiresUserApproval: boolean;
-    evidence: TaskExplainEvidence[];
-  };
-  globalSafetyReviews: TaskExplainReview[];
-  steps: TaskExplainStep[];
-  subagentSuggestions: TaskExplainMessage[];
-  completionEvidence: TaskCompletionEvidence;
-  finalResult: {
-    status: string;
-    summary: string;
-    safetyReviews: TaskExplainReview[];
-    evidence: TaskExplainEvidence[];
-    completionEvidence: TaskCompletionEvidence;
-  };
-  chain: TaskExplainChainItem[];
-}
-
-export type PlanStepState = "pending" | "active" | "done" | "blocked";
-export type PermissionMode = "plan" | "default" | "trusted_edits" | "auto_review" | "dont_ask";
-
-export interface PlanStep {
-  id: string;
-  title: string;
-  detail: string;
-  state: PlanStepState;
-  owner: string;
-  toolName?: string;
-  riskLevel?: string;
-  effects?: string[];
-  resourceKinds?: string[];
-  trustTier?: string;
-  approvalState?: string;
-  deferredTool?: boolean;
-}
-
-export interface Plan {
-  id: string;
-  title: string;
-  objective: string;
-  updatedAt: string;
-  steps: PlanStep[];
-}
-
-export interface AgentMessage {
-  id: string;
-  role: ChatRole;
-  name?: string;
-  content: string;
-  createdAt: string;
-  toolCalls?: OpenAIToolCall[];
-  toolCallId?: string;
-  metadata?: Record<string, unknown>;
-  agent?: string;
-  kind?: "handoff" | "observation" | "action" | "result";
-}
-
-export interface AgentConversation {
-  id: string;
-  title: string;
-  status: "idle" | "running" | "waiting" | "done";
-  messages: AgentMessage[];
-}
-
-export interface OpenAIToolCall {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-export type SafetySeverity = "low" | "medium" | "high" | "critical";
-
-export interface SafetyFinding {
-  id: string;
-  severity: SafetySeverity;
-  title: string;
-  detail: string;
-  status: "open" | "accepted" | "dismissed";
-}
-
-export interface SafetyReview {
-  id: string;
-  status: "clear" | "needs_review" | "blocked";
-  updatedAt: string;
-  findings: SafetyFinding[];
-  boundaryEvents?: TaskBoundaryEvent[];
-}
-
-export interface ApprovalRequest {
-  id: string;
-  taskId?: string;
-  stepId?: string | null;
-  approvalType?: string;
-  title: string;
-  reason: string;
-  requester: string;
-  riskLevel: SafetySeverity;
-  createdAt: string;
-  proposedAction: string;
-  status: "pending" | "approved" | "denied";
-  rawPayload?: unknown;
-  cleanupPlan?: CleanupPlan;
-  toolName?: string;
-  toolTrustTier?: string;
-  toolEffects?: string[];
-  resourceKinds?: string[];
-  policyMode?: PermissionMode | string;
-  dryRunSummary?: string;
-  modelAction?: Record<string, unknown>;
-  runtimeControlFields?: Record<string, unknown>;
-  engineeringBoundary?: Record<string, unknown>;
-}
-
-export interface BackendApprovalPayload {
-  id: string;
-  task_id?: string | null;
-  step_id?: string | null;
-  approval_type: string;
-  message: string;
-  diff_preview: unknown;
-  tool_name?: string;
-  risk_level?: string;
-  tool_trust_tier?: string;
-  tool_effects?: string[];
-  resource_kinds?: string[];
-  policy_mode?: string;
-  permission_mode?: string;
-  dry_run_summary?: string;
-  model_action?: unknown;
-  runtime_control_fields?: unknown;
-  runtime_fields?: unknown;
-  engineering_boundary?: unknown;
-  status: string;
-  created_at: string;
-}
-
-export interface ApprovalDecision {
-  approvalId: string;
-  decision: "approved" | "denied";
-  note?: string;
-}
-
-export type DocumentBlockType =
-  | "title"
-  | "heading"
-  | "paragraph"
-  | "list"
-  | "table"
-  | "image"
-  | "code"
-  | "metadata"
-  | string;
-
-export interface DocumentTable {
-  id: string;
-  title?: string;
-  columns: string[];
-  rows: string[][];
-  page?: number;
-  sourceBlockId?: string;
-}
-
-export interface DocumentBlock {
-  id: string;
-  type: DocumentBlockType;
-  text?: string;
-  level?: number;
-  page?: number;
-  order?: number;
-  columns?: string[];
-  rows?: string[][];
-  metadata?: Record<string, unknown>;
-}
-
-export interface DocumentCitation {
-  id: string;
-  label: string;
-  text: string;
-  path?: string;
-  blockId?: string;
-  page?: number;
-  score?: number;
-}
-
-export interface DocumentIR {
-  id: string;
-  path: string;
-  title: string;
-  mimeType?: string;
-  language?: string;
-  summary?: string;
-  text?: string;
-  truncated?: boolean;
-  blocks: DocumentBlock[];
-  tables: DocumentTable[];
-  citations?: DocumentCitation[];
-  metadata?: Record<string, unknown>;
-  createdAt?: string;
-}
-
-export interface DocumentParseRequest {
-  path: string;
-  includeText?: boolean;
-}
-
-export interface DocumentAskRequest {
-  path: string;
-  question: string;
-  topK?: number;
-}
-
-export interface DocumentAskResponse {
-  answer: string;
-  citations: DocumentCitation[];
-  sourceChunks?: DocumentCitation[];
-  note?: string;
-}
-
-export interface DocumentCompareRequest {
-  paths: string[];
-  focus?: string;
-}
-
-export interface DocumentDifference {
-  id: string;
-  title: string;
-  detail: string;
-  severity?: "info" | "warning" | "critical" | string;
-  citations?: DocumentCitation[];
-}
-
-export interface DocumentCompareResponse {
-  summary: string;
-  documents: DocumentIR[];
-  differences: DocumentDifference[];
-  tables?: DocumentTable[];
-  note?: string;
-}
-
-export type CleanupDisposition = "permanent_delete" | "trash" | "suggestion_only" | "skip" | string;
-
-export interface CleanupItem {
-  id: string;
-  path: string;
-  name?: string;
-  action: string;
-  disposition: CleanupDisposition;
-  bucket?: "direct_delete" | "recycle_bin" | "suggestion_only" | "immediate" | "approval" | "info_only" | string;
-  sizeBytes?: number;
-  sizeMb?: number;
-  category?: string;
-  detail?: string;
-  reason?: string;
-  riskLevel?: SafetySeverity | string;
-  canRollback?: boolean;
-  selected?: boolean;
-  modifiedAt?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface CleanupScanRequest {
-  roots?: string[];
-  thresholdMb?: number;
-  includeCaches?: boolean;
-}
-
-export interface CleanupPlanRequest extends CleanupScanRequest {
-  itemIds?: string[];
-  preferTrash?: boolean;
-}
-
-export interface CleanupExecuteRequest {
-  planId?: string;
-  contentHash?: string;
-  selectedItemIds?: string[];
-  roots?: string[];
-  items?: CleanupItem[];
-  dryRun?: boolean;
-  approved?: boolean;
-  approvalId?: string;
-}
-
-export interface CleanupRollbackRequest {
-  planId?: string;
-  executionId?: string;
-}
-
-export interface CleanupExecutionResult {
-  ok: boolean;
-  planId?: string;
-  executionId?: string;
-  freedBytes?: number;
-  executed: CleanupItem[];
-  rolledBack?: CleanupItem[];
-  errors?: string[];
-}
-
-export interface FileSearchResult {
-  id: string;
-  path: string;
-  match: string;
-  line: number;
-  score: number;
-}
-
-export interface IndexStatus {
-  status: "missing_scope" | "empty" | "ready" | "degraded" | string;
-  filesIndexed: number;
-  chunksIndexed: number;
-  embeddingsIndexed: number;
-  bytesIndexed: number;
-  lastIndexedAt: string;
-  lastModifiedAt: string;
-  retryHint: string;
-  latestFailure?: {
-    at: string;
-    pathLabel: string;
-    message: string;
-  } | null;
-}
-
-export interface FileSearchMeta {
-  count: number;
-  scanned: number;
-  truncated: boolean;
-  status?: "missing_scope" | "empty_query" | "ok" | string;
-  indexStatus?: IndexStatus;
-}
-
-export interface FileSearchResponse {
-  results: FileSearchResult[];
-  meta: FileSearchMeta;
-}
-
-export interface LocalLibraryItem {
-  id: string;
-  path: string;
-  pathLabel?: string;
-  name: string;
-  parent: string;
-  parentLabel?: string;
-  kind: "image" | "document" | "app" | string;
-  extension: string;
-  mimeType: string;
-  size: number;
-  createdAt: number;
-  modifiedAt: number;
-  previewUrl: string;
-  groupLabel: string;
-  iconUrl?: string;
-  width?: number;
-  height?: number;
-}
-
-export interface LocalLibraryStats {
-  size: number;
-  byExtension: Record<string, number>;
-}
-
-export interface LocalLibraryScopeSummary {
-  rootCount: number;
-  rootLabels: string[];
-  hasAuthorizedRoots: boolean;
-  displayLabel: string;
-  rawPathsAvailableForLocalActions: boolean;
-  shareableSummaryHasRawPaths: boolean;
-}
-
-export interface LocalLibraryResponse {
-  section: string;
-  roots: string[];
-  scopeSummary?: LocalLibraryScopeSummary;
-  items: LocalLibraryItem[];
-  count: number;
-  total: number;
-  scanned: number;
-  truncated: boolean;
-  stats: LocalLibraryStats;
-  indexStatus?: IndexStatus;
-}
-
-export interface InstalledApp {
-  id: string;
-  name: string;
-  path?: string;
-  command?: string;
-  source: "builtin" | "start_menu" | "registry" | string;
-  allowlisted: boolean;
-}
-
-export interface FileRevealResult {
-  ok: boolean;
-  path?: string;
-  revealed?: boolean;
-  shown?: boolean;
-  error?: string;
-}
-
-export interface SystemProcess {
-  pid: number;
-  name: string;
-  username?: string;
-  cpuPercent: number;
-  memoryBytes: number;
-  status?: string;
-}
-
-export interface StartupItem {
-  name: string;
-  path?: string;
-  command?: string;
-  source: string;
-}
-
-export interface DiskUsage {
-  total?: number;
-  used?: number;
-  free?: number;
-  percent?: number;
-}
-
-export interface DiskInfo {
-  device: string;
-  mountpoint: string;
-  fstype?: string;
-  usage?: DiskUsage;
-}
-
-export interface SystemDiagnosticProduct {
-  name?: string;
-  version?: string;
-}
-
-export interface SystemDiagnosticReleaseNotes {
-  available: boolean;
-  label?: string;
-  detail?: string;
-  path?: string;
-  source?: "local_file" | "package_notes" | "not_packaged" | string;
-}
-
-export interface SystemDiagnosticUpdateChannel {
-  configured: boolean;
-  status?: "not_configured" | string;
-  label?: string;
-  detail?: string;
-  checkAction?: "refresh_local_status" | string;
-  offlineOnly?: boolean;
-  userActionLabel?: string;
-  nextSteps?: string[];
-  releaseNotes?: SystemDiagnosticReleaseNotes;
-}
-
-export interface SystemDiagnosticLocalPaths {
-  dataDir?: string;
-  database?: string;
-  logDirs: string[];
-}
-
-export interface SystemDiagnosticAudit {
-  verification?: Record<string, unknown>;
-  latestEvent?: Record<string, unknown> | null;
-}
-
-export interface SystemDiagnosticExternalReview {
-  status: string;
-  requiredBeforeExternalSharing: boolean;
-  publicSafe: boolean;
-  externalSharingAllowed: boolean;
-  failClosed: boolean;
-  checklistCount: number;
-}
-
-export interface SystemDiagnosticCurrentResponseReview {
-  publicSafe: boolean;
-  containsLocalPaths: boolean;
-  externalReviewRequired: boolean;
-}
-
-export interface SystemDiagnosticSupportPackageRedaction {
-  appliesTo?: string;
-  scope: string;
-  intendedAudience: string;
-  publicSafe: boolean;
-  reviewBeforeExternalSharing: boolean;
-  externalSharingAllowed: boolean;
-  failClosed: boolean;
-  guidance: string;
-  currentResponse?: SystemDiagnosticCurrentResponseReview;
-  externalReview?: SystemDiagnosticExternalReview;
-  externalSharingSafe: boolean;
-  safetySignalsConsistent: boolean;
-  blockingReasons: string[];
-}
-
-export interface SystemDiagnostic {
-  info: Record<string, unknown>;
-  disks: DiskInfo[];
-  network: Record<string, unknown>;
-  battery?: Record<string, unknown> | null;
-  topProcesses: SystemProcess[];
-  startupItems?: StartupItem[];
-  suggestions: string[];
-  product?: SystemDiagnosticProduct;
-  updateChannel?: SystemDiagnosticUpdateChannel;
-  localPaths?: SystemDiagnosticLocalPaths;
-  audit?: SystemDiagnosticAudit;
-  lanTransport?: Record<string, unknown>;
-  recentCounts?: Record<string, number>;
-  recentFailureCounts?: Record<string, number>;
-  diagnosticHints?: string[];
-  diagnosticScope?: string;
-  supportPackageRedaction?: SystemDiagnosticSupportPackageRedaction;
-}
-
-export interface DiagnosticExportResult {
-  ok: boolean;
-  path: string;
-  filename: string;
-  createdAt: string;
-  bytes: number;
-  scope: string;
-  error?: string;
-}
+import type { BackendApprovalPayload } from "./executionTypes";
+import type { FileRevealResult } from "./fileLibraryTypes";
+import type {
+  BrowserHostActionRequest,
+  BrowserHostActionResult,
+  BrowserHostBounds,
+  BrowserHostOpenRequest,
+  BrowserHostSnapshot
+} from "./browserTypes";
+import type {
+  ApiRequest,
+  ApiResponse,
+  BackendStatus,
+  DesktopBrowserSessionRequest,
+  DesktopCommerceLicenseActivateRequest,
+  DesktopCommerceLicenseInstallRequest,
+  DesktopCommercePolicyImportRequest,
+  DesktopHardwareAccelerationSmokeRequest,
+  DesktopMemoryRecallRequest,
+  DesktopMemorySaveRequest,
+  DesktopOpenSettingsRequest,
+  DesktopPerceptionSuggestionLaunchRequest,
+  DesktopPermissionPolicyRelaxationRequest,
+  DesktopPermissionRuleDeleteRequest,
+  DesktopPermissionRuleUpsertRequest,
+  DesktopPrivacyEraseRequest,
+  DesktopPrivacyEraseResponse,
+  DesktopRunStartRequest,
+  DesktopScheduleCreateRequest,
+  DesktopScheduleEnableRequest,
+  DesktopSensitiveChangeConfirmation,
+  DesktopSettingsPatch,
+  DesktopWebSocketSubscribeHandlers,
+  DesktopWebSocketSubscribeRequest,
+  MobilePairingRemoteInputGrantRequest,
+  MobilePairingRevokeRemoteInputGrantRequest,
+  NotificationPayload
+} from "./desktopBridgeTypes";
+import type { DocumentAskRequest, DocumentCompareRequest, DocumentParseRequest } from "./documentTypes";
+
+export type {
+  ChatMessage,
+  ChatMessageContent,
+  ChatMessagePart,
+  ChatMessageStatus,
+  ChatRequest,
+  ChatResponse,
+  ChatRole,
+  InstalledApp,
+  InstalledSkill,
+  IntentSuggestion,
+  PerceptionSuggestionLaunchRequest,
+  PerceptionSuggestionLaunchResponse,
+  SkillImportResult,
+  SkillSafetyIssue,
+  SkillsCatalog,
+  SkillToolInfo
+} from "./catalogTypes";
+export type {
+  BrowserAction,
+  BrowserActionKind,
+  BrowserActivityEvent,
+  BrowserHostActionRequest,
+  BrowserHostActionResult,
+  BrowserHostBounds,
+  BrowserHostOpenRequest,
+  BrowserHostSnapshot,
+  BrowserLinkResult,
+  BrowserPageSnapshot,
+  BrowserReplayExport,
+  BrowserSession
+} from "./browserTypes";
+export type {
+  CommerceFeature,
+  CommerceLicenseState,
+  CommerceLicenseStatus,
+  CommercePlan,
+  CommercePlanStatus,
+  CommerceQuotaStatus,
+  CommerceQuotaWindow
+} from "./commerceTypes";
+export type {
+  CleanupDisposition,
+  CleanupExecuteRequest,
+  CleanupExecutionResult,
+  CleanupItem,
+  CleanupPlan,
+  CleanupPlanRequest,
+  CleanupRollbackRequest,
+  CleanupScanRequest
+} from "./cleanupTypes";
+export type {
+  DocumentAskRequest,
+  DocumentAskResponse,
+  DocumentBlock,
+  DocumentBlockType,
+  DocumentCitation,
+  DocumentCompareRequest,
+  DocumentCompareResponse,
+  DocumentDifference,
+  DocumentIR,
+  DocumentParseRequest,
+  DocumentTable
+} from "./documentTypes";
+export type {
+  AgentConversation,
+  AgentMessage,
+  ApprovalDecision,
+  ApprovalRequest,
+  BackendApprovalPayload,
+  CommandExecutionResult,
+  CommandInfo,
+  OpenAIToolCall,
+  PermissionMode,
+  Plan,
+  PlanStep,
+  PlanStepState,
+  RunEventPayload,
+  SafetyFinding,
+  SafetyReview,
+  SafetySeverity,
+  TaskArtifact,
+  TaskArtifactsSummary,
+  TaskBoundaryEvent,
+  TaskCompletionArtifact,
+  TaskCompletionEvidence,
+  TaskCompletionEvidenceLevel,
+  TaskCompletionEvidenceStatus,
+  TaskEvent,
+  TaskExplain,
+  TaskExplainChainItem,
+  TaskExplainEvidence,
+  TaskExplainMessage,
+  TaskExplainReview,
+  TaskExplainStep,
+  TaskState,
+  TaskStepRecording,
+  TaskStepRecordingFrame
+} from "./executionTypes";
+export type {
+  HardwareAccelerationCheck,
+  HardwareAccelerationComponentStatus,
+  HardwareAccelerationOperation,
+  HardwareAccelerationRuntime,
+  HardwareAccelerationSmokePayload,
+  HardwareAccelerationStatus,
+  HardwareAccelerationStatusPayload
+} from "./hardwareAccelerationTypes";
+export type {
+  FileClusterOptions,
+  FileRevealResult,
+  FileSearchMeta,
+  FileSearchResponse,
+  FileSearchResult,
+  IndexStatus,
+  LocalLibraryItem,
+  LocalLibraryResponse,
+  LocalLibraryScopeSummary,
+  LocalLibraryStats
+} from "./fileLibraryTypes";
+export type {
+  ContextProjectionSummary,
+  ContextUsage,
+  ContextUsageHealth,
+  ContextUsageLineage,
+  LLMCapabilities,
+  LLMCostSummary,
+  LLMHealthStatus,
+  LLMProfile,
+  LLMRetryStatus
+} from "./llmContextTypes";
+export type {
+  LocalLLMBackend,
+  LocalLLMHealth,
+  LocalModelEvidenceItem,
+  LocalModelReadiness,
+  LocalModelReadinessCheck,
+  LocalModelRepairAction,
+  LocalModelSetupPlan,
+  LocalModelSetupStep,
+  LocalModelSetupStepState,
+  LocalModelVerificationSummary
+} from "./localModelTypes";
+export type {
+  AppSettings,
+  McpServerConfig
+} from "./settingsTypes";
+export type {
+  DiagnosticExportResult,
+  DiskInfo,
+  DiskUsage,
+  LocalMetricsSummary,
+  StartupItem,
+  SystemDiagnostic,
+  SystemDiagnosticAudit,
+  SystemDiagnosticCurrentResponseReview,
+  SystemDiagnosticExternalReview,
+  SystemDiagnosticLocalPaths,
+  SystemDiagnosticProduct,
+  SystemDiagnosticReleaseNotes,
+  SystemDiagnosticSupportPackageRedaction,
+  SystemDiagnosticUpdateChannel,
+  SystemInfo,
+  SystemProcess
+} from "./systemTypes";
+export type {
+  ApiError,
+  ApiMethod,
+  ApiQueryValue,
+  ApiRequest,
+  ApiResponse,
+  BackendState,
+  BackendStatus,
+  DesktopBrowserSessionRequest,
+  DesktopCommerceLicenseActivateRequest,
+  DesktopCommerceLicenseInstallRequest,
+  DesktopCommercePolicyImportRequest,
+  DesktopHardwareAccelerationSmokeRequest,
+  DesktopMemoryRecallRequest,
+  DesktopMemorySaveRequest,
+  DesktopOpenSettingsRequest,
+  DesktopPerceptionSuggestionLaunchRequest,
+  DesktopPermissionPolicyRelaxationRequest,
+  DesktopPermissionRule,
+  DesktopPermissionRuleDeleteRequest,
+  DesktopPermissionRuleUpsertRequest,
+  DesktopPermissionTimeWindow,
+  DesktopPrivacyEraseRequest,
+  DesktopPrivacyEraseResponse,
+  DesktopRunEngine,
+  DesktopRunMode,
+  DesktopRunStartRequest,
+  DesktopScheduleCreateRequest,
+  DesktopScheduleEnableRequest,
+  DesktopSensitiveChangeConfirmation,
+  DesktopSettingsPatch,
+  DesktopWebSocketBridgeEvent,
+  DesktopWebSocketOpenRequest,
+  DesktopWebSocketOpenResult,
+  DesktopWebSocketSubscribeHandlers,
+  DesktopWebSocketSubscribeRequest,
+  MobilePairingRemoteInputGrantRequest,
+  MobilePairingRevokeRemoteInputGrantRequest,
+  NotificationPayload
+} from "./desktopBridgeTypes";
 
 export interface PrivacyEraseResult {
   scope: "local_only";
@@ -1439,114 +256,6 @@ export interface PrivacyEraseResult {
   auditRecorded: boolean;
 }
 
-export interface BrowserLinkResult {
-  title: string;
-  url: string;
-}
-
-export interface BrowserPageSnapshot {
-  ok: boolean;
-  url: string;
-  title: string;
-  text: string;
-  links: BrowserLinkResult[];
-  truncated?: boolean;
-  adapter?: string;
-  error?: string;
-}
-
-export type BrowserActionKind =
-  | "open"
-  | "navigate"
-  | "click"
-  | "fill"
-  | "submit"
-  | "scroll"
-  | "wait"
-  | "screenshot"
-  | "observe"
-  | "cua";
-
-export interface BrowserAction {
-  kind: BrowserActionKind;
-  url?: string;
-  selector?: string;
-  text?: string;
-  fields?: Record<string, string>;
-  dry_run?: boolean;
-  approved?: boolean;
-  approval_id?: string;
-  [key: string]: unknown;
-}
-
-export interface BrowserSession {
-  id: string;
-  task_id?: string;
-  current_url: string;
-  title: string;
-  status: "idle" | "loading" | "running" | "paused" | "stopped" | "error" | "awaiting_approval" | string;
-  mode: "watch" | "agent" | "takeover" | string;
-  created_at: string;
-  updated_at: string;
-  paused: boolean;
-  takeover: boolean;
-  last_observation?: string | Record<string, unknown> | null;
-}
-
-export interface BrowserActivityEvent {
-  id: string;
-  session_id: string;
-  task_id?: string;
-  step_id?: string;
-  type: string;
-  action?: BrowserAction;
-  url?: string;
-  title?: string;
-  risk_level?: "low" | "medium" | "high" | "critical" | string;
-  verdict?: string;
-  ok: boolean;
-  error?: string;
-  screenshot_url?: string;
-  created_at: string;
-}
-
-export interface BrowserHostBounds {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface BrowserHostOpenRequest {
-  sessionId?: string;
-  taskId?: string;
-  url?: string;
-  title?: string;
-  mode?: string;
-}
-
-export interface BrowserHostActionRequest {
-  sessionId: string;
-  action: BrowserAction;
-}
-
-export interface BrowserHostSnapshot {
-  sessions: BrowserSession[];
-  events: BrowserActivityEvent[];
-  activeSessionId?: string | null;
-  visible: boolean;
-  hostAvailable: boolean;
-  error?: string;
-}
-
-export interface BrowserHostActionResult {
-  ok: boolean;
-  session?: BrowserSession;
-  event?: BrowserActivityEvent;
-  snapshot?: BrowserHostSnapshot;
-  error?: string;
-}
-
 export interface ToolExecutionPreview {
   ok: boolean;
   dryRun: boolean;
@@ -1557,245 +266,6 @@ export interface ToolExecutionPreview {
   approvalRequired?: boolean;
 }
 
-export interface McpServerConfig {
-  name: string;
-  url: string;
-  enabled: boolean;
-  id?: string;
-  command?: string;
-  args?: string[];
-  transport?: string;
-  auth?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface SkillToolInfo {
-  name: string;
-  description: string;
-  agentOwner: string;
-  risk: string;
-  permissions: string[];
-  executionType: "python" | "shell" | "http" | string;
-  entry: string;
-  supportsDryRun: boolean;
-  requiresAuthorizedPath: boolean;
-  rollbackHint: string;
-}
-
-export interface SkillSafetyIssue {
-  severity: "error" | "warning";
-  location: string;
-  message: string;
-}
-
-export interface InstalledSkill {
-  name: string;
-  version: string;
-  agentOwner: string;
-  risk: string;
-  root: string;
-  manifestPath: string;
-  status: "ready" | "error" | string;
-  tools: SkillToolInfo[];
-  safety: {
-    ok: boolean;
-    issues: SkillSafetyIssue[];
-  };
-  error?: string;
-}
-
-export interface SkillsCatalog {
-  skills: InstalledSkill[];
-  count: number;
-  directories: string[];
-  installDirectory: string;
-}
-
-export interface SkillImportResult {
-  skill: InstalledSkill;
-  refresh: {
-    ok: boolean;
-    toolCount: number;
-    skillCount: number;
-  };
-}
-
-export interface CommandInfo {
-  name: string;
-  title: string;
-  description: string;
-  category: string;
-  inputSchema: Record<string, unknown>;
-}
-
-export interface CommandExecutionResult {
-  ok: boolean;
-  command: string;
-  title?: string;
-  result?: unknown;
-  diagnostics?: string[];
-  error?: string;
-  nextAction?: string;
-}
-
-export interface AppSettings {
-  apiBaseUrl: string;
-  autoStartBackend: boolean;
-  telemetryEnabled: boolean;
-  compactMode: boolean;
-  theme: "system" | "light" | "dark";
-  providerName: string;
-  model: string;
-  reviewModel: string;
-  wireApi: "chat_completions" | "responses";
-  requiresOpenAiAuth: boolean;
-  modelReasoningEffort: string;
-  disableResponseStorage: boolean;
-  temperature: number;
-  maxTokens: number;
-  timeout: number;
-  llmApiMaxRetries: number;
-  llmApiRetryBackoffSeconds: number;
-  llmApiCircuitFailureThreshold: number;
-  llmApiCircuitCooldownSeconds: number;
-  modelContextWindow: number;
-  modelAutoCompactTokenLimit: number;
-  workspaceRoot: string;
-  allowedDirectories?: string[];
-  allowBrowserNetwork: boolean;
-  remoteDesktopEnabled: boolean;
-  appAllowlist: string[];
-  browserMaxPageBytes: number;
-  browserScreenshotDir: string;
-  onnxModelPath: string;
-  onnxExecutionProvider: "Auto" | "WinML" | "DirectML" | "OpenVINO" | "CPU" | string;
-  onnxProviderPreference: string;
-  onnxDirectmlDeviceId: string;
-  onnxOpenvinoDevice: string;
-  onnxOpenvinoCacheDir: string;
-  onnxWarmOnStartup: boolean;
-  onnxModelFamily: string;
-  onnxEmbeddingBackend: string;
-  onnxEmbeddingModelPath: string;
-  onnxEmbeddingExecutionProvider: string;
-  onnxEmbeddingModelId: string;
-  onnxEmbeddingMaxBatchSize: number;
-  imageEmbeddingBackend: string;
-  onnxImageEmbeddingModelPath: string;
-  onnxImageEmbeddingExecutionProvider: string;
-  onnxImageEmbeddingModelId: string;
-  onnxImageEmbeddingMaxBatchSize: number;
-  ocrBackend: string;
-  ocrExecutionProvider: string;
-  ocrOpenvinoModelDir: string;
-  ocrOpenvinoDevice: string;
-  ocrLang: string;
-  ocrMinConfidence: number;
-  ocrBatchSize: number;
-  mode: "privacy" | "efficiency" | "hybrid";
-  permissionMode: PermissionMode;
-  allowCloudContext: boolean;
-  allowFileContentUpload: boolean;
-  mcpServers: McpServerConfig[];
-}
-
-export type HardwareAccelerationRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
-
-export type HardwareAccelerationStatus = "ready" | "missing" | "error";
-
-export interface HardwareAccelerationCheck {
-  key: string;
-  label: string;
-  status: HardwareAccelerationStatus;
-  details?: string;
-  required?: string;
-  actual?: string;
-}
-
-export interface HardwareAccelerationStatusPayload {
-  available: boolean;
-  kind: string;
-  modelPath: string;
-  executionProvider: string;
-  availableProviders: string[];
-  generationRuntime: string;
-  runtimePackage?: string;
-  configuredProvider?: string;
-  selectedProvider?: string;
-  runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
-  winml?: {
-    available?: boolean;
-    provider?: string;
-    providerAvailable?: boolean;
-    packages?: string[];
-    errors?: Record<string, string>;
-  };
-  errors?: string[];
-  error?: string;
-  llm?: {
-    runtime?: string;
-    available?: boolean;
-    modelPath?: string;
-    configuredProvider?: string;
-    selectedProvider?: string;
-    runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
-    winml?: {
-      available?: boolean;
-      provider?: string;
-      providerAvailable?: boolean;
-      packages?: string[];
-      errors?: Record<string, string>;
-    };
-    errors?: string[];
-  };
-  textEmbedding?: HardwareAccelerationComponentStatus;
-  imageEmbedding?: HardwareAccelerationComponentStatus;
-  ocr?: HardwareAccelerationComponentStatus;
-}
-
-export interface HardwareAccelerationComponentStatus {
-  available: boolean;
-  component?: string;
-  kind?: string;
-  modelPath?: string;
-  executionProvider?: string;
-  availableProviders?: string[];
-  runtimePackage?: string;
-  configuredProvider?: string;
-  selectedProvider?: string;
-  runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
-  winml?: HardwareAccelerationStatusPayload["winml"];
-  selectedBackend?: string;
-  runtime?: string;
-  model?: string;
-  errors?: string[];
-  error?: string;
-}
-
-export interface HardwareAccelerationSmokePayload {
-  ok: boolean;
-  available: boolean;
-  status: "ready" | "unavailable";
-  operation: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
-  error?: string;
-  errors?: string[];
-  message?: string;
-  count?: number;
-  dim?: number;
-  source?: string;
-  backend?: {
-    kind: string;
-    model_path: string;
-    execution_provider: string;
-    available_providers: string[];
-    generation_runtime: string;
-    runtime_package?: string;
-    model_family?: string;
-    provider_options?: Record<string, string>;
-  };
-  llm?: HardwareAccelerationStatusPayload["llm"];
-}
-
 export interface AuditLogEntry {
   id: string;
   actor: string;
@@ -1803,20 +273,6 @@ export interface AuditLogEntry {
   target: string;
   level: "info" | "warning" | "error";
   createdAt: string;
-}
-
-export interface SystemInfo {
-  appVersion: string;
-  electronVersion: string;
-  chromeVersion: string;
-  nodeVersion: string;
-  platform: string;
-  arch: string;
-  backendBaseUrl: string;
-  diagnostics?: SystemDiagnostic;
-  processes?: SystemProcess[];
-  startupItems?: StartupItem[];
-  installedApps?: InstalledApp[];
 }
 
 export interface LengrvisDesktopBridge {

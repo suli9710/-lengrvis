@@ -1,7 +1,7 @@
 import { AlertTriangle, Bot, Brain, CheckCircle2, CircleDashed, Pencil, Play, Send, Sparkles, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../shared/types";
+import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../shared/catalogTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import { zhUserFacingError } from "../lib/zh";
 import { Badge, Panel } from "./Panel";

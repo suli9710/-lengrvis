@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -21,12 +20,51 @@ except (ImportError, OSError):  # pragma: no cover - optional in stripped-down t
 
 from app.config import get_env
 from app.core.audit import record
-from app.policy.redaction import redact_public_text
+from app.services import ollama_hardware as _ollama_hardware
+from app.services.ollama_public import (
+    public_bundle_manifest_summary as _public_bundle_manifest_summary,
+)
+from app.services.ollama_public import (
+    public_manifest_string as _public_manifest_string,
+)
+from app.services.ollama_public import (
+    public_model_name as _safe_public_model_name,
+)
+from app.services.ollama_public import (
+    public_model_names as _safe_public_model_names,
+)
+from app.services.ollama_public import (
+    public_text as _public_text,
+)
+from app.services.ollama_setup_presenter import (
+    bundle_manifest_evidence_detail as _bundle_manifest_evidence_detail,
+)
+from app.services.ollama_setup_presenter import (
+    bundled_model_evidence_detail as _bundled_model_evidence_detail,
+)
+from app.services.ollama_setup_presenter import (
+    model_setup_detail as _model_setup_detail,
+)
+from app.services.ollama_setup_presenter import (
+    model_setup_label as _model_setup_label,
+)
+from app.services.ollama_setup_presenter import (
+    runtime_evidence_detail as _runtime_evidence_detail,
+)
+from app.services.ollama_setup_presenter import (
+    runtime_setup_detail as _runtime_setup_detail,
+)
+from app.services.ollama_setup_presenter import (
+    setup_next_action as _setup_next_action,
+)
+from app.services.ollama_setup_presenter import (
+    setup_repair_action as _setup_repair_action,
+)
 
 OLLAMA_API = "http://127.0.0.1:11434"
-RECOMMENDED_MODEL = "qwen2.5:3b"
-FALLBACK_SMALL_MODEL = RECOMMENDED_MODEL
-FALLBACK_MEDIUM_MODEL = "qwen2.5:7b"
+RECOMMENDED_MODEL = _ollama_hardware.RECOMMENDED_MODEL
+FALLBACK_SMALL_MODEL = _ollama_hardware.FALLBACK_SMALL_MODEL
+FALLBACK_MEDIUM_MODEL = _ollama_hardware.FALLBACK_MEDIUM_MODEL
 INSTALLABLE_LOCAL_MODELS = frozenset(
     {
         RECOMMENDED_MODEL,
@@ -35,13 +73,13 @@ INSTALLABLE_LOCAL_MODELS = frozenset(
         "llama3.2:3b",
     }
 )
-_GIB = 1024**3
-_MIN_CPU_CORES = 4
-_MIN_RAM_BYTES = 8 * _GIB
-_MIN_DISK_BYTES = 8 * _GIB
-_MEDIUM_CPU_CORES = 6
-_MEDIUM_RAM_BYTES = 16 * _GIB
-_MEDIUM_DISK_BYTES = 12 * _GIB
+_GIB = _ollama_hardware.GIB
+_MIN_CPU_CORES = _ollama_hardware.MIN_CPU_CORES
+_MIN_RAM_BYTES = _ollama_hardware.MIN_RAM_BYTES
+_MIN_DISK_BYTES = _ollama_hardware.MIN_DISK_BYTES
+_MEDIUM_CPU_CORES = _ollama_hardware.MEDIUM_CPU_CORES
+_MEDIUM_RAM_BYTES = _ollama_hardware.MEDIUM_RAM_BYTES
+_MEDIUM_DISK_BYTES = _ollama_hardware.MEDIUM_DISK_BYTES
 _TIMEOUT = 5.0
 _BUNDLED_ENV_KEYS = ("LENGRVIS_BUNDLED_OLLAMA_DIR",)
 _BUNDLED_MODEL_ENV_KEYS = ("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",)
@@ -58,8 +96,6 @@ _BUNDLED_MANIFEST_RELATIVE_PATHS = (
     ("resources", "ollama-bundle-manifest.json"),
     ("ollama-bundle-manifest.json",),
 )
-_PUBLIC_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
-_MAX_PUBLIC_ERROR_CHARS = 600
 
 
 def normalize_install_model(model: str | None) -> str:
@@ -73,43 +109,12 @@ def normalize_install_model(model: str | None) -> str:
     return normalized
 
 
-def _public_text(value: Any, fallback: str = "Local AI action failed.") -> str:
-    text = str(value or fallback)
-    without_urls = _PUBLIC_URL_RE.sub("[REDACTED_URL]", text)
-    redacted = redact_public_text(without_urls)
-    redacted = " ".join(redacted.split())
-    if len(redacted) > _MAX_PUBLIC_ERROR_CHARS:
-        return f"{redacted[: _MAX_PUBLIC_ERROR_CHARS - 1].rstrip()}..."
-    return redacted
-
-
 def _public_model_name(model: str) -> str:
-    return _public_text(model, fallback=RECOMMENDED_MODEL)
+    return _safe_public_model_name(model, fallback=RECOMMENDED_MODEL)
 
 
 def _public_model_names(models: list[str]) -> list[str]:
-    return [_public_model_name(model) for model in models if str(model or "").strip()]
-
-
-def _public_manifest_string(value: Any) -> str:
-    return _public_text(value, fallback="")
-
-
-def _public_bundle_manifest_value(key: str, value: Any) -> Any:
-    normalized_key = key.replace("-", "_").casefold()
-    if normalized_key == "path" or normalized_key.endswith("_path"):
-        return ""
-    if isinstance(value, str):
-        return _public_manifest_string(value)
-    if isinstance(value, dict):
-        return {str(item_key): _public_bundle_manifest_value(str(item_key), item) for item_key, item in value.items()}
-    if isinstance(value, list):
-        return [_public_bundle_manifest_value("", item) for item in value]
-    return value
-
-
-def _public_bundle_manifest_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    return {str(key): _public_bundle_manifest_value(str(key), value) for key, value in summary.items()}
+    return _safe_public_model_names(models, fallback=RECOMMENDED_MODEL)
 
 
 async def status() -> dict[str, Any]:
@@ -340,55 +345,17 @@ def assess_hardware(
     gpu_summary: str = "",
 ) -> dict[str, Any]:
     """Pure hardware gate used by runtime checks and tests."""
-    target = model or _recommended_model_for_hardware(
+    return _ollama_hardware.assess_hardware(
+        model=model,
         memory_total_bytes=memory_total_bytes,
         disk_free_bytes=disk_free_bytes,
         cpu_logical_cores=cpu_logical_cores,
+        gpu_summary=gpu_summary,
+        recommended_model_for_hardware_fn=_recommended_model_for_hardware,
+        requirements_for_model_fn=_requirements_for_model,
+        repair_action_fn=_setup_repair_action,
+        format_bytes_fn=_format_bytes,
     )
-    requirements = _requirements_for_model(target)
-    checks = [
-        {
-            "key": "memory",
-            "label": "Memory",
-            "ok": memory_total_bytes >= requirements["memory_total_bytes"],
-            "actual": _format_bytes(memory_total_bytes),
-            "required": _format_bytes(requirements["memory_total_bytes"]),
-        },
-        {
-            "key": "disk",
-            "label": "Free disk space",
-            "ok": disk_free_bytes >= requirements["disk_free_bytes"],
-            "actual": _format_bytes(disk_free_bytes),
-            "required": _format_bytes(requirements["disk_free_bytes"]),
-        },
-        {
-            "key": "cpu",
-            "label": "CPU cores",
-            "ok": cpu_logical_cores >= requirements["cpu_logical_cores"],
-            "actual": str(cpu_logical_cores or "unknown"),
-            "required": str(requirements["cpu_logical_cores"]),
-        },
-    ]
-    can_install = all(check["ok"] for check in checks)
-    failed = [check for check in checks if not check["ok"]]
-    reason = (
-        f"This computer is ready for {target}."
-        if can_install
-        else "Local AI setup needs " + ", ".join(f"{item['label']} >= {item['required']}" for item in failed) + "."
-    )
-    next_action = "continue_setup" if can_install else "hardware_blocked"
-    return {
-        "can_install": can_install,
-        "recommended_model": target,
-        "reason": reason,
-        "checks": checks,
-        "next_action": next_action,
-        "repair_action": _setup_repair_action(next_action, target),
-        "memory_total_bytes": memory_total_bytes,
-        "disk_free_bytes": disk_free_bytes,
-        "cpu_logical_cores": cpu_logical_cores,
-        "gpu_summary": gpu_summary,
-    }
 
 
 def is_installed() -> bool:
@@ -542,18 +509,7 @@ async def start_server() -> dict[str, Any]:
 
 
 def _requirements_for_model(model: str) -> dict[str, int]:
-    normalized = model.lower()
-    if "7b" in normalized:
-        return {
-            "memory_total_bytes": _MEDIUM_RAM_BYTES,
-            "disk_free_bytes": _MEDIUM_DISK_BYTES,
-            "cpu_logical_cores": _MEDIUM_CPU_CORES,
-        }
-    return {
-        "memory_total_bytes": _MIN_RAM_BYTES,
-        "disk_free_bytes": _MIN_DISK_BYTES,
-        "cpu_logical_cores": _MIN_CPU_CORES,
-    }
+    return _ollama_hardware.requirements_for_model(model)
 
 
 def _ollama_executable() -> str | None:
@@ -814,67 +770,17 @@ def _safe_runtime_path(runtime_source: str) -> str:
     return executable or ""
 
 
-def _runtime_setup_detail(installed: bool, bundled_available: bool) -> str:
-    if installed and bundled_available:
-        return "Lengrvis bundled Ollama runtime is available."
-    if installed:
-        return "Ollama is installed."
-    if bundled_available:
-        return "Lengrvis will use the bundled Ollama runtime."
-    return "Ollama is not installed yet; one-click setup can install it, start it, and prepare the model."
-
-
-def _model_setup_label(
-    has_model: bool,
-    bundled_model_available: bool,
-    bundled_model_configured: bool,
-    running: bool,
-) -> str:
-    if has_model:
-        return "Use local model"
-    if bundled_model_available and running and not bundled_model_configured:
-        return "Restart local service for bundled model"
-    if bundled_model_available:
-        return "Use bundled local model"
-    return "Download recommended model"
-
-
-def _model_setup_detail(
-    target: str,
-    has_model: bool,
-    bundled_model_available: bool,
-    bundled_model_configured: bool = False,
-    running: bool = False,
-) -> str:
-    if has_model:
-        return f"{target} is ready."
-    if bundled_model_configured:
-        return f"{target} is included with Lengrvis and the local service is configured to read it."
-    if bundled_model_available and running:
-        return (
-            f"{target} is included with Lengrvis, but the running Ollama service is not using "
-            "the Lengrvis bundled model directory."
-        )
-    if bundled_model_available:
-        return f"{target} is included with Lengrvis and will be used when the local service starts."
-    if running:
-        return f"Ollama is running; download {target} before privacy mode can use local AI."
-    return f"After Ollama is installed and running, {target} will be downloaded before privacy mode can use local AI."
-
-
 def _recommended_model_for_hardware(
     *,
     memory_total_bytes: int,
     disk_free_bytes: int,
     cpu_logical_cores: int,
 ) -> str:
-    if (
-        memory_total_bytes >= _MEDIUM_RAM_BYTES
-        and disk_free_bytes >= _MEDIUM_DISK_BYTES
-        and cpu_logical_cores >= _MEDIUM_CPU_CORES
-    ):
-        return FALLBACK_MEDIUM_MODEL
-    return FALLBACK_SMALL_MODEL
+    return _ollama_hardware.recommended_model_for_hardware(
+        memory_total_bytes=memory_total_bytes,
+        disk_free_bytes=disk_free_bytes,
+        cpu_logical_cores=cpu_logical_cores,
+    )
 
 
 def _has_model(models: list[str], target: str) -> bool:
@@ -885,103 +791,6 @@ def _has_model(models: list[str], target: str) -> bool:
         or model.lower().startswith(f"{normalized_target}_")
         or model.lower().startswith(f"{normalized_target}.")
         for model in models
-    )
-
-
-def _setup_next_action(
-    readiness: dict[str, Any],
-    installed: bool,
-    running: bool,
-    has_model: bool,
-    bundled_model_available: bool = False,
-    bundled_model_configured: bool = False,
-) -> str:
-    if not readiness.get("can_install"):
-        return "hardware_blocked"
-    if not installed:
-        return "install_runtime"
-    if not running:
-        return "start_runtime"
-    if bundled_model_available and not has_model:
-        if not bundled_model_configured:
-            return "restart_runtime_with_bundled_models"
-        return "use_bundled_model"
-    if not has_model:
-        return "download_model"
-    return "ready"
-
-
-def _setup_repair_action(next_action: str, target: str) -> dict[str, str]:
-    actions = {
-        "hardware_blocked": {
-            "code": "free_resources_for_local_ai",
-            "label": "Free resources for local AI",
-            "detail": (
-                "Close memory-heavy apps, free disk space, or choose a smaller supported local model, "
-                "then check again. "
-                "Privacy mode stays local-only and will not silently use cloud or mock AI."
-            ),
-        },
-        "continue_setup": {
-            "code": "continue_setup",
-            "label": "Continue local AI setup",
-            "detail": (
-                f"This computer passes the hardware preflight for {target}. "
-                "Continue setup to verify Ollama, start the local service, and prepare the model."
-            ),
-        },
-        "install_runtime": {
-            "code": "install_runtime",
-            "label": "Install Ollama runtime",
-            "detail": (
-                f"Use one-click setup to install Ollama, start the local service, and prepare {target}. "
-                "If automatic install is unavailable, install Ollama manually and retry. "
-                "Privacy tasks stay paused until a local runtime is available."
-            ),
-        },
-        "start_runtime": {
-            "code": "start_runtime",
-            "label": "Start local AI service",
-            "detail": (
-                "Start Ollama, or close any stuck Ollama process and retry. "
-                "Lengrvis will not switch privacy tasks to cloud or mock AI while the service is down."
-            ),
-        },
-        "restart_runtime_with_bundled_models": {
-            "code": "restart_runtime_with_bundled_models",
-            "label": "Restart Ollama with bundled models",
-            "detail": (
-                "Close Ollama, then retry setup so Lengrvis can restart it with the included local model files. "
-                "Privacy tasks stay local-only until Ollama lists the model."
-            ),
-        },
-        "use_bundled_model": {
-            "code": "use_bundled_model",
-            "label": "Use bundled local model",
-            "detail": f"Use the bundled {target} model without downloading it.",
-        },
-        "download_model": {
-            "code": "download_model",
-            "label": "Download recommended model",
-            "detail": (
-                f"Keep Ollama running and download {target}. If this app should include the model, "
-                "verify the bundled model package, then retry setup. "
-                "Privacy tasks stay local-only until the model is present."
-            ),
-        },
-        "ready": {
-            "code": "none",
-            "label": "No repair needed",
-            "detail": f"{target} is ready for local AI.",
-        },
-    }
-    return actions.get(
-        next_action,
-        {
-            "code": "prepare_local_ai",
-            "label": "Prepare local AI",
-            "detail": f"Run setup again to prepare {target}.",
-        },
     )
 
 
@@ -1174,45 +983,6 @@ def _setup_evidence(
     ]
 
 
-def _runtime_evidence_detail(installed: bool, runtime_source: str) -> str:
-    if installed and runtime_source == "bundled":
-        return "Bundled Ollama runtime executable was found."
-    if installed and runtime_source == "system":
-        return "System Ollama executable was found."
-    if runtime_source == "bundled":
-        return "Bundled Ollama runtime is available but not yet started."
-    return "No Ollama runtime executable was found."
-
-
-def _bundle_manifest_evidence_detail(bundle: dict[str, Any], target: str) -> str:
-    if not bundle["bundle_manifest_present"]:
-        return "No Ollama bundle manifest was found."
-    if not bundle["bundle_manifest_valid"]:
-        return "Ollama bundle manifest is present but invalid or lacks accepted licenses."
-    if not bundle["manifest_model_matches"]:
-        return f"Ollama bundle manifest does not prove that {target} is included."
-    return f"Ollama bundle manifest proves that {target} is included."
-
-
-def _bundled_model_evidence_detail(bundle: dict[str, Any], target: str, configured: bool) -> str:
-    missing = []
-    if not bundle["runtime_available"]:
-        missing.append("bundled runtime")
-    if not bundle["models_available"]:
-        missing.append("bundled models directory")
-    if not bundle["model_manifest_present"]:
-        missing.append("model manifest")
-    if not bundle["bundle_manifest_valid"] or not bundle["manifest_model_matches"]:
-        missing.append("valid bundle manifest")
-    if missing:
-        return f"Bundled {target} is not proven available; missing " + ", ".join(missing) + "."
-    if not configured:
-        return (
-            f"Bundled {target} is proven available, but Ollama is not configured to read the bundled model directory."
-        )
-    return f"Bundled {target} is proven available and the preferred model directory points to it."
-
-
 def _total_memory_bytes() -> int:
     if psutil is None:
         return 0
@@ -1254,10 +1024,7 @@ def _gpu_summary() -> str:
 
 
 def _format_bytes(value: int) -> str:
-    if value <= 0:
-        return "unknown"
-    gib = value / _GIB
-    return f"{gib:.1f} GB"
+    return _ollama_hardware.format_bytes(value)
 
 
 async def pull_model(model: str | None = None) -> dict[str, Any]:

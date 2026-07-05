@@ -369,7 +369,15 @@ async function installApiMocks(page, options = {}) {
     if (url.pathname === `/api/browser/session/${session.id}/events`) return json({ ok: true, events: [event] });
     if (url.pathname === "/api/browser/observe") return json({ ok: true, event });
     if (url.pathname === "/api/browser/replay-export") return json({ ok: true, events: [event], session });
-    if ((url.pathname === "/api/chat" || url.pathname === "/api/runs") && request.method().toUpperCase() === "POST") {
+    if (url.pathname === "/api/runs" && request.method().toUpperCase() === "POST") {
+      if (counters) counters.taskLaunchRequests = (counters.taskLaunchRequests ?? 0) + 1;
+      return json({
+        run_id: "run_browser_activity_smoke",
+        engine: "os",
+        phase: "queued"
+      });
+    }
+    if (url.pathname === "/api/chat" && request.method().toUpperCase() === "POST") {
       if (counters) counters.taskLaunchRequests = (counters.taskLaunchRequests ?? 0) + 1;
       return json({ message: { id: "mock-response", role: "assistant", author: "Lengrvis", content: "mock", created_at: new Date().toISOString() } });
     }
@@ -545,18 +553,20 @@ async function assertHomeQuickTemplates(page) {
 async function assertComputerTemplateFallback(page) {
   const templateButton = page.getByTestId("office-template-check-computer");
   await templateButton.waitFor({ timeout: 10_000 });
+  await templateButton.hover();
   const templateText = await templateButton.innerText();
-  assert.match(templateText, /产出/, "computer template should disclose the expected output before it is launched");
+  assert.match(templateText, /产出/, "computer template should disclose the expected output when expanded");
   assert.match(templateText, /健康状态|缺失依赖|下一步修复入口/, "computer template should name the result a user can verify");
   assert.match(templateText, /只读|不上云|无改动/, "computer template should keep the local read-only boundary visible");
 
   const outcomeText = await page.getByTestId("home-outcome-computer").innerText();
   assert.match(outcomeText, /等待只读快照/, "computer template fallback should not claim a result before one exists");
-  assert.match(outcomeText, /可一键启动只读检查/, "computer template fallback should explain the next safe action");
+  assert.match(outcomeText, /选择模板后点击发送/, "computer template fallback should explain the next safe action");
 }
 
 async function assertDocumentQuickEntry(page) {
   await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
+  await page.locator("button.command-footer__send").filter({ hasText: /打开文档工具/ }).click();
   await page.getByText(/文档操作区|鏂囨。鎿嶄綔鍖?/).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择文档|閫夋嫨鏂囨。/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择并总结|閫夋嫨骞舵€荤粨/ }).first().waitFor({ timeout: 10_000 });
@@ -582,6 +592,7 @@ async function assertDocumentCompareFlow(page, counters) {
   await page.goto(previewUrl, { waitUntil: "networkidle" });
   await assertRootRendered(page);
   await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
+  await page.locator("button.command-footer__send").filter({ hasText: /打开文档工具/ }).click();
   await page.getByText(/对比两份文档|瀵规瘮涓や唤鏂囨。/).first().waitFor({ timeout: 10_000 });
   await page.getByPlaceholder(/选择文档，或粘贴文件位置|閫夋嫨鏂囨。/).fill(smokeDocumentPath);
   await page.getByLabel(/第二份文档位置|绗簩浠芥枃妗ｄ綅缃?/).fill(smokeCompareDocumentPath);
@@ -601,7 +612,7 @@ async function assertQuickPromptEntry(page, counters) {
   await page.getByRole("button", { name: quickTemplateButtonNames.findLargeFiles }).click();
   const commandInput = page.locator("textarea").first();
   await expectTextareaValue(commandInput, /找出这台电脑上最大的文件|鎵惧嚭/);
-  await page.getByText(/已填好这句话|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/已选择.*下一步点“发送”开始|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
   await assertRootTextIncludes(page, /(?:任务工作区|Task Workspace).*(?:文件工具|鏂囦欢宸ュ叿)|(?:文件工具|鏂囦欢宸ュ叿).*(?:任务工作区|Task Workspace)/s, "quick prompt should update Task Workspace");
@@ -612,18 +623,17 @@ async function assertQuickPromptEntry(page, counters) {
 
 async function assertComputerCheckEntry(page, counters) {
   const systemInfoRequestsBefore = counters.systemInfoRequests ?? 0;
+  const taskLaunchRequestsBefore = counters.taskLaunchRequests ?? 0;
   await page.getByRole("button", { name: quickTemplateButtonNames.checkComputer }).click();
-  await page.getByText(/系统信息|绯荤粺淇℃伅/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/一键只读检查|立即只读检查|刷新本机状态|涓€閿彧璇绘鏌?/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/只读诊断，不改设置|鍙璇婃柇锛屼笉鏀硅缃?/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/Lengrvis 连接|Lengrvis 杩炴帴/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/任务状态|浠诲姟鐘舵€?/).first().waitFor({ timeout: 10_000 });
-  await assertRootTextIncludes(page, /暂未读取.*不代表电脑异常|暂未读取不等于故障|未知.*不代表电脑异常|未知不等于故障/, "computer quick entry should explain unknown health state");
-  assert.ok(
-    (counters.systemInfoRequests ?? 0) > systemInfoRequestsBefore,
-    "computer quick entry should refresh read-only system info"
-  );
-  assert.equal(counters.taskLaunchRequests ?? 0, 0, "computer quick entry should not start a chat or run task");
+  const commandInput = page.locator("textarea").first();
+  await expectTextareaValue(commandInput, /帮我检查这台电脑/);
+  await page.getByText(/下一步点“发送”开始|只读取状态，不改系统设置/).first().waitFor({ timeout: 10_000 });
+  assert.equal(counters.systemInfoRequests ?? 0, systemInfoRequestsBefore, "computer template selection should not refresh system info");
+  assert.equal(counters.taskLaunchRequests ?? 0, taskLaunchRequestsBefore, "computer template selection should not start a chat or run task");
+
+  await page.locator("button.command-footer__send").filter({ hasText: /发送/ }).click();
+  await waitForCounter(() => (counters.taskLaunchRequests ?? 0) > taskLaunchRequestsBefore, "computer template send");
+  assert.equal((counters.taskLaunchRequests ?? 0) - taskLaunchRequestsBefore, 1, "computer template send should start one run");
   await assertNoPlaceholderContent(page, "computer check quick entry");
   await assertNoHorizontalOverflow(page, "computer check quick entry");
 }
@@ -772,6 +782,15 @@ async function expectTextareaValue(locator, pattern) {
   }
   const value = await locator.inputValue().catch(() => "");
   assert.match(value, pattern, "textarea should contain the quick prompt");
+}
+
+async function waitForCounter(predicate, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(predicate(), `timed out waiting for ${label}`);
 }
 
 async function isDisabledButton(page, name) {

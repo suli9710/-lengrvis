@@ -1,10 +1,7 @@
 import { lazy, Suspense, type Dispatch, type SetStateAction } from "react";
 
-import type {
-  AppSettings,
-  HardwareAccelerationSmokePayload,
-  HardwareAccelerationStatusPayload
-} from "../../../shared/types";
+import type { HardwareAccelerationSmokePayload, HardwareAccelerationStatusPayload } from "../../../shared/hardwareAccelerationTypes";
+import type { AppSettings } from "../../../shared/settingsTypes";
 import type { LengrvisApiClient } from "../../lib/apiClient";
 import { runtimeToProvider } from "./SettingsPanelHelpers";
 import { DesktopInternalAppBrowserSettings } from "./DesktopInternalAppBrowserSettings";

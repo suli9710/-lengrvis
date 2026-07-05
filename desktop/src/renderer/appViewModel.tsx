@@ -1,4 +1,7 @@
-import type { ApprovalRequest, BackendStatus, ChatMessage, LocalLLMHealth, TaskEvent } from "../shared/types";
+import type { BackendStatus } from "../shared/types";
+import type { ChatMessage } from "../shared/catalogTypes";
+import type { ApprovalRequest, TaskEvent } from "../shared/executionTypes";
+import type { LocalLLMHealth } from "../shared/localModelTypes";
 import type { HomeReadinessItem, HomeTrustItem } from "./features/office";
 import type { RealtimeConnectionStatus } from "./lib/apiClient";
 import { zhBackendText, zhRealtimeBadMessageSummary, zhRealtimeConnectionStatus, zhUserFacingError } from "./lib/zh";

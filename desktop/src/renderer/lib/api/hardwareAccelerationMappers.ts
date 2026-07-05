@@ -1,9 +1,14 @@
-import type { AppSettings, HardwareAccelerationSmokePayload, HardwareAccelerationStatusPayload } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type {
+  HardwareAccelerationOperation,
+  HardwareAccelerationSmokePayload,
+  HardwareAccelerationStatusPayload
+} from "../../../shared/hardwareAccelerationTypes";
 import type {
   BackendHardwareAccelerationComponentStatus,
   BackendHardwareAccelerationSmoke,
   BackendHardwareAccelerationStatus
-} from "./backendTypes";
+} from "./hardwareAccelerationBackendTypes";
 
 export function mapHardwareAccelerationStatus(status: BackendHardwareAccelerationStatus): HardwareAccelerationStatusPayload {
   return {
@@ -27,18 +32,25 @@ export function mapHardwareAccelerationStatus(status: BackendHardwareAcceleratio
   };
 }
 
-export function mapHardwareAccelerationSmoke(data: BackendHardwareAccelerationSmoke): HardwareAccelerationSmokePayload {
+export function mapHardwareAccelerationSmoke(
+  data: BackendHardwareAccelerationSmoke,
+  fallbackOperation: HardwareAccelerationOperation = "warmup"
+): HardwareAccelerationSmokePayload {
   return {
     ok: Boolean(data.ok),
-    available: Boolean(data.available),
-    status: data.status === "ready" ? "ready" : "unavailable",
-    operation: mapHardwareAccelerationOperation(data.operation),
+    available: Boolean(data.available ?? data.ok),
+    status: data.status === "ready" || (data.status === undefined && data.ok) ? "ready" : "unavailable",
+    operation: mapHardwareAccelerationOperation(data.operation, fallbackOperation),
     error: data.error ? String(data.error) : undefined,
-    errors: Array.isArray(data.errors) ? data.errors.map(String) : [],
+    errors: Array.isArray(data.errors) ? data.errors.map(String) : data.error ? [String(data.error)] : [],
     message: data.message ? String(data.message) : undefined,
     count: data.count !== undefined ? Number(data.count) : undefined,
     dim: data.dim !== undefined ? Number(data.dim) : undefined,
     source: data.source ? String(data.source) : undefined,
+    selectedBackend: data.selected_backend ? String(data.selected_backend) : undefined,
+    runtime: data.runtime ? String(data.runtime) : undefined,
+    model: data.model ? String(data.model) : undefined,
+    smoke: data.smoke ? String(data.smoke) : undefined,
     backend: data.backend
       ? {
           kind: String(data.backend.kind ?? ""),
@@ -51,7 +63,10 @@ export function mapHardwareAccelerationSmoke(data: BackendHardwareAccelerationSm
           provider_options: data.backend.provider_options ? objectStringRecord(data.backend.provider_options) : {}
         }
       : undefined,
-    llm: data.llm ? mapHardwareAccelerationLlm(data.llm) : undefined
+    llm: data.llm ? mapHardwareAccelerationLlm(data.llm) : undefined,
+    textEmbedding: data.text_embedding ? mapHardwareAccelerationComponent(data.text_embedding) : undefined,
+    imageEmbedding: data.image_embedding ? mapHardwareAccelerationComponent(data.image_embedding) : undefined,
+    ocr: data.ocr ? mapHardwareAccelerationComponent(data.ocr) : undefined
   };
 }
 
@@ -69,9 +84,11 @@ export function mapHardwareAccelerationLlm(llm: NonNullable<BackendHardwareAccel
 }
 
 export function mapHardwareAccelerationOperation(
-  operation?: BackendHardwareAccelerationSmoke["operation"]
+  operation?: BackendHardwareAccelerationSmoke["operation"],
+  fallbackOperation: HardwareAccelerationOperation = "warmup"
 ): HardwareAccelerationSmokePayload["operation"] {
   if (
+    operation === "warmup" ||
     operation === "test_generate" ||
     operation === "test_embedding" ||
     operation === "test_ocr" ||
@@ -79,7 +96,7 @@ export function mapHardwareAccelerationOperation(
   ) {
     return operation;
   }
-  return "warmup";
+  return fallbackOperation;
 }
 
 export function mapHardwareAccelerationComponent(
@@ -132,19 +149,18 @@ export function mapRuntimePackages(
   );
 }
 
-export function objectStringRecord(value: Record<string, string> | undefined): Record<string, string> | undefined {
+export function objectStringRecord(value: Record<string, unknown> | undefined): Record<string, string> | undefined {
   if (!value) return undefined;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]));
 }
 
 export function normalizeExecutionProvider(value: string): AppSettings["onnxExecutionProvider"] {
   const lowered = value.trim().toLowerCase();
-  if (!lowered) return "";
-  if (["auto", "winml", "directml", "openvino", "cpu"].includes(lowered)) {
-    return lowered === "auto" ? "" : (lowered[0].toUpperCase() + lowered.slice(1)) as AppSettings["onnxExecutionProvider"];
-  }
-  if (lowered === "windowsml" || lowered === "windows_ml") return "WinML";
-  if (lowered === "dml") return "DirectML";
+  if (!lowered || lowered === "auto") return "";
+  if (lowered === "winml" || lowered === "windowsml" || lowered === "windows_ml") return "WinML";
+  if (lowered === "directml" || lowered === "dml") return "DirectML";
+  if (lowered === "openvino") return "OpenVINO";
+  if (lowered === "cpu") return "CPU";
   return value;
 }
 
@@ -157,4 +173,3 @@ export function normalizeHardwareRuntime(value: string): string {
   if (lowered === "cpu") return "CPU";
   return value;
 }
-

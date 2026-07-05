@@ -11,6 +11,8 @@ export {
 } from "./commandMappers";
 
 export {
+  fileClusterRequestFor,
+  mapFileSearchResponse,
   mapIndexStatus,
   mapLocalLibraryItem,
   mapLocalLibraryResponse
@@ -177,6 +179,7 @@ export {
   externalReviewStatusAllowsSharing,
   mapDiagnostic,
   mapDiagnosticExportResult,
+  mapLocalMetrics,
   mapProcess,
   mapStartupItem,
   mapSupportPackageRedaction,

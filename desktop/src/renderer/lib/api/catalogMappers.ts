@@ -1,24 +1,24 @@
 import type {
   ChatMessage,
-  FileRevealResult,
   InstalledApp,
   InstalledSkill,
   IntentSuggestion,
   PerceptionSuggestionLaunchResponse,
   SkillImportResult,
   SkillsCatalog
-} from "../../../shared/types";
+} from "../../../shared/catalogTypes";
+import type { FileRevealResult } from "../../../shared/fileLibraryTypes";
 import { zhBackendTaskStatus, zhBackendText } from "../zh";
 import type {
   BackendChatMessage,
-  BackendFileRevealResult,
   BackendInstalledApp,
   BackendInstalledSkill,
   BackendIntentSuggestion,
   BackendSkillImportResult,
-  BackendSkillsCatalog,
-  BackendSuggestionLaunchResponse
-} from "./backendTypes";
+  BackendSkillsCatalog
+} from "./catalogBackendTypes";
+import type { BackendSuggestionLaunchResponse } from "./executionBackendTypes";
+import type { BackendFileRevealResult } from "./fileLibraryBackendTypes";
 import { optionalString } from "./mapperPrimitives";
 import { mapTaskState, runEngineAgentName } from "./runMappers";
 

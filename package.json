@@ -18,6 +18,7 @@
     "sbom:generate": "powershell -ExecutionPolicy Bypass -File ./scripts/generate_sbom.ps1",
     "supply-chain:verify": "npm run deps:verify && npm run sbom:generate",
     "security:extensions": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_extension_security_gate.ps1",
+    "maintainability:size": "python scripts/check_source_size.py --top 25",
     "release:readiness": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md",
     "release:readiness:strict": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict",
     "release:readiness:rc": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --rc-release",

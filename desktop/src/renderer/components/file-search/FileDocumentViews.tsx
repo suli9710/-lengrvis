@@ -1,6 +1,6 @@
 import { Table2 } from "lucide-react";
 
-import type { DocumentAskResponse, DocumentCompareResponse, DocumentIR } from "../../../shared/types";
+import type { DocumentAskResponse, DocumentCompareResponse, DocumentIR } from "../../../shared/documentTypes";
 
 export function DocumentResultView({ document }: { document: DocumentIR }) {
   const previewBlocks = document.blocks.filter((block) => block.text).slice(0, 4);

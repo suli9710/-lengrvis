@@ -1,11 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import type {
-  AppSettings,
-  HardwareAccelerationStatusPayload,
-  LocalLLMHealth,
-  LocalModelSetupPlan
-} from "../../../shared/types";
+import type { HardwareAccelerationStatusPayload } from "../../../shared/hardwareAccelerationTypes";
+import type { LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/localModelTypes";
+import type { AppSettings } from "../../../shared/settingsTypes";
 import { LocalLlmHealthNotice, ModelBoundaryProfile } from "./LocalModelSettings";
 import { updateWorkspaceRoot } from "./SettingsPanelHelpers";
 import {

@@ -745,6 +745,41 @@ def test_assess_hardware_recommends_medium_model_when_resources_allow():
     assert result["repair_action"]["code"] == "continue_setup"
 
 
+def test_assess_hardware_keeps_ollama_service_patch_points(monkeypatch):
+    monkeypatch.setattr(
+        ollama_service,
+        "_recommended_model_for_hardware",
+        lambda **_resources: "custom:1b",
+    )
+    monkeypatch.setattr(
+        ollama_service,
+        "_requirements_for_model",
+        lambda _model: {
+            "memory_total_bytes": 10,
+            "disk_free_bytes": 20,
+            "cpu_logical_cores": 2,
+        },
+    )
+    monkeypatch.setattr(ollama_service, "_format_bytes", lambda value: f"{value} bytes")
+    monkeypatch.setattr(
+        ollama_service,
+        "_setup_repair_action",
+        lambda next_action, target: {"code": f"{next_action}:{target}"},
+    )
+
+    result = ollama_service.assess_hardware(
+        memory_total_bytes=1,
+        disk_free_bytes=2,
+        cpu_logical_cores=3,
+    )
+
+    assert result["recommended_model"] == "custom:1b"
+    assert result["can_install"] is False
+    assert result["checks"][0]["actual"] == "1 bytes"
+    assert result["checks"][0]["required"] == "10 bytes"
+    assert result["repair_action"]["code"] == "hardware_blocked:custom:1b"
+
+
 @pytest.mark.asyncio
 async def test_install_local_model_stops_when_hardware_not_ready(monkeypatch):
     monkeypatch.setattr(

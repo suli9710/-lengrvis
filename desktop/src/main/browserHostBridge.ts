@@ -4,7 +4,7 @@ import type {
   BrowserHostBounds,
   BrowserHostOpenRequest,
   BrowserHostSnapshot
-} from "../shared/types";
+} from "../shared/browserTypes";
 import { sanitizeActionResultForRenderer } from "../shared/browserHostRedaction";
 import { buildBackendWebSocketUrl, createDesktopWebSocket } from "./desktopWebSocket";
 

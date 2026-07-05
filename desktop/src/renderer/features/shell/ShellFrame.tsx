@@ -22,7 +22,9 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { ChatMessage, SystemInfo, TaskEvent } from "../../../shared/types";
+import type { ChatMessage } from "../../../shared/catalogTypes";
+import type { TaskEvent } from "../../../shared/executionTypes";
+import type { SystemInfo } from "../../../shared/systemTypes";
 import xiaomaErrorGif from "../../assets/xiaoma-agent/sleeping.gif";
 import xiaomaCompletedGif from "../../assets/xiaoma-agent/salute.gif";
 import xiaomaRunningGif from "../../assets/xiaoma-agent/working.gif";

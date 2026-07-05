@@ -1,7 +1,8 @@
 import { AlertCircle, CheckCircle2, Download, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { AppSettings, LocalLLMHealth, LocalModelReadiness, LocalModelSetupPlan } from "../../../shared/types";
+import type { AppSettings } from "../../../shared/settingsTypes";
+import type { LocalLLMHealth, LocalModelReadiness, LocalModelSetupPlan } from "../../../shared/localModelTypes";
 import { buildRendererLoopbackBackendWebSocketUrl, type LengrvisApiClient } from "../../lib/apiClient";
 import { Badge } from "../Panel";
 import { localModelUserMessage } from "./LocalModelSettings";

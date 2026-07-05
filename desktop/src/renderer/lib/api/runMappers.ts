@@ -1,5 +1,6 @@
-import type { AgentConversation, PerceptionSuggestionLaunchResponse, Plan, TaskBoundaryEvent, TaskEvent } from "../../../shared/types";
-import type { BackendPlan, BackendRunCreateResponse, BackendRunEvent, BackendRunState, BackendRunTimeline, BackendSuggestionLaunchResponse } from "./backendTypes";
+import type { PerceptionSuggestionLaunchResponse } from "../../../shared/catalogTypes";
+import type { AgentConversation, Plan, TaskBoundaryEvent, TaskEvent } from "../../../shared/executionTypes";
+import type { BackendPlan, BackendRunCreateResponse, BackendRunEvent, BackendRunState, BackendRunTimeline, BackendSuggestionLaunchResponse } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
 import { zhAgentName, zhBackendTaskStatus, zhBackendText, zhToolName } from "../zh";
@@ -208,4 +209,3 @@ export function mapRunEventKind(name: string): NonNullable<AgentConversation["me
   if (name === "tool.progress") return "observation";
   return "action";
 }
-

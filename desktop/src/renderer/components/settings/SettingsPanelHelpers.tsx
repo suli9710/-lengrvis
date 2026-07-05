@@ -1,10 +1,9 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import type { AppSettings, McpServerConfig } from "../../../shared/types";
+import type { AppSettings, McpServerConfig } from "../../../shared/settingsTypes";
+import type { HardwareAccelerationRuntime } from "../../../shared/hardwareAccelerationTypes";
 import type { MobileDevice, MobilePairingCode } from "../../lib/apiClient";
 import { activeRemoteInputGrantForDevice } from "../../lib/remoteInputGrant";
-
-type HardwareRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
 
 export function mobilePairingTransportWarning(baseUrl: string): string {
   try {
@@ -179,7 +178,7 @@ export function normalizeHardwareRuntime(value: string): string {
   return value;
 }
 
-export function runtimeToProvider(value: HardwareRuntime): string {
+export function runtimeToProvider(value: HardwareAccelerationRuntime): string {
   if (value === "winml") return "WinML";
   if (value === "directml") return "DirectML";
   if (value === "openvino") return "OpenVINO";
@@ -187,7 +186,7 @@ export function runtimeToProvider(value: HardwareRuntime): string {
   return "";
 }
 
-export function providerToRuntime(value: string): HardwareRuntime {
+export function providerToRuntime(value: string): HardwareAccelerationRuntime {
   const lowered = value.trim().toLowerCase();
   if (!lowered) return "auto";
   if (lowered === "winml" || lowered === "windowsml" || lowered === "windows_ml") return "winml";

@@ -1,6 +1,6 @@
-import type { ApprovalRequest, SafetyReview } from "../../../shared/types";
+import type { ApprovalRequest, SafetyReview } from "../../../shared/executionTypes";
 import { zhApprovalType, zhBackendText } from "../zh";
-import type { BackendApproval } from "./backendTypes";
+import type { BackendApproval } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { optionalObjectRecord } from "./mapperPrimitives";
 

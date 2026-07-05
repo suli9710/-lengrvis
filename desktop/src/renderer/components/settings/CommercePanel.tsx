@@ -1,15 +1,15 @@
 import { Check, FileKey2, KeyRound, Loader2, RefreshCw, ShieldAlert } from "lucide-react";
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 
+import type { ApiError } from "../../../shared/types";
 import type {
-  ApiError,
   CommerceFeature,
   CommerceLicenseStatus,
   CommercePlan,
   CommercePlanStatus,
   CommerceQuotaWindow,
   CommerceQuotaStatus
-} from "../../../shared/types";
+} from "../../../shared/commerceTypes";
 import type { LengrvisApiClient } from "../../lib/apiClient";
 
 const MAX_LICENSE_FILE_BYTES = 64 * 1024;

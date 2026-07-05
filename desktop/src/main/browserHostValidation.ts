@@ -1,4 +1,4 @@
-import type { BrowserAction, BrowserHostBounds } from "../shared/types";
+import type { BrowserAction, BrowserHostBounds } from "../shared/browserTypes";
 import { assertBrowserHostUrlAllowed } from "./browserHostNetworkGuard";
 
 const MIN_BROWSER_SIZE = 80;
