@@ -251,15 +251,18 @@ def _init_db_schema() -> None:
         initialize_schema(conn, _ensure_columns)
         _ensure_sensitive_record_integrity_schema(conn)
 
+
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
     from app.core.db_upserts import upsert_model as _upsert_model
 
     _upsert_model(table, model, task_id=task_id, status=status)
 
+
 def register_read_barrier(table: str, barrier: Callable[[], None]) -> None:
     from app.core.db_queries import register_read_barrier as _register_read_barrier
 
     _register_read_barrier(table, barrier)
+
 
 def _apply_read_barrier(table_name: str) -> None:
     from app.core.db_queries import apply_read_barrier
