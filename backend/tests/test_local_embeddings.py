@@ -56,11 +56,16 @@ def test_embed_texts_hashes_when_local_and_registry_are_unavailable(monkeypatch:
 
 def test_embed_texts_falls_back_when_local_provider_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     local_completed = False
+    local_cancelled = False
 
     class SlowLocalProvider:
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
-            nonlocal local_completed
-            await asyncio.sleep(1.0)
+            nonlocal local_cancelled, local_completed
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                local_cancelled = True
+                raise
             local_completed = True
             return [[99.0] for _ in texts]
 
@@ -72,29 +77,37 @@ def test_embed_texts_falls_back_when_local_provider_times_out(monkeypatch: pytes
     monkeypatch.setattr(embedding_service, "get_local_embedding_provider", lambda settings: SlowLocalProvider())
     monkeypatch.setattr(embedding_service, "get_provider", lambda settings, task="embed": RegistryProvider())
 
-    started = time.monotonic()
     vectors = asyncio.run(embedding_service.embed_texts(["alpha"], timeout_seconds=0.01))
 
     assert vectors == [[5.0, 7.0]]
+    assert local_cancelled is True
     assert local_completed is False
-    assert time.monotonic() - started < 0.5
 
 
 def test_embed_texts_hashes_when_registry_provider_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry_completed = False
+    registry_cancelled = False
+
     class SlowRegistryProvider:
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
-            await asyncio.sleep(1.0)
+            nonlocal registry_cancelled, registry_completed
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                registry_cancelled = True
+                raise
+            registry_completed = True
             return [[99.0] for _ in texts]
 
     monkeypatch.setattr(embedding_service, "get_local_embedding_provider", lambda settings: None)
     monkeypatch.setattr(embedding_service, "get_provider", lambda settings, task="embed": SlowRegistryProvider())
 
-    started = time.monotonic()
     vectors = asyncio.run(embedding_service.embed_texts(["alpha", "beta"], timeout_seconds=0.01))
 
     assert len(vectors) == 2
     assert all(len(vector) == 64 for vector in vectors)
-    assert time.monotonic() - started < 0.5
+    assert registry_cancelled is True
+    assert registry_completed is False
 
 
 def test_embed_texts_sync_timeout_raises_from_running_event_loop() -> None:
