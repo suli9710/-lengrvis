@@ -188,6 +188,17 @@ def test_aggregate_passes_when_only_optional_fails():
     assert "evidence" in verdict["optional_failures"]
 
 
+def test_resolve_stage_command_uses_path_lookup(monkeypatch):
+    monkeypatch.setattr(mod.shutil, "which", lambda command: "C:/node/npm.cmd" if command == "npm" else None)
+
+    assert mod.resolve_stage_command(["npm", "run", "qa:gate"]) == [
+        "C:/node/npm.cmd",
+        "run",
+        "qa:gate",
+    ]
+    assert mod.resolve_stage_command(["definitely-missing"]) == ["definitely-missing"]
+
+
 def test_run_pipeline_halts_after_required_failure():
     stages = [
         mod.Stage("a", ["true"], True),

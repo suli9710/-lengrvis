@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import shlex
 import subprocess
 import sys
@@ -316,10 +317,26 @@ def aggregate_verdict(results: List[StageResult]) -> dict:
     }
 
 
+def resolve_stage_command(command: List[str]) -> List[str]:
+    """Resolve PATHEXT-backed commands such as npm on Windows.
+
+    Python's CreateProcess path does not consistently apply PATHEXT the way an
+    interactive shell does, so ``["npm", ...]`` can fail even when ``where npm``
+    shows ``npm.cmd``. Keep the stage definitions shell-neutral and resolve the
+    executable at the boundary.
+    """
+    if not command:
+        return command
+    executable = shutil.which(command[0])
+    if executable:
+        return [executable, *command[1:]]
+    return command
+
+
 def run_stage(stage: Stage, *, cwd: Path) -> StageResult:
     start = time.monotonic()
     try:
-        proc = subprocess.run(stage.command, cwd=str(cwd))
+        proc = subprocess.run(resolve_stage_command(stage.command), cwd=str(cwd))
         code = proc.returncode
     except FileNotFoundError as exc:
         return StageResult(
