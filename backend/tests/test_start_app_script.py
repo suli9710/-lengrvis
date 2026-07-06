@@ -1430,6 +1430,9 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     verify_script = (project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs").read_text(
         encoding="utf-8"
     )
+    release_version_script = (project_root / "desktop" / "scripts" / "verify-release-version.cjs").read_text(
+        encoding="utf-8"
+    )
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
     assert (
@@ -1441,6 +1444,7 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert scripts["verify:linux-release-integrity"] == "node scripts/verify-linux-release-integrity.cjs"
     assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:signed"]
     assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:publish"]
+    assert "verify:release-version -- --require-tag" in scripts["dist:publish"]
     assert "verify:signed-build-config:mac" in scripts["dist:mac:signed"]
     assert "verify:macos-release-signatures" in scripts["dist:mac:signed"]
     assert "verify:linux-release-integrity -- --write" in scripts["dist:linux"]
@@ -1451,6 +1455,10 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert not (project_root / "desktop" / "electron-builder.signed.yml").exists()
 
     assert "REPLACE_" not in signed_config
+    assert "GITHUB_SHA" in release_version_script
+    assert "does not match checked-out HEAD" in release_version_script
+    assert "git\", [\"rev-parse\", \"HEAD\"]" in release_version_script
+    assert "git\", [\"rev-list\", \"-n\", \"1\", tag]" in release_version_script
     assert "endpoint: process.env.AZURE_TRUSTED_SIGNING_ENDPOINT" in signed_config
     assert "codeSigningAccountName: process.env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME" in signed_config
     assert "certificateProfileName: process.env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME" in signed_config
@@ -1487,6 +1495,19 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "win.publisherName[0]" in verify_script
     assert "mac.notarize" in verify_script
     assert "APPLE_APP_SPECIFIC_PASSWORD" in verify_script
+
+
+def test_dependency_lock_verifier_checks_all_npm_transitive_sources(project_root: Path) -> None:
+    verifier = (project_root / "scripts" / "verify_dependency_locks.ps1").read_text(encoding="utf-8")
+
+    assert "Object.entries(lock.packages || {})" in verifier
+    assert "packageEntry.integrity" in verifier
+    assert "is missing SRI integrity" in verifier
+    assert 'new Set(["registry.npmjs.org"])' in verifier
+    assert 'url.protocol !== "https:"' in verifier
+    assert 'resolved.startsWith("file:")' in verifier
+    assert 'resolved.startsWith("git+")' in verifier
+    assert 'resolved.startsWith("http:")' in verifier
 
 
 def test_windows_release_signature_verification_covers_portable_artifacts(

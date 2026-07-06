@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -21,6 +23,11 @@ from urllib.parse import urlparse
 
 ALLOWED_STATUSES = {"blocked", "in_progress", "passed", "waived"}
 STRICT_ALLOWED_P0_STATUSES = {"passed", "waived"}
+STRICT_ACCEPTED_MANUAL_SIGNOFF_STATUSES = {
+    "rc_signoff_recorded",
+    "release_signoff_recorded",
+    "paid_launch_signoff_recorded",
+}
 P0_PREFIX = "RR-P0-"
 ROW_RE = re.compile(r"^\|\s*(RR-[^|]+?)\s*\|(?P<body>.*)\|\s*$")
 CI_ARTIFACT_PATH_PREFIXES = (
@@ -81,13 +88,38 @@ def validate(
     strict: bool,
     rc_release: bool = False,
     artifact_root: Path | None = None,
+    dashboard_text: str = "",
+    expected_repo: str | None = None,
+    current_sha: str | None = None,
+    expected_run_id: str | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     artifact_root = artifact_root or Path.cwd()
+    git_repo = _git_remote_github_repo(artifact_root)
+    github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    expected_repo = (expected_repo or github_repo or git_repo).strip()
+    expected_run_id = (expected_run_id or os.environ.get("GITHUB_RUN_ID", "")).strip()
+    git_sha = _git_head_sha(artifact_root)
+    github_sha = os.environ.get("GITHUB_SHA", "").strip()
+    current_sha = (current_sha or git_sha or github_sha).strip() if strict else ""
     if not rows:
         errors.append("No readiness rows found.")
         return errors, warnings
+
+    if strict:
+        if github_repo and git_repo and github_repo.lower() != git_repo.lower():
+            errors.append(
+                f"GITHUB_REPOSITORY {github_repo} does not match checked-out repository {git_repo}."
+            )
+        if github_sha and git_sha and not _sha_matches(github_sha, git_sha):
+            errors.append(
+                f"GITHUB_SHA {github_sha[:8]} does not match checked-out HEAD {git_sha[:8]}."
+            )
+        if not expected_repo:
+            errors.append("Strict release readiness requires a current GitHub repository binding.")
+        if not current_sha:
+            errors.append("Strict release readiness requires a current commit binding.")
 
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     if not p0_rows:
@@ -129,29 +161,87 @@ def validate(
             )
         if (
             strict
+            and row.status in {"passed", "waived"}
+            and _artifact_is_github_actions_run(row.artifact)
+            and not _artifact_is_ci_evidence(
+                row.artifact,
+                artifact_root,
+                expected_repo=expected_repo,
+                expected_run_id=expected_run_id,
+            )
+        ):
+            errors.append(
+                f"{row.row_id}: strict release readiness requires GitHub Actions URLs to point to "
+                "the current repository and current CI run."
+            )
+        if (
+            strict
             and row.row_id.startswith(P0_PREFIX)
             and row.status in {"passed", "waived"}
-            and not _artifact_is_ci_evidence(row.artifact, artifact_root)
+            and not _artifact_is_ci_evidence(
+                row.artifact,
+                artifact_root,
+                expected_repo=expected_repo,
+                expected_run_id=expected_run_id,
+            )
         ):
             errors.append(
                 f"{row.row_id}: strict P0 readiness requires artifact to point to CI-generated evidence, "
-                "such as a GitHub Actions run URL or CI artifact path."
+                "such as a GitHub Actions run URL for this repository or CI artifact path."
             )
         if strict and row.status == "waived":
             waiver_error = _waiver_error(row)
             if waiver_error:
                 errors.append(f"{row.row_id}: {waiver_error}")
 
+    if strict and dashboard_text:
+        candidate = _candidate_commit_from_dashboard(dashboard_text)
+        if not candidate:
+            errors.append("Strict release readiness requires a Candidate commit in the dashboard.")
+        elif current_sha and not _sha_matches(candidate, current_sha):
+            errors.append(
+                f"Current candidate commit {candidate} does not match checked-out HEAD {current_sha[:8]}."
+            )
+        current_evidence = artifact_root / "docs" / "release" / "current-release-evidence.md"
+        if not current_evidence.exists():
+            errors.append("Strict release readiness requires docs/release/current-release-evidence.md.")
+        else:
+            evidence_text = current_evidence.read_text(encoding="utf-8")
+            evidence_commit = _current_evidence_commit(evidence_text)
+            if not evidence_commit:
+                errors.append("Current release evidence is missing Commit SHA.")
+            elif current_sha and not _sha_matches(evidence_commit, current_sha):
+                errors.append(
+                    f"Current release evidence commit {evidence_commit} does not match checked-out HEAD {current_sha[:8]}."
+                )
+            evidence_run_id = _current_evidence_run_id(evidence_text)
+            if expected_run_id and evidence_run_id and evidence_run_id != expected_run_id:
+                errors.append(
+                    f"Current release evidence run id {evidence_run_id} does not match GITHUB_RUN_ID {expected_run_id}."
+                )
+            evidence_ci_status = _current_evidence_summary_value(evidence_text, "CI status")
+            if evidence_ci_status != "machine_gates_passed":
+                errors.append(
+                    "Current release evidence CI status must be machine_gates_passed for strict readiness; "
+                    f"got {evidence_ci_status or 'missing'}."
+                )
+            manual_status = _current_evidence_summary_value(evidence_text, "Manual sign-off status")
+            if manual_status not in STRICT_ACCEPTED_MANUAL_SIGNOFF_STATUSES:
+                errors.append(
+                    "Current release evidence manual sign-off status must record RC/release owner approval; "
+                    f"got {manual_status or 'missing'}."
+                )
+            owner_signature = _current_evidence_summary_value(evidence_text, "Owner signature")
+            if not owner_signature or owner_signature == "PENDING_RELEASE_OWNER_SIGNATURE":
+                errors.append("Current release evidence owner signature is pending or missing.")
+
     return errors, warnings
 
 
 def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
-    value = artifact.strip()
+    value = _artifact_link_target(artifact)
     if not value or value.upper() == "TBD":
         return False
-    markdown_link = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
-    if markdown_link:
-        value = markdown_link.group(1).strip()
     parsed = urlparse(value)
     if parsed.scheme in {"https"} and parsed.netloc:
         return True
@@ -165,13 +255,38 @@ def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
     return candidate.exists()
 
 
-def _artifact_is_ci_evidence(artifact: str, artifact_root: Path) -> bool:
+def _artifact_link_target(artifact: str) -> str:
     value = artifact.strip()
     markdown_link = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
-    if markdown_link:
-        value = markdown_link.group(1).strip()
+    return markdown_link.group(1).strip() if markdown_link else value
+
+
+def _artifact_is_github_actions_run(artifact: str) -> bool:
+    parsed = urlparse(_artifact_link_target(artifact))
+    return parsed.scheme == "https" and parsed.netloc.lower() == "github.com" and "/actions/runs/" in parsed.path
+
+
+def _artifact_is_ci_evidence(
+    artifact: str,
+    artifact_root: Path,
+    *,
+    expected_repo: str = "",
+    expected_run_id: str = "",
+) -> bool:
+    value = _artifact_link_target(artifact)
     parsed = urlparse(value)
     if parsed.scheme == "https" and parsed.netloc and "/actions/runs/" in parsed.path:
+        if parsed.netloc.lower() != "github.com":
+            return False
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) < 5 or path_parts[2] != "actions" or path_parts[3] != "runs":
+            return False
+        repo = "/".join(path_parts[:2]).lower()
+        run_id = path_parts[4]
+        if not expected_repo or repo != expected_repo.lower():
+            return False
+        if expected_run_id and run_id != expected_run_id:
+            return False
         return True
     if parsed.scheme:
         return False
@@ -186,6 +301,60 @@ def _artifact_is_ci_evidence(artifact: str, artifact_root: Path) -> bool:
     except ValueError:
         return False
     return candidate.exists()
+
+
+def _candidate_commit_from_dashboard(markdown: str) -> str:
+    match = re.search(r"\|\s*Candidate commit\s*\|\s*`?([0-9a-fA-F]{7,40})`?\s*\|", markdown)
+    return match.group(1) if match else ""
+
+
+def _current_evidence_commit(markdown: str) -> str:
+    match = re.search(r"(?im)^-\s*Commit SHA:\s*`?([0-9a-fA-F]{7,40})`?\s*$", markdown)
+    return match.group(1) if match else ""
+
+
+def _current_evidence_run_id(markdown: str) -> str:
+    match = re.search(r"(?im)^-\s*Run id:\s*`?([0-9]+)`?\s*$", markdown)
+    return match.group(1) if match else ""
+
+
+def _current_evidence_summary_value(markdown: str, label: str) -> str:
+    escaped = re.escape(label)
+    match = re.search(rf"(?im)^-\s*{escaped}:\s*(.+?)\s*$", markdown)
+    if not match:
+        return ""
+    return match.group(1).strip().strip("`")
+
+
+def _sha_matches(candidate: str, current_sha: str) -> bool:
+    shorter = min(len(candidate), len(current_sha))
+    return shorter >= 7 and candidate[:shorter].lower() == current_sha[:shorter].lower()
+
+
+def _git_head_sha(root: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def _git_remote_github_repo(root: Path) -> str:
+    try:
+        remote = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    match = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?$", remote)
+    return match.group(1) if match else ""
 
 
 def _waiver_error(row: ReadinessRow) -> str:
@@ -231,7 +400,8 @@ def main() -> int:
         )
         return 2
 
-    rows = parse_rows(dashboard_path.read_text(encoding="utf-8"))
+    dashboard_text = dashboard_path.read_text(encoding="utf-8")
+    rows = parse_rows(dashboard_text)
     resolved_dashboard = dashboard_path.resolve()
     artifact_root = (
         resolved_dashboard.parents[2]
@@ -243,6 +413,7 @@ def main() -> int:
         strict=args.strict or args.rc_release,
         rc_release=args.rc_release,
         artifact_root=artifact_root,
+        dashboard_text=dashboard_text,
     )
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     summary = {

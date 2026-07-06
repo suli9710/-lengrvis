@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hmac
 import os
 import secrets
@@ -39,6 +40,7 @@ _DEFAULT_CHALLENGE_RATE_LIMIT_WINDOW_SECONDS = 60
 class NativeConfirmationChallenge:
     confirmation_id: str
     action: str
+    endpoint: str
     approval_id: str
     preview_hmac: str
     expires_at_epoch: int
@@ -47,6 +49,7 @@ class NativeConfirmationChallenge:
     def signing_payload(self) -> str:
         return native_confirmation_signing_payload(
             action=self.action,
+            endpoint=self.endpoint,
             approval_id=self.approval_id,
             confirmation_id=self.confirmation_id,
             preview_hmac=self.preview_hmac,
@@ -57,6 +60,7 @@ class NativeConfirmationChallenge:
         return {
             "confirmation_id": self.confirmation_id,
             "action": self.action,
+            "endpoint": self.endpoint,
             "approval_id": self.approval_id,
             "preview_hmac": self.preview_hmac,
             "expires_at_epoch": self.expires_at_epoch,
@@ -67,6 +71,7 @@ class NativeConfirmationChallenge:
 def require_native_confirmation(
     *,
     action: str,
+    endpoint: str,
     approval_id: str,
     confirmation_id: str,
     timestamp: str,
@@ -78,6 +83,7 @@ def require_native_confirmation(
         return _require_signed_challenge(
             public_key=public_key,
             action=action,
+            endpoint=endpoint,
             approval_id=approval_id,
             confirmation_id=confirmation_id,
             timestamp=timestamp,
@@ -88,6 +94,7 @@ def require_native_confirmation(
         raise HTTPException(status_code=403, detail="Native confirmation verifier is unavailable.")
     return _require_legacy_hmac_confirmation(
         action=action,
+        endpoint=endpoint,
         approval_id=approval_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -153,11 +160,13 @@ def enforce_native_confirmation_challenge_rate_limit(
 def create_native_confirmation_challenge(
     *,
     action: str,
+    endpoint: str,
     approval_id: str,
     preview_hmac: str = "",
     now: int | None = None,
 ) -> dict[str, Any]:
     normalized_action = _clean_action(action)
+    normalized_endpoint = _clean_endpoint(endpoint)
     normalized_approval_id = str(approval_id or "").strip()
     if not normalized_approval_id:
         raise HTTPException(status_code=422, detail="Approval id is required.")
@@ -165,6 +174,7 @@ def create_native_confirmation_challenge(
     challenge = NativeConfirmationChallenge(
         confirmation_id=secrets.token_urlsafe(24),
         action=normalized_action,
+        endpoint=normalized_endpoint,
         approval_id=normalized_approval_id,
         preview_hmac=str(preview_hmac or "").strip(),
         expires_at_epoch=int(now or time.time()) + NATIVE_CONFIRMATION_CHALLENGE_TTL_SECONDS,
@@ -202,6 +212,7 @@ def native_confirmation_public_key_fingerprint() -> str:
 def native_confirmation_signing_payload(
     *,
     action: str,
+    endpoint: str,
     approval_id: str,
     confirmation_id: str,
     preview_hmac: str,
@@ -209,8 +220,9 @@ def native_confirmation_signing_payload(
 ) -> str:
     return "\n".join(
         [
-            "approval-v2",
+            "approval-v3",
             _clean_action(action),
+            _clean_endpoint(endpoint),
             str(approval_id or "").strip(),
             str(confirmation_id or "").strip(),
             str(preview_hmac or "").strip(),
@@ -229,11 +241,14 @@ def native_confirmation_signature(
     *,
     secret: str,
     action: str,
+    endpoint: str,
     approval_id: str,
     confirmation_id: str,
     timestamp: str,
 ) -> str:
-    body = "\n".join(["approval", action, approval_id, confirmation_id, timestamp])
+    body = "\n".join(
+        ["approval-v3", _clean_action(action), _clean_endpoint(endpoint), approval_id, confirmation_id, timestamp]
+    )
     return hmac.new(secret.encode("utf-8"), body.encode("utf-8"), sha256).hexdigest()
 
 
@@ -241,6 +256,7 @@ def _require_signed_challenge(
     *,
     public_key: str,
     action: str,
+    endpoint: str,
     approval_id: str,
     confirmation_id: str,
     timestamp: str,
@@ -260,7 +276,11 @@ def _require_signed_challenge(
         raise HTTPException(status_code=403, detail="Native confirmation proof is expired.")
     if expires_at != challenge.expires_at_epoch:
         raise HTTPException(status_code=403, detail="Native confirmation timestamp is invalid.")
-    if challenge.action != _clean_action(action) or challenge.approval_id != str(approval_id or "").strip():
+    if (
+        challenge.action != _clean_action(action)
+        or challenge.endpoint != _clean_endpoint(endpoint)
+        or challenge.approval_id != str(approval_id or "").strip()
+    ):
         raise HTTPException(status_code=403, detail="Native confirmation challenge does not match this approval.")
     if challenge.preview_hmac != str(preview_hmac or "").strip():
         raise HTTPException(status_code=403, detail="Native confirmation preview changed.")
@@ -282,6 +302,7 @@ def _require_signed_challenge(
 def _require_legacy_hmac_confirmation(
     *,
     action: str,
+    endpoint: str,
     approval_id: str,
     confirmation_id: str,
     timestamp: str,
@@ -302,6 +323,7 @@ def _require_legacy_hmac_confirmation(
     expected = native_confirmation_signature(
         secret=secret,
         action=action,
+        endpoint=endpoint,
         approval_id=approval_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -322,10 +344,22 @@ def _legacy_hmac_allowed() -> bool:
     return env_flag("LENGRVIS_TEST") or bool(str(get_env("PYTEST_CURRENT_TEST") or "").strip())
 
 
+_NATIVE_CONFIRMATION_ACTIONS = {"approve", "reject", "rollback_task", "erase_local_data"}
+
+
 def _clean_action(action: str) -> str:
     normalized = str(action or "").strip().lower()
-    if normalized not in {"approve", "reject"}:
+    if normalized not in _NATIVE_CONFIRMATION_ACTIONS:
         raise HTTPException(status_code=422, detail="Native confirmation action is invalid.")
+    return normalized
+
+
+def _clean_endpoint(endpoint: str) -> str:
+    normalized = str(endpoint or "").strip()
+    if not normalized.startswith("/api/"):
+        raise HTTPException(status_code=422, detail="Native confirmation endpoint is invalid.")
+    if "://" in normalized or "\r" in normalized or "\n" in normalized:
+        raise HTTPException(status_code=422, detail="Native confirmation endpoint is invalid.")
     return normalized
 
 
@@ -338,12 +372,13 @@ def _store_challenge(challenge: NativeConfirmationChallenge) -> None:
         conn.execute(
             """
             INSERT INTO native_confirmation_challenges(
-                confirmation_id, action, approval_id, preview_hmac, expires_at_epoch
-            ) VALUES (?, ?, ?, ?, ?)
+                confirmation_id, action, endpoint, approval_id, preview_hmac, expires_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 challenge.confirmation_id,
                 challenge.action,
+                challenge.endpoint,
                 challenge.approval_id,
                 challenge.preview_hmac,
                 challenge.expires_at_epoch,
@@ -364,7 +399,7 @@ def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge |
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT action, approval_id, preview_hmac, expires_at_epoch
+            SELECT action, endpoint, approval_id, preview_hmac, expires_at_epoch
             FROM native_confirmation_challenges
             WHERE confirmation_id = ?
             """,
@@ -381,9 +416,10 @@ def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge |
         return NativeConfirmationChallenge(
             confirmation_id=normalized_id,
             action=str(row[0]),
-            approval_id=str(row[1]),
-            preview_hmac=str(row[2]),
-            expires_at_epoch=int(row[3]),
+            endpoint=str(row[1]),
+            approval_id=str(row[2]),
+            preview_hmac=str(row[3]),
+            expires_at_epoch=int(row[4]),
         )
 
 
@@ -424,12 +460,16 @@ def _ensure_challenge_table(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS native_confirmation_challenges (
             confirmation_id TEXT PRIMARY KEY,
             action TEXT NOT NULL,
+            endpoint TEXT NOT NULL DEFAULT '',
             approval_id TEXT NOT NULL,
             preview_hmac TEXT NOT NULL,
             expires_at_epoch INTEGER NOT NULL
         )
         """
     )
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(native_confirmation_challenges)").fetchall()}
+    if "endpoint" not in columns:
+        conn.execute("ALTER TABLE native_confirmation_challenges ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_native_confirmation_challenges_expires
@@ -454,7 +494,10 @@ def _env_int(name: str, default: int) -> int:
 def _b64url_decode(value: str) -> bytes:
     text = str(value or "").strip()
     padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode((text + padding).encode("ascii"))
+    try:
+        return base64.urlsafe_b64decode((text + padding).encode("ascii"))
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid base64url value.") from exc
 
 
 def _load_public_key(value: str) -> Ed25519PublicKey:

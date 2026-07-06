@@ -47,12 +47,25 @@ def test_default_stages_order_and_membership():
     assert "readiness" in names
     assert "real-llm-eval" not in names
     assert names[-1] == "evidence"
-    # Evidence is the only optional stage by default.
+    # Evidence collection stages are optional outside strict RC mode.
     optional = [s.name for s in stages if not s.required]
-    assert optional == ["evidence"]
+    assert optional == ["current-release-evidence", "evidence"]
     signed = next(s for s in stages if s.name == "signed-artifacts")
     assert signed.required is True
     assert "verify:windows-release-signatures" in signed.command
+
+
+def test_strict_makes_release_evidence_required():
+    non_strict_evidence = next(s for s in mod.default_stages(strict=False) if s.name == "evidence")
+    strict_evidence = next(s for s in mod.default_stages(strict=True) if s.name == "evidence")
+    non_strict_current = next(s for s in mod.default_stages(strict=False) if s.name == "current-release-evidence")
+    strict_current = next(s for s in mod.default_stages(strict=True) if s.name == "current-release-evidence")
+
+    assert non_strict_evidence.required is False
+    assert strict_evidence.required is True
+    assert non_strict_current.required is False
+    assert strict_current.required is True
+    assert "-StrictReleaseSignoff" in strict_current.command
 
 
 def test_non_strict_skip_signature_verify_omits_stage():
@@ -122,12 +135,23 @@ def test_strict_adds_strict_flag_to_readiness():
         "android-strict-gate",
         "commercial-loop",
         "market-readiness",
+        "current-release-evidence",
         "readiness",
         "evidence",
     ]
     readiness = next(s for s in mod.default_stages(strict=True) if s.name == "readiness")
     assert "--rc-release" in readiness.command
     assert "--strict" not in readiness.command
+    current_evidence = next(s for s in mod.default_stages(strict=True) if s.name == "current-release-evidence")
+    assert current_evidence.command == [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "./scripts/generate_current_release_evidence.ps1",
+        "-StrictReleaseSignoff",
+    ]
     market = next(s for s in mod.default_stages(strict=True) if s.name == "market-readiness")
     assert "--strict" in market.command
     assert "--paid-launch" not in market.command

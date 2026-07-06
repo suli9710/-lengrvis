@@ -26,6 +26,8 @@ export interface PairResult {
   server_origin?: string;
 }
 
+export type BackendApprovalStatus = "pending" | "approved" | "rejected" | "expired" | (string & {});
+
 export interface BackendApproval {
   id: string;
   task_id: string;
@@ -46,7 +48,7 @@ export interface BackendApproval {
   runtime_control_fields?: unknown;
   runtime_fields?: unknown;
   engineering_boundary?: unknown;
-  status: "pending" | "approved" | "rejected" | "expired";
+  status: BackendApprovalStatus;
   created_at: string;
   decided_at?: string | null;
   source?: string;

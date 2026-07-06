@@ -16,8 +16,9 @@ exposed through npm scripts.
 | 6 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
 | 7 | release-safety | yes | `npm run release:safety` | Release safety checks. |
 | 8 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
-| 9 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
-| 10 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
+| 9 | current-release-evidence | no / strict yes | `npm run evidence:current-release` | Generate the current CI/release evidence summary used by strict readiness. |
+| 10 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
+| 11 | evidence | no / strict yes | `npm run evidence:release` | Collect the release evidence packet. |
 
 Non-strict `delivery:run` inserts required `release-artifact-preflight` and
 `signed-artifacts` stages after `release-safety` unless `--skip-signature-verify` is
@@ -32,6 +33,8 @@ Strict RC mode inserts additional required stages after golden/safety/artifact c
 readiness with `--paid-launch`.
 These stages require reviewed evidence JSON and real Android APK/device evidence;
 template/preflight outputs intentionally fail them.
+Strict RC mode also upgrades both `current-release-evidence` and `evidence` from
+optional to required, so stale or missing evidence blocks the verdict.
 
 Windows RC signing order (`.github/workflows/release-candidate.yml`):
 

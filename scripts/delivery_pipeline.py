@@ -88,6 +88,26 @@ def release_artifact_preflight_stage() -> Stage:
     )
 
 
+def current_release_evidence_stage(*, strict: bool) -> Stage:
+    command = ["npm", "run", "evidence:current-release"]
+    if strict:
+        command = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "./scripts/generate_current_release_evidence.ps1",
+            "-StrictReleaseSignoff",
+        ]
+    return Stage(
+        "current-release-evidence",
+        command,
+        False,
+        "Generate current release evidence for this candidate",
+    )
+
+
 def default_stages(
     *,
     strict: bool,
@@ -173,6 +193,7 @@ def default_stages(
         Stage(
             "readiness", readiness_cmd, True, "Release readiness dashboard validation"
         ),
+        current_release_evidence_stage(strict=effective_strict),
         Stage(
             "evidence",
             ["npm", "run", "evidence:release"],
@@ -186,6 +207,20 @@ def default_stages(
         stages.insert(insert_at + 1, signed_artifacts_stage())
     if effective_strict:
         by_name = {stage.name: stage for stage in stages}
+        evidence_stage = by_name["evidence"]
+        by_name["evidence"] = Stage(
+            evidence_stage.name,
+            evidence_stage.command,
+            True,
+            evidence_stage.description,
+        )
+        current_evidence_stage = by_name["current-release-evidence"]
+        by_name["current-release-evidence"] = Stage(
+            current_evidence_stage.name,
+            current_evidence_stage.command,
+            True,
+            current_evidence_stage.description,
+        )
         stages = [
             by_name["qa-gate"],
             by_name["golden-gate"],
@@ -282,6 +317,7 @@ def default_stages(
                 else []
             ),
             by_name["market-readiness"],
+            by_name["current-release-evidence"],
             by_name["readiness"],
             by_name["evidence"],
         ]

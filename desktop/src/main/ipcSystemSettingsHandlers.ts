@@ -4,7 +4,7 @@ import { IPC_CHANNELS } from "../shared/ipc";
 import type { DesktopPrivacyEraseResponse } from "../shared/types";
 import type { IpcHandlerContext } from "./ipcHandlerContext";
 import { proxyExplicitDesktopBridgeRequest } from "./ipcBackendProxy";
-import { confirmNativeDesktopAction } from "./ipcNativeConfirmation";
+import { confirmNativeDesktopAction, nativeActionConfirmationHeaders } from "./ipcNativeConfirmation";
 import {
   ensureDocumentReadGrant,
   rememberRevealPathFromApiResponse
@@ -64,6 +64,16 @@ export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): v
   ipcMain.handle(IPC_CHANNELS.privacyEraseLocalData, async (event, request: unknown) => {
     assertTrustedRenderer(event);
     const body = validatePrivacyEraseRequest(request);
+    const backendBody = {
+      confirm: BACKEND_PRIVACY_ERASE_CONFIRMATION,
+      include_settings: body.includeSettings
+    };
+    const confirmationHeaders = await nativeActionConfirmationHeaders(
+      (bridgeRequest) => proxyExplicitDesktopBridgeRequest(backend, bridgeRequest),
+      backend,
+      "/api/system/privacy/erase-local-data/native-confirmation-challenge",
+      backendBody
+    );
     await confirmNativeDesktopAction(event, {
       type: "warning",
       confirmLabel: "删除本机数据",
@@ -75,10 +85,8 @@ export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): v
     return proxyExplicitDesktopBridgeRequest<DesktopPrivacyEraseResponse>(backend, {
       endpoint: "/api/system/privacy/erase-local-data",
       method: "POST",
-      body: {
-        confirm: BACKEND_PRIVACY_ERASE_CONFIRMATION,
-        include_settings: body.includeSettings
-      }
+      body: backendBody,
+      headers: confirmationHeaders
     });
   });
 

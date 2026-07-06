@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import (
+    TEST_NATIVE_CONFIRMATION_SECRET,
+    native_confirmation_headers,
+    signed_native_confirmation_headers,
+)
 
 from app.core import db
 from app.core.errors import StateTransitionError
@@ -12,11 +21,13 @@ from app.main import create_app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.state_machine import safe_transition, transition
 from app.orchestration.task_phase import TaskPhase
+from app.security.native_confirmation import NATIVE_CONFIRMATION_PUBLIC_KEY_ENV
 
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_NATIVE_CONFIRMATION_SECRET", TEST_NATIVE_CONFIRMATION_SECRET)
     monkeypatch.delenv("LENGRVIS_STRICT_STATE_MACHINE", raising=False)
     db.init_db()
     yield
@@ -162,6 +173,18 @@ def test_task_status_api_returns_app_error_for_invalid_transition():
 
     response = client.post(f"/api/tasks/{task.id}/rollback")
 
+    assert response.status_code == 403
+    assert "Native confirmation proof is required" in response.json()["detail"]
+
+    response = client.post(
+        f"/api/tasks/{task.id}/rollback",
+        headers=native_confirmation_headers(
+            "rollback_task",
+            task.id,
+            endpoint=f"/api/tasks/{task.id}/rollback",
+        ),
+    )
+
     assert response.status_code == 409
     assert response.json() == {
         "detail": "Invalid state transition planning -> failed",
@@ -172,3 +195,29 @@ def test_task_status_api_returns_app_error_for_invalid_transition():
     }
     persisted = Task.model_validate(db.fetch_one("tasks", task.id))
     assert persisted.status == TaskPhase.PLANNING
+
+
+def test_rollback_accepts_ed25519_native_confirmation_challenge(monkeypatch: pytest.MonkeyPatch):
+    private_key = Ed25519PrivateKey.generate()
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, _public_key_b64(private_key))
+    task = _make_task(TaskStatus.FAILED)
+    endpoint = f"/api/tasks/{task.id}/rollback"
+    client = TestClient(create_app())
+
+    challenge = client.post(f"{endpoint}/native-confirmation-challenge")
+    assert challenge.status_code == 200, challenge.text
+    response = client.post(endpoint, headers=signed_native_confirmation_headers(challenge.json(), private_key))
+
+    assert response.status_code == 200
+    assert response.json()["native_confirmation"]["confirmation_id"] == challenge.json()["confirmation_id"]
+    persisted = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert persisted.status == TaskPhase.FAILED
+
+
+def _public_key_b64(private_key: Ed25519PrivateKey) -> str:
+    return base64.urlsafe_b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii").rstrip("=")

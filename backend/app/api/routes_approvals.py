@@ -32,6 +32,11 @@ from app.services.mobile_pairing_service import reject_approval as reject_mobile
 from app.services.task_service import set_task_status
 
 router = APIRouter()
+_DEVELOPER_LENGRVIS_CODE_TOOL = "developer.lengrvis_code"
+
+
+def _approval_decision_endpoint(approval_id: str, action: str) -> str:
+    return f"/api/approvals/{approval_id}/{action}"
 
 
 class NativeConfirmationChallengeRequest(BaseModel):
@@ -47,6 +52,7 @@ def _approval_native_confirmation(
 ) -> dict[str, Any]:
     return require_native_confirmation(
         action="approve",
+        endpoint=_approval_decision_endpoint(approval_id, "approve"),
         approval_id=approval_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -63,6 +69,7 @@ def _rejection_native_confirmation(
 ) -> dict[str, Any]:
     return require_native_confirmation(
         action="reject",
+        endpoint=_approval_decision_endpoint(approval_id, "reject"),
         approval_id=approval_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -99,6 +106,7 @@ def native_confirmation_challenge(
         raise HTTPException(status_code=409, detail="Approval preview changed; refresh before confirming.")
     return create_native_confirmation_challenge(
         action=payload.action,
+        endpoint=_approval_decision_endpoint(approval.id, payload.action),
         approval_id=approval.id,
         preview_hmac=approval.preview_hmac,
     )
@@ -183,6 +191,29 @@ def _record_desktop_native_confirmation(
 
 async def _execute_approved_step(approval: Approval) -> Approval:
     db.require_sensitive_integrity_ok()
+    if approval.tool_name == _DEVELOPER_LENGRVIS_CODE_TOOL:
+        try:
+            scheduled = _resume_runs_after_approval(approval.task_id, strict=True)
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: fail closed instead of reporting a false schedule.
+            latest = latest_approval(approval)
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Developer write approval was accepted, but the run could not be resumed.",
+                    "error": redact_public_text(str(exc)),
+                    "approval": latest_approval_payload(latest),
+                },
+            ) from exc
+        latest = latest_approval(approval)
+        if not scheduled and not latest.consumed_at:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Developer write approval was accepted, but no resumable run was found.",
+                    "approval": latest_approval_payload(latest),
+                },
+            )
+        return latest
     try:
         await OrchestratorAgent().execute_approved_step(approval)
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
@@ -279,6 +310,12 @@ def approval_execution_response(approval: Approval) -> dict:
             },
         )
     if not payload.get("consumed_at"):
+        if payload.get("tool_name") == _DEVELOPER_LENGRVIS_CODE_TOOL:
+            return {
+                **payload,
+                "execution_scheduled": True,
+                "message": "Developer write approval was accepted; the developer run will resume and consume it.",
+            }
         raise HTTPException(
             status_code=503,
             detail={
@@ -344,23 +381,25 @@ def _deny_rejected_step(approval: Approval) -> None:
     set_task_status(task.id, TaskStatus.CANCELLED)
 
 
-def _resume_runs_after_approval(task_id: str) -> None:
+def _resume_runs_after_approval(task_id: str, *, strict: bool = False) -> bool:
     try:
         from app.core.schemas import Plan, StepStatus, Task, TaskStatus
         from app.services.run_service import resume_runs_for_task
 
         task_data = db.fetch_one("tasks", task_id)
         if not task_data:
-            return
+            return False
         task = Task.model_validate(task_data)
-        if task.status not in {TaskStatus.EXECUTING_STEP, TaskStatus.EXECUTION}:
-            return
+        if task.status not in {TaskStatus.EXECUTING_STEP, TaskStatus.EXECUTION, TaskStatus.WAITING_USER_APPROVAL}:
+            return False
         plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
         if not plans:
-            return
+            return False
         plan = Plan.model_validate(plans[0])
-        if not any(step.status == StepStatus.PENDING for step in plan.steps):
-            return
-        resume_runs_for_task(task_id, include_approval_continuations=True)
-    except Exception:  # noqa: BLE001 - broad-exception-boundary: approval response should not fail if resume scheduling fails.
-        return
+        if not any(step.status in {StepStatus.PENDING, StepStatus.WAITING_USER_APPROVAL} for step in plan.steps):
+            return False
+        return bool(resume_runs_for_task(task_id, include_approval_continuations=True))
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: non-strict callers reconcile best-effort.
+        if strict:
+            raise
+        return False

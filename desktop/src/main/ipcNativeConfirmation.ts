@@ -90,6 +90,34 @@ export async function nativeApprovalConfirmationHeaders(
   };
 }
 
+export async function nativeActionConfirmationHeaders(
+  requestBridge: NativeConfirmationBridgeRequester,
+  backend: Pick<BackendProcessManager, "signNativeConfirmationPayload">,
+  challengeEndpoint: string,
+  body?: unknown
+): Promise<Record<string, string>> {
+  const challenge = await requestBridge<NativeConfirmationChallengePayload>({
+    endpoint: challengeEndpoint,
+    method: "POST",
+    body
+  });
+  if (!challenge.ok || !challenge.data) {
+    throw new ApiRequestValidationError("Native confirmation challenge is unavailable");
+  }
+  const confirmationId = stringField(challenge.data, "confirmation_id");
+  const signingPayload = stringField(challenge.data, "signing_payload");
+  const expiresAt = String(challenge.data.expires_at_epoch ?? "").trim();
+  if (!confirmationId || !signingPayload || !expiresAt) {
+    throw new ApiRequestValidationError("Native confirmation challenge is malformed");
+  }
+  const signature = backend.signNativeConfirmationPayload(signingPayload);
+  return {
+    [NATIVE_CONFIRMATION_ID_HEADER]: confirmationId,
+    [NATIVE_CONFIRMATION_TIMESTAMP_HEADER]: expiresAt,
+    [NATIVE_CONFIRMATION_SIGNATURE_HEADER]: signature
+  };
+}
+
 export function approvalConfirmationDialogOptions(
   approvalId: string,
   payload: unknown,

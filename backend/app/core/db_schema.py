@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable
 
 EnsureColumns = Callable[[sqlite3.Connection, str, dict[str, str]], None]
+
+logger = logging.getLogger(__name__)
+
+FTS_TABLE = "document_chunks_fts"
+FTS_MODE_TRIGRAM = "trigram"
+FTS_MODE_PLAIN = "plain"
+FTS_MODE_UNAVAILABLE = "unavailable"
+_TRIGRAM_SUPPORT_CACHE: bool | None = None
 
 
 def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -> None:
@@ -307,11 +316,7 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
             ON perception_suggestions(task_id, created_at);
         """
     )
-    try:
-        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(file_id, path, text)")
-    except sqlite3.OperationalError:
-        # Some Python builds may not ship FTS5. The search service falls back to LIKE.
-        pass
+    ensure_document_chunks_fts(conn)
     ensure_columns(
         conn,
         "audit_events",
@@ -369,3 +374,120 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
             "expires_at": "TEXT",
         },
     )
+
+
+def ensure_document_chunks_fts(conn: sqlite3.Connection) -> str:
+    """Ensure the optional document FTS table exists and mirrors chunks.
+
+    The preferred shape uses SQLite FTS5's trigram tokenizer for substring and
+    CJK-friendly matching. Some bundled SQLite builds do not include that
+    tokenizer, so schema init must fall back to plain FTS5 instead of failing
+    startup. If FTS5 itself is unavailable, search paths fall back to LIKE.
+    """
+
+    ddl = _fts_table_sql(conn)
+    existing_mode = _fts_mode_from_sql(ddl)
+    desired_mode = (
+        FTS_MODE_TRIGRAM
+        if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn)
+        else FTS_MODE_PLAIN
+    )
+
+    if ddl and existing_mode not in {desired_mode, FTS_MODE_UNAVAILABLE}:
+        _drop_fts_table(conn)
+        ddl = None
+        existing_mode = FTS_MODE_UNAVAILABLE
+
+    if not ddl:
+        created_mode = _create_fts_table(conn, desired_mode)
+        if created_mode == FTS_MODE_UNAVAILABLE and desired_mode == FTS_MODE_TRIGRAM:
+            created_mode = _create_fts_table(conn, FTS_MODE_PLAIN)
+        if created_mode == FTS_MODE_UNAVAILABLE:
+            logger.info("document chunk FTS5 unavailable; file content search will use LIKE fallback")
+            return FTS_MODE_UNAVAILABLE
+        existing_mode = created_mode
+
+    _backfill_document_chunks_fts(conn)
+    return existing_mode
+
+
+def document_chunks_fts_mode(conn: sqlite3.Connection) -> str:
+    return _fts_mode_from_sql(_fts_table_sql(conn))
+
+
+def _sqlite_supports_trigram(conn: sqlite3.Connection) -> bool:
+    global _TRIGRAM_SUPPORT_CACHE
+    if _TRIGRAM_SUPPORT_CACHE is not None:
+        return _TRIGRAM_SUPPORT_CACHE
+    probe = "document_chunks_fts_trigram_probe"
+    try:
+        conn.execute(f"CREATE VIRTUAL TABLE {probe} USING fts5(text, tokenize='trigram')")
+    except sqlite3.OperationalError:
+        _TRIGRAM_SUPPORT_CACHE = False
+    else:
+        _TRIGRAM_SUPPORT_CACHE = True
+    finally:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {probe}")
+        except sqlite3.OperationalError:
+            pass
+    return bool(_TRIGRAM_SUPPORT_CACHE)
+
+
+def _fts_table_sql(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (FTS_TABLE,),
+    ).fetchone()
+    return str(row["sql"] if row is not None else "")
+
+
+def _fts_mode_from_sql(sql: str) -> str:
+    lowered = str(sql or "").lower()
+    if not lowered:
+        return FTS_MODE_UNAVAILABLE
+    if "tokenize" in lowered and "trigram" in lowered:
+        return FTS_MODE_TRIGRAM
+    return FTS_MODE_PLAIN
+
+
+def _drop_fts_table(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS {FTS_TABLE}")
+    except sqlite3.OperationalError as exc:
+        logger.info("could not drop stale document chunk FTS table: %s", exc)
+
+
+def _create_fts_table(conn: sqlite3.Connection, mode: str) -> str:
+    tokenizer = ", tokenize='trigram'" if mode == FTS_MODE_TRIGRAM else ""
+    try:
+        conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(file_id, path, text{tokenizer})")
+    except sqlite3.OperationalError as exc:
+        logger.info("could not create %s document chunk FTS table: %s", mode, exc)
+        return FTS_MODE_UNAVAILABLE
+    return mode
+
+
+def _backfill_document_chunks_fts(conn: sqlite3.Connection) -> None:
+    fts_count_sql = "SELECT COUNT(*) AS count FROM document_chunks_fts"
+    fts_delete_sql = "DELETE FROM document_chunks_fts"
+    fts_backfill_sql = """
+        INSERT INTO document_chunks_fts (file_id, path, text)
+        SELECT dc.file_id, f.normalized_path, dc.text
+        FROM document_chunks dc
+        JOIN indexed_files f ON f.id = dc.file_id
+        ORDER BY dc.file_id, dc.chunk_index
+        """
+    try:
+        chunk_count = int(conn.execute("SELECT COUNT(*) AS count FROM document_chunks").fetchone()["count"] or 0)
+        fts_count = int(conn.execute(fts_count_sql).fetchone()["count"] or 0)
+    except sqlite3.Error as exc:
+        logger.debug("could not inspect document chunk FTS table for backfill: %s", exc, exc_info=True)
+        return
+    if fts_count == chunk_count:
+        return
+    try:
+        conn.execute(fts_delete_sql)
+        conn.execute(fts_backfill_sql)
+    except sqlite3.Error as exc:
+        logger.debug("could not backfill document chunk FTS table: %s", exc, exc_info=True)

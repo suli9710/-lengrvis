@@ -69,8 +69,10 @@ export function ApprovalDialog({
   const cleanupGroups = splitCleanupItems(cleanupPlan);
   const decisionSummary = buildDecisionSummary(approval, cleanupPlan, cleanupGroups);
   const subtitle = approvalSubtitle(approval, selectionContext, pendingCount, queueIndex);
+  const canDecide = approval.status === "pending";
 
   const decide = async (decision: "approved" | "denied") => {
+    if (!canDecide) return;
     setIsSubmitting(true);
     try {
       await onDecision(approval.id, decision, note.trim() || undefined);
@@ -175,14 +177,18 @@ export function ApprovalDialog({
           <button className="button button--ghost" onClick={onClose} disabled={isSubmitting}>
             取消
           </button>
-          <button className="button button--danger" onClick={() => void decide("denied")} disabled={isSubmitting}>
-            <XCircle size={16} aria-hidden="true" />
-            拒绝
-          </button>
-          <button className="button button--primary" onClick={() => void decide("approved")} disabled={isSubmitting}>
-            <CheckCircle2 size={16} aria-hidden="true" />
-            批准
-          </button>
+          {canDecide ? (
+            <>
+              <button className="button button--danger" onClick={() => void decide("denied")} disabled={isSubmitting}>
+                <XCircle size={16} aria-hidden="true" />
+                拒绝
+              </button>
+              <button className="button button--primary" onClick={() => void decide("approved")} disabled={isSubmitting}>
+                <CheckCircle2 size={16} aria-hidden="true" />
+                批准
+              </button>
+            </>
+          ) : null}
         </footer>
       </div>
     </div>

@@ -206,9 +206,14 @@ async def test_cancel_falls_back_when_registered_owner_loop_is_closed() -> None:
     class Process:
         returncode = None
         terminated = False
+        killed = False
 
         def terminate(self) -> None:
             self.terminated = True
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.killed = True
 
     process = Process()
     with registry._lock:  # noqa: SLF001 - regression test for cross-loop cancellation fallback.
@@ -219,6 +224,85 @@ async def test_cancel_falls_back_when_registered_owner_loop_is_closed() -> None:
 
     assert cancelled is True
     assert process.terminated is True
+    assert process.killed is False
+    assert registry.active_run_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_fallback_kills_and_only_unregisters_after_confirmed_exit() -> None:
+    registry = LengrvisCodeProcessRegistry()
+    loop = asyncio.new_event_loop()
+
+    class Process:
+        returncode = None
+        terminated = False
+        killed = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+    process = Process()
+    with registry._lock:  # noqa: SLF001 - regression test for cross-loop cancellation fallback.
+        registry._processes["run_closed_loop_kill"] = (process, loop)  # noqa: SLF001
+    loop.close()
+
+    cancelled = await registry.cancel("run_closed_loop_kill", timeout_seconds=0.01)
+
+    assert cancelled is True
+    assert process.terminated is True
+    assert process.killed is True
+    assert registry.active_run_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_fallback_checks_underlying_popen_when_asyncio_returncode_stays_stale() -> None:
+    registry = LengrvisCodeProcessRegistry()
+    loop = asyncio.new_event_loop()
+
+    class Popen:
+        returncode = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    class Transport:
+        def __init__(self, popen: Popen) -> None:
+            self._proc = popen
+
+        def get_returncode(self) -> None:
+            return None
+
+    class Process:
+        returncode = None
+        terminated = False
+        killed = False
+
+        def __init__(self) -> None:
+            self._popen = Popen()
+            self._transport = Transport(self._popen)
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self._popen.returncode = -9
+
+    process = Process()
+    with registry._lock:  # noqa: SLF001 - regression test for cross-loop cancellation fallback.
+        registry._processes["run_closed_loop_stale_returncode"] = (process, loop)  # noqa: SLF001
+    loop.close()
+
+    cancelled = await registry.cancel("run_closed_loop_stale_returncode", timeout_seconds=0.01)
+
+    assert cancelled is True
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.returncode is None
     assert registry.active_run_ids() == []
 
 

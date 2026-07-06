@@ -72,6 +72,10 @@ def _client_scope(request: Request) -> str:
     return (host or "unknown").strip().lower() or "unknown"
 
 
+def _wakeup_decision_endpoint(wakeup_id: str, action: str) -> str:
+    return f"/api/wakeups/{wakeup_id}/{action}"
+
+
 def _wakeup_native_confirmation(
     wakeup_id: str,
     confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
@@ -80,6 +84,7 @@ def _wakeup_native_confirmation(
 ) -> dict[str, Any]:
     return require_native_confirmation(
         action="approve",
+        endpoint=_wakeup_decision_endpoint(wakeup_id, "approve"),
         approval_id=wakeup_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -95,6 +100,7 @@ def _wakeup_rejection_native_confirmation(
 ) -> dict[str, Any]:
     return require_native_confirmation(
         action="reject",
+        endpoint=_wakeup_decision_endpoint(wakeup_id, "reject"),
         approval_id=wakeup_id,
         confirmation_id=confirmation_id,
         timestamp=timestamp,
@@ -293,6 +299,7 @@ def wakeup_native_confirmation_challenge(
         raise HTTPException(status_code=409, detail=f"Wakeup is already {wakeup.status}.")
     return create_native_confirmation_challenge(
         action=payload.action,
+        endpoint=_wakeup_decision_endpoint(wakeup.id, payload.action),
         approval_id=wakeup.id,
     )
 

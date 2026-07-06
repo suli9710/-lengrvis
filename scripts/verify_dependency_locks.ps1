@@ -298,6 +298,40 @@ for (const section of dependencySections) {
   }
 }
 
+const allowedRegistryHosts = new Set(["registry.npmjs.org"]);
+for (const [packagePath, packageEntry] of Object.entries(lock.packages || {})) {
+  if (!packagePath) {
+    continue;
+  }
+  if (!packagePath.startsWith("node_modules/")) {
+    continue;
+  }
+  if (packageEntry.link) {
+    issues.push(`${packagePath} is a link entry; local/file dependencies are not allowed in release locks`);
+    continue;
+  }
+  const resolved = String(packageEntry.resolved || "");
+  if (!packageEntry.integrity) {
+    issues.push(`${packagePath} is missing SRI integrity`);
+  }
+  if (!resolved) {
+    issues.push(`${packagePath} is missing resolved source`);
+    continue;
+  }
+  if (resolved.startsWith("file:") || resolved.startsWith("git+") || resolved.startsWith("git:") || resolved.startsWith("http:")) {
+    issues.push(`${packagePath} uses disallowed resolved source ${resolved}`);
+    continue;
+  }
+  try {
+    const url = new URL(resolved);
+    if (url.protocol !== "https:" || !allowedRegistryHosts.has(url.hostname)) {
+      issues.push(`${packagePath} resolved source ${resolved} is not an allowlisted HTTPS registry URL`);
+    }
+  } catch {
+    issues.push(`${packagePath} resolved source ${resolved} is not a valid URL`);
+  }
+}
+
 if (issues.length) {
   for (const issue of issues) {
     console.error(issue);

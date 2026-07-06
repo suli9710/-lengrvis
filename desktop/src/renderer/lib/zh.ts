@@ -435,7 +435,9 @@ export function zhApprovalStatus(status: ApprovalRequest["status"]) {
   const labels: Record<ApprovalRequest["status"], string> = {
     pending: "待审批",
     approved: "已批准",
-    denied: "已拒绝"
+    denied: "已拒绝",
+    expired: "已过期",
+    unavailable: "不可操作"
   };
   return labels[status] ?? status;
 }

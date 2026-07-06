@@ -26,7 +26,7 @@ export function mapApproval(approval: BackendApproval): ApprovalRequest {
       : mapRiskSeverity(approval.risk_level ?? ""),
     createdAt: approval.created_at,
     proposedAction: formatDiffPreview(approval.diff_preview),
-    status: approval.status === "rejected" ? "denied" : approval.status === "approved" ? "approved" : "pending",
+    status: mapApprovalStatus(approval.status),
     rawPayload: approval.diff_preview,
     cleanupPlan,
     toolName: approval.tool_name,
@@ -39,6 +39,14 @@ export function mapApproval(approval: BackendApproval): ApprovalRequest {
     runtimeControlFields: optionalObjectRecord(approval.runtime_control_fields ?? approval.runtime_fields),
     engineeringBoundary: optionalObjectRecord(approval.engineering_boundary)
   };
+}
+
+function mapApprovalStatus(status: string): ApprovalRequest["status"] {
+  if (status === "pending") return "pending";
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "denied";
+  if (status === "expired") return "expired";
+  return "unavailable";
 }
 
 export function formatDiffPreview(diffPreview: unknown): string {

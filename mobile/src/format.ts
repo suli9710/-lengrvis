@@ -15,10 +15,11 @@ export function approvalTitle(approval: BackendApproval): string {
 }
 
 export function approvalStatusLabel(status: BackendApproval["status"]): string {
+  if (status === "pending") return "待审批";
   if (status === "approved") return "已批准";
   if (status === "rejected") return "已拒绝";
   if (status === "expired") return "已过期";
-  return "待审批";
+  return "状态未知";
 }
 
 export function formatPreview(value: unknown): string {

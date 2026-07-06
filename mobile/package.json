@@ -12,10 +12,12 @@
     "gate:android-release": "powershell -ExecutionPolicy Bypass -File ../scripts/verify_android_release_gate.ps1",
     "typecheck": "tsc --noEmit",
     "smoke:token": "node scripts/mobile-token-smoke.cjs",
+    "smoke:approval-status-label": "node scripts/approval-status-label-smoke.cjs",
     "smoke:task-companion": "node scripts/mobile-task-companion-smoke.cjs",
     "smoke:remote-input-grant": "node scripts/remote-input-grant-smoke.cjs",
     "smoke:wakeup-contract": "node scripts/wakeup-contract-smoke.cjs",
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs",
+    "smoke:android-hardening-plugin": "node scripts/android-hardening-plugin-smoke.cjs",
     "smoke:android-manifest-resources": "node scripts/android-manifest-resources-smoke.cjs",
     "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs"
   },

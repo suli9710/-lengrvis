@@ -8,20 +8,32 @@ confirmation phrase.
 
 from __future__ import annotations
 
+import base64
 import json
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import (
+    TEST_NATIVE_CONFIRMATION_SECRET,
+    native_confirmation_headers,
+    signed_native_confirmation_headers,
+)
 
 from app.core import db
 from app.core.audit import record, verify_chain
 from app.core.schemas import Task, ToolResult
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
+from app.security.native_confirmation import NATIVE_CONFIRMATION_PUBLIC_KEY_ENV
+
+ERASE_ENDPOINT = "/api/system/privacy/erase-local-data"
 
 
 def _setup_env(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_NATIVE_CONFIRMATION_SECRET", TEST_NATIVE_CONFIRMATION_SECRET)
     db.init_db()
 
 
@@ -51,12 +63,28 @@ def test_erase_requires_explicit_confirmation(monkeypatch, tmp_path):
     assert (tmp_path / "diagnostic-packages" / "lengrvis-diagnostics-sample.json").exists()
 
 
+def test_erase_requires_native_confirmation(monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+    _seed_user_data(tmp_path)
+    client = TestClient(create_app())
+
+    response = client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"})
+
+    assert response.status_code == 403
+    assert "Native confirmation proof is required" in response.json()["detail"]
+    assert db.fetch_many("tasks", limit=10)
+
+
 def test_erase_deletes_user_content_and_packages_preserving_audit_chain(monkeypatch, tmp_path):
     _setup_env(monkeypatch, tmp_path)
     _seed_user_data(tmp_path)
     client = TestClient(create_app())
 
-    response = client.post("/api/system/privacy/erase-local-data", json={"confirm": "erase-local-data"})
+    response = client.post(
+        ERASE_ENDPOINT,
+        json={"confirm": "erase-local-data"},
+        headers=_erase_headers(),
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -94,8 +122,9 @@ def test_erase_with_include_settings_clears_settings_tables(monkeypatch, tmp_pat
     client = TestClient(create_app())
 
     response = client.post(
-        "/api/system/privacy/erase-local-data",
+        ERASE_ENDPOINT,
         json={"confirm": "erase-local-data", "include_settings": True},
+        headers=_erase_headers(),
     )
 
     assert response.status_code == 200
@@ -104,3 +133,62 @@ def test_erase_with_include_settings_clears_settings_tables(monkeypatch, tmp_pat
     assert "app_settings" not in payload["preserved"]
     assert db.get_settings_overrides() == {}
     assert verify_chain(limit=None)["ok"] is True
+
+
+def test_erase_accepts_ed25519_native_confirmation_challenge(monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+    _seed_user_data(tmp_path)
+    private_key = Ed25519PrivateKey.generate()
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, _public_key_b64(private_key))
+    client = TestClient(create_app())
+    payload = {"confirm": "erase-local-data"}
+
+    challenge = client.post(f"{ERASE_ENDPOINT}/native-confirmation-challenge", json=payload)
+    assert challenge.status_code == 200, challenge.text
+    response = client.post(
+        ERASE_ENDPOINT,
+        json=payload,
+        headers=signed_native_confirmation_headers(challenge.json(), private_key),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert db.fetch_many("tasks", limit=10) == []
+
+
+def test_erase_ed25519_challenge_rejects_changed_body_hash(monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+    _seed_user_data(tmp_path)
+    private_key = Ed25519PrivateKey.generate()
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, _public_key_b64(private_key))
+    client = TestClient(create_app())
+    payload = {"confirm": "erase-local-data", "include_settings": False}
+
+    challenge = client.post(f"{ERASE_ENDPOINT}/native-confirmation-challenge", json=payload)
+    assert challenge.status_code == 200, challenge.text
+    response = client.post(
+        ERASE_ENDPOINT,
+        json={"confirm": "erase-local-data", "include_settings": True},
+        headers=signed_native_confirmation_headers(challenge.json(), private_key),
+    )
+
+    assert response.status_code == 403
+    assert "preview changed" in response.json()["detail"]
+    assert db.fetch_many("tasks", limit=10)
+
+
+def _erase_headers() -> dict[str, str]:
+    return native_confirmation_headers(
+        "erase_local_data",
+        "local-data",
+        endpoint=ERASE_ENDPOINT,
+    )
+
+
+def _public_key_b64(private_key: Ed25519PrivateKey) -> str:
+    return base64.urlsafe_b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii").rstrip("=")

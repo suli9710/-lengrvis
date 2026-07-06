@@ -140,13 +140,15 @@ class LocalBrowserActivityAdapter:
         max_chars = max(
             1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000))
         )
+        route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+                page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 html = page.content()
                 final_url = _validate_final_url(page.url)
                 browser.close()
@@ -155,6 +157,7 @@ class LocalBrowserActivityAdapter:
         except ValueError:
             raise
         except _playwright_adapter_error_types() as exc:
+            _raise_if_playwright_route_guard_blocked(route_guard)
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
             with httpx.Client(timeout=30, follow_redirects=False) as client:
@@ -176,20 +179,27 @@ class LocalBrowserActivityAdapter:
         out_dir.mkdir(parents=True, exist_ok=True)
         filename = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + ".png"
         out_path = out_dir / filename
+        route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page(
+                page, route_guard = _new_guarded_playwright_page(
+                    browser,
                     viewport={"width": int(action.get("width", 1280)), "height": int(action.get("height", 800))}
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 page.screenshot(path=str(out_path), full_page=bool(action.get("full_page", True)))
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
         except _playwright_action_error_types() as exc:
+            route_guard_error = _playwright_route_guard_error(route_guard)
+            if route_guard_error:
+                return {"ok": False, "error": f"Playwright screenshot failed: {route_guard_error}"}
             return {"ok": False, "error": f"Playwright screenshot failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
@@ -199,33 +209,42 @@ class LocalBrowserActivityAdapter:
         timeout = int(action.get("timeout_ms") or 10000)
         if not selector:
             return {"ok": False, "error": "selector is required"}
+        route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+                page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 page.wait_for_selector(selector, timeout=timeout)
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
         except _playwright_action_error_types() as exc:
+            route_guard_error = _playwright_route_guard_error(route_guard)
+            if route_guard_error:
+                return {"ok": False, "error": f"wait_for failed: {route_guard_error}"}
             return {"ok": False, "error": f"wait_for failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
     def _write_like(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         url = _validate_url(str(action.get("url") or ""))
         kind = str(action.get("kind") or "").lower()
+        route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+                page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                _raise_if_playwright_route_guard_blocked(route_guard)
                 if kind == "click":
                     page.click(str(action.get("selector") or ""), timeout=8000)
+                    _raise_if_playwright_route_guard_blocked(route_guard)
                 elif kind == "fill":
                     fields = action.get("fields") or {}
                     for selector, value in fields.items():
@@ -236,22 +255,70 @@ class LocalBrowserActivityAdapter:
                                 "target field is a sensitive credential/payment field; user must fill it manually."
                             )
                         page.fill(str(selector), str(value), timeout=8000)
+                        _raise_if_playwright_route_guard_blocked(route_guard)
                 elif kind == "submit":
                     selector = str(action.get("selector") or "form")
                     page.evaluate(
                         "(sel) => { const el = document.querySelector(sel); if (el && el.submit) el.submit(); }",
                         selector,
                     )
+                    _raise_if_playwright_route_guard_blocked(route_guard)
                 elif kind == "scroll":
                     page.evaluate("(y) => window.scrollBy(0, y)", int(action.get("delta_y") or action.get("y") or 500))
+                    _raise_if_playwright_route_guard_blocked(route_guard)
                 else:
                     return {"ok": False, "error": "CUA actions require a dedicated CUA provider."}
                 final_url = _validate_final_url(page.url)
                 title = page.title()
                 browser.close()
         except _playwright_action_error_types() as exc:
+            route_guard_error = _playwright_route_guard_error(route_guard)
+            if route_guard_error:
+                return {"ok": False, "error": f"{kind} failed: {route_guard_error}"}
             return {"ok": False, "error": f"{kind} failed: {_safe_browser_error(exc)}"}
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
+
+
+@dataclass(slots=True)
+class _PlaywrightRouteGuard:
+    blocked_error: str | None = None
+
+
+def _new_guarded_playwright_page(browser: Any, **context_options: Any) -> tuple[Any, _PlaywrightRouteGuard]:
+    """Create a Playwright page whose outbound HTTP(S) requests fail closed."""
+    guard = _PlaywrightRouteGuard()
+    context = browser.new_context(service_workers="block", **context_options)
+    context.route("**/*", lambda route: _guard_playwright_route(route, guard))
+    return context.new_page(), guard
+
+
+def _guard_playwright_route(route: Any, guard: _PlaywrightRouteGuard | None = None) -> None:
+    request = getattr(route, "request", None)
+    url = str(getattr(request, "url", "") or "")
+    if urlparse(url).scheme not in {"http", "https"}:
+        route.continue_()
+        return
+    try:
+        _validate_url(url)
+    except ValueError as exc:
+        if guard is not None and guard.blocked_error is None:
+            guard.blocked_error = _safe_browser_error(exc)
+        try:
+            route.abort("blockedbyclient")
+        except TypeError:
+            route.abort()
+        return
+    route.continue_()
+
+
+def _playwright_route_guard_error(guard: _PlaywrightRouteGuard | None) -> str:
+    return str(getattr(guard, "blocked_error", "") or "")
+
+
+def _raise_if_playwright_route_guard_blocked(guard: _PlaywrightRouteGuard | None) -> None:
+    error = _playwright_route_guard_error(guard)
+    if error:
+        raise ValueError(error)
 
 
 # Long-running processes accumulate sessions and events forever without a

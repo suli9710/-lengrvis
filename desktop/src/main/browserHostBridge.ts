@@ -93,37 +93,31 @@ export class BrowserHostWebSocketBridge {
     let result: BrowserHostActionResult;
     switch (message.type) {
       case "open":
-        result = await this.browserHost.open({
-          sessionId: message.session_id,
-          taskId: message.task_id,
-          url: message.url,
-          title: message.title,
-          mode: message.mode
-        });
+        result = this.deniedRemoteWriteAction("BrowserHost remote open requires a desktop approval grant.");
         break;
       case "show":
-        result = this.browserHost.show(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote show requires a desktop approval grant.");
         break;
       case "hide":
-        result = this.browserHost.hide();
+        result = this.deniedRemoteWriteAction("BrowserHost remote hide requires a desktop approval grant.");
         break;
       case "set_bounds":
-        result = this.browserHost.setBounds(message.bounds);
+        result = this.deniedRemoteWriteAction("BrowserHost remote bounds changes require a desktop approval grant.");
         break;
       case "pause":
-        result = this.browserHost.pause(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote pause requires a desktop approval grant.");
         break;
       case "resume":
-        result = this.browserHost.resume(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote resume requires a desktop approval grant.");
         break;
       case "takeover":
         result = this.deniedRemoteWriteAction("BrowserHost remote takeover requires a desktop approval grant.");
         break;
       case "release":
-        result = this.browserHost.release(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote release requires a desktop approval grant.");
         break;
       case "stop":
-        result = await this.browserHost.stop(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote stop requires a desktop approval grant.");
         break;
       case "action":
         result = isReadOnlyBrowserHostAction(message.action)

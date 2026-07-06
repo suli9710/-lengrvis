@@ -8,6 +8,8 @@ from app.policy.permission_modes import permission_mode_from_context, trusted_re
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
+_DEVELOPER_LENGRVIS_CODE_TOOL = "developer.lengrvis_code"
+
 
 def dry_run_preview_contract_error(preview: dict[str, Any]) -> str:
     if preview.get("dry_run") is not True:
@@ -18,6 +20,8 @@ def dry_run_preview_contract_error(preview: dict[str, Any]) -> str:
 
 
 def requires_runtime_approval(step: PlanStep, tool: ToolDefinition, runtime: TaskRuntimeContext) -> bool:
+    if tool.name == _DEVELOPER_LENGRVIS_CODE_TOOL:
+        return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
     mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
     if mode in {"trusted_edits", "auto_review"} and trusted_reversible_edit_allowed(tool, step.args):
         return False
@@ -32,6 +36,8 @@ def auto_approved_args(
     runtime: TaskRuntimeContext,
 ) -> dict[str, Any] | None:
     mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
+    if tool.name == _DEVELOPER_LENGRVIS_CODE_TOOL:
+        return None
     if mode not in {"trusted_edits", "auto_review"}:
         return None
     if not trusted_reversible_edit_allowed(tool, args):

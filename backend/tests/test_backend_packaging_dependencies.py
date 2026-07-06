@@ -68,3 +68,21 @@ def test_default_windows_packaging_gate_stays_under_500mb_without_bundled_ollama
 
     assert "Default builds must download local models on demand" in text
     assert "separate offline Ollama/model package" in text
+
+
+def test_portable_refresh_outputs_are_limited_to_release_directories(project_root: Path) -> None:
+    refresh = _text(project_root, "scripts/refresh_portable_release_bundle.ps1")
+    csharp_sfx = _text(project_root, "scripts/create_csharp_self_extracting_exe.ps1")
+
+    for text in (refresh, csharp_sfx):
+        assert "function Resolve-ReleaseOutputPath" in text
+        assert 'Join-Path $Root "dist"' in text
+        assert 'Join-Path $Root "release"' in text
+        assert "must stay under repository dist or release directories" in text
+
+    assert '$PortableZipPath = Resolve-ReleaseOutputPath -Path $PortableZip -Label "PortableZip"' in refresh
+    assert (
+        '$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"'
+        in refresh
+    )
+    assert '$OutputPath = Resolve-ReleaseOutputPath -Path $OutputExe -Label "OutputExe"' in csharp_sfx

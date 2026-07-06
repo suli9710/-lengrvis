@@ -10,12 +10,12 @@ This dashboard covers engineering delivery. A paid or publicly advertised commer
 
 | Field | Value |
 | --- | --- |
-| Candidate commit | `1176c66` |
-| Build id | `main CI 28288204979` |
+| Candidate commit | `2bbfe6613ecba87c535e13225b3a6d474775f7dd` |
+| Build id | `main CI 28770782160` |
 | Platform | `Windows primary; Android companion preview` |
 | Release owner | `suli9710` |
-| Dashboard last reviewed UTC | `2026-07-01T09:57:46Z` |
-| Decision | `engineering RC evidence passed; commercial launch and public paid claims still require market readiness` |
+| Dashboard last reviewed UTC | `2026-07-06T06:32:01Z` |
+| Decision | `machine gates completed, but release evidence remains incomplete because real LLM quality evidence and manual sign-off are pending` |
 
 ## Stop-ship blockers
 
@@ -23,12 +23,12 @@ Status values are restricted to: `blocked`, `in_progress`, `passed`, `waived`.
 
 | ID | Area | Required evidence | Status | Artifact / link label | Owner | Expiry / next review | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| RR-P0-001 | Clean-machine Windows install | Reviewed `clean-machine-release-evidence-reviewed` accepted by `npm run evidence:clean-machine-verify`: install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback, and artifact redaction review on a clean Windows machine/profile. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | Reviewed clean-machine Windows evidence accepted by release owner. |
-| RR-P0-002 | Local model clean-machine path | Reviewed clean-machine evidence accepted by `npm run evidence:clean-machine-verify -- --require-local-model`: runtime install/start/pull, model version, privacy-mode task smoke, or explicit blocked handoff if unavailable. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | Reviewed local-model clean-machine evidence accepted by release owner. |
-| RR-P0-003 | Android real-device / emulator LAN-WSS | Strict `npm run android:release-gate` with installable APK and reviewed Android evidence JSON: QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | Reviewed Android real-device / emulator LAN-WSS evidence accepted by release owner. |
-| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | Reviewed result-quality evidence accepted by release owner. |
-| RR-P0-005 | Diagnostics external-share review | Actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | Reviewed diagnostics external-share evidence accepted by release owner. |
-| RR-P0-006 | RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | passed | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | next RC review | RC handoff and release-owner sign-off accepted. |
+| RR-P0-001 | Clean-machine Windows install | Reviewed `clean-machine-release-evidence-reviewed` accepted by `npm run evidence:clean-machine-verify`: install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback, and artifact redaction review on a clean Windows machine/profile. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but clean-machine/manual acceptance remains pending in `docs/release/current-release-evidence.md`. |
+| RR-P0-002 | Local model clean-machine path | Reviewed clean-machine evidence accepted by `npm run evidence:clean-machine-verify -- --require-local-model`: runtime install/start/pull, model version, privacy-mode task smoke, or explicit blocked handoff if unavailable. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but local-model clean-machine/manual acceptance remains pending in `docs/release/current-release-evidence.md`. |
+| RR-P0-003 | Android real-device / emulator LAN-WSS | Strict `npm run android:release-gate` with installable APK and reviewed Android evidence JSON: QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate mobile CI gates completed, but reviewed Android real-device / emulator LAN-WSS evidence remains pending. |
+| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate real LLM quality gate was skipped because `LENGRVIS_REAL_LLM_API_KEY` is not configured for this workflow context. |
+| RR-P0-005 | Diagnostics external-share review | Actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but diagnostics external-share manual review remains pending. |
+| RR-P0-006 | RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Release owner signature remains pending for this candidate. |
 
 ## P1 hardening backlog
 

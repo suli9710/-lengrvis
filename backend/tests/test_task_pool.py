@@ -47,6 +47,31 @@ def test_pool_limits_concurrency():
     assert len(started_ids) == 5
 
 
+def test_pool_ignores_duplicate_submit_for_same_task():
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    task = _make_task(42)
+    started = 0
+    release_signal = asyncio.Event()
+
+    async def runner(submitted: Task) -> Task:
+        nonlocal started
+        started += 1
+        await release_signal.wait()
+        return submitted
+
+    async def main():
+        first = await pool.submit(task, runner)
+        duplicate = await pool.submit(task, runner)
+        assert duplicate is first
+        await asyncio.sleep(0.05)
+        assert started == 1
+        assert pool.status()["running"] == [task.id]
+        release_signal.set()
+        await first
+
+    asyncio.run(main())
+
+
 def test_pool_cancel_running_task():
     pool = task_pool.reset_pool_for_tests(max_concurrent=2)
 
@@ -60,6 +85,21 @@ def test_pool_cancel_running_task():
         await asyncio.sleep(0.01)
         ok = await pool.cancel(task.id)
         assert ok is True
+        assert pool.status()["completed"][task.id] == "cancelled"
+
+    asyncio.run(main())
+
+
+def test_pool_cancel_external_claim_keeps_cancelled_status():
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    task = _make_task(7)
+
+    async def main():
+        assert pool.claim_external(task.id, "resume_thread") is True
+        ok = await pool.cancel(task.id)
+        assert ok is True
+        assert pool.active_task(task.id) is False
+        pool.release_external(task.id, "completed")
         assert pool.status()["completed"][task.id] == "cancelled"
 
     asyncio.run(main())

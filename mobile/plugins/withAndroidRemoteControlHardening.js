@@ -65,20 +65,28 @@ function addFlagSecure(source, language) {
     if (!next.includes("import android.view.WindowManager")) {
       next = next.replace(/(package\s+[^\n]+\n)/, "$1\nimport android.view.WindowManager\n");
     }
-    return next.replace(
-      /(super\.onCreate\(null\)\s*)/,
+    const updated = next.replace(
+      /(super\.onCreate\([^)]*\)\s*)/,
       "$1\n    window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)\n",
     );
+    if (updated === next) {
+      throw new Error("Unable to inject FLAG_SECURE: Kotlin MainActivity has no super.onCreate(...) call");
+    }
+    return updated;
   }
 
   let next = source;
   if (!next.includes("import android.view.WindowManager;")) {
     next = next.replace(/(package\s+[^;]+;\s*)/, "$1\nimport android.view.WindowManager;\n");
   }
-  return next.replace(
-    /(super\.onCreate\(null\);\s*)/,
+  const updated = next.replace(
+    /(super\.onCreate\([^)]*\);\s*)/,
     "$1\n    getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);\n",
   );
+  if (updated === next) {
+    throw new Error("Unable to inject FLAG_SECURE: Java MainActivity has no super.onCreate(...) call");
+  }
+  return updated;
 }
 
 function withAndroidFlagSecure(config) {
@@ -91,7 +99,10 @@ function withAndroidFlagSecure(config) {
   });
 }
 
-module.exports = function withAndroidRemoteControlHardening(config) {
+function withAndroidRemoteControlHardening(config) {
   config = withAndroidNetworkSecurityConfig(config);
   return withAndroidFlagSecure(config);
-};
+}
+
+module.exports = withAndroidRemoteControlHardening;
+module.exports.addFlagSecure = addFlagSecure;

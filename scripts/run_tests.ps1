@@ -102,6 +102,15 @@ if (Test-Path "desktop\package.json") {
 }
 
 if (Test-Path "mobile\package.json") {
+    Push-Location "mobile"
+    try {
+        npm exec expo -- install --check
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    finally {
+        Pop-Location
+    }
+
     npm --prefix mobile run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -119,4 +128,26 @@ if (Test-Path "mobile\package.json") {
 
     npm --prefix mobile run smoke:android-back
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:approval-status-label
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:android-hardening-plugin
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:android-lan-tls
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    if (-not $env:ANDROID_HOME -or -not (Test-Path -LiteralPath $env:ANDROID_HOME)) {
+        Write-Error "ANDROID_HOME is required to compile the Android companion."
+        exit 1
+    }
+    Push-Location "mobile\android"
+    try {
+        .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    finally {
+        Pop-Location
+    }
 }

@@ -332,7 +332,7 @@ export interface ApprovalRequest {
   riskLevel: SafetySeverity;
   createdAt: string;
   proposedAction: string;
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "expired" | "unavailable";
   rawPayload?: unknown;
   cleanupPlan?: CleanupPlan;
   toolName?: string;

@@ -108,7 +108,7 @@ lengrvis/
 
 ### 文件、文档和工具
 
-- 授权目录文件搜索、FTS5 全文索引（含 CJK trigram 迁移）、重复文件检测。
+- 授权目录文件搜索、FTS5 全文索引（支持时启用 CJK trigram；否则显式降级为 plain FTS + LIKE fallback）、重复文件检测。
 - 向量语义搜索：FTS5 候选召回、Embedding rerank、cosine similarity、按文件折叠。
 - 文档 AI：摘要、问答、报告生成，支持 map-reduce 分块和 extractive fallback。
 - 文档文本提取：PDF、DOCX、XLSX、PPTX、CSV。

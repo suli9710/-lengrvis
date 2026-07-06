@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core import db
+from app.core import db, db_schema
 from app.indexer.fts_index import FTSIndex
 from app.indexer.fts_query import fts_match_query
 
@@ -15,7 +15,6 @@ def isolated_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 
 
-@pytest.mark.skip(reason="Requires init_db(force=) and trigram FTS migration in db.py (batch-3 WIP)")
 def test_fts_trigram_migration_repopulates_existing_chunks(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -39,6 +38,9 @@ def test_fts_trigram_migration_repopulates_existing_chunks(tmp_path: Path) -> No
     db.init_db(force=True)
 
     with db.connect() as conn:
+        mode = db_schema.document_chunks_fts_mode(conn)
+        if mode != db_schema.FTS_MODE_TRIGRAM:
+            pytest.skip("SQLite FTS5 trigram tokenizer is unavailable in this build")
         ddl = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_chunks_fts'"
         ).fetchone()["sql"]
@@ -53,7 +55,6 @@ def test_fts_trigram_migration_repopulates_existing_chunks(tmp_path: Path) -> No
     assert rows
 
 
-@pytest.mark.skip(reason="Requires cached init_db FTS drift rebuild in db.py (batch-3 WIP)")
 def test_fts_drift_rebuild_on_cached_init_db(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -73,6 +74,34 @@ def test_fts_drift_rebuild_on_cached_init_db(tmp_path: Path) -> None:
 
     assert chunk_count >= 1
     assert fts_count >= chunk_count
+
+
+def test_fts_init_db_falls_back_to_plain_mode_when_trigram_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("plain fallback searchable content", encoding="utf-8")
+    monkeypatch.setattr(db_schema, "_sqlite_supports_trigram", lambda conn: False)
+
+    FTSIndex().rebuild([str(workspace)])
+
+    with db.connect() as conn:
+        mode = db_schema.document_chunks_fts_mode(conn)
+        count = conn.execute("SELECT COUNT(*) AS count FROM document_chunks_fts").fetchone()["count"]
+
+    status = FTSIndex().status([str(workspace)])
+    results = FTSIndex().search("plain", limit=5, allowed_directories=[str(workspace)])
+    substring_results = FTSIndex().search("arch", limit=5, allowed_directories=[str(workspace)])
+
+    assert mode == db_schema.FTS_MODE_PLAIN
+    assert count >= 1
+    assert status["fts_mode"] == db_schema.FTS_MODE_PLAIN
+    assert "LIKE fallback" in status["fts_fallback"]
+    assert results
+    assert substring_results
+    assert any("searchable" in str(item.get("snippet") or "") for item in substring_results)
 
 
 def test_fts_search_short_cjk_query_falls_back_to_like(tmp_path: Path) -> None:

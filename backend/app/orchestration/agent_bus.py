@@ -7,8 +7,9 @@ import os
 import queue
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from app.config import AppSettings
@@ -35,11 +36,23 @@ logger = logging.getLogger(__name__)
 _PERSIST_QUEUE_MAX_SIZE = int(os.environ.get("LENGRVIS_PERSIST_QUEUE_MAX_SIZE", "10000"))
 _PERSIST_BACKPRESSURE_TIMEOUT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_TIMEOUT", "5.0"))
 _PERSIST_BACKPRESSURE_MAX_WAIT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_MAX_WAIT", "30.0"))
+_PERSIST_FAILURE_LIMIT = int(os.environ.get("LENGRVIS_PERSIST_FAILURE_LIMIT", "1000"))
 _PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue(maxsize=_PERSIST_QUEUE_MAX_SIZE)
 _PERSIST_STATE = threading.Condition()
 _PERSIST_PENDING = 0
 _PERSIST_THREAD: threading.Thread | None = None
 _PERSIST_THREAD_LOCK = threading.Lock()
+
+
+@dataclass(slots=True)
+class _PersistFailure:
+    message: AgentMessage
+    data_dir: str
+    error: str
+
+
+_PERSIST_FAILURES: deque[_PersistFailure] = deque(maxlen=_PERSIST_FAILURE_LIMIT)
+_PERSIST_FAILURE_OVERFLOW_DIRS: set[str] = set()
 
 
 def _persist_worker() -> None:
@@ -50,8 +63,12 @@ def _persist_worker() -> None:
             with db.using_data_dir(data_dir):
                 db.init_db()
                 db.upsert_model("agent_messages", message)
-        except Exception:  # noqa: BLE001 - broad-exception-boundary
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             logger.exception("agent_bus: failed to persist message %s", message.id)
+            with _PERSIST_STATE:
+                if len(_PERSIST_FAILURES) >= _PERSIST_FAILURE_LIMIT:
+                    _PERSIST_FAILURE_OVERFLOW_DIRS.add(data_dir)
+                _PERSIST_FAILURES.append(_PersistFailure(message=message, data_dir=data_dir, error=str(exc)))
         finally:
             with _PERSIST_STATE:
                 _PERSIST_PENDING -= 1
@@ -146,13 +163,67 @@ def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
     if threading.current_thread() is _PERSIST_THREAD:
         return True
     deadline = time.monotonic() + max(0.0, timeout_seconds)
+    data_dir = str(db.db_path().parent)
     with _PERSIST_STATE:
         while _PERSIST_PENDING > 0:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
             _PERSIST_STATE.wait(remaining)
+        should_recover = _persist_failures_for_dir_locked(data_dir) or data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS
+    if should_recover:
+        _recover_persist_failures_for_dir(data_dir)
+    with _PERSIST_STATE:
+        failures = _persist_failure_messages_for_dir_locked(data_dir)
+        if failures or data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS:
+            overflow = "failure history overflowed; " if data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS else ""
+            raise AgentMessagePersistError(
+                "agent_messages persistence failed; read refused to avoid a split live/durable timeline: "
+                + overflow
+                + "; ".join(failures[:3])
+            )
     return True
+
+
+def reset_agent_message_persist_failures_for_tests() -> None:
+    with _PERSIST_STATE:
+        _PERSIST_FAILURES.clear()
+        _PERSIST_FAILURE_OVERFLOW_DIRS.clear()
+
+
+def _persist_failures_for_dir_locked(data_dir: str) -> list[_PersistFailure]:
+    return [failure for failure in _PERSIST_FAILURES if failure.data_dir == data_dir]
+
+
+def _persist_failure_messages_for_dir_locked(data_dir: str) -> list[str]:
+    return [f"{failure.message.id}: {failure.error}" for failure in _persist_failures_for_dir_locked(data_dir)]
+
+
+def _recover_persist_failures_for_dir(data_dir: str) -> None:
+    global _PERSIST_FAILURES
+    with _PERSIST_STATE:
+        failures = _persist_failures_for_dir_locked(data_dir)
+    recovered_ids: set[int] = set()
+    for failure in failures:
+        try:
+            with db.using_data_dir(data_dir):
+                db.init_db()
+                db.upsert_model("agent_messages", failure.message)
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: recovery is best-effort; reads still fail closed below.
+            logger.warning(
+                "agent_bus: failed to recover persisted message %s: %s",
+                failure.message.id,
+                exc,
+            )
+            continue
+        recovered_ids.add(id(failure))
+    if not recovered_ids:
+        return
+    with _PERSIST_STATE:
+        _PERSIST_FAILURES = deque(
+            (failure for failure in _PERSIST_FAILURES if id(failure) not in recovered_ids),
+            maxlen=_PERSIST_FAILURE_LIMIT,
+        )
 
 
 class AgentMessageReadConsistencyError(RuntimeError):
@@ -163,11 +234,19 @@ class AgentMessagePersistBackpressureError(RuntimeError):
     """Raised when a publish cannot be durably queued without blocking asyncio."""
 
 
+class AgentMessagePersistError(RuntimeError):
+    """Raised when queued agent_messages failed to persist durably."""
+
+
 def _flush_agent_messages_for_read() -> None:
-    if flush_agent_message_writes(timeout_seconds=10.0):
-        return
-    if flush_agent_message_writes(timeout_seconds=30.0):
-        return
+    try:
+        if flush_agent_message_writes(timeout_seconds=10.0):
+            return
+        if flush_agent_message_writes(timeout_seconds=30.0):
+            return
+    except AgentMessagePersistError as exc:
+        logger.error("agent_messages write flush failed; refusing inconsistent read: %s", exc)
+        raise AgentMessageReadConsistencyError(str(exc)) from exc
     logger.error("agent_messages write flush timed out; refusing stale read")
     raise AgentMessageReadConsistencyError("agent_messages write flush timed out; read refused to avoid stale timeline")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import sqlite3
 import threading
 import time
 
@@ -13,7 +14,9 @@ from app.orchestration.agent_bus import (
     GLOBAL_TASK_ID,
     AgentBus,
     AgentMessagePersistBackpressureError,
+    AgentMessagePersistError,
     flush_agent_message_writes,
+    reset_agent_message_persist_failures_for_tests,
 )
 
 
@@ -62,6 +65,52 @@ def test_publish_persists_off_thread_and_reads_flush_pending_writes(monkeypatch,
     assert [row["id"] for row in rows] == [message.id]
     assert agent_bus_module.flush_agent_message_writes(timeout_seconds=5)
     assert writer_threads == ["agent-bus-writer"]
+
+
+def test_persist_failure_refuses_reads_until_recovery_replays_message(monkeypatch, tmp_path):
+    from app.orchestration import agent_bus as agent_bus_module
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    reset_agent_message_persist_failures_for_tests()
+    original_upsert = db.upsert_model
+
+    def failing_agent_message_upsert(table, model, **kwargs):
+        if table == "agent_messages":
+            raise sqlite3.OperationalError("disk full")
+        return original_upsert(table, model, **kwargs)
+
+    monkeypatch.setattr(db, "upsert_model", failing_agent_message_upsert)
+    published_id = ""
+
+    async def run() -> None:
+        nonlocal published_id
+        bus = AgentBus()
+        live_queue = bus.subscribe("task_persist_failure")
+        try:
+            published = bus.publish_text("task_persist_failure", "PlannerAgent", "live only")
+            published_id = published.id
+            live_message = await asyncio.wait_for(live_queue.get(), timeout=1)
+            assert live_message.id == published.id
+        finally:
+            bus.unsubscribe("task_persist_failure", live_queue)
+
+    try:
+        asyncio.run(run())
+        try:
+            agent_bus_module.flush_agent_message_writes(timeout_seconds=5)
+        except AgentMessagePersistError as exc:
+            assert "disk full" in str(exc)
+        else:
+            raise AssertionError("flush must fail closed after an agent_messages persist failure")
+
+        monkeypatch.setattr(db, "upsert_model", original_upsert)
+        bus = AgentBus()
+        assert agent_bus_module.flush_agent_message_writes(timeout_seconds=5)
+        messages = bus.get_messages("task_persist_failure", limit=10)
+        assert [message.id for message in messages] == [published_id]
+    finally:
+        reset_agent_message_persist_failures_for_tests()
 
 
 def test_get_llm_messages_honors_requested_limit_above_db_default(monkeypatch, tmp_path):

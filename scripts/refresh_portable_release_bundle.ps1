@@ -25,13 +25,51 @@ function Resolve-ProjectPath {
     return Join-Path $Root $Path
 }
 
+function Resolve-CanonicalPath {
+    param([string]$Path)
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Test-SameOrNestedPath {
+    param(
+        [string]$Parent,
+        [string]$Candidate
+    )
+    $parentCanonical = Resolve-CanonicalPath -Path $Parent
+    $candidateCanonical = Resolve-CanonicalPath -Path $Candidate
+    return $candidateCanonical.Equals($parentCanonical, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $candidateCanonical.StartsWith("$parentCanonical\", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $candidateCanonical.StartsWith("$parentCanonical/", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-ReleaseOutputPath {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Label must not be empty."
+    }
+    $resolved = Resolve-CanonicalPath -Path (Resolve-ProjectPath $Path)
+    $allowedRoots = @(
+        (Join-Path $Root "dist"),
+        (Join-Path $Root "release")
+    )
+    foreach ($allowedRoot in $allowedRoots) {
+        if (Test-SameOrNestedPath -Parent $allowedRoot -Candidate $resolved) {
+            return $resolved
+        }
+    }
+    throw "$Label must stay under repository dist or release directories. Got: $resolved"
+}
+
 if ([string]::IsNullOrWhiteSpace($SelfExtractingExe)) {
     $SelfExtractingExe = "dist\Lengrvis-$(Get-DesktopVersion)-x64-self-extracting.exe"
 }
 
 $PortablePath = Resolve-ProjectPath $PortableDir
-$PortableZipPath = Resolve-ProjectPath $PortableZip
-$SelfExtractingPath = Resolve-ProjectPath $SelfExtractingExe
+$PortableZipPath = Resolve-ReleaseOutputPath -Path $PortableZip -Label "PortableZip"
+$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"
 $PortableLauncher = Join-Path $PortablePath "Lengrvis.exe"
 
 if (-not (Test-Path -LiteralPath $PortableLauncher -PathType Leaf)) {
@@ -52,7 +90,7 @@ $SelfExtractingParent = Split-Path -Parent $SelfExtractingPath
 if ($SelfExtractingParent) {
     New-Item -ItemType Directory -Path $SelfExtractingParent -Force | Out-Null
 }
-& "$PSScriptRoot\create_csharp_self_extracting_exe.ps1" -PortableZip $PortableZip -OutputExe $SelfExtractingExe
+& "$PSScriptRoot\create_csharp_self_extracting_exe.ps1" -PortableZip $PortableZipPath -OutputExe $SelfExtractingPath
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Refreshed self-extracting executable: $SelfExtractingPath"

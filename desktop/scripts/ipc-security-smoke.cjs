@@ -123,6 +123,24 @@ function eventFor(url, trustedWindow = true) {
   };
 }
 
+function assertNativeConfirmationHeaders(headers, label) {
+  assert.match(
+    headers?.["X-Lengrvis-Native-Confirmation-Id"],
+    /^[A-Za-z0-9_-]+$/,
+    `${label} should bind a native confirmation id`
+  );
+  assert.match(
+    headers?.["X-Lengrvis-Native-Confirmation-Timestamp"],
+    /^\d+$/,
+    `${label} should bind a native confirmation timestamp`
+  );
+  assert.match(
+    headers?.["X-Lengrvis-Native-Confirmation-Signature"],
+    /^[A-Za-z0-9_-]+$/,
+    `${label} should bind a native confirmation signature`
+  );
+}
+
 async function assertRejectsUntrusted(listener, hostCalls) {
   await assert.rejects(
     async () => listener(eventFor("https://evil.example/app"), "session-1"),
@@ -280,6 +298,20 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
   const originalFetch = global.fetch;
   let fetchCalls = [];
+  const nativeConfirmationId = "native_confirmation_token_111111111111111111111111";
+  const nativeChallengeResponse = (pathname) =>
+    new Response(
+      JSON.stringify({
+        ok: true,
+        confirmation_id: nativeConfirmationId,
+        expires_at_epoch: 1893456000,
+        signing_payload: `native-confirmation-v1\n${pathname}\n${nativeConfirmationId}\n1893456000`
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }
+    );
   global.fetch = async (url, init) => {
     const requestUrl = url.toString();
     const pathname = new URL(requestUrl).pathname;
@@ -298,19 +330,8 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         }
       );
     }
-    if (pathname === "/api/approvals/approval-1/native-confirmation-challenge") {
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          confirmation_id: "11111111-1111-4111-8111-111111111111",
-          expires_at_epoch: 1893456000,
-          signing_payload: "approval-v2\napproval-1\npreview:hmac-redacted"
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        }
-      );
+    if (pathname.endsWith("/native-confirmation-challenge")) {
+      return nativeChallengeResponse(pathname);
     }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -743,7 +764,8 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         args: [{ confirmationText: "删除本机数据", includeSettings: false }],
         expectedUrl: "http://127.0.0.1:8000/api/system/privacy/erase-local-data",
         expectedMethod: "POST",
-        expectedBody: JSON.stringify({ confirm: "erase-local-data", include_settings: false })
+        expectedBody: JSON.stringify({ confirm: "erase-local-data", include_settings: false }),
+        nativeChallenge: true
       },
       {
         name: "settings sensitive confirmation",
@@ -978,10 +1000,21 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         requiresNativeConfirmation ? 1 : 0,
         `${testCase.name} native confirmation policy must match handler behavior`
       );
-      assert.equal(fetchCalls.length, 1, `${testCase.name} explicit bridge should use fetch once`);
-      assert.equal(fetchCalls[0].url, testCase.expectedUrl);
-      assert.equal(fetchCalls[0].init.method, testCase.expectedMethod);
-      assert.equal(fetchCalls[0].init.body, testCase.expectedBody);
+      const usesNativeChallenge = Boolean(testCase.nativeChallenge);
+      assert.equal(
+        fetchCalls.length,
+        usesNativeChallenge ? 2 : 1,
+        `${testCase.name} explicit bridge should use the expected backend requests`
+      );
+      const backendCall = fetchCalls[fetchCalls.length - 1];
+      if (usesNativeChallenge) {
+        assert.match(fetchCalls[0].url, /\/native-confirmation-challenge$/);
+        assert.equal(fetchCalls[0].init.method, "POST");
+        assertNativeConfirmationHeaders(backendCall.init.headers, `${testCase.name} final backend request`);
+      }
+      assert.equal(backendCall.url, testCase.expectedUrl);
+      assert.equal(backendCall.init.method, testCase.expectedMethod);
+      assert.equal(backendCall.init.body, testCase.expectedBody);
       await assert.rejects(
         async () => handler(eventFor("https://evil.example/app"), ...testCase.args),
         /untrusted renderer/,
@@ -1026,7 +1059,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       assert.equal(fetchCalls[2].init.method, "POST");
       assert.match(
         fetchCalls[2].init.headers["X-Lengrvis-Native-Confirmation-Id"],
-        /^[0-9a-f-]{36}$/i,
+        /^[A-Za-z0-9_-]+$/,
         `${testCase.name} should bind a native confirmation id`
       );
       assert.match(
@@ -1070,7 +1103,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         `${testCase.name} should stop when native confirmation is denied`
       );
       assert.equal(messageBoxCalls.length, 1, `${testCase.name} denied path should ask exactly once`);
-      assert.equal(fetchCalls.length, 0, `${testCase.name} denied path must not call backend`);
+      if (testCase.nativeChallenge) {
+        assert.equal(fetchCalls.length, 1, `${testCase.name} denied path may fetch a challenge only`);
+        assert.match(fetchCalls[0].url, /\/native-confirmation-challenge$/);
+      } else {
+        assert.equal(fetchCalls.length, 0, `${testCase.name} denied path must not call backend`);
+      }
     }
 
     const privacyEraseHandler = ipcHandlers.get(IPC_CHANNELS.privacyEraseLocalData);
@@ -1454,9 +1492,15 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     );
     assert.equal(rollbackResponse.ok, true, "explicit task rollback bridge should call backend after native confirmation");
     assert.equal(messageBoxCalls.length, 1, "task rollback should ask native confirmation exactly once");
-    assert.equal(fetchCalls.length, 1, "explicit task rollback bridge should use fetch once");
-    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/tasks/task_123/rollback");
+    assert.equal(fetchCalls.length, 2, "explicit task rollback bridge should fetch challenge before rollback");
+    assert.equal(
+      fetchCalls[0].url,
+      "http://127.0.0.1:8000/api/tasks/task_123/rollback/native-confirmation-challenge"
+    );
     assert.equal(fetchCalls[0].init.method, "POST");
+    assert.equal(fetchCalls[1].url, "http://127.0.0.1:8000/api/tasks/task_123/rollback");
+    assert.equal(fetchCalls[1].init.method, "POST");
+    assertNativeConfirmationHeaders(fetchCalls[1].init.headers, "task rollback final backend request");
 
     messageBoxCalls = [];
     messageBoxResponses = [1];
@@ -1466,7 +1510,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       /not confirmed/,
       "task rollback bridge should require native confirmation"
     );
-    assert.equal(fetchCalls.length, 0, "denied native task rollback confirmation must not call backend");
+    assert.equal(fetchCalls.length, 1, "denied native task rollback confirmation may fetch a challenge only");
+    assert.equal(
+      fetchCalls[0].url,
+      "http://127.0.0.1:8000/api/tasks/task_456/rollback/native-confirmation-challenge"
+    );
+    assert.equal(fetchCalls[0].init.method, "POST");
     assert.equal(messageBoxCalls.length, 1, "task rollback denied path should ask exactly once");
   } finally {
     global.fetch = originalFetch;
@@ -1520,6 +1569,18 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   let takeoverCalls = 0;
   let performActionCalls = 0;
   let performedActions = [];
+  const hostCallCounts = {
+    open: 0,
+    show: 0,
+    hide: 0,
+    setBounds: 0,
+    pause: 0,
+    resume: 0,
+    takeover: 0,
+    release: 0,
+    stop: 0,
+    performAction: 0
+  };
   const host = {
     getSnapshot: () => {
       calls += 1;
@@ -1528,6 +1589,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     onSnapshot: () => () => undefined,
     open: async () => {
       calls += 1;
+      hostCallCounts.open += 1;
       return {
         ok: false,
         error: "Navigation failed for https://example.test/#/callback?access_token=secret-token&client_secret=secret-token"
@@ -1535,39 +1597,48 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     },
     show: () => {
       calls += 1;
+      hostCallCounts.show += 1;
       return { ok: true };
     },
     hide: () => {
       calls += 1;
+      hostCallCounts.hide += 1;
       return { ok: true };
     },
     setBounds: () => {
       calls += 1;
+      hostCallCounts.setBounds += 1;
       return { ok: true };
     },
     pause: () => {
       calls += 1;
+      hostCallCounts.pause += 1;
       return { ok: true };
     },
     resume: () => {
       calls += 1;
+      hostCallCounts.resume += 1;
       return { ok: true };
     },
     takeover: () => {
       calls += 1;
+      hostCallCounts.takeover += 1;
       takeoverCalls += 1;
       return { ok: true };
     },
     release: () => {
       calls += 1;
+      hostCallCounts.release += 1;
       return { ok: true };
     },
     stop: async () => {
       calls += 1;
+      hostCallCounts.stop += 1;
       return { ok: true };
     },
     performAction: async (sessionId, action) => {
       calls += 1;
+      hostCallCounts.performAction += 1;
       performActionCalls += 1;
       performedActions.push({ sessionId, kind: action?.kind });
       return { ok: true };
@@ -1785,6 +1856,9 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     remoteNotificationBridge.stopBackendListener();
     backendBaseUrl = "http://127.0.0.1:8000";
 
+    for (const key of Object.keys(hostCallCounts)) {
+      hostCallCounts[key] = 0;
+    }
     takeoverCalls = 0;
     performActionCalls = 0;
     performedActions = [];
@@ -1796,7 +1870,15 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(sentMessages[0].type, "snapshot", "BrowserHost WS bridge should send snapshots after protocol auth");
 
     const remoteWriteMessages = [
+      { type: "open", request_id: "open-1", request: { url: "https://example.test/" } },
+      { type: "show", request_id: "show-1", session_id: "session-1" },
+      { type: "hide", request_id: "hide-1" },
+      { type: "set_bounds", request_id: "set-bounds-1", bounds: { x: 10, y: 20, width: 640, height: 480 } },
+      { type: "pause", request_id: "pause-1", session_id: "session-1" },
+      { type: "resume", request_id: "resume-1", session_id: "session-1" },
       { type: "takeover", request_id: "takeover-1", session_id: "session-1" },
+      { type: "release", request_id: "release-1", session_id: "session-1" },
+      { type: "stop", request_id: "stop-1", session_id: "session-1" },
       { type: "action", request_id: "click-1", session_id: "session-1", action: { kind: "click", selector: "#submit" } },
       { type: "action", request_id: "fill-1", session_id: "session-1", action: { kind: "fill", selector: "#email", text: "secret" } },
       { type: "action", request_id: "submit-1", session_id: "session-1", action: { kind: "submit", selector: "form" } }
@@ -1813,13 +1895,22 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     const remoteResults = new Map(sentMessages.filter((message) => message.type === "result").map((message) => [message.request_id, message]));
-    for (const requestId of ["takeover-1", "click-1", "fill-1", "submit-1"]) {
+    for (const requestId of remoteWriteMessages.map((message) => message.request_id)) {
       assert.equal(remoteResults.get(requestId)?.ok, false, `BrowserHost WS ${requestId} should be denied without a desktop grant`);
       assert.match(remoteResults.get(requestId)?.error ?? "", /approval grant/);
     }
     assert.equal(remoteResults.get("observe-1")?.ok, true, "BrowserHost WS observe should remain read-only");
     assert.equal(remoteResults.get("screenshot-1")?.ok, true, "BrowserHost WS screenshot should remain read-only");
     assert.equal(takeoverCalls, 0, "BrowserHost WS takeover denial must not call the host takeover method");
+    assert.equal(hostCallCounts.open, 0, "BrowserHost WS open denial must not call the host open method");
+    assert.equal(hostCallCounts.show, 0, "BrowserHost WS show denial must not call the host show method");
+    assert.equal(hostCallCounts.hide, 0, "BrowserHost WS hide denial must not call the host hide method");
+    assert.equal(hostCallCounts.setBounds, 0, "BrowserHost WS set_bounds denial must not call the host setBounds method");
+    assert.equal(hostCallCounts.pause, 0, "BrowserHost WS pause denial must not call the host pause method");
+    assert.equal(hostCallCounts.resume, 0, "BrowserHost WS resume denial must not call the host resume method");
+    assert.equal(hostCallCounts.takeover, 0, "BrowserHost WS takeover denial must not call the host takeover method");
+    assert.equal(hostCallCounts.release, 0, "BrowserHost WS release denial must not call the host release method");
+    assert.equal(hostCallCounts.stop, 0, "BrowserHost WS stop denial must not call the host stop method");
     assert.deepEqual(
       performedActions,
       [
@@ -1829,6 +1920,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       "BrowserHost WS bridge should only perform read-only remote actions without a desktop grant"
     );
     assert.equal(performActionCalls, 2, "BrowserHost WS bridge must not perform denied remote input actions");
+    assert.equal(hostCallCounts.performAction, 2, "BrowserHost WS bridge should only call performAction for read-only actions");
     bridge.stop();
   } finally {
     global.WebSocket = originalWebSocket;

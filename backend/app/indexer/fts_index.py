@@ -11,6 +11,7 @@ from typing import Any
 
 from app.core import db
 from app.core.audit import record
+from app.core.db_schema import document_chunks_fts_mode
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.core.schemas import DocumentChunk, IndexedFile, now_iso
@@ -53,6 +54,7 @@ class FTSIndex:
 
     def status(self, allowed_directories: list[str] | None = None) -> dict[str, Any]:
         db.init_db()
+        fts_capability = _fts_capability_status()
         allowed_roots = _normalized_allowed_roots(allowed_directories or [])
         if not allowed_roots:
             return {
@@ -65,6 +67,8 @@ class FTSIndex:
                 "last_modified_at": "",
                 "latest_failure": None,
                 "retry_hint": _index_status_retry_hint("missing_scope"),
+                "fts_mode": fts_capability["mode"],
+                "fts_fallback": fts_capability["fallback"],
             }
 
         with db.connect() as conn:
@@ -129,6 +133,8 @@ class FTSIndex:
             "last_modified_at": last_modified_at,
             "latest_failure": latest_failure,
             "retry_hint": _index_status_retry_hint(status),
+            "fts_mode": fts_capability["mode"],
+            "fts_fallback": fts_capability["fallback"],
         }
 
     def rebuild(self, allowed_directories: list[str]) -> dict[str, Any]:
@@ -480,8 +486,10 @@ class FTSIndex:
                     (fts_match_query(cleaned),),
                 ).fetchall()
                 rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)][:limit]
-                if rows or len(cleaned) >= 3:
+                if rows:
                     return [dict(row) for row in rows]
+                if len(cleaned) >= 3 and document_chunks_fts_mode(conn) == "trigram":
+                    return []
             except sqlite3.Error as exc:
                 logger.info("FTS search failed; falling back to LIKE for query=%r: %s", cleaned, exc)
             return self._search_like(conn, cleaned, limit, allowed_roots)
@@ -711,6 +719,22 @@ def _index_status_retry_hint(status: str) -> str:
             "Retry rebuild after the local embedding service recovers."
         )
     return ""
+
+
+def _fts_capability_status() -> dict[str, str]:
+    with db.connect() as conn:
+        mode = document_chunks_fts_mode(conn)
+    if mode == "trigram":
+        return {"mode": "trigram", "fallback": ""}
+    if mode == "plain":
+        return {
+            "mode": "plain",
+            "fallback": "SQLite FTS5 trigram tokenizer is unavailable; short substring searches use LIKE fallback.",
+        }
+    return {
+        "mode": "unavailable",
+        "fallback": "SQLite FTS5 is unavailable; content search uses LIKE fallback.",
+    }
 
 
 def _timestamp_after(left: str, right: str) -> bool:

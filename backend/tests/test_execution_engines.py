@@ -288,7 +288,15 @@ async def test_developer_engine_run_turn_passes_write_tools_to_lengrvis_code(tmp
         use_lengrvis_code=True,
     )
     state = await engine.start_run("fix failing pytest", "efficiency", "developer")
-    await engine.run_turn(state)
+    awaiting = await engine.run_turn(state)
+    assert awaiting.state.phase == RunPhase.AWAITING_APPROVAL
+
+    from app.core.schemas import Approval
+    from app.services.mobile_pairing_service import approve_approval
+
+    approval = Approval.model_validate(db.fetch_many("approvals", "task_id = ?", (state.task_id,), limit=1)[0])
+    approve_approval(approval.id)
+    await engine.run_turn(awaiting.state)
 
     assert "Write" in captured["allowed_tools"]
     assert "Edit" in captured["allowed_tools"]

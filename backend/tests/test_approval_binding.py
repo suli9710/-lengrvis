@@ -360,6 +360,77 @@ def test_approval_route_requires_signed_one_time_native_confirmation_challenge(
     assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.REJECTED
 
 
+def test_native_confirmation_challenge_binds_decision_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+
+    with TestClient(app) as client:
+        challenge_response = client.post(
+            f"/api/approvals/{approval.id}/native-confirmation-challenge",
+            json={"action": "approve", "expected_preview_hmac": approval.preview_hmac},
+        )
+        assert challenge_response.status_code == 200, challenge_response.text
+        challenge = challenge_response.json()
+        assert challenge["endpoint"] == f"/api/approvals/{approval.id}/approve"
+        signature = private_key.sign(str(challenge["signing_payload"]).encode("utf-8"))
+        headers = {
+            NATIVE_CONFIRMATION_ID_HEADER: str(challenge["confirmation_id"]),
+            NATIVE_CONFIRMATION_TIMESTAMP_HEADER: str(challenge["expires_at_epoch"]),
+            NATIVE_CONFIRMATION_SIGNATURE_HEADER: _b64url(signature),
+        }
+        wrong_endpoint = client.post(f"/api/approvals/{approval.id}/reject", headers=headers)
+
+    assert wrong_endpoint.status_code == 403
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+
+
+def test_native_confirmation_challenge_rejects_malformed_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+
+    with TestClient(app) as client:
+        challenge_response = client.post(
+            f"/api/approvals/{approval.id}/native-confirmation-challenge",
+            json={"action": "approve", "expected_preview_hmac": approval.preview_hmac},
+        )
+        assert challenge_response.status_code == 200, challenge_response.text
+        challenge = challenge_response.json()
+        malformed = {
+            NATIVE_CONFIRMATION_ID_HEADER: str(challenge["confirmation_id"]),
+            NATIVE_CONFIRMATION_TIMESTAMP_HEADER: str(challenge["expires_at_epoch"]),
+            NATIVE_CONFIRMATION_SIGNATURE_HEADER: "a",
+        }
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=malformed)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Native confirmation proof is invalid."
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+
+
 def test_native_confirmation_challenge_binds_current_preview_hmac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,6 +466,7 @@ def test_legacy_native_confirmation_hmac_is_test_only(monkeypatch: pytest.Monkey
     with pytest.raises(HTTPException) as excinfo:
         require_native_confirmation(
             action="approve",
+            endpoint="/api/approvals/approval_1/approve",
             approval_id="approval_1",
             confirmation_id="confirmation_1",
             timestamp="1",

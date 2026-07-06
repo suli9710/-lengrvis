@@ -213,14 +213,34 @@ def set_task_status(task_id: str, status: TaskStatus, *, strict: bool | None = N
     return safe_transition(task, status, actor="TaskService", strict=strict)
 
 
+async def cancel_task(task_id: str, *, strict: bool | None = None) -> Task:
+    get_task(task_id)
+    await get_pool().cancel(task_id)
+    from app.services import run_service
+
+    run_service.cancel_runs_for_task(task_id, active_grace_seconds=0.0)
+    task = get_task(task_id)
+    if task.status == TaskPhase.CANCELLED:
+        return task
+    return safe_transition(task, TaskStatus.CANCELLED, actor="TaskService", strict=strict)
+
+
 def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
+    pool = get_pool()
+    if pool.active_task(task_id):
+        task = get_task(task_id)
+        record("task.resume_duplicate_ignored", "TaskService", {"task_id": task.id}, task_id=task.id)
+        return task
     task = set_task_status(task_id, TaskStatus.EXECUTING_STEP, strict=strict)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        _start_resume_thread(task)
+        if not pool.claim_external(task.id, "resume_thread"):
+            record("task.resume_duplicate_ignored", "TaskService", {"task_id": task.id}, task_id=task.id)
+            return task
+        _start_resume_thread(task, pool)
     else:
-        _spawn_background(get_pool().submit(task, _resume_task_through_orchestrator))
+        _spawn_background(pool.submit(task, _resume_task_through_orchestrator))
     record("task.resume_requested", "TaskService", {"task_id": task.id}, task_id=task.id)
     return task
 
@@ -243,11 +263,21 @@ async def _resume_task_background(task: Task) -> None:
         task.final_summary = f"Task resume failed: {exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
+        raise
 
 
-def _start_resume_thread(task: Task) -> None:
+def _start_resume_thread(task: Task, pool: Any) -> None:
+    def _run() -> None:
+        status = "completed"
+        try:
+            asyncio.run(_resume_task_background(task))
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: thread boundary records and releases singleflight claim.
+            status = f"failed:{exc}"
+        finally:
+            pool.release_external(task.id, status)
+
     thread = threading.Thread(
-        target=lambda: asyncio.run(_resume_task_background(task)),
+        target=_run,
         name=f"task-resume-{task.id}",
         daemon=True,
     )

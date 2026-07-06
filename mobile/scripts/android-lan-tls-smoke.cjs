@@ -32,8 +32,29 @@ for (const fragment of [
   'alias.startsWith("system:")',
   "hasAnyFingerprint",
   "hostHasFingerprint",
+  "hostHasAnyFingerprintForHost",
 ]) {
   assert.ok(trust.includes(fragment), `LAN TLS trust implementation must include ${fragment}`);
 }
+
+const verifierStart = trust.indexOf("private class LengrvisPinnedHostnameVerifier");
+const verifierEnd = trust.indexOf("private fun sha256", verifierStart);
+assert.notEqual(verifierStart, -1, "LAN TLS trust implementation must include a hostname verifier");
+assert.notEqual(verifierEnd, -1, "LAN TLS trust implementation must keep sha256 outside the hostname verifier");
+const verifier = trust.slice(verifierStart, verifierEnd);
+assert.ok(
+  verifier.includes("hostHasAnyFingerprintForHost(context, hostname)"),
+  "pinned hosts must require the presented certificate to match a host pin",
+);
+assert.match(
+  verifier,
+  /hostHasFingerprint\(context,\s*hostname,\s*fingerprint\)/,
+  "hostname verifier must check host-specific pins",
+);
+assert.match(
+  verifier,
+  /!\s*LengrvisLanTrust\.hasAnyFingerprint\(context,\s*fingerprint\)/,
+  "hostname verifier must reject a cert pinned for another host",
+);
 
 console.log("[pass] Android LAN TLS source contract");

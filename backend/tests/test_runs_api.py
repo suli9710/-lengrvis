@@ -594,7 +594,7 @@ def test_auto_routing_uses_developer_when_writes_enabled_for_pytest_fix_goal(mon
     assert len(scheduled) == 1
 
 
-def test_developer_writes_enabled_run_passes_write_tools_and_default_permission_mode(monkeypatch, tmp_path):
+def test_developer_writes_enabled_run_requires_backend_approval_before_launch(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", "true")
@@ -629,15 +629,13 @@ if record_path:
 
 print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
 print(json.dumps({"type": "assistant", "message": {"content": [
-    {"type": "text", "text": "Attempting write"},
-    {"type": "tool_use", "name": "Write", "input": {"file_path": "backend/tests/smoke.txt", "content": "x"}},
+    {"type": "text", "text": "Approved developer run executed"},
 ]}}), flush=True)
 print(json.dumps({
     "type": "result",
     "subtype": "success",
     "is_error": False,
-    "result": "Write blocked pending approval",
-    "permission_denials": [{"tool_name": "Write", "reason": "default permission mode requires user approval"}],
+    "result": "Approved developer run completed",
 }), flush=True)
 """.lstrip(),
         encoding="utf-8",
@@ -658,18 +656,26 @@ print(json.dumps({
         assert created.json()["engine"] == "developer"
         final = _wait_for_phase(client, created.json()["run_id"], "awaiting_approval", "completed", "failed")
         assert final["phase"] == "awaiting_approval"
+        assert not record_path.exists(), "developer subprocess must not launch before backend approval"
 
         timeline = client.get(f"/api/runs/{created.json()['run_id']}/timeline").json()
-        tool_results = [
-            event
-            for event in timeline["events"]
-            if event.get("name") == "tool.result" and event.get("payload", {}).get("tool_name") == "lengrvis_code"
-        ]
-        assert tool_results, timeline["events"]
-        payload = tool_results[-1]["payload"]["output"]
-        assert payload.get("permission_denials"), payload
-        assert payload["permission_denials"][0]["tool_name"] == "Write"
-        assert payload.get("awaiting_write_approval") is True
+        task_id = timeline["run"]["task_id"]
+        approvals = db.fetch_many("approvals", "task_id = ?", (task_id,), limit=10)
+        assert approvals and approvals[0]["status"] == ApprovalStatus.PENDING
+        approval = Approval.model_validate(approvals[0])
+        assert approval.tool_name == "developer.lengrvis_code"
+        assert approval.risk_level == RiskLevel.R2_REVERSIBLE_MODIFY.value
+        assert "write" in approval.tool_effects
+        assert approval.dry_run_summary
+
+        approved = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("approve", approval.id),
+        )
+        assert approved.status_code == 200
+        assert approved.json()["execution_scheduled"] is True
+        completed = _wait_for_phase(client, created.json()["run_id"], "completed", "failed", timeout_seconds=20)
+        assert completed["phase"] == "completed"
 
     record = json.loads(record_path.read_text(encoding="utf-8"))
     argv = record["argv"]
@@ -678,6 +684,8 @@ print(json.dumps({
     assert argv[argv.index("--permission-mode") + 1] == "default"
     assert "skip-permissions" not in " ".join(argv)
     assert "Write/Edit tools are enabled" in record["prompt"]
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed_approval.consumed_at
 
 
 @pytest.mark.parametrize(

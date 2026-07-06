@@ -8,6 +8,7 @@ param(
     [string]$ReleaseOwner = "",
     [string]$OwnerSignature = "",
     [string]$ManualSignoffStatus = "",
+    [switch]$StrictReleaseSignoff,
     [string[]]$Waiver = @(),
     [string[]]$ManualAcceptance = @(),
     [string[]]$ArtifactLink = @()
@@ -277,13 +278,18 @@ $gates = @(
         scope = "Mobile audit, TypeScript typecheck, and behavior smokes"
         commands = @(
             "npm --prefix mobile ci",
+            "cd mobile; npm exec expo -- install --check",
             "npm --prefix mobile audit --audit-level=high",
             "npm --prefix mobile run typecheck",
             "npm --prefix mobile run smoke:token",
             "npm --prefix mobile run smoke:task-companion",
             "npm --prefix mobile run smoke:remote-input-grant",
             "npm --prefix mobile run smoke:wakeup-contract",
-            "npm --prefix mobile run smoke:android-back"
+            "npm --prefix mobile run smoke:android-back",
+            "npm --prefix mobile run smoke:approval-status-label",
+            "npm --prefix mobile run smoke:android-hardening-plugin",
+            "npm --prefix mobile run smoke:android-lan-tls",
+            "cd mobile/android; .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace"
         )
     },
     [ordered]@{
@@ -336,11 +342,34 @@ else {
 $manualStatus = if (-not [string]::IsNullOrWhiteSpace($ManualSignoffStatus)) {
     $ManualSignoffStatus.Trim()
 }
+elseif (-not [string]::IsNullOrWhiteSpace($env:RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS)) {
+    ([string]$env:RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS).Trim()
+}
 elseif ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE") {
     "manual_signoff_pending"
 }
 else {
     "manual_signature_recorded_review_required"
+}
+
+$strictReleaseEvidenceErrors = New-Object System.Collections.Generic.List[string]
+if ($StrictReleaseSignoff) {
+    if ($ciStatus -ne "machine_gates_passed") {
+        $strictReleaseEvidenceErrors.Add("CI status must be machine_gates_passed; got $ciStatus.")
+    }
+    if ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE" -or [string]::IsNullOrWhiteSpace($OwnerSignature)) {
+        $strictReleaseEvidenceErrors.Add("Owner signature must be recorded for strict RC evidence.")
+    }
+    $acceptedManualStatuses = @(
+        "rc_signoff_recorded",
+        "release_signoff_recorded",
+        "paid_launch_signoff_recorded"
+    )
+    if (-not ($acceptedManualStatuses -contains $manualStatus)) {
+        $strictReleaseEvidenceErrors.Add(
+            "Manual sign-off status must be one of $($acceptedManualStatuses -join ', '); got $manualStatus."
+        )
+    }
 }
 
 $machineEnvironment = [ordered]@{
@@ -423,3 +452,10 @@ New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 [System.IO.File]::WriteAllText($resolvedOutputPath, $markdown, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host "Current release evidence generated: $resolvedOutputPath"
+
+if ($StrictReleaseSignoff -and $strictReleaseEvidenceErrors.Count -gt 0) {
+    [Console]::Error.WriteLine(
+        "Strict current release evidence failed: $($strictReleaseEvidenceErrors -join ' ')"
+    )
+    exit 1
+}

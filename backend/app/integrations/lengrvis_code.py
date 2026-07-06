@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import time
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -276,7 +277,7 @@ class LengrvisCodeProcessRegistry:
             future = asyncio.run_coroutine_threadsafe(coro, loop)
         except RuntimeError:
             coro.close()
-            return self._terminate_without_owner_loop(run_id, process)
+            return self._terminate_without_owner_loop(run_id, process, timeout_seconds=timeout_seconds)
         try:
             return await asyncio.wait_for(
                 asyncio.wrap_future(future),
@@ -284,7 +285,7 @@ class LengrvisCodeProcessRegistry:
             )
         except (TimeoutError, RuntimeError, concurrent.futures.CancelledError):
             future.cancel()
-            return self._terminate_without_owner_loop(run_id, process)
+            return self._terminate_without_owner_loop(run_id, process, timeout_seconds=timeout_seconds)
 
     async def _cancel_on_owner_loop(
         self,
@@ -308,14 +309,58 @@ class LengrvisCodeProcessRegistry:
             self.unregister(run_id, process)
         return True
 
-    def _terminate_without_owner_loop(self, run_id: str, process: asyncio.subprocess.Process) -> bool:
+    def _terminate_without_owner_loop(
+        self,
+        run_id: str,
+        process: asyncio.subprocess.Process,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
         try:
             process.terminate()
         except ProcessLookupError:
             self.unregister(run_id, process)
             return False
-        self.unregister(run_id, process)
-        return True
+        if self._wait_for_returncode_without_owner_loop(process, timeout_seconds=timeout_seconds):
+            self.unregister(run_id, process)
+            return True
+        with suppress(ProcessLookupError):
+            process.kill()
+        if self._wait_for_returncode_without_owner_loop(process, timeout_seconds=timeout_seconds):
+            self.unregister(run_id, process)
+            return True
+        return False
+
+    def _wait_for_returncode_without_owner_loop(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
+        deadline = time.monotonic() + max(0.05, timeout_seconds)
+        while time.monotonic() < deadline:
+            if self._returncode_without_owner_loop(process) is not None:
+                return True
+            time.sleep(0.05)
+        return self._returncode_without_owner_loop(process) is not None
+
+    @staticmethod
+    def _returncode_without_owner_loop(process: asyncio.subprocess.Process) -> int | None:
+        if process.returncode is not None:
+            return process.returncode
+        transport = getattr(process, "_transport", None)
+        get_returncode = getattr(transport, "get_returncode", None)
+        if callable(get_returncode):
+            with suppress(Exception):
+                returncode = get_returncode()
+                if returncode is not None:
+                    return returncode
+        popen = getattr(transport, "_proc", None) or getattr(process, "_proc", None)
+        poll = getattr(popen, "poll", None)
+        if callable(poll):
+            with suppress(Exception):
+                return poll()
+        return None
 
     def active_run_ids(self) -> list[str]:
         with self._lock:

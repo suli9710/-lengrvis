@@ -258,6 +258,25 @@ describe("execution mapper contracts", () => {
     });
   });
 
+  it("maps expired and unknown approval statuses to non-actionable states", () => {
+    const baseApproval = {
+      id: "approval_status",
+      task_id: "task_status",
+      step_id: "step_status",
+      approval_type: "tool_call",
+      message: "Review action",
+      diff_preview: {},
+      risk_level: "R2_REVERSIBLE_MODIFY",
+      created_at: "2026-06-20T10:00:00Z"
+    };
+
+    expect(mapApproval({ ...baseApproval, status: "pending" }).status).toBe("pending");
+    expect(mapApproval({ ...baseApproval, status: "approved" }).status).toBe("approved");
+    expect(mapApproval({ ...baseApproval, status: "rejected" }).status).toBe("denied");
+    expect(mapApproval({ ...baseApproval, status: "expired" }).status).toBe("expired");
+    expect(mapApproval({ ...baseApproval, status: "paused_by_backend" }).status).toBe("unavailable");
+  });
+
   it("maps command info and execution results to the shared execution shape", () => {
     expect(
       mapCommandInfo({

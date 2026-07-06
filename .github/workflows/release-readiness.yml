@@ -41,12 +41,12 @@ jobs:
       - name: Strict release readiness
         # Strict mode fails while any P0 blocker is still open. This is expected
         # before RC, so PR/main runs report it without failing. Manual RC and
-        # release tag runs are hard gates.
+        # release tag runs are hard RC gates and cannot accept P0 waivers.
         continue-on-error: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
         run: |
           python scripts/check_release_readiness_dashboard.py \
             --dashboard docs/release/release-readiness-dashboard.md \
-            --strict
+            --rc-release
 
       - name: Strict market readiness
         continue-on-error: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}

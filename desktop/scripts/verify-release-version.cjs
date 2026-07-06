@@ -1,5 +1,6 @@
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 // Fail-closed release version consistency gate.
 //
@@ -59,6 +60,32 @@ function resolveTag(cliTag) {
   return undefined;
 }
 
+function localHeadSha(required) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  } catch (error) {
+    if (required) {
+      issues.push(`Unable to resolve checked-out HEAD for release tag verification: ${error.message}`);
+    }
+    return "";
+  }
+}
+
+function currentCommitRefs(required) {
+  const fromEnv = (process.env.GITHUB_SHA || "").trim();
+  const head = localHeadSha(required || Boolean(fromEnv));
+  if (fromEnv && head && fromEnv.toLowerCase() !== head.toLowerCase()) {
+    issues.push(`GITHUB_SHA ${fromEnv} does not match checked-out HEAD ${head}.`);
+  }
+  return [
+    ...(head ? [{ label: "checked-out HEAD", sha: head }] : []),
+    ...(fromEnv ? [{ label: "GITHUB_SHA", sha: fromEnv }] : [])
+  ];
+}
+
 const { tag: cliTag, requireTag } = parseArgs(process.argv.slice(2));
 const tagRequired = requireTag || process.env.RELEASE_REQUIRE_TAG === "1";
 
@@ -86,6 +113,22 @@ if (!tag) {
     issues.push(
       `Release tag "${tag}" does not match package.json version "${version}" (expected tag "${expectedTag}").`
     );
+  }
+  const commitRefs = currentCommitRefs(tagRequired || Boolean(tag));
+  if (commitRefs.length > 0) {
+    try {
+      const tagSha = execFileSync("git", ["rev-list", "-n", "1", tag], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      }).trim();
+      for (const ref of commitRefs) {
+        if (!tagSha || tagSha.toLowerCase() !== ref.sha.toLowerCase()) {
+          issues.push(`Release tag "${tag}" points to ${tagSha || "<missing>"} but ${ref.label} is ${ref.sha}.`);
+        }
+      }
+    } catch (error) {
+      issues.push(`Unable to resolve release tag "${tag}" to verify it matches checked-out HEAD: ${error.message}`);
+    }
   }
 }
 

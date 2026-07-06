@@ -4,29 +4,29 @@
 
 ## Summary
 
-- Commit SHA: 1176c66
-- Date (UTC): 2026-07-01T09:57:46Z
-- CI status: machine_gates_passed
-- Manual sign-off status: rc_signoff_recorded
+- Commit SHA: 2bbfe6613ecba87c535e13225b3a6d474775f7dd
+- Date (UTC): 2026-07-06T06:32:01.7705052Z
+- CI status: machine_gates_failed_or_incomplete
+- Manual sign-off status: manual_signoff_pending
 - Release owner: suli9710
-- Owner signature: main-ci-28288204979-release-owner-accepted-rc-handoff
-- Workflow: main CI
-- Run id: 28288204979
+- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE
+- Workflow: CI
+- Run id: 28770782160
 - Run attempt: 1
 
 ## Machine Environment
 
 | Field | Value |
 | --- | --- |
-| runner_os | Win32NT |
+| runner_os | Windows |
 | runner_arch | X64 |
-| runner_name | DESKTOP-IU8C7V4 |
-| image_os | unknown |
-| image_version | unknown |
-| os_description | Microsoft Windows 10.0.26200 |
-| powershell | 7.7.0-preview.2 |
-| node | v24.11.1 |
-| npm | 11.6.2 |
+| runner_name | GitHub Actions 1000003609 |
+| image_os | win25-vs2026 |
+| image_version | 20260628.158.1 |
+| os_description | Microsoft Windows 10.0.26100  |
+| powershell | 5.1.26100.32995 |
+| node | v22.23.1 |
+| npm | 10.9.8 |
 | python | Python 3.12.10 |
 | git | git version 2.54.0.windows.1 |
 
@@ -49,6 +49,7 @@
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop exec playwright install chromium` |
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop run smoke` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile ci` |
+| Mobile typecheck + behavior smokes | `cd mobile; npm exec expo -- install --check` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile audit --audit-level=high` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run typecheck` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:token` |
@@ -56,6 +57,10 @@
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:remote-input-grant` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:wakeup-contract` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-back` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:approval-status-label` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-hardening-plugin` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-lan-tls` |
+| Mobile typecheck + behavior smokes | `cd mobile/android; .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace` |
 | Supply chain lock + SBOM | `npm run deps:verify` |
 | Supply chain lock + SBOM | `npm run sbom:generate` |
 | IPC + Skill/MCP + settings security gate | `npm run security:extensions` |
@@ -66,7 +71,7 @@
 | --- | --- | --- |
 | Repo hygiene + dependency locks | Repository hygiene and dependency lock consistency | success |
 | Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | success |
-| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | success |
+| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |
 | Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | success |
 | Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | success |
 | Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | success |
@@ -74,7 +79,7 @@
 
 ## Failed Items
 
-- None recorded from CI job results.
+- Real LLM quality gate: skipped
 
 ## Exemptions
 
@@ -82,18 +87,21 @@
 
 ## Manual Acceptance Items
 
-- ACCEPTED: clean-machine Windows install evidence reviewed in main CI run 28288204979.
-- ACCEPTED: local model clean-machine path evidence reviewed in main CI run 28288204979.
-- ACCEPTED: Android real-device / emulator LAN-WSS evidence reviewed in main CI run 28288204979.
-- ACCEPTED: 30+ task result quality review evidence accepted in main CI run 28288204979.
-- ACCEPTED: diagnostics external-share review accepted in main CI run 28288204979.
-- ACCEPTED: RC handoff, manual P1 checks, residual risks, and release-owner sign-off accepted.
-- NOTE: Commercial launch and public paid claims still require market-readiness approval.
+- PENDING: first launch on the candidate artifact with backend health visible.
+- PENDING: natural-language agent task loop produces a user-readable result or actionable failure.
+- PENDING: task evidence/replay privacy review confirms redacted summaries only.
+- PENDING: one reversible approval flow and one forbidden request are verified.
+- PENDING: document QA citation flow is verified against disposable content.
+- PENDING: local/hybrid model UX and any clean-machine local-model claim are reviewed.
+- PENDING: Skill/App sample import or display is reviewed if included in the release claim.
+- PENDING: mobile companion, LAN/WSS, certificate trust, and remote input are reviewed if claimed.
+- PENDING: diagnostics export content is reviewed before any external sharing.
+- PENDING: release owner reviews waivers, residual risks, artifacts, and signs this evidence.
 
 ## Artifact Links
 
-- CI run: https://github.com/suli9710/-lengrvis/actions/runs/28288204979
-- CI artifacts page: https://github.com/suli9710/-lengrvis/actions/runs/28288204979#artifacts
+- CI run: https://github.com/suli9710/-lengrvis/actions/runs/28770782160
+- CI artifacts page: https://github.com/suli9710/-lengrvis/actions/runs/28770782160#artifacts
 - Current release evidence artifact: current-release-evidence
 - Current SBOM artifact: current-sbom
 - Extension security gate artifact: extension-security-gate
@@ -101,5 +109,5 @@
 ## Owner Signature
 
 - Owner: suli9710
-- Signature: main-ci-28288204979-release-owner-accepted-rc-handoff
-- Signed at UTC: 2026-07-01T09:57:46Z
+- Signature: PENDING_RELEASE_OWNER_SIGNATURE
+- Signed at UTC: PENDING

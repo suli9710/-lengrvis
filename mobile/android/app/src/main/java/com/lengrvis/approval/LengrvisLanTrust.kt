@@ -76,6 +76,14 @@ object LengrvisLanTrust {
     }
   }
 
+  fun hostHasAnyFingerprintForHost(context: Context, host: String?): Boolean {
+    val normalizedHost = normalizeHost(host)
+    if (normalizedHost.isBlank()) return false
+    synchronized(lock) {
+      return containsAnyFingerprint(readPinsLocked(context).optJSONArray(normalizedHost))
+    }
+  }
+
   private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
   private fun readPinsLocked(context: Context): JSONObject {
@@ -96,6 +104,14 @@ object LengrvisLanTrust {
     if (values == null) return false
     for (index in 0 until values.length()) {
       if (normalizeFingerprint(values.optString(index)) == fingerprint) return true
+    }
+    return false
+  }
+
+  private fun containsAnyFingerprint(values: JSONArray?): Boolean {
+    if (values == null) return false
+    for (index in 0 until values.length()) {
+      if (normalizeFingerprint(values.optString(index)).isNotBlank()) return true
     }
     return false
   }
@@ -180,10 +196,10 @@ private class LengrvisPinnedHostnameVerifier(
     } catch (_: SSLPeerUnverifiedException) {
       return false
     }
-    return if (LengrvisLanTrust.hasAnyFingerprint(context, fingerprint)) {
+    return if (LengrvisLanTrust.hostHasAnyFingerprintForHost(context, hostname)) {
       LengrvisLanTrust.hostHasFingerprint(context, hostname, fingerprint)
     } else {
-      true
+      !LengrvisLanTrust.hasAnyFingerprint(context, fingerprint)
     }
   }
 }

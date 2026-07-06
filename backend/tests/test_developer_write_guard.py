@@ -118,7 +118,16 @@ async def test_developer_engine_applies_write_verification_on_success(tmp_path, 
         use_lengrvis_code=True,
     )
     state = await engine.start_run("fix failing backend pytest in backend/tests", "efficiency", "developer")
-    result = await engine.run_turn(state)
+    awaiting = await engine.run_turn(state)
+    assert awaiting.state.phase == RunPhase.AWAITING_APPROVAL
+
+    from app.core import db
+    from app.core.schemas import Approval
+    from app.services.mobile_pairing_service import approve_approval
+
+    approval = Approval.model_validate(db.fetch_many("approvals", "task_id = ?", (state.task_id,), limit=1)[0])
+    approve_approval(approval.id)
+    result = await engine.run_turn(awaiting.state)
 
     assert result.state.phase == RunPhase.COMPLETED
     assert "write_verification" in result.outputs

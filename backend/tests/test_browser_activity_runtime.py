@@ -17,6 +17,9 @@ from app.services.browser_activity_runtime import (
     BROWSER_CONTENT_TRUST,
     BrowserActivityRuntime,
     LocalBrowserActivityAdapter,
+    _guard_playwright_route,
+    _PlaywrightRouteGuard,
+    _raise_if_playwright_route_guard_blocked,
     _read_limited_http_response,
 )
 from app.tools import browser_tools
@@ -63,6 +66,105 @@ def _install_fake_playwright(
     fake_playwright.sync_api = fake_sync_api
     monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
     monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+
+
+class _FakeRoute:
+    def __init__(self, url: str) -> None:
+        self.request = types.SimpleNamespace(url=url)
+        self.aborted: list[str | None] = []
+        self.continued = False
+
+    def abort(self, error_code: str | None = None) -> None:
+        self.aborted.append(error_code)
+
+    def continue_(self) -> None:
+        self.continued = True
+
+
+class _GuardedFakePage:
+    def __init__(self, context, blocked_on: str) -> None:  # noqa: ANN001
+        self._context = context
+        self._blocked_on = blocked_on
+        self.url = "https://example.test/page"
+
+    def _route(self, url: str) -> None:
+        assert self._context.route_handler is not None
+        self._context.route_handler(_FakeRoute(url))
+
+    def _maybe_block(self, event: str) -> None:
+        if self._blocked_on == event:
+            self._route("http://127.0.0.1/admin")
+
+    def goto(self, url: str, **_kwargs) -> None:  # noqa: ANN003
+        self.url = url
+        self._route(url)
+        self._maybe_block("goto")
+
+    def content(self) -> str:
+        return "<html><title>Example</title><main>Hello</main></html>"
+
+    def screenshot(self, **_kwargs) -> None:  # noqa: ANN003
+        self._maybe_block("screenshot")
+
+    def wait_for_selector(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        self._maybe_block("wait")
+
+    def click(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        self._maybe_block("click")
+
+    def fill(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        self._maybe_block("fill")
+
+    def evaluate(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        self._maybe_block("evaluate")
+
+    def get_attribute(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN201
+        return None
+
+    def title(self) -> str:
+        return "Example"
+
+
+class _GuardedFakeContext:
+    def __init__(self, blocked_on: str) -> None:
+        self.blocked_on = blocked_on
+        self.route_pattern = ""
+        self.route_handler = None
+
+    def route(self, pattern: str, handler) -> None:  # noqa: ANN001
+        self.route_pattern = pattern
+        self.route_handler = handler
+
+    def new_page(self):
+        assert self.route_handler is not None
+        return _GuardedFakePage(self, self.blocked_on)
+
+
+class _GuardedFakeBrowser:
+    def __init__(self, blocked_on: str) -> None:
+        self.blocked_on = blocked_on
+        self.context: _GuardedFakeContext | None = None
+        self.context_options: dict[str, Any] = {}
+
+    def new_context(self, **kwargs) -> _GuardedFakeContext:  # noqa: ANN003
+        self.context_options = dict(kwargs)
+        self.context = _GuardedFakeContext(self.blocked_on)
+        return self.context
+
+    def close(self) -> None:
+        return None
+
+
+class _GuardedFakeSyncPlaywright:
+    def __init__(self, browser: _GuardedFakeBrowser) -> None:
+        self.browser = browser
+
+    def __enter__(self):
+        chromium = types.SimpleNamespace(launch=lambda **_kwargs: self.browser)
+        return types.SimpleNamespace(chromium=chromium)
+
+    def __exit__(self, *_args) -> bool:  # noqa: ANN002
+        return False
 
 
 @pytest.fixture(autouse=True)
@@ -535,6 +637,77 @@ def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatc
 
 
 # --- SSRF guard regression (code review 3-H3 / 3-L4) -----------------------
+
+
+def test_playwright_route_guard_blocks_redirect_to_internal_host(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV
+
+    monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
+    guard = _PlaywrightRouteGuard()
+
+    public_request = _FakeRoute("https://example.test/page")
+    _guard_playwright_route(public_request, guard)
+    assert public_request.continued is True
+    assert public_request.aborted == []
+
+    redirected_request = _FakeRoute("http://127.0.0.1:8000/api/system/diagnostics")
+    _guard_playwright_route(redirected_request, guard)
+
+    assert redirected_request.continued is False
+    assert redirected_request.aborted == ["blockedbyclient"]
+    with pytest.raises(ValueError, match="SSRF"):
+        _raise_if_playwright_route_guard_blocked(guard)
+
+
+def test_playwright_route_guard_honors_private_host_opt_in(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV
+
+    monkeypatch.setenv(ALLOW_PRIVATE_HOSTS_ENV, "1")
+    guard = _PlaywrightRouteGuard()
+    request = _FakeRoute("http://192.168.1.1/router")
+
+    _guard_playwright_route(request, guard)
+
+    assert request.continued is True
+    assert request.aborted == []
+    _raise_if_playwright_route_guard_blocked(guard)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "action", "blocked_on"),
+    [
+        ("_observe", {"url": "https://example.test/page", "max_chars": 100}, "goto"),
+        ("_screenshot", {"url": "https://example.test/screen"}, "goto"),
+        ("_wait", {"url": "https://example.test/page", "selector": "#ready"}, "wait"),
+        ("_write_like", {"kind": "click", "url": "https://example.test/page", "selector": "#go"}, "click"),
+    ],
+)
+def test_local_playwright_adapter_methods_fail_when_route_guard_blocks_internal_request(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    action: dict[str, Any],
+    blocked_on: str,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_BROWSER_ALLOW_PRIVATE_HOSTS", raising=False)
+    browser = _GuardedFakeBrowser(blocked_on)
+    _install_fake_playwright(
+        monkeypatch,
+        lambda: _GuardedFakeSyncPlaywright(browser),
+        error_type=RuntimeError,
+    )
+
+    method = getattr(LocalBrowserActivityAdapter(), method_name)
+    if method_name == "_observe":
+        with pytest.raises(ValueError, match="SSRF"):
+            method(action, _context())
+    else:
+        result = method(action, _context())
+        assert result["ok"] is False
+        assert "SSRF" in result["error"]
+
+    assert browser.context is not None
+    assert browser.context.route_pattern == "**/*"
+    assert browser.context_options["service_workers"] == "block"
 
 
 @pytest.mark.parametrize(

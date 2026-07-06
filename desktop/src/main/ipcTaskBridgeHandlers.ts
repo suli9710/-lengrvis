@@ -9,6 +9,7 @@ import {
 import {
   approvalConfirmationDialogOptions,
   confirmNativeDesktopAction,
+  nativeActionConfirmationHeaders,
   nativeApprovalConfirmationHeaders,
   truncateForDialog
 } from "./ipcNativeConfirmation";
@@ -91,6 +92,11 @@ export function registerTaskBridgeIpcHandlers(backend: BackendProcessManager): v
   ipcMain.handle(IPC_CHANNELS.taskRollback, async (event, taskId: unknown) => {
     assertTrustedRenderer(event);
     const safeTaskId = validateBridgeIdentifier(taskId, "task id");
+    const confirmationHeaders = await nativeActionConfirmationHeaders(
+      (request) => proxyExplicitDesktopBridgeRequest(backend, request),
+      backend,
+      `/api/tasks/${encodeURIComponent(safeTaskId)}/rollback/native-confirmation-challenge`
+    );
     await confirmNativeDesktopAction(event, {
       title: "Confirm task rollback",
       message: "Roll back this task?",
@@ -98,7 +104,8 @@ export function registerTaskBridgeIpcHandlers(backend: BackendProcessManager): v
     });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/tasks/${encodeURIComponent(safeTaskId)}/rollback`,
-      method: "POST"
+      method: "POST",
+      headers: confirmationHeaders
     });
   });
 

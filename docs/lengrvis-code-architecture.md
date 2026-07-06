@@ -1,9 +1,9 @@
 # Lengrvis Code Vendor Runtime And Architecture Boundary
 
 Lengrvis Code is the in-product name for Lengrvis's vendored coding-engine
-runtime. The source snapshot is kept under the vendored path
-`vendor/lengrvis-code`, and the local provenance record remains
-`vendor/lengrvis-code/LENGRVIS_VENDOR_MANIFEST.md`.
+runtime. The source snapshot can be restored locally under
+`vendor/lengrvis-code`, while the tracked provenance record lives at
+`docs/vendors/lengrvis-code-vendor-manifest.md`.
 
 The snapshot currently contains source, package metadata, tests, docs,
 workspace packages, and built `dist/` output. The upstream package metadata

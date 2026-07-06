@@ -4,16 +4,25 @@ import json
 import re
 import ssl
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import PROJECT_ROOT, env_raw
 from app.core import audit as audit_core
 from app.core import db
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
 from app.policy.redaction import contains_sensitive_key, redact_text
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    create_native_confirmation_challenge,
+    enforce_native_confirmation_challenge_rate_limit,
+    require_native_confirmation,
+)
 from app.services import mobile_pairing_service, ollama_service, system_service, task_recording_service
 
 router = APIRouter()
@@ -196,10 +205,17 @@ def export_diagnostics(request: Request):
 
 
 ERASE_LOCAL_DATA_CONFIRM = "erase-local-data"
+ERASE_LOCAL_DATA_NATIVE_ACTION = "erase_local_data"
+ERASE_LOCAL_DATA_ENDPOINT = "/api/system/privacy/erase-local-data"
 
 
 @router.post("/system/privacy/erase-local-data")
-def erase_local_data(payload: dict):
+def erase_local_data(
+    payload: dict,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+):
     """One-click local personal data deletion (PIPL/GDPR deletion-right entry).
 
     Erases locally stored user content (tasks, chats, runs, recordings,
@@ -213,7 +229,17 @@ def erase_local_data(payload: dict):
             status_code=400,
             detail=f'Confirmation required: pass {{"confirm": "{ERASE_LOCAL_DATA_CONFIRM}"}}.',
         )
-    include_settings = bool(payload.get("include_settings", False))
+    include_settings = _erase_include_settings(payload)
+    native_confirmation = require_native_confirmation(
+        action=ERASE_LOCAL_DATA_NATIVE_ACTION,
+        endpoint=ERASE_LOCAL_DATA_ENDPOINT,
+        approval_id="local-data",
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+        preview_hmac=_erase_local_data_hmac(payload),
+    )
+    db.require_sensitive_integrity_ok()
     settings = get_effective_settings()
 
     deleted_packages = 0
@@ -240,6 +266,7 @@ def erase_local_data(payload: dict):
             "deleted_diagnostic_packages": deleted_packages,
             "include_settings": include_settings,
             "preserved": preserved,
+            "desktop_native_confirmation_id": native_confirmation.get("confirmation_id"),
         },
     )
     return {
@@ -256,6 +283,45 @@ def erase_local_data(payload: dict):
         },
         "audit": "erase_event_appended_to_local_audit_chain",
     }
+
+
+@router.post("/system/privacy/erase-local-data/native-confirmation-challenge")
+def erase_local_data_native_confirmation_challenge(payload: dict, request: Request):
+    if str(payload.get("confirm") or "") != ERASE_LOCAL_DATA_CONFIRM:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation required: pass {{"confirm": "{ERASE_LOCAL_DATA_CONFIRM}"}}.',
+        )
+    _erase_include_settings(payload)
+    enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
+    db.require_sensitive_integrity_ok()
+    return create_native_confirmation_challenge(
+        action=ERASE_LOCAL_DATA_NATIVE_ACTION,
+        endpoint=ERASE_LOCAL_DATA_ENDPOINT,
+        approval_id="local-data",
+        preview_hmac=_erase_local_data_hmac(payload),
+    )
+
+
+def _erase_local_data_hmac(payload: dict[str, Any]) -> str:
+    return sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _erase_include_settings(payload: dict[str, Any]) -> bool:
+    value = payload.get("include_settings", False)
+    if not isinstance(value, bool):
+        raise HTTPException(status_code=422, detail="include_settings must be a boolean.")
+    return value
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _client_scope(request: Request) -> str:
+    client = request.client
+    host = client.host if client else "unknown"
+    return (host or "unknown").strip().lower() or "unknown"
 
 
 def _diagnostics_payload(request: Request) -> dict[str, Any]:

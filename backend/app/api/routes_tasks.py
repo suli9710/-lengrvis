@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from app.api.task_public_views import (
@@ -55,17 +56,30 @@ from app.core.schemas import Task, TaskStatus
 from app.llm.registry import get_effective_settings
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    create_native_confirmation_challenge,
+    enforce_native_confirmation_challenge_rate_limit,
+    require_native_confirmation,
+)
 from app.services import task_artifact_service, task_recording_service
 from app.services.task_explain_service import (
     build_task_completion_evidence,
     build_task_explain,
 )
-from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
+from app.services.task_service import cancel_task, get_task, list_tasks, resume_task, set_task_status
 from app.tools import rollback_tools
 
 router = APIRouter()
 BOUNDARY_EVENT_SOURCE_LIMIT = 500
 BOUNDARY_EVENT_QUERY_CHUNK_SIZE = 400
+ROLLBACK_NATIVE_ACTION = "rollback_task"
+
+
+def _rollback_endpoint(task_id: str) -> str:
+    return f"/api/tasks/{task_id}/rollback"
 
 
 def _audit_export_enabled() -> bool:
@@ -521,21 +535,58 @@ def resume(task_id: str):
 
 
 @router.post("/tasks/{task_id}/cancel")
-def cancel(task_id: str):
-    return set_task_status(task_id, TaskStatus.CANCELLED)
+async def cancel(task_id: str):
+    return await cancel_task(task_id)
 
 
 @router.post("/tasks/{task_id}/rollback")
-def rollback(task_id: str):
+def rollback(
+    task_id: str,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+):
+    try:
+        task = get_task(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    native_confirmation = require_native_confirmation(
+        action=ROLLBACK_NATIVE_ACTION,
+        endpoint=_rollback_endpoint(task_id),
+        approval_id=task_id,
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+        preview_hmac=_rollback_preview_hmac(task_id),
+    )
+    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
+        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
+    db.require_sensitive_integrity_ok()
+    outcome = rollback_tools.execute_rollback(task_id)
+    outcome["native_confirmation"] = {
+        "confirmation_id": native_confirmation.get("confirmation_id"),
+        "desktop_native_confirmed": True,
+    }
+    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService", strict=True)
+    return outcome
+
+
+@router.post("/tasks/{task_id}/rollback/native-confirmation-challenge")
+def rollback_native_confirmation_challenge(task_id: str, request: Request):
     try:
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
         raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
-    outcome = rollback_tools.execute_rollback(task_id)
-    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService", strict=True)
-    return outcome
+    enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
+    db.require_sensitive_integrity_ok()
+    return create_native_confirmation_challenge(
+        action=ROLLBACK_NATIVE_ACTION,
+        endpoint=_rollback_endpoint(task_id),
+        approval_id=task_id,
+        preview_hmac=_rollback_preview_hmac(task_id),
+    )
 
 
 @router.get("/tasks/{task_id}/rollback-preview")
@@ -545,3 +596,17 @@ def rollback_preview(task_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     return rollback_tools.build_rollback_plan(task_id)
+
+
+def _rollback_preview_hmac(task_id: str) -> str:
+    return sha256(_canonical_json(rollback_tools.build_rollback_plan(task_id)).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _client_scope(request: Request) -> str:
+    client = request.client
+    host = client.host if client else "unknown"
+    return (host or "unknown").strip().lower() or "unknown"

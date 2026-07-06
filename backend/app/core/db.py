@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
-from app.core.db_schema import initialize_schema
+from app.core.db_schema import ensure_document_chunks_fts, initialize_schema
 from app.core.db_tables import (
     _ENSURE_COLUMNS_TABLES,
     _SAFE_COLUMN_DEFINITION_RE,
@@ -232,15 +232,17 @@ def reset_init_db_cache() -> None:
     close_thread_connection()
 
 
-def init_db() -> None:
+def init_db(*, force: bool = False) -> None:
     # init_db is used as a lazy-init guard on hot paths (event publishing,
     # usage recording, ...). Re-running the full schema script there is pure
     # overhead, so each db path is initialized once per process.
     path = str(db_path())
-    if path in _INITIALIZED_DB_PATHS and Path(path).exists():
+    if not force and path in _INITIALIZED_DB_PATHS and Path(path).exists():
+        _ensure_cached_schema()
         return
     with _INIT_DB_LOCK:
-        if path in _INITIALIZED_DB_PATHS and Path(path).exists():
+        if not force and path in _INITIALIZED_DB_PATHS and Path(path).exists():
+            _ensure_cached_schema()
             return
         _init_db_schema()
         _INITIALIZED_DB_PATHS.add(path)
@@ -250,6 +252,14 @@ def _init_db_schema() -> None:
     with connect() as conn:
         initialize_schema(conn, _ensure_columns)
         _ensure_sensitive_record_integrity_schema(conn)
+
+
+def _ensure_cached_schema() -> None:
+    state = _thread_connection_state()
+    if state is not None and state.conn.in_transaction:
+        return
+    with connect() as conn:
+        ensure_document_chunks_fts(conn)
 
 
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:

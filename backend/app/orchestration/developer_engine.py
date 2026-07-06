@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hmac
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from app.agents.delegation_metadata import developer_engine_capabilities
 from app.config import PROJECT_ROOT, AppSettings
 from app.core import db
-from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus, now_iso
 from app.integrations.lengrvis_code import (
     allowed_tools_for_developer,
     validate_allowed_tools,
@@ -23,6 +24,7 @@ from app.orchestration.execution_models import (
     RunPhase,
     RunState,
 )
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.lengrvis_code_config import LENGRVIS_CODE_DISPLAY_NAME, LengrvisCodeConfig
 from app.orchestration.lengrvis_code_runner import (
     LengrvisCodeStreamSummary,
@@ -31,7 +33,10 @@ from app.orchestration.lengrvis_code_runner import (
     run_lengrvis_code,
 )
 from app.orchestration.runtime_context import TaskRuntimeContext
+from app.orchestration.task_phase import TaskPhase
 from app.orchestration.tool_runtime import ToolRuntime
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
@@ -180,6 +185,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
 
     async def run_turn(self, state: RunState) -> EngineTurnResult:
         if state.phase in NON_EXECUTABLE_RUN_PHASES:
+            if state.phase == RunPhase.AWAITING_APPROVAL and bool(
+                getattr(self.settings, "developer_writes_enabled", False)
+            ):
+                return await self._run_lengrvis_code_turn(state)
             return EngineTurnResult(state=state, finished=True, message=f"Run is already {state.phase.value}.")
         if not self.use_lengrvis_code:
             disabled = state.model_copy(
@@ -292,9 +301,11 @@ class DeveloperExecutionEngine(ExecutionEngine):
         task, plan, step = _developer_runtime_models(
             state,
             settings=self.settings,
-            allowed_tools=launch_config.allowed_tools,
+            launch_config=launch_config,
             writes_enabled=writes_enabled,
         )
+        if state.phase != RunPhase.AWAITING_APPROVAL:
+            task = _ensure_developer_task_execution(task, adapter)
         runtime = TaskRuntimeContext.from_task(task, self.settings, adapter.bus)
         runtime.allowed_directories = list(self.settings.allowed_directories or [_default_workspace(self.settings)])
         runtime.extra_context.update(
@@ -306,33 +317,53 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 "_developer_lengrvis_code_config": launch_config,
             }
         )
-        tool = _developer_lengrvis_code_tool()
-        review = await ToolRuntime(adapter).review_and_maybe_prepare_approval(task, step, tool, runtime)
-        if review.kind != "allowed":
-            db.upsert_model("plans", plan)
-            if review.kind in {"step_denied", "fatal_denied"}:
-                return LengrvisCodeStreamSummary(
-                    result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} denied."]},
+        tool = _developer_lengrvis_code_tool(writes_enabled=writes_enabled)
+        approval: Approval | None = None
+        if state.phase == RunPhase.AWAITING_APPROVAL:
+            approval = _claim_developer_write_approval(task, step, tool, runtime)
+            if approval is None:
+                adapter._set_status(
+                    task,
+                    TaskStatus.WAITING_USER_APPROVAL,
+                    final_summary=f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run is waiting for backend approval.",
                 )
-            return LengrvisCodeStreamSummary(
-                result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} unavailable."]},
-            )
+                return _developer_waiting_for_approval_summary()
+        else:
+            review = await ToolRuntime(adapter).review_and_maybe_prepare_approval(task, step, tool, runtime)
+            if review.kind != "allowed":
+                db.upsert_model("plans", plan)
+                if review.kind == "waiting_user_approval":
+                    adapter._set_status(
+                        task,
+                        TaskStatus.WAITING_USER_APPROVAL,
+                        final_summary=f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run requires backend approval.",
+                    )
+                    return _developer_waiting_for_approval_summary()
+                if review.kind in {"step_denied", "fatal_denied"}:
+                    return LengrvisCodeStreamSummary(
+                        result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} denied."]},
+                    )
+                return LengrvisCodeStreamSummary(
+                    result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} unavailable."]},
+                )
+
+        approved_args = None
+        approval_id = None
+        if approval is not None:
+            approval_id = approval.id
+            approved_args = {**dict(step.args or {}), "dry_run": False, "approved": True, "approval_id": approval.id}
 
         execution = await ToolRuntime(adapter).execute_allowed(
             task,
             step,
             tool,
             runtime,
-            approved_args={
-                "prompt": _prompt_from_goal(state.goal, writes_enabled=writes_enabled),
-                "cwd": _default_workspace(self.settings),
-                "run_id": state.run_id,
-                "allowed_tools": list(launch_config.allowed_tools),
-                "max_turns": launch_config.max_turns,
-                "permission_mode": launch_config.permission_mode,
-            },
+            approved_args=approved_args,
+            approval_id=approval_id,
         )
         db.upsert_model("plans", plan)
+        if approval is not None and execution.result is not None and execution.result.ok:
+            db.upsert_model("approvals", approval, status=approval.status)
         output = execution.result.output if execution.result is not None else {}
         summary_payload = output.get("summary")
         if isinstance(summary_payload, LengrvisCodeStreamSummary):
@@ -454,9 +485,10 @@ def _developer_plan_step(
             "writes_enabled": writes_enabled,
         },
         expected_observation=f"{LENGRVIS_CODE_DISPLAY_NAME} stream-json result captured.",
-        risk_level=RiskLevel.R1_OPEN_ONLY,
+        risk_level=_developer_risk_level(writes_enabled),
+        requires_approval=writes_enabled,
         status=status,
-        tool_effects=["read", "execute_subprocess"],
+        tool_effects=_developer_tool_effects(writes_enabled),
         resource_kinds=["workspace", "developer_runtime"],
         trust_tier="builtin",
     )
@@ -466,7 +498,7 @@ def _developer_runtime_models(
     state: RunState,
     *,
     settings: AppSettings,
-    allowed_tools: tuple[str, ...],
+    launch_config: LengrvisCodeConfig,
     writes_enabled: bool,
 ) -> tuple[Task, Plan, PlanStep]:
     task = _task_for_developer_state(state)
@@ -476,26 +508,149 @@ def _developer_runtime_models(
     if step is None:
         step = _developer_plan_step(
             task,
-            allowed_tools=allowed_tools,
+            allowed_tools=launch_config.allowed_tools,
             writes_enabled=writes_enabled,
         )
         if step_id:
             step.id = step_id
         plan.steps.insert(0, step)
-    step.args = {
-        "workspace_path": _default_workspace(settings),
-        "allowed_tools": list(allowed_tools),
-        "writes_enabled": writes_enabled,
-    }
+    step.args = _developer_execution_args(
+        state,
+        settings=settings,
+        launch_config=launch_config,
+        writes_enabled=writes_enabled,
+    )
     step.tool_name = DEVELOPER_TOOL_NAME
     step.agent_name = "DeveloperExecutionEngine"
-    step.risk_level = RiskLevel.R1_OPEN_ONLY
-    step.tool_effects = ["read", "execute_subprocess"]
+    step.risk_level = _developer_risk_level(writes_enabled)
+    step.requires_approval = writes_enabled
+    step.tool_effects = _developer_tool_effects(writes_enabled)
     step.resource_kinds = ["workspace", "developer_runtime"]
     step.trust_tier = "builtin"
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
     return task, plan, step
+
+
+def _developer_execution_args(
+    state: RunState,
+    *,
+    settings: AppSettings,
+    launch_config: LengrvisCodeConfig,
+    writes_enabled: bool,
+) -> dict[str, Any]:
+    workspace = _default_workspace(settings)
+    return {
+        "prompt": _prompt_from_goal(state.goal, writes_enabled=writes_enabled),
+        "cwd": workspace,
+        "workspace_path": workspace,
+        "run_id": state.run_id,
+        "allowed_tools": list(launch_config.allowed_tools),
+        "max_turns": launch_config.max_turns,
+        "permission_mode": launch_config.permission_mode,
+        "writes_enabled": writes_enabled,
+    }
+
+
+def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
+    return LengrvisCodeStreamSummary(
+        result={
+            "is_error": True,
+            "result": f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run requires backend approval.",
+            "permission_denials": [
+                {
+                    "tool_name": DEVELOPER_TOOL_NAME,
+                    "reason": "backend approval required before launching write-capable developer subprocess",
+                }
+            ],
+        },
+    )
+
+
+def _ensure_developer_task_execution(task: Task, adapter: _DeveloperRuntimeAdapter) -> Task:
+    if task.status == TaskPhase.CREATED:
+        task = adapter._set_status(task, TaskStatus.PLANNING)
+    if task.status == TaskPhase.PLANNING:
+        task = adapter._set_status(task, TaskStatus.REVIEWING_PLAN)
+    if task.status == TaskPhase.PLAN_REVIEW:
+        task = adapter._set_status(task, TaskStatus.EXECUTION)
+    if task.status == TaskPhase.EXECUTION and task.execution_stage == ExecutionStage.AWAITING_APPROVAL:
+        return task
+    if task.status == TaskPhase.EXECUTION and task.execution_stage != ExecutionStage.STEP_RUNNING:
+        task = adapter._set_status(task, TaskStatus.EXECUTION)
+    return task
+
+
+def _claim_developer_write_approval(
+    task: Task,
+    step: PlanStep,
+    tool: ToolDefinition,
+    runtime: TaskRuntimeContext,
+) -> Approval | None:
+    rows = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, ApprovalStatus.APPROVED.value), limit=100)
+    candidates: list[Approval] = []
+    for row in rows:
+        approval = Approval.model_validate(row)
+        if approval.consumed_at:
+            continue
+        if approval.tool_name != DEVELOPER_TOOL_NAME:
+            continue
+        if approval.step_id and approval.step_id != step.id:
+            continue
+        candidates.append(approval)
+    candidates.sort(key=lambda item: item.created_at, reverse=True)
+    for approval in candidates:
+        binding_error = _developer_approval_binding_error(approval, task, step, tool, runtime)
+        if binding_error:
+            db.expire_approval_if_unconsumed(approval.id, now_iso(), binding_error)
+            continue
+        claimed = db.claim_approval_for_execution(approval.id, now_iso())
+        if claimed:
+            return Approval.model_validate(claimed)
+    return None
+
+
+def _developer_approval_binding_error(
+    approval: Approval,
+    task: Task,
+    step: PlanStep,
+    tool: ToolDefinition,
+    runtime: TaskRuntimeContext,
+) -> str:
+    if approval.status != ApprovalStatus.APPROVED:
+        return f"Approval status is {approval.status}; expected approved."
+    if approval.consumed_at:
+        return "Approval has already been consumed."
+    if not all(
+        [
+            approval.tool_name,
+            approval.args_binding_hmac,
+            approval.preview_hmac,
+            approval.settings_fingerprint,
+            approval.permission_policy_version,
+            approval.tool_version,
+        ]
+    ):
+        return "Approval lacks binding metadata."
+    if approval.tool_name != step.tool_name:
+        return "Approved tool name does not match current plan step."
+    if approval.risk_level and approval.risk_level != tool.risk_level.value:
+        return "Approved risk level does not match current tool risk."
+    if approval.tool_version != getattr(tool, "tool_version", "1"):
+        return "Approved tool version does not match current tool definition."
+    expected_args = args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id)
+    if not hmac.compare_digest(str(approval.args_binding_hmac or ""), expected_args):
+        return "Approved arguments do not match current plan step."
+    expected_preview = preview_hmac(approval.diff_preview)
+    if not hmac.compare_digest(str(approval.preview_hmac or ""), expected_preview):
+        return "Approval preview was modified after review."
+    expected_settings = settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories)
+    if not hmac.compare_digest(str(approval.settings_fingerprint or ""), expected_settings):
+        return "Runtime settings changed after approval preview."
+    expected_policy = permission_policy_version(PermissionStore().updated_at())
+    if not hmac.compare_digest(str(approval.permission_policy_version or ""), expected_policy):
+        return "Permission policy changed after approval preview."
+    return ""
 
 
 def _task_for_developer_state(state: RunState) -> Task:
@@ -530,7 +685,18 @@ def _developer_step_id(plan: dict[str, Any]) -> str:
     return ""
 
 
-def _developer_lengrvis_code_tool() -> ToolDefinition:
+def _developer_risk_level(writes_enabled: bool) -> RiskLevel:
+    return RiskLevel.R2_REVERSIBLE_MODIFY if writes_enabled else RiskLevel.R1_OPEN_ONLY
+
+
+def _developer_tool_effects(writes_enabled: bool) -> list[str]:
+    effects = ["read", "execute_subprocess"]
+    if writes_enabled:
+        effects.append("write")
+    return effects
+
+
+def _developer_lengrvis_code_tool(*, writes_enabled: bool = False) -> ToolDefinition:
     return ToolDefinition(
         name=DEVELOPER_TOOL_NAME,
         description=f"Run {LENGRVIS_CODE_DISPLAY_NAME} headless inside the authorized workspace.",
@@ -540,14 +706,15 @@ def _developer_lengrvis_code_tool() -> ToolDefinition:
                 "prompt": {"type": "string"},
                 "cwd": {"type": "string"},
                 "run_id": {"type": "string"},
+                "dry_run": {"type": "boolean"},
             },
-            "required": ["prompt", "cwd", "run_id"],
+            "required": [],
             "additionalProperties": True,
         },
         output_schema={},
-        risk_level=RiskLevel.R1_OPEN_ONLY,
+        risk_level=_developer_risk_level(writes_enabled),
         agent_owner="DeveloperExecutionEngine",
-        supports_dry_run=False,
+        supports_dry_run=writes_enabled,
         requires_authorized_path=False,
         execute=_execute_lengrvis_code_tool,
         read_only=False,
@@ -557,7 +724,7 @@ def _developer_lengrvis_code_tool() -> ToolDefinition:
         max_result_size=80000,
         result_summary=_developer_tool_summary,
         capabilities=["developer_runtime", "subprocess"],
-        effects=["read", "execute_subprocess"],
+        effects=_developer_tool_effects(writes_enabled),
         resource_kinds=["workspace", "developer_runtime"],
         trust_tier="builtin",
         sensitive_arg_keys=["prompt"],
@@ -572,6 +739,23 @@ def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -
     config = context.get("_developer_lengrvis_code_config")
     if not isinstance(config, LengrvisCodeConfig):
         config = LengrvisCodeConfig()
+    if bool(args.get("dry_run")):
+        return {
+            "dry_run": True,
+            "would_change": [
+                {
+                    "type": "developer_subprocess",
+                    "tool": LENGRVIS_CODE_DISPLAY_NAME,
+                    "cwd": str(args.get("cwd") or args.get("workspace_path") or _default_workspace(settings)),
+                    "allowed_tools": list(args.get("allowed_tools") or config.allowed_tools),
+                    "writes_enabled": bool(args.get("writes_enabled", False)),
+                }
+            ],
+            "summary": (
+                f"{LENGRVIS_CODE_DISPLAY_NAME} would launch a developer subprocess. "
+                "Write/Edit tools require backend approval before execution."
+            ),
+        }
     run_id = str(args.get("run_id") or context.get("run_id") or "")
     abort_event = context.get("_tool_abort_event")
     summary = _run_lengrvis_code_sync(

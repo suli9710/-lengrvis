@@ -9,7 +9,7 @@ import { addApprovalNotificationResponseListener, getLastApprovalNotificationApp
 import { reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs, isRemoteInputGrantUsable } from "../src/remoteInputGrant";
 import { ConsentScreen } from "../src/screens/ConsentScreen";
 import { PairScreen } from "../src/screens/PairScreen";
-import { MobileCompanionProvider } from "../src/state/MobileCompanionContext";
+import { MobileCompanionProvider, useMobileCompanion } from "../src/state/MobileCompanionContext";
 import { clearSession, loadSession } from "../src/store/auth";
 import { loadConsentState } from "../src/store/consent";
 import { colors } from "../src/ui/theme";
@@ -67,31 +67,6 @@ export default function RootLayout() {
       isActive = false;
     };
   }, [consentGate, pathname, router, sessionLoadAttempt]);
-
-  useEffect(() => {
-    if (!session) return undefined;
-    let isActive = true;
-    const openApprovalFromNotification = (approvalId: string) => {
-      void getApprovalDetail(session, approvalId)
-        .then((detail) => {
-          if (!isActive) return;
-          router.push({ pathname: "/approval/[id]", params: { id: detail.approval.id } });
-        })
-        .catch(() => undefined);
-    };
-
-    void getLastApprovalNotificationApprovalId()
-      .then((lastApprovalId) => {
-        if (lastApprovalId && isActive) openApprovalFromNotification(lastApprovalId);
-      })
-      .catch(() => undefined);
-
-    const subscription = addApprovalNotificationResponseListener(openApprovalFromNotification);
-    return () => {
-      isActive = false;
-      subscription.remove();
-    };
-  }, [router, session]);
 
   useEffect(() => {
     if (!remoteInputGrant) return undefined;
@@ -238,10 +213,43 @@ export default function RootLayout() {
         remoteInputGrant={remoteInputGrant}
         session={session}
       >
+        <ApprovalNotificationRouter session={session} />
         <Slot />
       </MobileCompanionProvider>
     </GestureHandlerRootView>
   );
+}
+
+function ApprovalNotificationRouter({ session }: { session: PairingSession }) {
+  const router = useRouter();
+  const { updateApproval } = useMobileCompanion();
+
+  useEffect(() => {
+    let isActive = true;
+    const openApprovalFromNotification = (approvalId: string) => {
+      void getApprovalDetail(session, approvalId)
+        .then((detail) => {
+          if (!isActive) return;
+          updateApproval(detail.approval);
+          router.push({ pathname: "/approval/[id]", params: { id: detail.approval.id } });
+        })
+        .catch(() => undefined);
+    };
+
+    void getLastApprovalNotificationApprovalId()
+      .then((lastApprovalId) => {
+        if (lastApprovalId && isActive) openApprovalFromNotification(lastApprovalId);
+      })
+      .catch(() => undefined);
+
+    const subscription = addApprovalNotificationResponseListener(openApprovalFromNotification);
+    return () => {
+      isActive = false;
+      subscription.remove();
+    };
+  }, [router, session, updateApproval]);
+
+  return null;
 }
 
 function routeStateFromPath(pathname: string) {

@@ -20,8 +20,46 @@ function Resolve-ProjectPath {
     return Join-Path $Root $Path
 }
 
+function Resolve-CanonicalPath {
+    param([string]$Path)
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Test-SameOrNestedPath {
+    param(
+        [string]$Parent,
+        [string]$Candidate
+    )
+    $parentCanonical = Resolve-CanonicalPath -Path $Parent
+    $candidateCanonical = Resolve-CanonicalPath -Path $Candidate
+    return $candidateCanonical.Equals($parentCanonical, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $candidateCanonical.StartsWith("$parentCanonical\", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $candidateCanonical.StartsWith("$parentCanonical/", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-ReleaseOutputPath {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Label must not be empty."
+    }
+    $resolved = Resolve-CanonicalPath -Path (Resolve-ProjectPath $Path)
+    $allowedRoots = @(
+        (Join-Path $Root "dist"),
+        (Join-Path $Root "release")
+    )
+    foreach ($allowedRoot in $allowedRoots) {
+        if (Test-SameOrNestedPath -Parent $allowedRoot -Candidate $resolved) {
+            return $resolved
+        }
+    }
+    throw "$Label must stay under repository dist or release directories. Got: $resolved"
+}
+
 $ZipPath = Resolve-ProjectPath $PortableZip
-$OutputPath = Resolve-ProjectPath $OutputExe
+$OutputPath = Resolve-ReleaseOutputPath -Path $OutputExe -Label "OutputExe"
 $BuildDir = Join-Path $Root "build\csharp-sfx"
 $SourcePath = Join-Path $BuildDir "LengrvisSfx.cs"
 $PayloadPath = Join-Path $BuildDir "payload.zip"

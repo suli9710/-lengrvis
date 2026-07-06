@@ -714,7 +714,11 @@ def test_guardian_wakeup_approve_returns_refreshed_failed_payload(monkeypatch, t
     with TestClient(create_guardian_app()) as client:
         response = client.post(
             f"/api/wakeups/{wakeup.id}/approve",
-            headers=native_confirmation_headers("approve", wakeup.id),
+            headers=native_confirmation_headers(
+                "approve",
+                wakeup.id,
+                endpoint=f"/api/wakeups/{wakeup.id}/approve",
+            ),
         )
 
     assert response.status_code == 503
@@ -787,7 +791,11 @@ def test_guardian_wakeup_run_response_without_run_id_fails(monkeypatch, tmp_path
     with TestClient(create_guardian_app()) as client:
         response = client.post(
             f"/api/wakeups/{wakeup.id}/approve",
-            headers=native_confirmation_headers("approve", wakeup.id),
+            headers=native_confirmation_headers(
+                "approve",
+                wakeup.id,
+                endpoint=f"/api/wakeups/{wakeup.id}/approve",
+            ),
         )
 
     assert response.status_code == 503
@@ -832,7 +840,11 @@ def test_guardian_wakeup_run_failure_redacts_persisted_upstream_error(monkeypatc
     with TestClient(create_guardian_app()) as client:
         response = client.post(
             f"/api/wakeups/{wakeup.id}/approve",
-            headers=native_confirmation_headers("approve", wakeup.id),
+            headers=native_confirmation_headers(
+                "approve",
+                wakeup.id,
+                endpoint=f"/api/wakeups/{wakeup.id}/approve",
+            ),
         )
 
     assert response.status_code == 503
@@ -882,7 +894,11 @@ def test_guardian_wakeup_approve_returns_completed_payload_with_run_id(monkeypat
     with TestClient(create_guardian_app()) as client:
         response = client.post(
             f"/api/wakeups/{wakeup.id}/approve",
-            headers=native_confirmation_headers("approve", wakeup.id),
+            headers=native_confirmation_headers(
+                "approve",
+                wakeup.id,
+                endpoint=f"/api/wakeups/{wakeup.id}/approve",
+            ),
         )
 
     assert response.status_code == 200

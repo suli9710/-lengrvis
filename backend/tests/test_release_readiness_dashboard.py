@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_release_readiness_dashboard.py"
+RELEASE_READINESS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-readiness.yml"
 
 
 def _load_module():
@@ -43,6 +44,16 @@ def test_script_path_exists():
     assert SCRIPT_PATH.exists(), f"missing validator at {SCRIPT_PATH}"
 
 
+def test_release_readiness_workflow_hard_gate_uses_rc_release():
+    text = RELEASE_READINESS_WORKFLOW.read_text(encoding="utf-8")
+    strict_section = text[
+        text.index("Strict release readiness") : text.index("Strict market readiness")
+    ]
+
+    assert "--rc-release" in strict_section
+    assert "--strict" not in strict_section
+
+
 def test_parse_rows_reads_p0_and_p1():
     rows = mod.parse_rows(SAMPLE)
     ids = {row.row_id for row in rows}
@@ -62,7 +73,12 @@ def test_non_strict_allows_blocked_p0_but_warns():
 
 def test_strict_fails_on_blocked_p0():
     rows = mod.parse_rows(SAMPLE)
-    errors, _ = mod.validate(rows, strict=True, artifact_root=REPO_ROOT)
+    errors, _ = mod.validate(
+        rows,
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+    )
     assert any("RR-P0-001" in e for e in errors)
     # The passed P0 row must not be flagged in strict mode.
     assert not any("RR-P0-002" in e for e in errors)
@@ -116,6 +132,175 @@ def test_strict_requires_p0_artifact_to_point_to_ci_evidence():
     assert any("RR-P0-013" in e and "CI-generated evidence" in e for e in errors)
 
 
+def test_strict_rejects_external_actions_repo():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-015 | X | ev | passed | https://github.com/other/repo/actions/runs/123 | alice | 2026-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+    )
+    assert any("RR-P0-015" in e and "CI-generated evidence" in e for e in errors)
+
+
+def test_strict_rejects_external_actions_repo_for_non_p0_rows():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P1-015 | X | ev | passed | https://github.com/other/repo/actions/runs/123 | alice | 2026-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+    )
+    assert any("RR-P1-015" in e and "current repository and current CI run" in e for e in errors)
+
+
+def test_strict_rejects_actions_run_id_that_is_not_current_ci():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-016 | X | ev | passed | https://github.com/example/repo/actions/runs/123 | alice | 2026-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+        expected_run_id="999",
+    )
+    assert any("RR-P0-016" in e and "CI-generated evidence" in e for e in errors)
+
+
+def test_strict_requires_dashboard_candidate_commit(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "- Commit SHA: abcdef1234567890\n- Run id: 123\n",
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-017 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=tmp_path,
+        dashboard_text="| Field | Value |\n| --- | --- |\n| Build id | 123 |\n",
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+    assert any("Candidate commit" in e for e in errors)
+
+
+def test_strict_requires_current_evidence_commit_to_match_head(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "- Commit SHA: 1234567890abcdef\n- Run id: 123\n",
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-018 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+    assert any("Current release evidence commit" in e for e in errors)
+
+
+def test_strict_rejects_pending_rr_p0_006_current_evidence(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                "- Commit SHA: abcdef1234567890",
+                "- Run id: 123",
+                "- CI status: ci_results_unavailable",
+                "- Manual sign-off status: manual_signoff_pending",
+                "- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | RC handoff and release-owner sign-off | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+
+    assert any("CI status" in e and "ci_results_unavailable" in e for e in errors)
+    assert any("manual sign-off status" in e and "manual_signoff_pending" in e for e in errors)
+    assert any("owner signature is pending" in e for e in errors)
+
+
+def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                "- Commit SHA: abcdef1234567890",
+                "- Run id: 123",
+                "- CI status: machine_gates_passed",
+                "- Manual sign-off status: rc_signoff_recorded",
+                "- Owner signature: release-owner-accepted-rc",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | RC handoff and release-owner sign-off | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+
+    assert errors == []
+
+
 def test_strict_waiver_requires_unexpired_expiry_reason_and_followup():
     markdown = (
         "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
@@ -138,5 +323,6 @@ def test_rc_release_rejects_scoped_maintenance_waivers():
         strict=True,
         rc_release=True,
         artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
     )
     assert any("RR-P0-014" in e and "RC release requires passed P0 evidence" in e for e in errors)

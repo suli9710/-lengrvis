@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.facebook.react.modules.network.OkHttpClientProvider
 import java.io.IOException
+import java.net.URL
 import java.security.cert.CertificateException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -44,6 +45,21 @@ class LengrvisLanTrustInstrumentedTest {
   @After
   fun tearDown() {
     LengrvisLanTrust.clearTrustedServers(context)
+  }
+
+  @Test
+  fun pinnedHostPolicyTracksFingerprintsByHost() {
+    val host = URL(baseUrl).host
+
+    Assert.assertFalse(LengrvisLanTrust.hostHasAnyFingerprintForHost(context, host))
+    Assert.assertFalse(LengrvisLanTrust.hostHasFingerprint(context, host, fingerprintSha256))
+
+    LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)
+
+    Assert.assertTrue(LengrvisLanTrust.hostHasAnyFingerprintForHost(context, host))
+    Assert.assertTrue(LengrvisLanTrust.hostHasFingerprint(context, host, fingerprintSha256))
+    Assert.assertFalse(LengrvisLanTrust.hostHasFingerprint(context, host, wrongFingerprint(fingerprintSha256)))
+    Assert.assertFalse(LengrvisLanTrust.hostHasAnyFingerprintForHost(context, "example.invalid"))
   }
 
   @Test
