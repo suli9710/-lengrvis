@@ -356,6 +356,10 @@
   --result-evidence-accent: var(--green);
 }
 
+.explain-result-evidence--verified_result {
+  --result-evidence-accent: var(--green);
+}
+
 .explain-result-evidence--task_evidence_only,
 .explain-result-evidence--visible_progress {
   --result-evidence-accent: var(--amber);
@@ -375,6 +379,25 @@
   color: var(--text);
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.explain-result-evidence ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.explain-result-evidence em {
+  color: var(--text);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 

@@ -21,7 +21,18 @@ from app.api.routes_approvals import router as approvals_router
 from app.api.routes_perception import router as perception_router
 from app.api.routes_runs import router, ws_router
 from app.core import db
-from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, Plan, PlanStep, Task
+from app.core.schemas import (
+    AgentMessage,
+    Approval,
+    ApprovalStatus,
+    MessageType,
+    Plan,
+    PlanStep,
+    SafetyReview,
+    Task,
+    ToolCall,
+    ToolResult,
+)
 from app.orchestration.execution_models import EngineTurnResult
 from app.orchestration.execution_models import RunPhase as EngineRunPhase
 from app.orchestration.execution_stage import ExecutionStage
@@ -321,6 +332,168 @@ def test_run_timeline_progress_and_wire_redact_secrets_and_internal_paths(monkey
     assert proposed["payload"]["structured_payload"]["note"] == "Authorization: Bearer [REDACTED]"
     assert any(event.get("event") == "tool.proposed" for event in replayed)
     assert progress["progress"][-1]["payload"]["status"] == "running"
+
+
+def test_run_state_exposes_linked_task_result_contract_without_forging_unlinked_results(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+
+    def store_task_run(
+        *,
+        suffix: str,
+        task_status: TaskPhase,
+        run_phase: run_service.RunPhase,
+        final_summary: str = "",
+        tool_result: bool = False,
+        tool_review: bool = False,
+        final_review: bool = False,
+        blocking_review: bool = False,
+    ) -> tuple[str, str]:
+        task = Task(
+            id=f"task_result_contract_{suffix}",
+            user_goal=f"review result contract {suffix}",
+            mode="efficiency",
+            status=task_status,
+            final_summary=final_summary,
+        )
+        db.upsert_model("tasks", task)
+        if tool_result:
+            call = ToolCall(
+                id=f"tool_result_contract_{suffix}",
+                task_id=task.id,
+                step_id=f"step_result_contract_{suffix}",
+                tool_name="system.diagnostics",
+                risk_level=RiskLevel.R0_READ_ONLY,
+            )
+            db.upsert_model("tool_calls", call)
+            db.upsert_model(
+                "tool_results",
+                ToolResult(
+                    id=f"result_contract_{suffix}",
+                    tool_call_id=call.id,
+                    ok=True,
+                    output={"summary": "raw output C:\\Users\\Suli\\secret.txt token=secret-run-result"},
+                ),
+            )
+            if tool_review:
+                db.upsert_model(
+                    "safety_reviews",
+                    SafetyReview(
+                        id=f"tool_review_contract_{suffix}",
+                        task_id=task.id,
+                        step_id=call.step_id,
+                        target_type="tool_result",
+                        verdict="allow",
+                        risk_level=RiskLevel.R0_READ_ONLY,
+                    ),
+                )
+        if final_review:
+            db.upsert_model(
+                "safety_reviews",
+                SafetyReview(
+                    id=f"final_review_contract_{suffix}",
+                    task_id=task.id,
+                    target_type="final",
+                    verdict="allow",
+                    risk_level=RiskLevel.R0_READ_ONLY,
+                ),
+            )
+        if blocking_review:
+            db.upsert_model(
+                "safety_reviews",
+                SafetyReview(
+                    id=f"blocking_review_contract_{suffix}",
+                    task_id=task.id,
+                    target_type="final",
+                    verdict="deny",
+                    risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+                    reasons=["raw reason C:\\Users\\Suli\\secret.txt token=blocked-secret"],
+                ),
+            )
+        run = run_service.Run(
+            id=f"osrun_result_contract_{suffix}",
+            message=f"run result contract {suffix} token=run-message-secret",
+            mode=task.mode,
+            requested_engine=run_service.RunEngine.OS,
+            engine=run_service.RunEngine.OS,
+            phase=run_phase,
+            task_id=task.id,
+        )
+        db.upsert_model("runs", run)
+        return run.id, task.id
+
+    verified_run_id, _ = store_task_run(
+        suffix="verified",
+        task_status=TaskPhase.COMPLETED,
+        run_phase=run_service.RunPhase.COMPLETED,
+        final_summary="Diagnostics result verified.",
+        tool_result=True,
+        tool_review=True,
+        final_review=True,
+    )
+    progress_run_id, _ = store_task_run(
+        suffix="progress",
+        task_status=TaskPhase.COMPLETED,
+        run_phase=run_service.RunPhase.COMPLETED,
+        final_summary="Diagnostics result visible.",
+        tool_result=True,
+    )
+    evidence_only_run_id, _ = store_task_run(
+        suffix="created",
+        task_status=TaskPhase.CREATED,
+        run_phase=run_service.RunPhase.CREATED,
+    )
+    safe_failure_run_id, _ = store_task_run(
+        suffix="failure",
+        task_status=TaskPhase.FAILED,
+        run_phase=run_service.RunPhase.FAILED,
+        final_summary="safe failure",
+        blocking_review=True,
+    )
+    unlinked = run_service.Run(
+        id="osrun_result_contract_unlinked",
+        message="completed run without task",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.COMPLETED,
+    )
+    db.upsert_model("runs", unlinked)
+
+    with TestClient(_test_app()) as client:
+        verified = client.get(f"/api/runs/{verified_run_id}").json()
+        progress = client.get(f"/api/runs/{progress_run_id}").json()
+        evidence_only = client.get(f"/api/runs/{evidence_only_run_id}").json()
+        safe_failure = client.get(f"/api/runs/{safe_failure_run_id}").json()
+        unlinked_payload = client.get(f"/api/runs/{unlinked.id}").json()
+
+    assert verified["completion_evidence"]["level"] == "completed_result"
+    assert verified["completion_evidence"]["result_verified"] is True
+    assert verified["result_quality"]["state"] == "verified_result"
+    assert verified["result_quality"]["can_treat_as_done"] is True
+
+    assert progress["completion_evidence"]["level"] == "visible_progress"
+    assert progress["completion_evidence"]["result_verified"] is False
+    assert progress["result_quality"]["state"] == "visible_progress"
+    assert progress["result_quality"]["can_treat_as_done"] is False
+
+    assert evidence_only["completion_evidence"]["level"] == "task_created"
+    assert evidence_only["result_quality"]["state"] == "task_evidence_only"
+    assert evidence_only["result_quality"]["can_treat_as_done"] is False
+
+    assert safe_failure["completion_evidence"]["level"] == "safe_failure"
+    assert safe_failure["result_quality"]["state"] == "safe_failure"
+    assert safe_failure["result_quality"]["can_treat_as_done"] is False
+
+    assert unlinked_payload["phase"] == "completed"
+    assert unlinked_payload["completion_evidence"]["result_verified"] is False
+    assert unlinked_payload["result_quality"]["can_treat_as_done"] is False
+
+    dumped = json.dumps([verified, progress, evidence_only, safe_failure, unlinked_payload], ensure_ascii=False)
+    assert "C:\\Users\\Suli" not in dumped
+    assert "secret-run-result" not in dumped
+    assert "blocked-secret" not in dumped
+    assert "run-message-secret" not in dumped
 
 
 def test_task_message_to_run_event_uses_safe_projection_for_persisted_payload():

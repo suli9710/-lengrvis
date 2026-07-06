@@ -213,6 +213,8 @@ class RunStateResponse(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     engine_capabilities: dict[str, Any] = Field(default_factory=dict)
+    completion_evidence: dict[str, Any] = Field(default_factory=dict)
+    result_quality: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanStep(BaseModel):

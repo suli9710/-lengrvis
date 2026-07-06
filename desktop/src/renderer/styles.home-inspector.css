@@ -391,3 +391,113 @@
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+
+.result-timeline-card {
+  border-color: rgba(74, 108, 247, 0.2);
+}
+
+.result-timeline-card--ready {
+  border-color: rgba(25, 163, 122, 0.24);
+}
+
+.result-timeline-card--blocked,
+.result-timeline-card--failed {
+  border-color: rgba(219, 74, 94, 0.24);
+}
+
+.result-timeline-card__summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.result-timeline-card__summary strong {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.result-timeline-card__summary p,
+.result-timeline-card__summary em {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.result-timeline-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.result-timeline-step {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  min-height: 82px;
+  padding: 9px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(248, 250, 253, 0.8);
+  color: var(--muted);
+}
+
+.result-timeline-step svg {
+  color: currentColor;
+}
+
+.result-timeline-step b {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.result-timeline-step em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.result-timeline-step--done {
+  color: var(--green);
+  background: rgba(232, 248, 241, 0.82);
+  border-color: rgba(25, 163, 122, 0.22);
+}
+
+.result-timeline-step--current {
+  color: var(--brand);
+  background: rgba(238, 243, 255, 0.92);
+  border-color: rgba(74, 108, 247, 0.24);
+}
+
+.result-timeline-step--blocked {
+  color: var(--amber);
+  background: rgba(255, 247, 226, 0.9);
+  border-color: rgba(196, 135, 30, 0.26);
+}
+
+.result-timeline-step--failed {
+  color: var(--red);
+  background: rgba(255, 235, 238, 0.84);
+  border-color: rgba(219, 74, 94, 0.24);
+}
+
+.result-timeline-card__action {
+  margin-top: 12px;
+}
+
+@media (max-width: 1180px) {
+  .result-timeline-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

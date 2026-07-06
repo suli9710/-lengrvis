@@ -470,6 +470,43 @@ def test_skill_route_rejects_directory_import_with_link_escape(monkeypatch, tmp_
     assert not (data_dir / "skills" / "linked-demo-1.0.0" / "linked-outside" / "secret.txt").exists()
 
 
+def test_skill_route_rejects_nested_link_escape_without_replacing_existing_install(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    source = _write_skill(tmp_path / "source", name="linked-nested-demo")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    db.init_db()
+    client = TestClient(create_app())
+
+    first_response = client.post("/api/skills/import", json={"path": str(source)})
+    assert first_response.status_code == 200
+    installed_root = data_dir / "skills" / "linked-nested-demo-1.0.0"
+    installed_echo = installed_root / "echo.py"
+    assert "echo" in installed_echo.read_text(encoding="utf-8")
+
+    (source / "echo.py").write_text("raise SystemExit('mutated source should not install')\n", encoding="utf-8")
+    nested = source / "nested" / "child"
+    nested.mkdir(parents=True)
+    outside = tmp_path / "outside-nested"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside nested secret", encoding="utf-8")
+    link = nested / "linked-outside"
+    _create_directory_escape_link(link, outside)
+
+    try:
+        response = client.post("/api/skills/import", json={"path": str(source)})
+    finally:
+        _remove_directory_escape_link(link)
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["code"] == "skill_import_path_denied"
+    assert "symlinks" in payload["error"]["message"]
+    assert "mutated source should not install" not in installed_echo.read_text(encoding="utf-8")
+    assert not (installed_root / "nested" / "child" / "linked-outside" / "secret.txt").exists()
+
+
 def test_skill_route_imports_skill_zip_from_downloads(monkeypatch, tmp_path: Path):
     home = tmp_path / "home"
     downloads = home / "Downloads"

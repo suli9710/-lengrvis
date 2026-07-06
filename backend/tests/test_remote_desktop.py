@@ -1133,6 +1133,97 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
     assert routes_remote._remote_input_pending_approval_count({"grant_id": grant_id, "device_id": device_id}) == 1
 
 
+def _seed_remote_input_approval_for_count(
+    suffix: str,
+    *,
+    grant_id: str,
+    device_id: str,
+    **overrides: object,
+) -> Approval:
+    data = {
+        "task_id": f"task_remote_pending_filter_{suffix}",
+        "step_id": f"step_{suffix}",
+        "approval_type": "remote_input",
+        "message": f"Remote input approval {suffix}",
+        "source": "remote_input",
+        "source_device_id": device_id,
+        "source_grant_id": grant_id,
+    }
+    data.update(overrides)
+    approval = Approval(**data)
+    db.upsert_model("approvals", approval, status=approval.status)
+    return approval
+
+
+def test_remote_input_pending_approval_count_filters_inactive_or_mismatched_records():
+    device_id = "mobile_input_pending_filter"
+    grant_id = "grant_pending_filter"
+
+    _seed_remote_input_approval_for_count("match", grant_id=grant_id, device_id=device_id)
+    _seed_remote_input_approval_for_count(
+        "approved",
+        grant_id=grant_id,
+        device_id=device_id,
+        status=ApprovalStatus.APPROVED,
+        decided_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_remote_input_approval_for_count(
+        "rejected",
+        grant_id=grant_id,
+        device_id=device_id,
+        status=ApprovalStatus.REJECTED,
+        decided_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_remote_input_approval_for_count(
+        "expired",
+        grant_id=grant_id,
+        device_id=device_id,
+        status=ApprovalStatus.EXPIRED,
+        decided_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_remote_input_approval_for_count(
+        "consumed",
+        grant_id=grant_id,
+        device_id=device_id,
+        consumed_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_remote_input_approval_for_count(
+        "wrong_source",
+        grant_id=grant_id,
+        device_id=device_id,
+        source="manual_desktop",
+    )
+    _seed_remote_input_approval_for_count(
+        "wrong_grant",
+        grant_id="other_grant",
+        device_id=device_id,
+    )
+    _seed_remote_input_approval_for_count(
+        "wrong_device",
+        grant_id=grant_id,
+        device_id="other_device",
+    )
+
+    assert db.count_pending_remote_input_approvals(grant_id, device_id) == 1
+    assert routes_remote._remote_input_pending_approval_count({"grant_id": "", "device_id": device_id}) == 0
+    assert routes_remote._remote_input_pending_approval_count({"grant_id": grant_id, "device_id": ""}) == 0
+
+
+def test_remote_input_pending_approval_count_fails_on_tampered_matching_record():
+    device_id = "mobile_input_pending_tamper"
+    grant_id = "grant_pending_tamper"
+    approval = _seed_remote_input_approval_for_count("tampered", grant_id=grant_id, device_id=device_id)
+    stored = db.fetch_one("approvals", approval.id)
+    assert stored is not None
+    stored["message"] = "tampered after integrity hmac was stored"
+
+    with db.connect() as conn:
+        conn.execute("UPDATE approvals SET data = ? WHERE id = ?", (json.dumps(stored), approval.id))
+
+    with pytest.raises(db.SensitiveRecordIntegrityError):
+        db.count_pending_remote_input_approvals(grant_id, device_id)
+
+
 def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_preview(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     private_text = "please type my private recovery phrase"

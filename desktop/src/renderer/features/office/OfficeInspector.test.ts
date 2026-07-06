@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OfficeTaskPresentation } from "./officeTaskPresentation";
 import { OfficeInspector } from "./OfficeInspector";
 import type { HomeReadinessItem, HomeTrustItem, OfficeQuickSkill } from "./OfficeScene";
+import { buildTaskResultTimelineSummary } from "../task-results/taskResultTimeline";
 
 const quickSkill: OfficeQuickSkill = {
   id: "check-computer",
@@ -47,19 +48,19 @@ const trustItems: HomeTrustItem[] = [
   }
 ];
 
+const displayedTask = {
+  id: "task-1",
+  title: "检查电脑状态",
+  description: "读取系统快照",
+  state: "running" as const,
+  agent: "computer",
+  createdAt: "2026-07-03T01:00:00.000Z",
+  updatedAt: "2026-07-03T02:00:00.000Z"
+};
+
 const presentation: OfficeTaskPresentation = {
   currentTasks: [],
-  displayedTasks: [
-    {
-      id: "task-1",
-      title: "检查电脑状态",
-      description: "读取系统快照",
-      state: "running",
-      agent: "computer",
-      createdAt: "2026-07-03T01:00:00.000Z",
-      updatedAt: "2026-07-03T02:00:00.000Z"
-    }
-  ],
+  displayedTasks: [displayedTask],
   activeTaskLabel: "当前没有正在处理的任务",
   recentTaskLabel: "显示最近 1 项",
   blockedTaskCount: 0,
@@ -74,6 +75,7 @@ const presentation: OfficeTaskPresentation = {
     task: null,
     steps: []
   },
+  resultTimeline: buildTaskResultTimelineSummary([displayedTask]),
   taskWorkspaceItems: [],
   outcomeCards: []
 };

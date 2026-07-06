@@ -67,6 +67,19 @@ const completedComputerTemplateTask = {
     missing: [],
     signoff: false
   },
+  result_quality: {
+    state: "verified_result",
+    label: "完成结果已核验",
+    summary: "只读系统检查结果已经核验，可以作为完成记录。",
+    result_verified: true,
+    can_treat_as_done: true,
+    needs_review: false,
+    missing_checks: [],
+    next_step: "查看电脑状态页。",
+    signoff: false,
+    redacted: true,
+    privacy_note: "仅展示脱敏摘要。"
+  },
   result_verified: true,
   created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
   updated_at: new Date().toISOString()
@@ -85,6 +98,19 @@ const unverifiedCompletedComputerTemplateTask = {
     ],
     missing: ["结果核验"],
     signoff: false
+  },
+  result_quality: {
+    state: "visible_progress",
+    label: "有进度，待核验",
+    summary: "只读系统检查有进度记录，但还不能确认健康结论。",
+    result_verified: false,
+    can_treat_as_done: false,
+    needs_review: true,
+    missing_checks: ["结果核验"],
+    next_step: "查看时间线或重新检查。",
+    signoff: false,
+    redacted: true,
+    privacy_note: "仅展示脱敏摘要。"
   },
   result_verified: false,
   created_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
@@ -105,6 +131,19 @@ const safeFailureComputerTemplateTask = {
     missing: ["完成结果"],
     signoff: false
   },
+  result_quality: {
+    state: "safe_failure",
+    label: "安全停止，需处理",
+    summary: "安全策略停止了任务，没有形成完成结果。",
+    result_verified: false,
+    can_treat_as_done: false,
+    needs_review: true,
+    missing_checks: ["完成结果"],
+    next_step: "查看原因后重试。",
+    signoff: false,
+    redacted: true,
+    privacy_note: "仅展示脱敏摘要。"
+  },
   result_verified: false,
   created_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
   updated_at: new Date().toISOString()
@@ -123,6 +162,19 @@ const taskEvidenceOnlyComputerTemplateTask = {
     ],
     missing: ["完成结果", "结果核验"],
     signoff: false
+  },
+  result_quality: {
+    state: "task_evidence_only",
+    label: "仅有任务记录",
+    summary: "任务只有提交或创建记录，不能当作完成结果。",
+    result_verified: false,
+    can_treat_as_done: false,
+    needs_review: true,
+    missing_checks: ["完成结果", "结果核验"],
+    next_step: "核对结果或重新运行。",
+    signoff: false,
+    redacted: true,
+    privacy_note: "仅展示脱敏摘要。"
   },
   result_verified: false,
   created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
@@ -614,12 +666,25 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
     assert.match(outcomeText, /下一步：查看电脑状态页/, "computer outcome should expose a next-step action");
     assert.match(outcomeText, /只读状态|不会改系统设置/, "computer outcome should preserve the local task boundary");
 
+    const resultTimelineText = await page.getByTestId("home-result-timeline-card").innerText();
+    assert.match(resultTimelineText, /结果时间线/, "home should expose the result-first timeline summary");
+    assert.match(resultTimelineText, /完成结果已核验/, "result timeline should show the verified result state");
+    assert.match(resultTimelineText, /结果可以作为完成记录|查看结果/, "result timeline should expose what the user can do next");
+    assert.doesNotMatch(
+      resultTimelineText,
+      /tool_result|completion_evidence|result_verified|verified_result|completed result/i,
+      "result timeline must not expose internal result contract names"
+    );
+
     const workspaceText = await page.getByTestId("task-workspace-card").innerText();
     assert.match(workspaceText, /系统只读/, "Task Workspace should bind the computer template to a read-only system tool");
     assert.match(workspaceText, /已完成|按任务类型启用/, "Task Workspace should show local task evidence without faking a new run");
   } else {
     assert.match(outcomeText, /等待只读快照/, "computer template should have a clear fallback while no result exists");
     assert.match(outcomeText, /选择模板后点击发送/, "computer fallback should tell the user the next safe action");
+
+    const resultTimelineText = await page.getByTestId("home-result-timeline-card").innerText();
+    assert.match(resultTimelineText, /等待第一个任务|准备启动任务/, "home result timeline should explain the empty first-task state");
   }
 }
 
@@ -635,6 +700,11 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /结果状态/,
       /有进度，待核验/,
       /不能当作最终结果/
+    ],
+    timelineMatches: [
+      /结果时间线/,
+      /有进度，待核验/,
+      /缺少：结果核验|缺 结果核验/
     ],
     pilotMatches: [
       /已结束，待核验|核对结果|记录待核验/
@@ -654,6 +724,11 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /安全停止，需处理/,
       /没有完成结果/
     ],
+    timelineMatches: [
+      /结果时间线/,
+      /安全停止/,
+      /查看原因后重试/
+    ],
     pilotMatches: [
       /安全停止，需处理|查看原因|没有形成完成结果/
     ],
@@ -672,6 +747,11 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /仅有任务记录/,
       /只说明任务被提交或创建/
     ],
+    timelineMatches: [
+      /结果时间线/,
+      /仅有任务记录/,
+      /缺少：完成结果、结果核验|缺 完成结果/
+    ],
     pilotMatches: [
       /已结束，待核验|核对结果|记录待核验/
     ],
@@ -679,7 +759,7 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
   });
 }
 
-async function assertComputerResultQualityState(previewUrl, { task, outcomeMatches, workspaceMatches, pilotMatches, label }) {
+async function assertComputerResultQualityState(previewUrl, { task, outcomeMatches, workspaceMatches, timelineMatches, pilotMatches, label }) {
   const counters = {};
   const { context, page, profileDir } = await openDisposablePage();
   try {
@@ -699,13 +779,18 @@ async function assertComputerResultQualityState(previewUrl, { task, outcomeMatch
       assert.match(workspaceText, pattern, `${label} workspace should explain the result-quality state`);
     }
 
+    const resultTimelineText = await page.getByTestId("home-result-timeline-card").innerText();
+    for (const pattern of timelineMatches) {
+      assert.match(resultTimelineText, pattern, `${label} result timeline should summarize trust and next action`);
+    }
+
     const pilotText = await page.locator(".task-pilot-card").first().innerText();
     for (const pattern of pilotMatches) {
       assert.match(pilotText, pattern, `${label} Task Pilot should stay honest and actionable`);
     }
     assert.doesNotMatch(pilotText, /完成结果已通过核验|查看结果/, `${label} Task Pilot should not show verified-result language without strict evidence`);
 
-    const combinedText = `${outcomeText}\n${workspaceText}\n${pilotText}`;
+    const combinedText = `${outcomeText}\n${workspaceText}\n${resultTimelineText}\n${pilotText}`;
     assert.doesNotMatch(combinedText, /tool_result|completion_evidence|result_verified|safe_failure|task_evidence_only|completed result/i, `${label} UI must not expose internal result contract names`);
     assert.doesNotMatch(combinedText, /[A-Za-z]:\\|https?:\/\/\S*(?:token|api[_-]?key|authorization|access[_-]?token|sig|signature)=/i, `${label} UI must not expose local paths or tokenized URLs`);
     assert.doesNotMatch(combinedText, /证据/, `${label} UI should use novice-facing result and record language`);

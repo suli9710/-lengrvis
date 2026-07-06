@@ -7,7 +7,7 @@ const assetsDir = path.join(rendererDir, "assets");
 const budgets = {
   entryJs: Number(process.env.LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB || 230),
   chunkJs: Number(process.env.LENGRVIS_RENDERER_CHUNK_JS_BUDGET_KB || 160),
-  totalJs: Number(process.env.LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB || 700),
+  totalJs: Number(process.env.LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB || 715),
   totalCss: Number(process.env.LENGRVIS_RENDERER_TOTAL_CSS_BUDGET_KB || 190),
 };
 

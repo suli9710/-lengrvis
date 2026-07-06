@@ -254,6 +254,18 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .timeline-result-workbench__head {
+    flex-direction: column;
+  }
+
+  .timeline-result-workbench__steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timeline-result-workbench__actions {
+    display: grid;
+  }
+
   .recording-player__controls {
     grid-template-columns: 34px 34px 34px minmax(0, 1fr);
   }

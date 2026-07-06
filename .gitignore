@@ -44,6 +44,7 @@ tmp-office-review/
 desktop/tmp-office-review/
 .codex_remote/
 .claude/settings.local.json
+.superpowers/
 /puzzler_bards*.json
 UsersSuliAppDataLocalTempLengrvis-Code-review
 .codex-vite-*.pid

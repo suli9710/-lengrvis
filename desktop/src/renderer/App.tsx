@@ -447,9 +447,10 @@ export function App() {
   };
 
   const handleTaskPilotAction = (task: TaskEvent | null, action: "open" | "approve" | "compose") => {
+    const targetTaskId = task?.sourceTaskId ?? task?.id ?? null;
     if (action === "approve") {
-      if (task?.id) setFocusedTaskId(task.id);
-      const matchingApproval = selectedPendingApproval(pendingApprovals, task?.id ?? focusedTaskId);
+      if (targetTaskId) setFocusedTaskId(targetTaskId);
+      const matchingApproval = selectedPendingApproval(pendingApprovals, targetTaskId ?? focusedTaskId);
       if (matchingApproval) {
         setApprovalError(null);
         setApprovalSelectionContext("task");
@@ -463,7 +464,7 @@ export function App() {
       return;
     }
     if (action === "open") {
-      if (task?.id) setFocusedTaskId(task.id);
+      if (targetTaskId) setFocusedTaskId(targetTaskId);
       setActiveView("agents");
       return;
     }

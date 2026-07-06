@@ -4,13 +4,19 @@ import { zhBackendTaskStatus, zhBackendText } from "../zh";
 import type { BackendAgentMessage, BackendStepRecordingFrame, BackendStepRecordingPayload, BackendTask, BackendTimeline } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
+import { mapOptionalTaskResultQuality } from "./resultQualityMappers";
 import { mapBoundaryEvents, mapTaskState } from "./runMappers";
 import { absoluteRendererLoopbackBackendUrl, getBackendBaseUrl } from "./transport";
 
 export function mapTaskEvent(task: BackendTask): TaskEvent {
   const cleanupPlan = cleanupPlanFromApprovalPayload(task.cleanup_plan ?? task.cleanupPlan ?? task.diff_preview);
+  const completionEvidence = mapOptionalTaskCompletionEvidence(task.completion_evidence, {
+    resultVerified: task.result_verified,
+    completedResult: task.completed_result
+  });
   return {
     id: task.id,
+    sourceTaskId: task.id,
     title: task.user_goal,
     description: zhBackendText(task.final_summary) || `当前后端状态：${zhBackendTaskStatus(task.status)}`,
     state: mapTaskState(task.status),
@@ -20,10 +26,8 @@ export function mapTaskEvent(task: BackendTask): TaskEvent {
     recordings: [],
     cleanupPlan,
     boundaryEvents: mapBoundaryEvents(task.boundary_events),
-    completionEvidence: mapOptionalTaskCompletionEvidence(task.completion_evidence, {
-      resultVerified: task.result_verified,
-      completedResult: task.completed_result
-    })
+    completionEvidence,
+    resultQuality: mapOptionalTaskResultQuality(task.result_quality, completionEvidence)
   };
 }
 

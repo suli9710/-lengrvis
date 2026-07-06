@@ -1,4 +1,5 @@
 import type { TaskEvent } from "../../../shared/executionTypes";
+import { buildTaskResultTimelineSummary, type TaskResultTimelineSummary } from "../task-results/taskResultTimeline";
 import { buildOutcomeCards, type OutcomeCard } from "./officeTaskOutcomes";
 import { buildTaskPilotSummary, type TaskPilotSummary } from "./officeTaskPilot";
 import {
@@ -60,6 +61,7 @@ export interface OfficeTaskPresentation {
   blockedTaskCount: number;
   runningTaskCount: number;
   taskPilot: TaskPilotSummary;
+  resultTimeline: TaskResultTimelineSummary;
   taskWorkspaceItems: TaskWorkspaceItem[];
   outcomeCards: OutcomeCard[];
 }
@@ -83,6 +85,7 @@ export function deriveOfficeTaskPresentation({
     blockedTaskCount: currentTasks.filter((task) => task.state === "blocked").length,
     runningTaskCount: currentTasks.filter((task) => task.state === "running" || task.state === "queued").length,
     taskPilot: buildTaskPilotSummary(tasks, hasDraft),
+    resultTimeline: buildTaskResultTimelineSummary(tasks, hasDraft),
     taskWorkspaceItems: buildTaskWorkspaceItems(tasks, readinessItems, trustItems, pendingApprovalCount, selectedSkill),
     outcomeCards: buildOutcomeCards(tasks)
   };

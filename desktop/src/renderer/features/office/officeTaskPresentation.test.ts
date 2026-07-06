@@ -48,6 +48,7 @@ describe("deriveOfficeTaskPresentation", () => {
     expect(model.blockedTaskCount).toBe(1);
     expect(model.runningTaskCount).toBe(1);
     expect(model.taskPilot).toMatchObject({ action: "approve", tone: "blocked", task: { id: "blocked" } });
+    expect(model.resultTimeline).toMatchObject({ action: "approve", tone: "blocked", task: { id: "blocked" } });
 
     vi.useRealTimers();
   });
@@ -73,6 +74,11 @@ describe("deriveOfficeTaskPresentation", () => {
     ]);
 
     expect(model.taskPilot).toMatchObject({ status: "已完成", tone: "done", actionLabel: "查看结果" });
+    expect(model.resultTimeline).toMatchObject({
+      statusLabel: "完成结果已核验",
+      tone: "ready",
+      canTreatAsDone: true
+    });
     expect(model.taskWorkspaceItems).toContainEqual(expect.objectContaining({ label: "结果状态", value: "完成结果已核验", tone: "ready" }));
     expect(model.outcomeCards.find((card) => card.id === "document")).toMatchObject({
       statusLabel: "完成结果已核验",

@@ -15,6 +15,7 @@ import type {
   BackendTaskExplainStep
 } from "./executionBackendTypes";
 import { mapTaskCompletionEvidence } from "./completionEvidenceMappers";
+import { mapTaskResultQuality } from "./resultQualityMappers";
 import { zhBackendText } from "../zh";
 
 export function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
@@ -24,6 +25,7 @@ export function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
     completedResult: finalResult.completed_result ?? data.completed_result,
     evidenceKind: finalResult.evidence_kind ?? data.evidence_kind
   });
+  const resultQuality = mapTaskResultQuality(finalResult.result_quality ?? data.result_quality, completionEvidence);
   return {
     taskId: String(data.task_id ?? ""),
     userGoal: zhBackendText(String(data.user_goal ?? "")),
@@ -58,12 +60,14 @@ export function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
     steps: (data.steps ?? []).map(mapExplainStep),
     subagentSuggestions: (data.subagent_suggestions ?? []).map(mapExplainMessage),
     completionEvidence,
+    resultQuality,
     finalResult: {
       status: String(finalResult.status ?? ""),
       summary: zhBackendText(String(finalResult.summary ?? "")),
       safetyReviews: (finalResult.safety_reviews ?? []).map(mapExplainReview),
       evidence: (finalResult.evidence ?? []).map(mapExplainEvidence),
-      completionEvidence
+      completionEvidence,
+      resultQuality
     },
     chain: (data.chain ?? []).map(mapExplainChainItem)
   };

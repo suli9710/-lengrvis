@@ -61,6 +61,7 @@ export function OfficeInspector({
     recentTaskLabel,
     blockedTaskCount,
     taskPilot,
+    resultTimeline,
     taskWorkspaceItems,
     outcomeCards
   } = presentation;
@@ -167,6 +168,42 @@ export function OfficeInspector({
             );
           })}
         </div>
+      </div>
+
+      <div className={`inspector-card result-timeline-card result-timeline-card--${resultTimeline.tone}`} data-testid="home-result-timeline-card">
+        <div className="inspector-card__head">
+          <strong>结果时间线</strong>
+          <span>{resultTimeline.statusLabel}</span>
+        </div>
+        <div className="result-timeline-card__summary">
+          <strong>{resultTimeline.title}</strong>
+          <p>{resultTimeline.detail}</p>
+          {resultTimeline.missingChecks.length ? (
+            <em>缺少：{resultTimeline.missingChecks.slice(0, 2).join("、")}；下一步：{resultTimeline.nextStep}</em>
+          ) : (
+            <em>{resultTimeline.canTreatAsDone ? "结果可以作为完成记录" : resultTimeline.privacyNote}</em>
+          )}
+        </div>
+        <div className="result-timeline-steps" aria-label="任务结果时间线">
+          {resultTimeline.steps.map((step) => {
+            const Icon = resultTimelineStepIcon(step.id);
+            return (
+              <span key={step.id} className={`result-timeline-step result-timeline-step--${step.state}`}>
+                <Icon size={13} aria-hidden="true" />
+                <b>{step.label}</b>
+                <em>{step.detail}</em>
+              </span>
+            );
+          })}
+        </div>
+        <button
+          className="task-pilot-action result-timeline-card__action"
+          type="button"
+          onClick={() => onTaskPilotAction?.(resultTimeline.task, resultTimeline.action)}
+        >
+          {resultTimeline.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : resultTimeline.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+          {resultTimeline.actionLabel}
+        </button>
       </div>
 
       <div className="inspector-card task-list-card">
@@ -376,6 +413,13 @@ function trustIcon(item: HomeTrustItem) {
   if (item.id === "upload") return <LockKeyhole size={14} />;
   if (item.state === "ready") return <CheckCircle2 size={14} />;
   return <Radio size={14} />;
+}
+
+function resultTimelineStepIcon(stepId: "understand" | "scope" | "execute" | "verify"): LucideIcon {
+  if (stepId === "understand") return Sparkles;
+  if (stepId === "scope") return LockKeyhole;
+  if (stepId === "execute") return Radio;
+  return CheckCircle2;
 }
 
 function buildHomeStatusChips(

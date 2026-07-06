@@ -16,13 +16,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CleanupPlan } from "../../shared/cleanupTypes";
 import type {
   TaskBoundaryEvent,
-  TaskCompletionEvidenceStatus,
   TaskEvent,
   TaskExplain,
   TaskExplainEvidence,
+  TaskResultQualityState,
   TaskState,
   TaskStepRecording
 } from "../../shared/executionTypes";
+import {
+  buildTaskResultTimelineSummary,
+  type TaskResultTimelineStep,
+  type TaskResultTimelineSummary
+} from "../features/task-results/taskResultTimeline";
 import { LengrvisApiClient } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import {
@@ -40,9 +45,10 @@ interface TaskTimelineProps {
   tasks: TaskEvent[];
   api?: LengrvisApiClient;
   focusedTaskId?: string | null;
+  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
 }
 
-export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
+export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: TaskTimelineProps) {
   const focusedTaskRef = useRef<HTMLLIElement | null>(null);
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [previewSteps, setPreviewSteps] = useState<unknown[]>([]);
@@ -82,8 +88,9 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     focusedTaskRef.current.scrollIntoView({ behavior: motionAwareScrollBehavior(), block: "center" });
   }, [focusedTaskId, tasks]);
 
-  const openPreview = async (taskId: string) => {
+  const openPreview = async (task: TaskEvent) => {
     if (!api) return;
+    const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
     const response = await api.previewRollback(taskId);
@@ -110,8 +117,9 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     }
   };
 
-  const openExplain = async (taskId: string) => {
+  const openExplain = async (task: TaskEvent) => {
     if (!api) return;
+    const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
     const response = await api.getTaskExplain(taskId);
@@ -160,11 +168,13 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
           {tasks.map((task) => {
             const trustManifest = buildTaskTrustManifest(task);
             const workspaceItems = buildTimelineWorkspace(task);
+            const resultTimeline = buildTaskResultTimelineSummary([task]);
+            const isFocused = taskMatchesFocus(task, focusedTaskId);
             return (
               <li
-                className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
+                className={isFocused ? "timeline__item timeline__item--focused" : "timeline__item"}
                 key={task.id}
-                ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
+                ref={isFocused ? focusedTaskRef : undefined}
               >
                 <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
                 <div className="timeline__content">
@@ -181,6 +191,15 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
                       </span>
                     ))}
                   </div>
+                  <TimelineResultWorkbench
+                    summary={resultTimeline}
+                    task={task}
+                    api={api}
+                    isWorking={isWorking}
+                    onExplain={openExplain}
+                    onPreview={openPreview}
+                    onTaskPilotAction={onTaskPilotAction}
+                  />
                   <div className="timeline-workspace" aria-label="Task Workspace">
                     <div className="timeline-workspace__head">
                       <strong>Task Workspace</strong>
@@ -237,18 +256,6 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
                 {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
                 {task.boundaryEvents?.length ? <TimelineBoundaryEvents events={task.boundaryEvents} /> : null}
                 <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
-                {task.state === "completed" && api ? (
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="button button--ghost" onClick={() => void openExplain(task.id)} disabled={isWorking}>
-                      <HelpCircle size={14} aria-hidden="true" />
-                      为什么？
-                    </button>
-                    <button className="button button--ghost" onClick={() => void openPreview(task.id)} disabled={isWorking}>
-                      <RotateCcw size={14} aria-hidden="true" />
-                      回滚此任务
-                    </button>
-                  </div>
-                ) : null}
                 </div>
               </li>
             );
@@ -408,6 +415,100 @@ function buildTaskTrustManifest(task: TaskEvent): Array<{ label: string; value: 
   ];
 }
 
+function taskSourceId(task: TaskEvent): string {
+  return task.sourceTaskId || task.id;
+}
+
+function taskMatchesFocus(task: TaskEvent, focusedTaskId?: string | null): boolean {
+  if (!focusedTaskId) return false;
+  return task.id === focusedTaskId || task.sourceTaskId === focusedTaskId;
+}
+
+function TimelineResultWorkbench({
+  summary,
+  task,
+  api,
+  isWorking,
+  onExplain,
+  onPreview,
+  onTaskPilotAction
+}: {
+  summary: TaskResultTimelineSummary;
+  task: TaskEvent;
+  api?: LengrvisApiClient;
+  isWorking: boolean;
+  onExplain: (task: TaskEvent) => Promise<void>;
+  onPreview: (task: TaskEvent) => Promise<void>;
+  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+}) {
+  const missingChecks = summary.missingChecks.slice(0, 3);
+  const canPreviewRollback = Boolean(api && task.state === "completed");
+  return (
+    <section
+      className={`timeline-result-workbench timeline-result-workbench--${summary.tone}`}
+      aria-label="结果时间线"
+      data-testid="detail-result-timeline-card"
+    >
+      <div className="timeline-result-workbench__head">
+        <div>
+          <span>结果时间线</span>
+          <strong>{summary.statusLabel}</strong>
+        </div>
+        <Badge tone={timelineToneToBadge(summary.tone)}>
+          {summary.canTreatAsDone ? "可视为完成" : summary.resultState === "none" ? "等待任务" : "需要复核"}
+        </Badge>
+      </div>
+      <p>{summary.detail}</p>
+      {missingChecks.length ? (
+        <em className="timeline-result-workbench__missing">缺少检查：{missingChecks.join("、")}</em>
+      ) : null}
+      <div className="timeline-result-workbench__steps" aria-label="结果阶段">
+        {summary.steps.map((step) => (
+          <TimelineResultStep key={step.id} step={step} />
+        ))}
+      </div>
+      <span className="timeline-result-workbench__privacy">{summary.privacyNote}</span>
+      <div className="timeline-result-workbench__actions">
+        {summary.action === "approve" && onTaskPilotAction ? (
+          <button className="button button--ghost" onClick={() => onTaskPilotAction(task, "approve")} disabled={isWorking}>
+            <CheckCircle2 size={14} aria-hidden="true" />
+            去审批
+          </button>
+        ) : null}
+        {api ? (
+          <button className="button button--ghost" onClick={() => void onExplain(task)} disabled={isWorking}>
+            <HelpCircle size={14} aria-hidden="true" />
+            核对结果
+          </button>
+        ) : null}
+        {canPreviewRollback ? (
+          <button className="button button--ghost" onClick={() => void onPreview(task)} disabled={isWorking}>
+            <RotateCcw size={14} aria-hidden="true" />
+            回滚预览
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function TimelineResultStep({ step }: { step: TaskResultTimelineStep }) {
+  return (
+    <span className={`timeline-result-step timeline-result-step--${step.state}`}>
+      <b>{step.label}</b>
+      <em>{step.detail}</em>
+    </span>
+  );
+}
+
+function timelineToneToBadge(tone: TaskResultTimelineSummary["tone"]): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (tone === "ready") return "success";
+  if (tone === "blocked" || tone === "warning") return "warning";
+  if (tone === "failed") return "danger";
+  if (tone === "active") return "info";
+  return "neutral";
+}
+
 function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: string; tone: "ready" | "warning" | "blocked" }> {
   const hasApproval = task.state === "blocked" || Boolean(task.boundaryEvents?.length);
   const hasRollback = Boolean(task.cleanupPlan) || task.state === "completed";
@@ -507,6 +608,7 @@ function formatBytes(bytes?: number): string {
 
 function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {
   const completionEvidence = explain.finalResult.completionEvidence;
+  const resultQuality = explain.finalResult.resultQuality;
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
@@ -538,21 +640,29 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
             </div>
             <div>
               <span className="muted">结果证据</span>
-              <Badge tone={completionEvidenceTone(completionEvidence.status)}>
-                {completionEvidenceLabel(completionEvidence.status)}
+              <Badge tone={resultQualityTone(resultQuality.state, resultQuality.canTreatAsDone)}>
+                {resultQualityLabel(resultQuality.state)}
               </Badge>
             </div>
           </div>
 
-          <div className={`explain-result-evidence explain-result-evidence--${completionEvidence.status}`}>
+          <div className={`explain-result-evidence explain-result-evidence--${resultQuality.state}`}>
             <div className="row row--between">
-              <strong>结果证据状态</strong>
-              <Badge tone={completionEvidenceTone(completionEvidence.status)}>
-                {completionEvidenceLabel(completionEvidence.status)}
+              <strong>结果可信度</strong>
+              <Badge tone={resultQualityTone(resultQuality.state, resultQuality.canTreatAsDone)}>
+                {resultQuality.canTreatAsDone ? "可作为完成结果" : resultQualityLabel(resultQuality.state)}
               </Badge>
             </div>
-            <p>{completionEvidence.summary}</p>
-            <span>{completionEvidence.privacyNote ?? "仅展示证据状态，不展示原始证据内容。"}</span>
+            <p>{resultQuality.summary || completionEvidence.summary}</p>
+            {resultQuality.missingChecks.length ? (
+              <ul>
+                {resultQuality.missingChecks.slice(0, 4).map((missing) => (
+                  <li key={missing}>{missing}</li>
+                ))}
+              </ul>
+            ) : null}
+            {resultQuality.nextStep ? <em>下一步：{resultQuality.nextStep}</em> : null}
+            <span>{resultQuality.privacyNote ?? completionEvidence.privacyNote ?? "仅展示证据状态，不展示原始证据内容。"}</span>
           </div>
 
           <div className="explain-chain">
@@ -597,7 +707,7 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
           ) : null}
         </div>
         <footer className="modal__footer">
-          <span className="muted">{taskId}</span>
+          <span className="muted">{taskId ? "证据链已脱敏" : "无关联任务"}</span>
           <button className="button button--ghost" onClick={onClose}>
             <X size={14} aria-hidden="true" />
             关闭
@@ -645,22 +755,24 @@ function formatSources(sources: Record<string, number>) {
     .join(" / ");
 }
 
-function completionEvidenceLabel(status: TaskCompletionEvidenceStatus): string {
-  const labels: Record<TaskCompletionEvidenceStatus, string> = {
-    unverified: "未验证",
-    task_evidence_only: "仅任务证据",
-    visible_progress: "可见进度",
-    safe_failure: "安全失败",
-    verified_completed_result: "最终结果已验证"
+function resultQualityLabel(state: TaskResultQualityState): string {
+  const labels: Record<TaskResultQualityState, string> = {
+    verified_result: "完成结果已核验",
+    visible_progress: "有进度待核验",
+    safe_failure: "安全停止",
+    task_evidence_only: "仅有任务记录"
   };
-  return labels[status];
+  return labels[state];
 }
 
-function completionEvidenceTone(status: TaskCompletionEvidenceStatus): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (status === "verified_completed_result") return "success";
-  if (status === "safe_failure") return "danger";
-  if (status === "visible_progress") return "info";
-  if (status === "task_evidence_only") return "warning";
+function resultQualityTone(
+  state: TaskResultQualityState,
+  canTreatAsDone: boolean
+): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (state === "verified_result" && canTreatAsDone) return "success";
+  if (state === "safe_failure") return "danger";
+  if (state === "visible_progress") return "info";
+  if (state === "task_evidence_only") return "warning";
   return "neutral";
 }
 

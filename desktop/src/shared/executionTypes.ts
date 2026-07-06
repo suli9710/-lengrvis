@@ -29,6 +29,7 @@ export interface TaskBoundaryEvent {
 export interface TaskEvent {
   id: string;
   runId?: string;
+  sourceTaskId?: string;
   title: string;
   description: string;
   state: TaskState;
@@ -39,6 +40,7 @@ export interface TaskEvent {
   cleanupPlan?: CleanupPlan;
   boundaryEvents?: TaskBoundaryEvent[];
   completionEvidence?: TaskCompletionEvidence;
+  resultQuality?: TaskResultQuality;
 }
 
 export interface TaskArtifact {
@@ -111,6 +113,26 @@ export interface TaskCompletionEvidence {
   missing: string[];
   signoff: boolean;
   summary: string;
+  privacyNote?: string;
+}
+
+export type TaskResultQualityState =
+  | "verified_result"
+  | "visible_progress"
+  | "safe_failure"
+  | "task_evidence_only";
+
+export interface TaskResultQuality {
+  state: TaskResultQualityState;
+  label: string;
+  summary: string;
+  resultVerified: boolean;
+  canTreatAsDone: boolean;
+  needsReview: boolean;
+  missingChecks: string[];
+  nextStep: string;
+  signoff: boolean;
+  redacted: boolean;
   privacyNote?: string;
 }
 
@@ -214,12 +236,14 @@ export interface TaskExplain {
   steps: TaskExplainStep[];
   subagentSuggestions: TaskExplainMessage[];
   completionEvidence: TaskCompletionEvidence;
+  resultQuality: TaskResultQuality;
   finalResult: {
     status: string;
     summary: string;
     safetyReviews: TaskExplainReview[];
     evidence: TaskExplainEvidence[];
     completionEvidence: TaskCompletionEvidence;
+    resultQuality: TaskResultQuality;
   };
   chain: TaskExplainChainItem[];
 }

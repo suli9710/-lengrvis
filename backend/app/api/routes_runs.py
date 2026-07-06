@@ -4,11 +4,15 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from app.api.task_public_views import empty_completion_evidence
+from app.core import db
 from app.core.schemas import Run, RunCreateRequest, RunCreateResponse, RunStateResponse
 from app.orchestration.run_event_bus import run_event_bus, run_event_to_wire
 from app.policy.redaction import redact_run_payload
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.services import run_service
+from app.services.task_explain_service import build_task_completion_evidence, build_task_result_quality
+from app.services.task_service import get_task
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -162,6 +166,7 @@ async def _replay_missing_events(
 
 
 def _state_response(run: Run) -> RunStateResponse:
+    completion_evidence, result_quality = _run_result_contract(run)
     return RunStateResponse(
         run_id=run.id,
         engine=run.engine,
@@ -175,4 +180,29 @@ def _state_response(run: Run) -> RunStateResponse:
         created_at=run.created_at,
         updated_at=run.updated_at,
         engine_capabilities=run_service.engine_capabilities_for_run(run),
+        completion_evidence=completion_evidence,
+        result_quality=result_quality,
     )
+
+
+def _run_result_contract(run: Run) -> tuple[dict, dict]:
+    completion_evidence = empty_completion_evidence()
+    if not run.task_id:
+        return completion_evidence, build_task_result_quality(None, completion_evidence)
+
+    try:
+        task = get_task(run.task_id)
+    except KeyError:
+        return completion_evidence, build_task_result_quality(None, completion_evidence)
+
+    messages = db.fetch_many_by_fields("agent_messages", {"task_id": task.id}, limit=5000)
+    reviews = db.fetch_many_by_fields("safety_reviews", {"task_id": task.id}, limit=5000)
+    audits = db.fetch_many_by_fields("audit_events", {"task_id": task.id}, limit=5000)
+    completion_evidence = build_task_completion_evidence(
+        task,
+        messages=messages,
+        reviews=reviews,
+        audits=audits,
+    )
+    result_quality = build_task_result_quality(task, completion_evidence)
+    return completion_evidence, result_quality

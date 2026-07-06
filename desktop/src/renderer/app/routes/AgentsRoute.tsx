@@ -12,13 +12,14 @@ const TaskTimeline = lazy(() => import("../../components/TaskTimeline").then((mo
 
 type AgentsRouteProps = Pick<
   AppSurfaceProps,
-  "agentConversations" | "api" | "focusedTaskId" | "plan" | "tasks" | "onRevealPath"
+  "agentConversations" | "api" | "focusedTaskId" | "plan" | "tasks" | "onRevealPath" | "onTaskPilotAction"
 >;
 
 export function AgentsRoute({
   agentConversations,
   api,
   focusedTaskId,
+  onTaskPilotAction,
   plan,
   tasks,
   onRevealPath
@@ -27,7 +28,7 @@ export function AgentsRoute({
     <section className="detail-grid">
       <Suspense fallback={<RouteLoading />}>
         <AgentConversationPanel conversations={agentConversations} />
-        <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+        <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} onTaskPilotAction={onTaskPilotAction} />
       </Suspense>
       <PlanViewer plan={plan} />
       <details className="progress-more detail-grid__full" data-testid="progress-more">

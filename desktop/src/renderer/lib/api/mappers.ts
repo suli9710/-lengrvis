@@ -79,6 +79,11 @@ export {
 } from "./completionEvidenceMappers";
 
 export {
+  mapOptionalTaskResultQuality,
+  mapTaskResultQuality
+} from "./resultQualityMappers";
+
+export {
   formatDiffPreview,
   localizeDiffPreview,
   mapApproval,

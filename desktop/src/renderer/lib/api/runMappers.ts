@@ -3,6 +3,7 @@ import type { AgentConversation, Plan, TaskBoundaryEvent, TaskEvent } from "../.
 import type { BackendPlan, BackendRunCreateResponse, BackendRunEvent, BackendRunState, BackendRunTimeline, BackendSuggestionLaunchResponse } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
+import { mapOptionalTaskResultQuality } from "./resultQualityMappers";
 import { zhAgentName, zhBackendTaskStatus, zhBackendText, zhToolName } from "../zh";
 
 function optionalString(value: unknown): string | undefined {
@@ -72,9 +73,14 @@ export function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSug
 
 export function mapRunTaskEvent(run: BackendRunState): TaskEvent {
   const cleanupPlan = cleanupPlanFromApprovalPayload(run.cleanup_plan ?? run.cleanupPlan ?? run.diff_preview);
+  const completionEvidence = mapOptionalTaskCompletionEvidence(run.completion_evidence, {
+    resultVerified: run.result_verified,
+    completedResult: run.completed_result
+  });
   return {
     id: run.run_id,
     runId: run.run_id,
+    sourceTaskId: run.task_id ?? undefined,
     title: run.message || run.run_id,
     description: runDescription(run),
     state: mapTaskState(run.phase),
@@ -83,10 +89,8 @@ export function mapRunTaskEvent(run: BackendRunState): TaskEvent {
     updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
     recordings: [],
     cleanupPlan,
-    completionEvidence: mapOptionalTaskCompletionEvidence(run.completion_evidence, {
-      resultVerified: run.result_verified,
-      completedResult: run.completed_result
-    })
+    completionEvidence,
+    resultQuality: mapOptionalTaskResultQuality(run.result_quality, completionEvidence)
   };
 }
 

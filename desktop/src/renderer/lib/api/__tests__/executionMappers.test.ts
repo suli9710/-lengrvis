@@ -5,8 +5,10 @@ import {
   mapCommandExecutionResult,
   mapCommandInfo,
   mapRunCreateResponse,
-  mapRunTaskEvent
+  mapRunTaskEvent,
+  mapTaskEvent
 } from "../mappers";
+import { mergeTaskSnapshots } from "../../../appViewModel";
 
 describe("execution mapper contracts", () => {
   it("maps run create responses from nested run state and falls back to backend capabilities", () => {
@@ -72,6 +74,27 @@ describe("execution mapper contracts", () => {
           ]
         }
       },
+      task_id: "task_cleanup",
+      completion_evidence: {
+        level: "completed_result",
+        result_verified: true,
+        result_artifacts: [{ kind: "tool_result", label: "Successful tool result", redacted: true }],
+        missing: [],
+        signoff: false
+      },
+      result_quality: {
+        state: "verified_result",
+        label: "Verified result",
+        summary: "A result is recorded and verified.",
+        result_verified: true,
+        can_treat_as_done: true,
+        needs_review: false,
+        missing_checks: [],
+        next_step: "Review the verified result.",
+        signoff: false,
+        redacted: true,
+        privacy_note: "Private details are hidden."
+      },
       result_verified: true,
       completed_result: {
         summary: "Removed the selected temporary file"
@@ -81,6 +104,7 @@ describe("execution mapper contracts", () => {
     expect(event).toMatchObject({
       id: "run_cleanup",
       runId: "run_cleanup",
+      sourceTaskId: "task_cleanup",
       title: "Clean temporary files",
       state: "completed",
       agent: "开发执行引擎",
@@ -103,6 +127,87 @@ describe("execution mapper contracts", () => {
     expect(event.completionEvidence).toMatchObject({
       resultVerified: true,
       missing: []
+    });
+    expect(event.resultQuality).toMatchObject({
+      state: "verified_result",
+      resultVerified: true,
+      canTreatAsDone: true,
+      missingChecks: []
+    });
+  });
+
+  it("maps task result quality and merges run/task snapshots by source task id", () => {
+    const task = mapTaskEvent({
+      id: "task_shared",
+      user_goal: "检查电脑",
+      status: "completed",
+      mode: "efficiency",
+      final_summary: "系统检查完成",
+      created_at: "2026-06-20T09:00:00Z",
+      updated_at: "2026-06-20T09:04:00Z",
+      completion_evidence: {
+        level: "visible_progress",
+        result_verified: false,
+        result_artifacts: [{ kind: "tool_result", label: "Successful tool result", redacted: true }],
+        missing: ["final result verification"],
+        signoff: false
+      },
+      result_quality: {
+        state: "visible_progress",
+        label: "Progress awaiting verification",
+        summary: "The task shows progress.",
+        result_verified: false,
+        can_treat_as_done: false,
+        needs_review: true,
+        missing_checks: ["final result review"],
+        next_step: "Open the task explanation.",
+        signoff: false,
+        redacted: true
+      }
+    });
+    const run = mapRunTaskEvent({
+      run_id: "run_shared",
+      task_id: "task_shared",
+      engine: "os",
+      phase: "completed",
+      message: "检查电脑",
+      mode: "efficiency",
+      requested_engine: "auto",
+      created_at: "2026-06-20T09:00:00Z",
+      updated_at: "2026-06-20T09:05:00Z",
+      result_quality: {
+        state: "visible_progress",
+        result_verified: false,
+        can_treat_as_done: false,
+        needs_review: true,
+        missing_checks: ["final result review"],
+        next_step: "Open the task explanation.",
+        signoff: false,
+        redacted: true
+      }
+    });
+
+    expect(task).toMatchObject({
+      id: "task_shared",
+      sourceTaskId: "task_shared",
+      resultQuality: {
+        state: "visible_progress",
+        canTreatAsDone: false,
+        missingChecks: ["final result review"]
+      }
+    });
+    expect(run).toMatchObject({
+      id: "run_shared",
+      runId: "run_shared",
+      sourceTaskId: "task_shared"
+    });
+    expect(mergeTaskSnapshots([run], [task])).toHaveLength(1);
+    expect(mergeTaskSnapshots([run], [task])[0]).toMatchObject({
+      id: "run_shared",
+      sourceTaskId: "task_shared",
+      resultQuality: {
+        state: "visible_progress"
+      }
     });
   });
 

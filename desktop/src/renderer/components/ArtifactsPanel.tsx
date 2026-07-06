@@ -15,7 +15,7 @@ interface ArtifactsPanelProps {
 
 export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: ArtifactsPanelProps) {
   const candidateTasks = useMemo(() => tasks.filter((task) => task.id), [tasks]);
-  const defaultTaskId = focusedTaskId ?? candidateTasks[0]?.id ?? null;
+  const defaultTaskId = focusedTaskId ?? (candidateTasks[0] ? taskSourceId(candidateTasks[0]) : null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(defaultTaskId);
   const [summary, setSummary] = useState<TaskArtifactsSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -27,8 +27,8 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
   }, [focusedTaskId]);
 
   useEffect(() => {
-    if (!selectedTaskId && candidateTasks[0]?.id) {
-      setSelectedTaskId(candidateTasks[0].id);
+    if (!selectedTaskId && candidateTasks[0]) {
+      setSelectedTaskId(taskSourceId(candidateTasks[0]));
     }
   }, [candidateTasks, selectedTaskId]);
 
@@ -74,7 +74,7 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
         >
           {!candidateTasks.length ? <option value="">暂无任务</option> : null}
           {candidateTasks.map((task) => (
-            <option key={task.id} value={task.id}>
+            <option key={task.id} value={taskSourceId(task)}>
               {task.title.length > 42 ? `${task.title.slice(0, 42)}…` : task.title}
             </option>
           ))}
@@ -147,6 +147,10 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
       {revealError ? <p className="muted">{revealError}</p> : null}
     </Panel>
   );
+}
+
+function taskSourceId(task: TaskEvent): string {
+  return task.sourceTaskId || task.id;
 }
 
 function artifactName(path: string): string {

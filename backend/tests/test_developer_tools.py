@@ -250,6 +250,82 @@ def test_shell_readonly_rejects_workspace_hijacked_external_executable(
     assert calls == []
 
 
+def test_shell_readonly_fails_closed_when_trusted_executable_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[Any] = []
+
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: None)
+    monkeypatch.setattr(developer_tools, "_run_command", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "git status --short"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["readonly"] is False
+    assert "trusted executable for 'git' was not found" in result["error"].lower()
+    assert calls == []
+
+
+def test_shell_readonly_rejects_external_executable_inside_any_allowed_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    allowed_tools = tmp_path / "allowed-tools"
+    allowed_tools.mkdir()
+    fake_git = allowed_tools / "git.exe"
+    fake_git.write_text("not really git", encoding="utf-8")
+    calls: list[Any] = []
+
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda *args, **kwargs: str(fake_git))
+    monkeypatch.setattr(developer_tools, "_run_command", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = developer_tools.diff_preview(
+        {"cwd": str(workspace), "pathspec": "."},
+        {"allowed_directories": [str(workspace), str(allowed_tools)]},
+    )
+
+    assert result["ok"] is False
+    assert "authorized workspace" in result["error"].lower()
+    assert calls == []
+
+
+def test_shell_readonly_normalizes_executable_tokens_before_trusted_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    trusted_git = _trusted_test_executable(tmp_path, "GIT.EXE")
+
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
+        calls.append({"command": command, "cwd": cwd, "shell": shell})
+        return {
+            "returncode": 0,
+            "stdout": "## main\n",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+
+    monkeypatch.setattr(developer_tools.shutil, "which", lambda command, **kwargs: str(trusted_git))
+    monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "Git.EXE status --short"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+    assert result["readonly"] is True
+    assert calls[0]["command"][0] == str(trusted_git.resolve(strict=False))
+    assert calls[0]["command"][-2:] == ["status", "--short"]
+
+
 def _trusted_test_executable(workspace: Path, name: str) -> Path:
     trusted_dir = workspace.parent / f"{workspace.name}-trusted-bin"
     trusted_dir.mkdir(exist_ok=True)

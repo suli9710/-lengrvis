@@ -12,10 +12,12 @@ export function mergeTaskSnapshots(runTasks: TaskEvent[], legacyTasks: TaskEvent
   if (!legacyTasks.length) return runTasks;
 
   const legacyById = new Map(legacyTasks.map((task) => [task.id, task]));
+  const legacyBySourceId = new Map(legacyTasks.map((task) => [task.sourceTaskId ?? task.id, task]));
   const merged = runTasks.map((runTask) => {
-    const legacyTask = legacyById.get(runTask.id);
+    const legacyTask = legacyById.get(runTask.id) ?? legacyBySourceId.get(runTask.sourceTaskId ?? runTask.id);
     if (!legacyTask) return runTask;
     legacyById.delete(runTask.id);
+    legacyById.delete(legacyTask.id);
     return {
       ...legacyTask,
       ...runTask,

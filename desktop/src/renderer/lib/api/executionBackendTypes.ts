@@ -55,6 +55,7 @@ export interface BackendRunState {
   cleanupPlan?: unknown;
   diff_preview?: unknown;
   completion_evidence?: unknown;
+  result_quality?: unknown;
   result_verified?: unknown;
   completed_result?: unknown;
 }
@@ -112,6 +113,7 @@ export interface BackendTask {
   diff_preview?: unknown;
   boundary_events?: BackendBoundaryEvent[];
   completion_evidence?: unknown;
+  result_quality?: unknown;
   result_verified?: unknown;
   completed_result?: unknown;
 }
@@ -333,6 +335,7 @@ export interface BackendTaskExplain {
   steps?: BackendTaskExplainStep[];
   subagent_suggestions?: BackendTaskExplainMessage[];
   completion_evidence?: unknown;
+  result_quality?: unknown;
   result_verified?: unknown;
   completed_result?: unknown;
   evidence_kind?: string;
@@ -343,6 +346,7 @@ export interface BackendTaskExplain {
     safety_reviews?: BackendTaskExplainReview[];
     evidence?: BackendTaskExplainEvidence[];
     completion_evidence?: unknown;
+    result_quality?: unknown;
     result_verified?: unknown;
     completed_result?: unknown;
     evidence_kind?: string;

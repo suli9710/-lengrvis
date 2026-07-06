@@ -14,6 +14,7 @@ type ChatRouteProps = Pick<
   | "focusedTaskId"
   | "intentSuggestions"
   | "messages"
+  | "onTaskPilotAction"
   | "plan"
   | "tasks"
   | "onExecuteSuggestion"
@@ -26,6 +27,7 @@ export function ChatRoute({
   focusedTaskId,
   intentSuggestions,
   messages,
+  onTaskPilotAction,
   plan,
   tasks,
   onExecuteSuggestion,
@@ -45,7 +47,7 @@ export function ChatRoute({
       <div className="conversation-side">
         <PlanViewer plan={plan} />
         <Suspense fallback={<RouteLoading />}>
-          <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+          <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} onTaskPilotAction={onTaskPilotAction} />
         </Suspense>
       </div>
     </section>
