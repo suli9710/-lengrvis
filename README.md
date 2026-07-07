@@ -5,7 +5,7 @@ Lengrvis 是一款面向 Windows 本地环境的 OS Agent 桌面助手。用户�
 Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检测、系统状态检查，以及通过 Android companion 进行移动审批和任务监督。产品原则是：优先在本机处理数据；执行有风险的操作前取得明确授权；关键行为具备审计、诊断和追溯能力。
 
 - 仓库：[github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
-- 当前版本：[v0.1.1](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.1)
+- 当前版本：[v0.1.2](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.2)
 - License：BUSL-1.1
 
 | 组件 | 技术栈 |
@@ -19,7 +19,7 @@ Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检�
 
 | 平台 | 状态 | 当前交付 | 待完善事项 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.1 产物尚未签名；clean-machine、升级/回滚和真实设备联动仍需候选版本证据。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.2 产物尚未签名；clean-machine、升级/回滚和真实设备联动仍需候选版本证据。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、短期远程输入授权 | 当前面向内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发尚未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本和 DMG 脚本 | 仍需在 macOS 主机上完成打包、签名和 notarization 验证。 |
 | iOS Companion | Planned | 暂不交付 | 待 Android companion 稳定后再排期。 |
@@ -27,7 +27,7 @@ Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检�
 ## 安装与快速开始
 
 1. 打开 [Releases](https://github.com/suli9710/-lengrvis/releases)。
-2. 下载 `Lengrvis-0.1.1-win-portable.zip` 或 `Lengrvis-0.1.1-x64-self-extracting.exe`。
+2. 下载 `Lengrvis-0.1.2-win-portable.zip` 或 `Lengrvis-0.1.2-x64-self-extracting.exe`。
 3. portable zip 解压后运行 `Lengrvis.exe`；自解压包双击后会释放到本机用户目录并启动。
 4. 启动后，在桌面窗口中输入任务，例如“找出重复文件，但先不要删除”。
 5. 涉及本机状态变更的步骤会进入预览和审批流程；文件写入、编辑等操作会记录回滚信息。
@@ -293,6 +293,7 @@ npm run android:release-gate -- -PreflightOnly # source/config check only; not A
 npm run evidence:android-real-device-template # fail-closed template only; not real-device pass
 npm run evidence:local-model-template # handoff template; not clean-machine pass
 npm run evidence:diagnostics-review # template only; not public-safe/signoff; public_safe=false until reviewed
+npm run evidence:diagnostics-verify # signed reviewed diagnostics evidence only; template helper cannot satisfy this
 npm run evidence:distribution-template # template only; not signed-installer pass or release sign-off
 npm run evidence:paid-launch-template # template only; not paid-launch pass or release sign-off
 npm run sign:windows:preflight # metadata only; checks signing env/artifacts without signing or exposing secrets
@@ -357,7 +358,7 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 版本号唯一来源是 `desktop\package.json`。自定义输出目录：
 
 ```powershell
-.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.1-x64-self-extracting.exe
+.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.2-x64-self-extracting.exe
 ```
 
 签名与自动更新：

@@ -32,7 +32,7 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     assert response.status_code == 200
     payload = response.json()
     assert payload["product"]["name"] == "Lengrvis"
-    assert payload["product"]["version"] == "0.1.1"
+    assert payload["product"]["version"] == "0.1.2"
     update_channel = payload["update_channel"]
     assert update_channel["schema_version"] == 1
     assert update_channel["configured"] is False
@@ -338,7 +338,7 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert diagnostics["diagnostic_scope"] == "local_only"
     assert diagnostics["local_ai"]["scope"] == "local_only"
     assert diagnostics["product"]["name"] == "Lengrvis"
-    assert diagnostics["product"]["version"] == "0.1.1"
+    assert diagnostics["product"]["version"] == "0.1.2"
     assert diagnostics["update_channel"]["schema_version"] == 1
     assert diagnostics["update_channel"]["configured"] is False
     assert diagnostics["update_channel"]["status"] == "not_configured"

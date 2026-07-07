@@ -26,10 +26,15 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "20"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
       - name: Repo hygiene check
         run: npm run hygiene
       - name: Dependency lock verification
         run: npm run deps:verify
+      - name: Maintainability source-size gate
+        run: npm run maintainability:gate
 
   backend:
     name: Backend pytest + golden task gate
@@ -186,9 +191,11 @@ jobs:
         run: npm --prefix mobile run smoke:approval-status-label
       - name: Mobile Android hardening plugin smoke
         run: npm --prefix mobile run smoke:android-hardening-plugin
-      - name: Mobile Android LAN TLS source contract
+      - name: Mobile Android manifest/resources hardening smoke
+        run: npm --prefix mobile run smoke:android-manifest-resources
+      - name: Mobile Android LAN TLS source + connected test contract
         run: npm --prefix mobile run smoke:android-lan-tls
-      - name: Android native debug + instrumentation compilation gate
+      - name: Android native debug + androidTest compilation gate
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"

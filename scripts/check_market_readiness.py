@@ -8,12 +8,25 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
 ALLOWED_STATUSES = {"blocked", "in_progress", "passed", "waived"}
 STRICT_ALLOWED_STATUSES = {"passed", "waived"}
 ROW_RE = re.compile(r"^\|\s*(MR-P0-[^|]+?)\s*\|")
+ISSUE_KEY_RE = r"(?:#[0-9]+|[A-Z][A-Z0-9]+-[0-9]+)"
+ISSUE_URL_RE = re.compile(
+    r"https?://[^\s)]+(?:"
+    r"/issues/[0-9]+|"
+    r"/pull/[0-9]+|"
+    r"/-/issues/[0-9]+|"
+    r"/-/merge_requests/[0-9]+|"
+    r"/browse/[A-Z][A-Z0-9]+-[0-9]+|"
+    r"/issue/[A-Z][A-Z0-9]+-[0-9]+"
+    r")(?:[/?#][^\s)]*)?",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -75,10 +88,10 @@ def validate(
                 errors.append(
                     f"{row.row_id}: {row.status} row requires an artifact/link label."
                 )
-        if row.status == "waived" and not re.search(
-            r"\b(expiry|expires|until)\b|到期", row.notes, re.IGNORECASE
-        ):
-            errors.append(f"{row.row_id}: waived row notes require an expiry.")
+        if row.status == "waived":
+            waiver_error = _waiver_error(row)
+            if waiver_error:
+                errors.append(f"{row.row_id}: {waiver_error}")
         if strict and row.status == "passed" and not _artifact_is_verifiable(row.artifact, artifact_root):
             errors.append(
                 f"{row.row_id}: strict market readiness requires passed rows to point to an existing "
@@ -96,6 +109,32 @@ def validate(
                 f"{row.status} is only allowed for no-sale maintenance packaging."
             )
     return errors, warnings
+
+
+def _waiver_error(row: MarketRow) -> str:
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", row.notes)
+    if not match:
+        return "waived row requires an ISO expiry date."
+    try:
+        expiry = date.fromisoformat(match.group(1))
+    except ValueError:
+        return "waived row expiry date is invalid."
+    if expiry < date.today():
+        return "waived row expiry date has passed."
+    notes = row.notes.casefold()
+    if "reason" not in notes:
+        return "waived row notes require a reason."
+    if not _has_follow_up_reference(row.notes):
+        return "waived row notes require an explicit follow-up issue reference."
+    return ""
+
+
+def _has_follow_up_reference(notes: str) -> bool:
+    if ISSUE_URL_RE.search(notes):
+        return True
+    return bool(
+        re.search(rf"(?:^|[\s(:]){ISSUE_KEY_RE}(?:$|[\s).,;])", notes, re.IGNORECASE)
+    )
 
 
 def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:

@@ -17,7 +17,7 @@ from app.tools.developer_tools import (
     _trusted_guarded_git_command,
 )
 
-WRITE_TOOL_NAMES = frozenset({"Write", "Edit"})
+WRITE_TOOL_NAMES = frozenset({"Write", "Edit", "NotebookEdit"})
 _PYTEST_GOAL_RE = re.compile(r"\b(pytest|unit\s*test|integration\s*test|failing\s+test)\b", re.IGNORECASE)
 
 
@@ -31,7 +31,7 @@ def extract_write_targets(tool_events: list[dict[str, Any]]) -> list[str]:
         tool_input = event.get("input")
         if not isinstance(tool_input, dict):
             continue
-        raw_path = tool_input.get("file_path") or tool_input.get("path")
+        raw_path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             continue
         normalized = raw_path.strip()

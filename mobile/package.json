@@ -1,6 +1,6 @@
 {
   "name": "lengrvis-mobile",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -19,7 +19,9 @@
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs",
     "smoke:android-hardening-plugin": "node scripts/android-hardening-plugin-smoke.cjs",
     "smoke:android-manifest-resources": "node scripts/android-manifest-resources-smoke.cjs",
-    "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs"
+    "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs",
+    "gate:android-instrumentation-compile": "node scripts/android-lan-tls-smoke.cjs --compile-instrumentation",
+    "gate:android-connected-lan-tls": "node scripts/android-lan-tls-smoke.cjs --connected"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

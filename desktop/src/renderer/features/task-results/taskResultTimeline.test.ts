@@ -131,7 +131,7 @@ describe("buildTaskResultTimelineSummary", () => {
   it("hides raw path and internal contract words from the summary title", () => {
     const summary = buildTaskResultTimelineSummary([
       task({
-        title: String.raw`scan C:\Users\Suli\secret.txt with token=abc123456789`,
+        title: String.raw`scan C:\Users\Suli\secret.txt with token=demo`,
         state: "completed",
         resultQuality: quality({ state: "task_evidence_only", missingChecks: [] })
       })

@@ -747,6 +747,25 @@ async function main() {
     assert.equal(loopbackSecurity.requiresExplicitAllow, false);
     assert.equal(client.isLoopbackBaseUrl("http://[::1]:8000"), true);
 
+    const loopbackStorage = makeStorage();
+    const loopbackAuth = loadAuth(client, loopbackStorage);
+    loopbackStorage.asyncMap.set(
+      "lengrvis.mobile.session",
+      JSON.stringify({
+        baseUrl: "http://127.0.0.1:8000",
+        baseUrlSecurity: loopbackSecurity,
+        deviceId: "device-1",
+      }),
+    );
+    loopbackStorage.secureMap.set("lengrvis.mobile.session.token", "old-loopback-token");
+    assert.equal(
+      await loopbackAuth.loadSession(),
+      null,
+      "stored loopback sessions must be cleared and must not restore as paired",
+    );
+    assert.equal(loopbackStorage.asyncMap.has("lengrvis.mobile.session"), false);
+    assert.equal(loopbackStorage.secureMap.has("lengrvis.mobile.session.token"), false);
+
     const lanSecurity = client.describeBaseUrlSecurity("http://192.168.1.20:8000");
     assert.equal(lanSecurity.kind, "insecureLan");
     assert.equal(lanSecurity.isInsecureLan, true);
@@ -942,17 +961,15 @@ async function main() {
     migratedStorage.asyncMap.set(
       "lengrvis.mobile.session",
       JSON.stringify({
-        baseUrl: paired.baseUrl,
-        baseUrlSecurity: paired.baseUrlSecurity,
-        deviceId: paired.deviceId,
-        server: paired.server,
-        security: paired.security,
+        baseUrl: httpsSession.baseUrl,
+        baseUrlSecurity: httpsSession.baseUrlSecurity,
+        deviceId: httpsSession.deviceId,
         token: "legacy-token",
       }),
     );
     const migrated = await migratedAuth.loadSession();
     assert.equal(migrated.token, "legacy-token");
-    assert.equal(migrated.baseUrl, server.origin);
+    assert.equal(migrated.baseUrl, "https://example.test:8443");
     assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "legacy-token");
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /legacy-token/);
 

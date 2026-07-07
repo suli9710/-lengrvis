@@ -5,7 +5,7 @@ Runs the real delivery chain in order and emits a single machine-readable
 verdict that other tooling and the release owner can trust:
 
     qa-gate -> supply-chain -> security-extensions -> release-safety
-             -> market-readiness -> readiness -> evidence
+             -> market-readiness -> current-release-evidence -> readiness -> evidence
 
 Design notes:
 - Pure helpers (default_stages, build_plan, aggregate_verdict) carry the policy
@@ -155,6 +155,12 @@ def default_stages(
             "Mock-provider deterministic golden tasks",
         ),
         Stage(
+            "maintainability-gate",
+            ["npm", "run", "maintainability:gate"],
+            True,
+            "Source-size anti-regrowth gate",
+        ),
+        Stage(
             "supply-chain",
             ["npm", "run", "supply-chain:verify"],
             True,
@@ -190,10 +196,10 @@ def default_stages(
             True,
             "Commercial launch dashboard validation",
         ),
+        current_release_evidence_stage(strict=effective_strict),
         Stage(
             "readiness", readiness_cmd, True, "Release readiness dashboard validation"
         ),
-        current_release_evidence_stage(strict=effective_strict),
         Stage(
             "evidence",
             ["npm", "run", "evidence:release"],
@@ -224,6 +230,7 @@ def default_stages(
         stages = [
             by_name["qa-gate"],
             by_name["golden-gate"],
+            by_name["maintainability-gate"],
             Stage(
                 "real-llm-eval",
                 [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
@@ -271,6 +278,12 @@ def default_stages(
                 "Reviewed 30+ task natural-language result quality evidence",
             ),
             Stage(
+                "diagnostics-evidence",
+                ["npm", "run", "evidence:diagnostics-verify"],
+                True,
+                "Reviewed diagnostics external-sharing evidence",
+            ),
+            Stage(
                 "android-strict-gate",
                 [
                     "powershell",
@@ -286,14 +299,14 @@ def default_stages(
                 True,
                 "Strict Android APK plus reviewed LAN/WSS evidence gate",
             ),
-            Stage(
-                "commercial-loop",
-                ["npm", "run", "evidence:commercial-loop"],
-                True,
-                "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
-            ),
             *(
                 [
+                    Stage(
+                        "commercial-loop",
+                        ["npm", "run", "evidence:commercial-loop"],
+                        True,
+                        "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
+                    ),
                     Stage(
                         "support-privacy-evidence",
                         ["npm", "run", "evidence:support-privacy-verify"],

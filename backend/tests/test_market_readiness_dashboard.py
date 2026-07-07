@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +60,8 @@ def test_strict_passed_row_requires_verifiable_commercial_evidence() -> None:
 
 
 def test_paid_launch_rejects_waived_rows() -> None:
-    note = "Waived until 2026-07-27; reason: no-sale maintenance packaging. Follow-up issue: collect paid evidence."
+    future = date.today() + timedelta(days=21)
+    note = f"Waived until {future.isoformat()}; reason: no-sale maintenance packaging. Follow-up issue: PAY-123."
     sample = f"""
 | ID | Area | Required evidence | Status | Artifact / link label | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -67,6 +69,68 @@ def test_paid_launch_rejects_waived_rows() -> None:
 """
     errors, _ = mod.validate(mod.parse_rows(sample), strict=True, paid_launch=True, artifact_root=REPO_ROOT)
     assert any("paid launch requires passed" in error for error in errors)
+
+
+def test_strict_accepts_unexpired_waiver_for_no_sale_packaging() -> None:
+    future = date.today() + timedelta(days=21)
+    note = f"Waived until {future.isoformat()}; reason: no-sale maintenance packaging. Follow-up issue: PAY-123."
+    sample = f"""
+| ID | Area | Required evidence | Status | Artifact / link label | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| MR-P0-001 | Checkout | evidence | waived | docs/business/market-readiness.md | alice | {note} |
+"""
+    errors, _ = mod.validate(mod.parse_rows(sample), strict=True, artifact_root=REPO_ROOT)
+
+    assert errors == []
+
+
+def test_waived_rows_require_expiry_reason_and_followup() -> None:
+    future = date.today() + timedelta(days=21)
+    sample = """
+| ID | Area | Required evidence | Status | Artifact / link label | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| MR-P0-001 | Checkout | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future}; follow-up issue: PAY-123. |
+| MR-P0-002 | Tax | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future}; reason: no-sale maintenance packaging. |
+| MR-P0-003 | Legal | evidence | waived | docs/business/market-readiness.md | alice | reason: no-sale maintenance packaging. Follow-up issue: PAY-123. |
+""".format(future=future.isoformat())
+    errors, _ = mod.validate(mod.parse_rows(sample), strict=True, artifact_root=REPO_ROOT)
+
+    assert any("MR-P0-001" in error and "reason" in error for error in errors)
+    assert any("MR-P0-002" in error and "follow-up" in error for error in errors)
+    assert any("MR-P0-003" in error and "ISO expiry" in error for error in errors)
+
+
+def test_waived_rows_reject_expired_or_invalid_iso_dates() -> None:
+    sample = """
+| ID | Area | Required evidence | Status | Artifact / link label | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| MR-P0-001 | Checkout | evidence | waived | docs/business/market-readiness.md | alice | Waived until 2020-01-01; reason: no-sale maintenance packaging. Follow-up issue: PAY-123. |
+| MR-P0-002 | Tax | evidence | waived | docs/business/market-readiness.md | alice | Waived until 2026-99-99; reason: no-sale maintenance packaging. Follow-up issue: PAY-123. |
+"""
+    errors, _ = mod.validate(mod.parse_rows(sample), strict=True, artifact_root=REPO_ROOT)
+
+    assert any("MR-P0-001" in error and "has passed" in error for error in errors)
+    assert any("MR-P0-002" in error and "invalid" in error for error in errors)
+
+
+def test_waived_rows_require_explicit_followup_reference() -> None:
+    future = date.today() + timedelta(days=21)
+    sample = f"""
+| ID | Area | Required evidence | Status | Artifact / link label | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| MR-P0-001 | Checkout | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future.isoformat()}; reason: known issue. |
+| MR-P0-002 | Tax | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future.isoformat()}; reason: no-sale maintenance packaging. Tracker: PAY-123 |
+| MR-P0-003 | Legal | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future.isoformat()}; reason: no-sale maintenance packaging. https://github.com/example/repo/issues/123 |
+| MR-P0-004 | Support | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future.isoformat()}; reason: known issue. https://example.com/docs |
+| MR-P0-005 | Refunds | evidence | waived | docs/business/market-readiness.md | alice | Waived until {future.isoformat()}; reason: known issue. Follow-up issue: collect paid evidence. |
+"""
+    errors, _ = mod.validate(mod.parse_rows(sample), strict=True, artifact_root=REPO_ROOT)
+
+    assert any("MR-P0-001" in error and "follow-up issue reference" in error for error in errors)
+    assert any("MR-P0-004" in error and "follow-up issue reference" in error for error in errors)
+    assert any("MR-P0-005" in error and "follow-up issue reference" in error for error in errors)
+    assert not any("MR-P0-002" in error for error in errors)
+    assert not any("MR-P0-003" in error for error in errors)
 
 
 def test_repository_commercial_sources_are_consistent() -> None:

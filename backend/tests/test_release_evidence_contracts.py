@@ -26,6 +26,7 @@ distribution = _load_script("verify_distribution_release_evidence.py")
 clean_machine = _load_script("verify_clean_machine_evidence.py")
 commercial = _load_script("verify_commercial_loop_evidence.py")
 result_quality = _load_script("verify_result_quality_reviewed_evidence.py")
+diagnostics_reviewed = _load_script("verify_diagnostics_external_reviewed_evidence.py")
 support_privacy = _load_script("verify_support_privacy_rehearsal_evidence.py")
 claims_launch = _load_script("verify_launch_claims_reviewed_evidence.py")
 commercial_operations = _load_script("verify_commercial_operations_evidence.py")
@@ -257,6 +258,43 @@ def _result_quality_sample() -> dict:
                 "success_rate": 1.0,
                 "rewrite_rate": 0.0,
                 "safety_false_negative_count": 0,
+                "rc_signoff": False,
+                "release_signoff": False,
+            },
+        }
+    )
+
+
+def _diagnostics_reviewed_sample() -> dict:
+    return _signed(
+        {
+            "artifact_type": "diagnostics-external-review-evidence-reviewed",
+            "candidate": {
+                "commit": "abc123",
+                "build_identifier": "ci-123",
+                "diagnostics_package_label": "diagnostics-package-redacted",
+            },
+            "checks": {
+                "actual_exported_package_opened": "passed",
+                "logs_reviewed": "passed",
+                "path_labels_reviewed": "passed",
+                "task_traces_reviewed": "passed",
+                "model_traces_reviewed": "passed",
+                "device_identifiers_reviewed": "passed",
+                "credentials_and_secrets_reviewed": "passed",
+                "redaction_reviewed": "passed",
+                "external_sharing_decision_recorded": "passed",
+            },
+            "review": {
+                "status": "passed",
+                "reviewer_label": "reviewer-redacted",
+                "reviewed_at_utc": "2026-06-27T12:00:00Z",
+                "decision": "support_only",
+            },
+            "summary": {
+                "diagnostics_review_pass": True,
+                "public_safe": False,
+                "external_sharing_allowed": False,
                 "rc_signoff": False,
                 "release_signoff": False,
             },
@@ -517,6 +555,9 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     assert scripts["evidence:distribution-verify"] == "python scripts/verify_distribution_release_evidence.py"
     assert scripts["evidence:clean-machine-verify"] == "python scripts/verify_clean_machine_evidence.py"
     assert scripts["evidence:result-quality-verify"] == "python scripts/verify_result_quality_reviewed_evidence.py"
+    assert scripts["evidence:diagnostics-verify"] == (
+        "python scripts/verify_diagnostics_external_reviewed_evidence.py"
+    )
     assert scripts["evidence:support-privacy-verify"] == "python scripts/verify_support_privacy_rehearsal_evidence.py"
     assert scripts["evidence:claims-launch-verify"] == "python scripts/verify_launch_claims_reviewed_evidence.py"
     assert scripts["evidence:commercial-operations-verify"] == (
@@ -825,6 +866,129 @@ def test_result_quality_rejects_template_short_run_and_safety_false_negative() -
     assert any("template evidence" in error for error in errors)
     assert any("at least 30" in error for error in errors)
     assert any("false_negative" in error or "false negatives" in error for error in errors)
+
+
+def test_diagnostics_reviewed_sample_passes() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    assert diagnostics_reviewed.validate_payload(payload) == []
+    errors, contract = diagnostics_reviewed.validate_payload_with_contract(payload)
+    assert errors == []
+    assert contract == {
+        "valid_hash": True,
+        "valid_signature": True,
+        "reviewed_pass": True,
+        "release_signoff": False,
+    }
+
+
+def test_diagnostics_reviewed_rejects_template_and_unsafe_external_share() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    payload["artifact_type"] = "diagnostics-external-review-evidence-template"
+    payload["review"]["decision"] = "public_safe"
+    payload["summary"]["public_safe"] = True
+    payload["summary"]["external_sharing_allowed"] = True
+    payload = _resign(payload)
+
+    errors = diagnostics_reviewed.validate_payload(payload)
+
+    assert any("template evidence" in error for error in errors)
+    assert any("summary.public_safe must be false" in error for error in errors)
+    assert any("summary.external_sharing_allowed must be false" in error for error in errors)
+    assert any("review.decision must be one of" in error for error in errors)
+
+
+def test_diagnostics_reviewed_rejects_raw_package_path_and_ambiguous_time() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    payload["candidate"]["diagnostics_package_label"] = (
+        r"D:\Desktop\mavris\.lengrvis_data\diagnostic-packages\case.zip"
+    )
+    payload["review"]["reviewed_at_utc"] = "2026-06-27T12:00:00"
+    payload = _resign(payload)
+
+    errors = diagnostics_reviewed.validate_payload(payload)
+
+    assert any("diagnostics_package_label must be a redacted label" in error for error in errors)
+    assert any("review.reviewed_at_utc must include an explicit UTC timezone" in error for error in errors)
+
+
+def test_diagnostics_reviewed_rejects_non_string_identity_and_label_fields() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    payload["candidate"]["commit"] = 123
+    payload["candidate"]["build_identifier"] = ["ci-123"]
+    payload["candidate"]["diagnostics_package_label"] = {"label": r"C:\ProgramData\Lengrvis\diagnostics\case.zip"}
+    payload["review"]["reviewer_label"] = {"reviewer": "alice"}
+    payload = _resign(payload)
+
+    errors = diagnostics_reviewed.validate_payload(payload)
+
+    assert any("candidate.commit must be a non-empty string" in error for error in errors)
+    assert any("candidate.build_identifier must be a non-empty string" in error for error in errors)
+    assert any("candidate.diagnostics_package_label must be a non-empty string" in error for error in errors)
+    assert any("review.reviewer_label must be a non-empty string" in error for error in errors)
+
+
+def test_diagnostics_reviewed_rejects_common_path_spellings_without_rejecting_label_text() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    for raw_path in (
+        "C:/ProgramData/Lengrvis/diagnostics/case.zip",
+        "/opt/lengrvis/diagnostics/case.zip",
+        r"\\server\share\case.zip",
+        "~/.lengrvis_data/diagnostic-packages/case.zip",
+    ):
+        payload = _diagnostics_reviewed_sample()
+        payload["candidate"]["diagnostics_package_label"] = raw_path
+        payload = _resign(payload)
+
+        errors = diagnostics_reviewed.validate_payload(payload)
+
+        assert any("diagnostics_package_label must be a redacted label" in error for error in errors)
+
+    payload = _diagnostics_reviewed_sample()
+    payload["candidate"]["diagnostics_package_label"] = "diagnostic-packages-redacted-label"
+    payload = _resign(payload)
+    assert diagnostics_reviewed.validate_payload(payload) == []
+
+
+def test_diagnostics_reviewed_rejects_support_only_public_safe_mismatch() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    payload["summary"]["public_safe"] = True
+    payload = _resign(payload)
+
+    errors = diagnostics_reviewed.validate_payload(payload)
+
+    assert any("summary.public_safe must be false" in error for error in errors)
+
+
+def test_diagnostics_reviewed_rejects_missing_actual_package_review() -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    payload = _diagnostics_reviewed_sample()
+    payload["checks"]["task_traces_reviewed"] = "pending"
+    payload["review"]["decision"] = "share_anyway"
+    payload = _resign(payload)
+
+    errors = diagnostics_reviewed.validate_payload(payload)
+
+    assert any("checks.task_traces_reviewed must be passed" in error for error in errors)
+    assert any("review.decision must be one of" in error for error in errors)
 
 
 def test_commercial_rejects_development_license_profile() -> None:

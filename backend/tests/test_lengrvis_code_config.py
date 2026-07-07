@@ -6,6 +6,7 @@ from app.config import AppSettings
 from app.orchestration.lengrvis_code_config import (
     BLOCKED_ENV_KEYS,
     LengrvisCodeConfig,
+    assert_safe_lengrvis_code_invocation,
     build_lengrvis_code_command,
     build_lengrvis_code_env,
     default_allowed_tools,
@@ -122,6 +123,40 @@ def test_command_rejects_dangerously_skip_permissions(tmp_path, flag: str) -> No
 
     with pytest.raises(ValueError, match="dangerously-skip-permissions"):
         build_lengrvis_code_command("unsafe", cwd=tmp_path, config=config)
+
+
+def test_command_rejects_configured_write_tools_by_default(tmp_path) -> None:
+    config = LengrvisCodeConfig(
+        command=("lengrvis-test",),
+        allowed_tools=("Read", "NotebookEdit"),
+    )
+
+    with pytest.raises(ValueError, match="NotebookEdit"):
+        build_lengrvis_code_command("edit notebook", cwd=tmp_path, config=config)
+
+
+def test_invocation_rejects_explicit_write_tools_by_default() -> None:
+    command = ["lengrvis-test", "--allowedTools", "Read,NotebookEdit"]
+
+    with pytest.raises(ValueError, match="NotebookEdit"):
+        assert_safe_lengrvis_code_invocation(command, build_env={})
+
+
+def test_explicit_allow_write_tools_allows_write_tool_command(tmp_path) -> None:
+    config = LengrvisCodeConfig(
+        command=("lengrvis-test",),
+        allowed_tools=("Read", "NotebookEdit"),
+    )
+
+    command = build_lengrvis_code_command(
+        "edit notebook",
+        cwd=tmp_path,
+        config=config,
+        allow_write_tools=True,
+    )
+
+    assert command[command.index("--allowedTools") + 1] == "Read,NotebookEdit"
+    assert_safe_lengrvis_code_invocation(command, build_env={}, allow_write_tools=True)
 
 
 def test_unbuilt_vendor_runtime_does_not_fallback_to_path(tmp_path, monkeypatch) -> None:

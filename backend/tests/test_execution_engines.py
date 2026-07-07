@@ -155,7 +155,10 @@ async def test_developer_engine_run_turn_goes_through_tool_runtime(tmp_path, mon
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
 
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is False
         from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
 
         return LengrvisCodeStreamSummary(
@@ -191,7 +194,10 @@ async def test_developer_engine_run_turn_goes_through_tool_runtime(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_lengrvis_code_sync_bridge_returns_from_running_event_loop(tmp_path, monkeypatch) -> None:
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is False
         from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
 
         return LengrvisCodeStreamSummary(result={"is_error": False, "result": "ok"}, assistant_text=["done"])
@@ -212,7 +218,10 @@ async def test_lengrvis_code_sync_bridge_returns_from_running_event_loop(tmp_pat
 
 
 def test_lengrvis_code_sync_bridge_times_out_slow_adapter(tmp_path, monkeypatch) -> None:
-    async def slow_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def slow_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is False
         from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
 
         await asyncio.sleep(1.0)
@@ -266,7 +275,10 @@ async def test_developer_engine_writes_enabled_expands_allowed_tools(tmp_path) -
 async def test_developer_engine_run_turn_passes_write_tools_to_lengrvis_code(tmp_path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is True
         captured["allowed_tools"] = tuple(config.allowed_tools)
         captured["prompt"] = prompt
         from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
@@ -307,7 +319,10 @@ async def test_developer_engine_run_turn_passes_write_tools_to_lengrvis_code(tmp
 async def test_developer_engine_run_turn_honors_live_writes_setting_over_plan_snapshot(tmp_path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is False
         captured["allowed_tools"] = tuple(config.allowed_tools)
         captured["prompt"] = prompt
         from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
@@ -367,6 +382,7 @@ def test_build_lengrvis_command_writes_enabled_uses_default_permission_mode(tmp_
         cwd=tmp_path,
         settings=settings,
         config=config,
+        allow_write_tools=True,
     )
     assert "--permission-mode" in command
     assert command[command.index("--permission-mode") + 1] == "default"

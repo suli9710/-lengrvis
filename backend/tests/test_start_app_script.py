@@ -123,6 +123,19 @@ def _powershell_executable() -> str:
     return executable
 
 
+def _init_clean_git_repo(path: Path) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is required for current release evidence worktree tests")
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "README.md").write_text("test repo\n", encoding="utf-8")
+    subprocess.run([git, "init"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run([git, "config", "user.email", "tests@example.invalid"], cwd=path, check=True)
+    subprocess.run([git, "config", "user.name", "Tests"], cwd=path, check=True)
+    subprocess.run([git, "add", "README.md"], cwd=path, check=True)
+    subprocess.run([git, "commit", "-m", "init"], cwd=path, check=True, capture_output=True, text=True)
+
+
 def _run_release_safety(
     project_root: Path,
     tmp_path: Path,
@@ -911,9 +924,12 @@ def test_current_release_evidence_ci_success_still_requires_manual_signature(
     assert result.returncode == 0, output
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_passed" in text
+    assert "- Worktree status:" in text
+    assert "- Worktree dirty file count:" in text
     assert "- Manual sign-off status: manual_signoff_pending" in text
     assert "- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE" in text
     assert "It is not release sign-off" in text
+    assert "npm run maintainability:gate" in text
     assert "| Supply chain lock + SBOM |" in text
     assert "| IPC + Skill/MCP + settings security gate |" in text
 
@@ -971,6 +987,7 @@ def test_current_release_evidence_accepts_explicit_manual_signoff_status(
     assert result.returncode == 0, output
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_passed" in text
+    assert "- Worktree status:" in text
     assert "- Manual sign-off status: rc_signoff_recorded" in text
     assert "- Owner signature: release-owner-accepted-rc" in text
     assert "Skill/MCP release-profile supply-chain controls" in text
@@ -1026,6 +1043,7 @@ def test_current_release_evidence_requires_every_ci_gate_success(
     assert result.returncode == 0, output
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_failed_or_incomplete" in text
+    assert "- Worktree status:" in text
     assert "- Backend pytest + golden task gate: failure" in text
     assert "machine_gates_passed" not in text
     assert (
@@ -1086,12 +1104,135 @@ def test_current_release_evidence_records_real_llm_secret_skip_as_incomplete(
     assert result.returncode == 0, output
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_failed_or_incomplete" in text
+    assert "- Worktree status:" in text
     assert "- Real LLM quality gate: skipped" in text
     assert (
         "| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |"
         in text
     )
     assert "machine_gates_passed" not in text
+
+
+def test_strict_current_release_evidence_requires_clean_worktree(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "real-llm-quality",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    repo = tmp_path / "candidate"
+    _init_clean_git_repo(repo)
+    (repo / "dirty.txt").write_text("untracked\n", encoding="utf-8")
+    output_path = repo / "docs" / "release" / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(repo),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-07-01T00:00:00Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+            "-OwnerSignature",
+            "release-owner-accepted-rc",
+            "-ManualSignoffStatus",
+            "rc_signoff_recorded",
+            "-StrictReleaseSignoff",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- Worktree status: dirty" in text
+    assert "- Worktree dirty file count: 1" in text
+    assert "Worktree status must be clean; got dirty." in output
+
+
+def test_strict_current_release_evidence_accepts_clean_worktree(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "real-llm-quality",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    repo = tmp_path / "candidate"
+    _init_clean_git_repo(repo)
+    output_path = repo / "docs" / "release" / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(repo),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-07-01T00:00:00Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+            "-OwnerSignature",
+            "release-owner-accepted-rc",
+            "-ManualSignoffStatus",
+            "rc_signoff_recorded",
+            "-StrictReleaseSignoff",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- CI status: machine_gates_passed" in text
+    assert "- Worktree status: clean" in text
+    assert "- Worktree dirty file count: 0" in text
+    assert "- Manual sign-off status: rc_signoff_recorded" in text
 
 
 def test_release_safety_fails_closed_without_strict_state_machine(
@@ -1634,6 +1775,7 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
         "npm run evidence:mobile-lan-wss",
         "npm run evidence:local-model-template",
         "npm run evidence:diagnostics-review",
+        "npm run evidence:diagnostics-verify",
         "npm run evidence:distribution-template",
     )
     for alias in aliases:
@@ -1648,6 +1790,7 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
         r".\scripts\verify_mobile_lan_wss_preflight.ps1",
         r".\scripts\collect_local_model_clean_machine_evidence_template.ps1",
         r".\scripts\collect_diagnostics_external_review_packet.ps1",
+        r"python scripts\verify_diagnostics_external_reviewed_evidence.py",
         r".\scripts\collect_distribution_release_evidence_template.ps1",
     )
     for helper in raw_helpers:
@@ -2098,6 +2241,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:android-real-device-template",
         "evidence:local-model-template",
         "evidence:diagnostics-review",
+        "evidence:diagnostics-verify",
         "evidence:distribution-template",
         "evidence:paid-launch-template",
         "evidence:distribution-verify",

@@ -81,7 +81,7 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(pnpm test:*)",
 )
 FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
-WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit")
+WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit", "NotebookEdit")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 # P1-11 fix: Keys the adapter intentionally injects for the OpenAI-compatible
 # provider. These match sensitive-key patterns (e.g. API_KEY) but are required
@@ -626,6 +626,7 @@ def build_lengrvis_code_command(
     cwd: str | Path,
     settings: AppSettings | None = None,
     config: LengrvisCodeConfig | None = None,
+    allow_write_tools: bool = False,
 ) -> list[str]:
     active = config or LengrvisCodeConfig()
     workspace = Path(cwd).expanduser().resolve(strict=False)
@@ -636,7 +637,6 @@ def build_lengrvis_code_command(
         raise RuntimeError(runtime.reason)
 
     model = str((settings.model if settings is not None else "") or "").strip()
-    allow_write_tools = any(str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in active.allowed_tools)
     allowed_tools = validate_allowed_tools(active.allowed_tools, allow_write_tools=allow_write_tools)
 
     command = [
@@ -659,12 +659,14 @@ def build_lengrvis_code_command(
         ",".join(allowed_tools),
         prompt,
     ]
-    assert_safe_lengrvis_code_invocation(command, build_env=active.env)
+    assert_safe_lengrvis_code_invocation(command, build_env=active.env, allow_write_tools=allow_write_tools)
     return command
 
 
-def assert_safe_lengrvis_code_invocation(command: Sequence[str], *, build_env: Mapping[str, Any]) -> None:
-    error = _command_safety_error(command, build_env=build_env)
+def assert_safe_lengrvis_code_invocation(
+    command: Sequence[str], *, build_env: Mapping[str, Any], allow_write_tools: bool = False
+) -> None:
+    error = _command_safety_error(command, build_env=build_env, allow_write_tools=allow_write_tools)
     if error:
         raise ValueError(error)
 
@@ -700,6 +702,7 @@ async def run_lengrvis_code(
     run_id: str = "",
     cancel_event: asyncio.Event | None = None,
     registry: LengrvisCodeProcessRegistry = lengrvis_code_process_registry,
+    allow_write_tools: bool = False,
 ) -> LengrvisCodeStreamSummary:
     active = config or LengrvisCodeConfig(max_turns=settings.agent_loop_max_turns)
     # P1-11 fix: build_lengrvis_code_env starts from a sanitized parent-env
@@ -718,8 +721,14 @@ async def run_lengrvis_code(
     )
     runtime_health = diagnose_lengrvis_code_runtime(_configured_command(launch_config))
     try:
-        command = build_lengrvis_code_command(prompt, cwd=cwd, settings=settings, config=launch_config)
-        assert_safe_lengrvis_code_invocation(command, build_env=env)
+        command = build_lengrvis_code_command(
+            prompt,
+            cwd=cwd,
+            settings=settings,
+            config=launch_config,
+            allow_write_tools=allow_write_tools,
+        )
+        assert_safe_lengrvis_code_invocation(command, build_env=env, allow_write_tools=allow_write_tools)
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return LengrvisCodeStreamSummary(
             launch_error=str(exc),
@@ -879,11 +888,12 @@ def _resolve_command(command: tuple[str, ...]) -> tuple[str, ...]:
     return (resolved, *command[1:]) if resolved else command
 
 
-def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any] | None = None) -> str:
+def _command_safety_error(
+    command: Sequence[str], *, build_env: Mapping[str, Any] | None = None, allow_write_tools: bool = False
+) -> str:
     try:
         _assert_no_forbidden_flags(command)
         for raw_tools in _allowed_tools_args(command):
-            allow_write_tools = any(str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in raw_tools)
             validate_allowed_tools(raw_tools, allow_write_tools=allow_write_tools)
     except ValueError as exc:
         return str(exc)

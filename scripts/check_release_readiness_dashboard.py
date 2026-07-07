@@ -37,6 +37,18 @@ CI_ARTIFACT_PATH_PREFIXES = (
     "build/",
     "desktop/release/",
 )
+ISSUE_KEY_RE = r"(?:#[0-9]+|[A-Z][A-Z0-9]+-[0-9]+)"
+ISSUE_URL_RE = re.compile(
+    r"https?://[^\s)]+(?:"
+    r"/issues/[0-9]+|"
+    r"/pull/[0-9]+|"
+    r"/-/issues/[0-9]+|"
+    r"/-/merge_requests/[0-9]+|"
+    r"/browse/[A-Z][A-Z0-9]+-[0-9]+|"
+    r"/issue/[A-Z][A-Z0-9]+-[0-9]+"
+    r")(?:[/?#][^\s)]*)?",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -225,6 +237,12 @@ def validate(
                     "Current release evidence CI status must be machine_gates_passed for strict readiness; "
                     f"got {evidence_ci_status or 'missing'}."
                 )
+            evidence_worktree_status = _current_evidence_summary_value(evidence_text, "Worktree status")
+            if evidence_worktree_status != "clean":
+                errors.append(
+                    "Current release evidence worktree status must be clean for strict readiness; "
+                    f"got {evidence_worktree_status or 'missing'}."
+                )
             manual_status = _current_evidence_summary_value(evidence_text, "Manual sign-off status")
             if manual_status not in STRICT_ACCEPTED_MANUAL_SIGNOFF_STATUSES:
                 errors.append(
@@ -371,9 +389,17 @@ def _waiver_error(row: ReadinessRow) -> str:
     notes = row.notes.casefold()
     if "reason" not in notes:
         return "waived row notes require a reason."
-    if "follow-up" not in notes and "followup" not in notes and "issue" not in notes:
-        return "waived row notes require a follow-up issue."
+    if not _has_follow_up_reference(row.notes):
+        return "waived row notes require an explicit follow-up issue reference."
     return ""
+
+
+def _has_follow_up_reference(notes: str) -> bool:
+    if ISSUE_URL_RE.search(notes):
+        return True
+    return bool(
+        re.search(rf"(?:^|[\s(:]){ISSUE_KEY_RE}(?:$|[\s).,;])", notes, re.IGNORECASE)
+    )
 
 
 def main() -> int:

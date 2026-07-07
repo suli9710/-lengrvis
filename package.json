@@ -1,7 +1,7 @@
 {
   "name": "lengrvis",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "BUSL-1.1",
   "description": "Lengrvis workspace packaging and QA scripts",
   "scripts": {
@@ -19,6 +19,7 @@
     "supply-chain:verify": "npm run deps:verify && npm run sbom:generate",
     "security:extensions": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_extension_security_gate.ps1",
     "maintainability:size": "python scripts/check_source_size.py --top 25",
+    "maintainability:gate": "python scripts/check_source_size.py --top 25 --max-p95-lines 800 --max-area-max-lines backend=1400 --max-area-max-lines desktop=900 --max-area-max-lines desktop_styles=700 --max-area-max-lines mobile=900 --max-area-max-lines scripts=2400",
     "release:readiness": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md",
     "release:readiness:strict": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict",
     "release:readiness:rc": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --rc-release",
@@ -57,6 +58,7 @@
     "evidence:distribution-verify": "python scripts/verify_distribution_release_evidence.py",
     "evidence:clean-machine-verify": "python scripts/verify_clean_machine_evidence.py",
     "evidence:result-quality-verify": "python scripts/verify_result_quality_reviewed_evidence.py",
+    "evidence:diagnostics-verify": "python scripts/verify_diagnostics_external_reviewed_evidence.py",
     "evidence:support-privacy-verify": "python scripts/verify_support_privacy_rehearsal_evidence.py",
     "evidence:claims-launch-verify": "python scripts/verify_launch_claims_reviewed_evidence.py",
     "evidence:commercial-operations-verify": "python scripts/verify_commercial_operations_evidence.py",

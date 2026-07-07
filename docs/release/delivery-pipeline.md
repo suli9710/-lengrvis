@@ -10,15 +10,16 @@ exposed through npm scripts.
 | ---: | --- | :---: | --- | --- |
 | 1 | qa-gate | yes | `npm run qa:gate` | Backend tests, desktop/mobile typecheck, desktop smoke. |
 | 2 | golden-gate | yes | `npm run golden:gate` | Deterministic golden-task regression gate. |
-| 3 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
-| 4 | dependency-audit | yes | `npm run audit:deps` | npm audit plus pip-audit over runtime/build/acceleration Python locks. |
-| 5 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
-| 6 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
-| 7 | release-safety | yes | `npm run release:safety` | Release safety checks. |
-| 8 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
-| 9 | current-release-evidence | no / strict yes | `npm run evidence:current-release` | Generate the current CI/release evidence summary used by strict readiness. |
-| 10 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
-| 11 | evidence | no / strict yes | `npm run evidence:release` | Collect the release evidence packet. |
+| 3 | maintainability-gate | yes | `npm run maintainability:gate` | Source-size p95 and per-area anti-regrowth gate. |
+| 4 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
+| 5 | dependency-audit | yes | `npm run audit:deps` | npm audit plus pip-audit over runtime/build/acceleration Python locks. |
+| 6 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
+| 7 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
+| 8 | release-safety | yes | `npm run release:safety` | Release safety checks. |
+| 9 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
+| 10 | current-release-evidence | no / strict yes | `npm run evidence:current-release` | Generate the current CI/release evidence summary used by strict readiness. |
+| 11 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
+| 12 | evidence | no / strict yes | `npm run evidence:release` | Collect the release evidence packet. |
 
 Non-strict `delivery:run` inserts required `release-artifact-preflight` and
 `signed-artifacts` stages after `release-safety` unless `--skip-signature-verify` is
@@ -27,14 +28,21 @@ passed. Strict RC mode (`delivery:rc`) always runs `signed-artifacts` and ignore
 
 Strict RC mode inserts additional required stages after golden/safety/artifact checks:
 `real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
-`clean-machine-evidence`, `result-quality-evidence`, `android-strict-gate`, and
-`commercial-loop`. Paid-launch mode adds `support-privacy-evidence`,
+`clean-machine-evidence`, `result-quality-evidence`, `diagnostics-evidence`, and
+`android-strict-gate`.
+The real-LLM stage runs `scripts/run_real_llm_eval.py --quality-gate`, which refuses
+mock providers and requires at least 20 eligible `runs` / `chat` tasks to run before
+the quality metrics can pass. It also records numerator/denominator counts for each
+quality rate and fails strict RC when a core metric is measured on too small a sample.
+Paid-launch mode adds `commercial-loop`, `support-privacy-evidence`,
 `claims-launch-evidence`, and `commercial-operations-evidence`, then runs market
 readiness with `--paid-launch`.
 These stages require reviewed evidence JSON and real Android APK/device evidence;
 template/preflight outputs intentionally fail them.
 Strict RC mode also upgrades both `current-release-evidence` and `evidence` from
-optional to required, so stale or missing evidence blocks the verdict.
+optional to required. The current-release evidence generator records the
+pre-generation git worktree status, and strict sign-off fails unless that status
+is `clean`, so dirty-worktree candidates cannot be promoted by commit SHA alone.
 
 Windows RC signing order (`.github/workflows/release-candidate.yml`):
 
@@ -92,7 +100,9 @@ The orchestrator prints and optionally writes a JSON verdict:
    day-to-day development and never authorize a tag or announcement.
 2. A paid/public launch must use `delivery:paid-launch`; `delivery:rc` is necessary
    but not sufficient to accept payment, issue invoices, publish paid pricing, or
-   call a paid plan generally available.
+   call a paid plan generally available. No-sale RCs must not be blocked on
+   commercial-loop evidence while the market dashboard records scoped no-sale
+   waivers.
 3. The pipeline does not replace manual evidence. `RR-P0` engineering rows and
    `MR-P0` commercial rows still require their named real-world artifacts and owners.
 4. Strict Android evidence is supplied through `LENGRVIS_ANDROID_APK_PATH` and
@@ -111,7 +121,7 @@ Closes: ordering, fail-closed aggregation, a single verdict artifact, and a clea
 mapping from gates to release decision.
 
 Does not close on its own: real-world execution evidence (clean-machine, Android
-device, result-quality and diagnostics review) or the external substance behind
+device, result-quality review, diagnostics review) or the external substance behind
 commercial operations (lawyer, tax, payment processor, support staffing). Those
 remain manual P0 responsibilities, but paid launch mode now requires signed
 commercial operations evidence before `market:readiness:paid` can pass.

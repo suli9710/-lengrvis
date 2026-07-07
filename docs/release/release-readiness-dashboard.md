@@ -48,6 +48,7 @@ npm run supply-chain:verify
 npm run security:extensions
 npm run qa:gate
 npm run evidence:result-quality-verify
+npm run evidence:diagnostics-verify
 npm run release:check
 npm run release:readiness
 npm run release:readiness:strict
@@ -62,7 +63,7 @@ Strict readiness accepts explicit release-owner-approved `waived` rows for scope
 
 1. Use artifact labels, not private absolute paths, in this dashboard.
 2. A template-only helper output must stay `blocked` or `in_progress` until the real run evidence exists.
-3. `waived` requires owner, reason, expiry, and follow-up issue.
+3. `waived` requires owner, reason, ISO expiry, and an explicit follow-up issue reference.
 4. Do not mark mobile, clean-machine, diagnostics public-safety, or result quality as passed based only on CI.
 5. Do not tag, publish, announce, or share diagnostics externally while any P0 row is `blocked`.
 

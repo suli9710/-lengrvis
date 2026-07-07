@@ -61,6 +61,40 @@ function Get-GitValue([string[]]$Arguments, [string]$Fallback) {
     return $Fallback
 }
 
+function Get-GitStatusSnapshot() {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $git) {
+        return @{
+            available = $false
+            lines = @()
+        }
+    }
+
+    Push-Location $resolvedRoot
+    try {
+        $output = & $git.Source status --porcelain 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return @{
+                available = $false
+                lines = @()
+            }
+        }
+        return @{
+            available = $true
+            lines = @($output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        }
+    }
+    catch {
+        return @{
+            available = $false
+            lines = @()
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 function Get-FirstNonEmpty([string[]]$Values, [string]$Fallback) {
     foreach ($value in $Values) {
         if (-not [string]::IsNullOrWhiteSpace($value)) {
@@ -177,6 +211,19 @@ if ([string]::IsNullOrWhiteSpace($OwnerSignature)) {
     ) "PENDING_RELEASE_OWNER_SIGNATURE"
 }
 
+$gitStatusSnapshot = Get-GitStatusSnapshot
+$gitStatusLines = @($gitStatusSnapshot.lines)
+$worktreeStatus = if (-not [bool]$gitStatusSnapshot.available) {
+    "unavailable"
+}
+elseif ($gitStatusLines.Count -eq 0) {
+    "clean"
+}
+else {
+    "dirty"
+}
+$worktreeDirtyCount = $gitStatusLines.Count
+
 $runUrl = ""
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_SERVER_URL) -and
     -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY) -and
@@ -233,10 +280,11 @@ $gates = @(
     [ordered]@{
         id = "hygiene"
         job = "Repo hygiene + dependency locks"
-        scope = "Repository hygiene and dependency lock consistency"
+        scope = "Repository hygiene, dependency lock consistency, and maintainability anti-regrowth"
         commands = @(
             "npm run hygiene",
-            "npm run deps:verify"
+            "npm run deps:verify",
+            "npm run maintainability:gate"
         )
     },
     [ordered]@{
@@ -357,6 +405,9 @@ if ($StrictReleaseSignoff) {
     if ($ciStatus -ne "machine_gates_passed") {
         $strictReleaseEvidenceErrors.Add("CI status must be machine_gates_passed; got $ciStatus.")
     }
+    if ($worktreeStatus -ne "clean") {
+        $strictReleaseEvidenceErrors.Add("Worktree status must be clean; got $worktreeStatus.")
+    }
     if ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE" -or [string]::IsNullOrWhiteSpace($OwnerSignature)) {
         $strictReleaseEvidenceErrors.Add("Owner signature must be recorded for strict RC evidence.")
     }
@@ -396,6 +447,8 @@ $lines.Add("")
 $lines.Add("- Commit SHA: $CommitSha")
 $lines.Add("- Date (UTC): $GeneratedAtUtc")
 $lines.Add("- CI status: $ciStatus")
+$lines.Add("- Worktree status: $worktreeStatus")
+$lines.Add("- Worktree dirty file count: $worktreeDirtyCount")
 $lines.Add("- Manual sign-off status: $manualStatus")
 $lines.Add("- Release owner: $ReleaseOwner")
 $lines.Add("- Owner signature: $OwnerSignature")

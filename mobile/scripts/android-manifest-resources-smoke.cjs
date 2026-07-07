@@ -6,12 +6,65 @@ const mobileRoot = path.resolve(__dirname, "..");
 const manifestPath = path.join(mobileRoot, "android/app/src/main/AndroidManifest.xml");
 const manifest = fs.readFileSync(manifestPath, "utf8");
 const xmlReferences = [...manifest.matchAll(/@xml\/([A-Za-z0-9_]+)/g)].map((match) => match[1]);
+const mainNetworkSecurityConfigPath = path.join(
+  mobileRoot,
+  "android/app/src/main/res/xml/network_security_config.xml",
+);
+const mainNetworkSecurityConfig = fs.readFileSync(mainNetworkSecurityConfigPath, "utf8");
+
+assert.doesNotMatch(manifest, /SYSTEM_ALERT_WINDOW/, "AndroidManifest.xml must not request overlay permission");
+assert.doesNotMatch(
+  manifest,
+  /tools:replace\s*=\s*"android:usesCleartextTraffic"/,
+  "AndroidManifest.xml must not override the generated cleartext policy",
+);
+assert.match(
+  manifest,
+  /android:allowBackup\s*=\s*"false"/,
+  "AndroidManifest.xml must disable Android backup for token-bearing mobile state",
+);
+assert.match(
+  manifest,
+  /android:networkSecurityConfig\s*=\s*"@xml\/network_security_config"/,
+  "AndroidManifest.xml must bind the hardened network security config",
+);
+assert.match(
+  manifest,
+  /android:usesCleartextTraffic\s*=\s*"false"/,
+  "AndroidManifest.xml must disable app-wide cleartext traffic",
+);
+assert.match(
+  manifest,
+  /android:fullBackupContent\s*=\s*"@xml\/secure_store_backup_rules"/,
+  "AndroidManifest.xml must keep SecureStore backup rules wired",
+);
+assert.match(
+  manifest,
+  /android:dataExtractionRules\s*=\s*"@xml\/secure_store_data_extraction_rules"/,
+  "AndroidManifest.xml must keep SecureStore data extraction rules wired",
+);
 
 assert.ok(xmlReferences.length > 0, "AndroidManifest.xml should reference XML resources explicitly");
 for (const name of xmlReferences) {
   const resourcePath = path.join(mobileRoot, "android/app/src/main/res/xml", `${name}.xml`);
   assert.ok(fs.existsSync(resourcePath), `AndroidManifest.xml references missing @xml/${name}`);
 }
+
+assert.match(
+  mainNetworkSecurityConfig,
+  /<base-config\s+cleartextTrafficPermitted="false">/,
+  "main network_security_config.xml must fail closed for default cleartext",
+);
+assert.doesNotMatch(
+  mainNetworkSecurityConfig,
+  /cleartextTrafficPermitted="true"/,
+  "main network_security_config.xml must not allow release cleartext exceptions",
+);
+assert.doesNotMatch(
+  mainNetworkSecurityConfig,
+  /<domain\s+includeSubdomains="false">(?:127(?:\.\d{1,3}){3}|localhost)<\/domain>/i,
+  "main network_security_config.xml must not allow loopback cleartext in release",
+);
 
 for (const relativePath of [
   "android/app/src/debug/AndroidManifest.xml",
@@ -46,6 +99,11 @@ for (const relativePath of [
     /<domain\s+includeSubdomains="false">10\.0\.2\.2<\/domain>/,
     `${relativePath} may allow emulator cleartext only through network_security_config`,
   );
+  assert.match(
+    source,
+    /<domain\s+includeSubdomains="false">127\.0\.0\.1<\/domain>[\s\S]*<domain\s+includeSubdomains="false">localhost<\/domain>/,
+    `${relativePath} may keep loopback cleartext for debug-only development`,
+  );
 }
 
-console.log("[pass] Android manifest XML resources exist");
+console.log("[pass] Android manifest/resource hardening smoke");

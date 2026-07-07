@@ -11,9 +11,14 @@ from app.integrations.lengrvis_code_constants import (
 )
 from app.integrations.lengrvis_code_errors import classify_lengrvis_code_error
 from app.integrations.lengrvis_code_redaction import (
+    _public_lengrvis_code_command,
+    _public_lengrvis_code_final_text,
     _public_lengrvis_code_json,
     _public_lengrvis_code_result,
     _public_lengrvis_code_text,
+    _public_lengrvis_code_tool_event,
+    _public_lengrvis_code_tool_input_text,
+    _public_lengrvis_code_tool_input_value,
     _public_lengrvis_code_value,
     _short_json,
 )
@@ -100,7 +105,7 @@ def _summary_message(summary: LengrvisCodeEventSummaryLike) -> str:
     if summary.is_error:
         return _error_reason(summary)
     if summary.final_text:
-        return summary.final_text[:500]
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} completed with redacted final text."
     return f"{LENGRVIS_CODE_DISPLAY_NAME} emitted {len(summary.events)} stream-json event(s)."
 
 
@@ -135,8 +140,10 @@ def _summary_payload(summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
         "error_classification": error_classification,
         "returncode": summary.returncode,
         "event_count": len(summary.events),
-        "assistant_text": _public_lengrvis_code_text(summary.final_text) if summary.is_error else summary.final_text,
-        "tool_events": summary.tool_events,
+        "assistant_text": _public_lengrvis_code_text(summary.final_text)
+        if summary.is_error
+        else _public_lengrvis_code_final_text(summary.final_text),
+        "tool_events": [_public_lengrvis_code_tool_event(event) for event in summary.tool_events],
         "system_events": summary.system_events,
         "result": _public_lengrvis_code_result(summary.result),
         "usage": summary.usage,
@@ -145,7 +152,7 @@ def _summary_payload(summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
         "diagnostics": _diagnostics(summary),
         "adapter_events": adapter_events,
         "lengrvis_events": lengrvis_events,
-        "command": summary.command,
+        "command": _public_lengrvis_code_command(summary.command),
         "runtime_health": summary.runtime_health,
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
@@ -238,10 +245,8 @@ def _event_summary(event: Mapping[str, Any]) -> str:
             return f"{LENGRVIS_CODE_DISPLAY_NAME} requested tool(s): {', '.join(tools)}."
         return f"{LENGRVIS_CODE_DISPLAY_NAME} assistant message."
     if event_type == "result":
-        if isinstance(event.get("result"), str) and event.get("result"):
-            return str(event["result"])[:500]
         if isinstance(event.get("errors"), list) and event["errors"]:
-            return "; ".join(str(item) for item in event["errors"])[:500]
+            return "; ".join(_public_lengrvis_code_text(item) for item in event["errors"])[:500]
         return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'}."
     if event_type in {"streamlined_text", "text"} and isinstance(event.get("text"), str):
         return str(event["text"]).strip()[:500]
@@ -366,7 +371,7 @@ def _lengrvis_events_for_source_event(
                         "status": "failed" if tool_result.get("is_error") else "completed",
                         "message": _tool_result_message(tool_result),
                         "tool_use_id": tool_result.get("tool_use_id"),
-                        "output": tool_result.get("content"),
+                        "output": _tool_result_output_payload(tool_result),
                     },
                 }
             )
@@ -466,18 +471,20 @@ def _tool_input_summary(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value[:500]
+        return _public_lengrvis_code_tool_input_text(value, limit=500)
     if isinstance(value, Mapping):
+        safe_value = _public_lengrvis_code_tool_input_value(value)
         parts: list[str] = []
-        for key, item in list(value.items())[:8]:
+        for key, item in list(safe_value.items())[:8]:
             text = str(item)
             if len(text) > 80:
                 text = f"{text[:77]}..."
             parts.append(f"{key}={text}")
         return ", ".join(parts)[:500]
     if isinstance(value, list):
-        return f"{len(value)} item(s): {_short_json(value[:5], limit=420)}"
-    return str(value)[:500]
+        safe_value = _public_lengrvis_code_tool_input_value(value)
+        return f"{len(value)} item(s): {_short_json(safe_value[:5], limit=420)}"
+    return _public_lengrvis_code_tool_input_text(value, limit=500)
 
 
 def _tool_name_from_summary_event(event: Mapping[str, Any]) -> str:
@@ -497,12 +504,12 @@ def _tool_name_from_summary_event(event: Mapping[str, Any]) -> str:
 def _tool_use_summary_message(event: Mapping[str, Any]) -> str:
     summary = event.get("summary")
     if isinstance(summary, str) and summary.strip():
-        return summary.strip()[:500]
+        return _public_lengrvis_code_tool_input_text(summary.strip(), limit=500)
     if isinstance(summary, Mapping):
         for key in ("summary", "message", "description"):
             value = summary.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()[:500]
+                return _public_lengrvis_code_tool_input_text(value.strip(), limit=500)
         return _tool_input_summary(summary)
     return f"{LENGRVIS_CODE_DISPLAY_NAME} tool progress."
 
@@ -523,17 +530,34 @@ def _user_tool_results(event: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _tool_result_message(tool_result: Mapping[str, Any]) -> str:
     content = tool_result.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()[:500]
-    if isinstance(content, list):
-        texts = [
-            str(item.get("text")) for item in content if isinstance(item, Mapping) and isinstance(item.get("text"), str)
-        ]
-        if texts:
-            return "\n".join(texts).strip()[:500]
+    descriptor = _tool_result_content_descriptor(content)
     if tool_result.get("is_error"):
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result failed."
-    return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result completed."
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result failed{descriptor}."
+    return f"{LENGRVIS_CODE_DISPLAY_NAME} tool result completed{descriptor}."
+
+
+def _tool_result_content_descriptor(content: Any) -> str:
+    if isinstance(content, str) and content.strip():
+        return " with redacted text output"
+    if isinstance(content, list):
+        return f" with {len(content)} redacted output item(s)"
+    if content is None:
+        return ""
+    return " with redacted structured output"
+
+
+def _tool_result_output_payload(tool_result: Mapping[str, Any]) -> dict[str, Any]:
+    content = tool_result.get("content")
+    payload: dict[str, Any] = {
+        "redacted": True,
+        "is_error": bool(tool_result.get("is_error")),
+        "content_type": type(content).__name__ if content is not None else "none",
+    }
+    if isinstance(content, list):
+        payload["item_count"] = len(content)
+    elif isinstance(content, str):
+        payload["char_count"] = len(content)
+    return payload
 
 
 def _terminal_status(summary: LengrvisCodeEventSummaryLike) -> str:
@@ -547,7 +571,9 @@ def _terminal_status(summary: LengrvisCodeEventSummaryLike) -> str:
 
 def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
     payload = {
-        "result": _public_lengrvis_code_text(event.get("result")) if event.get("is_error") else event.get("result"),
+        "result": _public_lengrvis_code_text(event.get("result"))
+        if event.get("is_error")
+        else _public_lengrvis_code_final_text(event.get("result")),
         "subtype": event.get("subtype"),
         "is_error": bool(event.get("is_error")),
         "errors": _public_lengrvis_code_value(event.get("errors")) if isinstance(event.get("errors"), list) else [],

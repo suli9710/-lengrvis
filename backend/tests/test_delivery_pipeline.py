@@ -7,6 +7,8 @@ it by file path with importlib and exercise the pure policy helpers.
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,14 +39,17 @@ def test_default_stages_order_and_membership():
     names = [s.name for s in stages]
     assert names[0] == "qa-gate"
     assert names[1] == "golden-gate"
+    assert names[2] == "maintainability-gate"
     assert "signed-artifacts" in names
     assert names.index("release-safety") < names.index("signed-artifacts")
     assert names.index("signed-artifacts") < names.index("market-readiness")
+    assert names.index("maintainability-gate") < names.index("supply-chain")
     assert names.index("supply-chain") < names.index("dependency-audit")
     assert names.index("dependency-audit") < names.index("secret-scan")
     assert names.index("secret-scan") < names.index("security-extensions")
     assert "market-readiness" in names
     assert "readiness" in names
+    assert names.index("current-release-evidence") < names.index("readiness")
     assert "real-llm-eval" not in names
     assert names[-1] == "evidence"
     # Evidence collection stages are optional outside strict RC mode.
@@ -121,6 +126,7 @@ def test_strict_adds_strict_flag_to_readiness():
     assert names == [
         "qa-gate",
         "golden-gate",
+        "maintainability-gate",
         "real-llm-eval",
         "supply-chain",
         "dependency-audit",
@@ -132,8 +138,8 @@ def test_strict_adds_strict_flag_to_readiness():
         "distribution-evidence",
         "clean-machine-evidence",
         "result-quality-evidence",
+        "diagnostics-evidence",
         "android-strict-gate",
-        "commercial-loop",
         "market-readiness",
         "current-release-evidence",
         "readiness",
@@ -163,6 +169,7 @@ def test_strict_adds_strict_flag_to_readiness():
 def test_paid_launch_adds_commercial_evidence_and_paid_market_gate():
     stages = mod.default_stages(strict=True, paid_launch=True)
     names = [s.name for s in stages]
+    assert "commercial-loop" in names
     assert "support-privacy-evidence" in names
     assert "claims-launch-evidence" in names
     assert "commercial-operations-evidence" in names
@@ -187,6 +194,59 @@ def test_non_strict_readiness_has_no_strict_flag():
 def test_build_plan_shape():
     plan = mod.build_plan(mod.default_stages(strict=False))
     assert plan and all({"name", "command", "required", "description"} <= set(row) for row in plan)
+
+
+def _run_plan_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), *args, "--plan-only"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_strict_plan_cli_keeps_no_sale_rc_out_of_commercial_loop():
+    result = _run_plan_cli("--strict")
+    payload = json.loads(result.stdout)
+    names = [stage["name"] for stage in payload["plan"]]
+    market = next(stage for stage in payload["plan"] if stage["name"] == "market-readiness")
+
+    assert payload["effective_strict"] is True
+    assert "commercial-loop" not in names
+    assert "--strict" in market["command"]
+    assert "--paid-launch" not in market["command"]
+    assert result.stderr == ""
+
+
+def test_paid_launch_plan_cli_keeps_commercial_evidence_before_market_readiness():
+    result = _run_plan_cli("--paid-launch")
+    payload = json.loads(result.stdout)
+    names = [stage["name"] for stage in payload["plan"]]
+    market = next(stage for stage in payload["plan"] if stage["name"] == "market-readiness")
+
+    assert payload["strict"] is False
+    assert payload["paid_launch"] is True
+    assert payload["effective_strict"] is True
+    for name in (
+        "commercial-loop",
+        "support-privacy-evidence",
+        "claims-launch-evidence",
+        "commercial-operations-evidence",
+    ):
+        assert name in names
+        assert names.index(name) < names.index("market-readiness")
+    assert "--paid-launch" in market["command"]
+    assert "--strict" not in market["command"]
+
+
+def test_strict_plan_cli_reports_ignored_signature_skip_without_polluting_stdout():
+    result = _run_plan_cli("--strict", "--skip-signature-verify")
+    payload = json.loads(result.stdout)
+
+    assert payload["skip_signature_verify"] is False
+    assert any("ignored in strict RC mode" in warning for warning in payload["warnings"])
+    assert "ignored in strict RC mode" in result.stderr
 
 
 def test_aggregate_blocks_on_required_failure():

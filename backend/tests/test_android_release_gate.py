@@ -158,3 +158,28 @@ def test_android_real_device_template_cannot_satisfy_strict_gate(project_root: P
     assert "review_status_not_passed" in issue_codes
     assert "real_device_claim_flag_missing" in issue_codes
     assert "redaction_flag_missing" in issue_codes
+
+
+def test_android_pr_ci_has_manifest_and_connected_tls_regression_contract(project_root: Path) -> None:
+    ci = (project_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    package = json.loads((project_root / "mobile" / "package.json").read_text(encoding="utf-8"))
+    lan_tls_smoke = (project_root / "mobile" / "scripts" / "android-lan-tls-smoke.cjs").read_text(encoding="utf-8")
+
+    scripts = package["scripts"]
+    assert scripts["smoke:android-manifest-resources"] == "node scripts/android-manifest-resources-smoke.cjs"
+    assert scripts["smoke:android-lan-tls"] == "node scripts/android-lan-tls-smoke.cjs"
+    assert scripts["gate:android-instrumentation-compile"] == (
+        "node scripts/android-lan-tls-smoke.cjs --compile-instrumentation"
+    )
+    assert scripts["gate:android-connected-lan-tls"] == "node scripts/android-lan-tls-smoke.cjs --connected"
+
+    assert "npm --prefix mobile run smoke:android-hardening-plugin" in ci
+    assert "npm --prefix mobile run smoke:android-manifest-resources" in ci
+    assert "npm --prefix mobile run smoke:android-lan-tls" in ci
+    assert ":app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace" in ci
+    assert "connectedDebugAndroidTest" not in ci
+
+    assert "connectedDebugAndroidTest" in lan_tls_smoke
+    assert "LENGRVIS_ANDROID_LAN_TLS_BASE_URL" in lan_tls_smoke
+    assert "LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256" in lan_tls_smoke
+    assert "This release/evidence gate is intentionally not run by PR CI." in lan_tls_smoke

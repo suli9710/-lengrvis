@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from app.integrations.lengrvis_code import validate_allowed_tools
 from app.orchestration.developer_write_guard import (
     extract_write_targets,
     git_worktree_diff_preview,
@@ -20,8 +21,18 @@ def test_extract_write_targets_collects_unique_paths() -> None:
         {"name": "Write", "input": {"file_path": "backend/app/foo.py"}},
         {"name": "Edit", "input": {"file_path": "backend/app/foo.py"}},
         {"name": "Edit", "input": {"file_path": "backend/tests/test_foo.py"}},
+        {"name": "NotebookEdit", "input": {"notebook_path": "backend/notebooks/demo.ipynb"}},
     ]
-    assert extract_write_targets(events) == ["backend/app/foo.py", "backend/tests/test_foo.py"]
+    assert extract_write_targets(events) == [
+        "backend/app/foo.py",
+        "backend/tests/test_foo.py",
+        "backend/notebooks/demo.ipynb",
+    ]
+
+
+def test_validate_allowed_tools_rejects_notebook_edit_in_readonly_mode() -> None:
+    with pytest.raises(ValueError, match="NotebookEdit"):
+        validate_allowed_tools(["Read", "NotebookEdit"], allow_write_tools=False)
 
 
 def test_validate_write_paths_rejects_outside_workspace(tmp_path) -> None:
@@ -95,7 +106,10 @@ async def test_developer_engine_applies_write_verification_on_success(tmp_path, 
     subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True)
 
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is True
         return LengrvisCodeStreamSummary(
             result={"is_error": False, "result": "patched test"},
             assistant_text=["done"],
@@ -144,7 +158,10 @@ async def test_developer_engine_permission_denial_enters_awaiting_approval(tmp_p
     from app.orchestration.lengrvis_code_config import LengrvisCodeConfig
     from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
 
-    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+    async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        assert allow_write_tools is True
         return LengrvisCodeStreamSummary(
             result={
                 "is_error": False,

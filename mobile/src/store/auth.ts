@@ -38,7 +38,7 @@ export async function loadSession(): Promise<PairingSession | null> {
       return null;
     }
     const baseUrlSecurity = restoredBaseUrlSecurity(parsed);
-    if (baseUrlSecurity.isInsecureLan) {
+    if (baseUrlSecurity.isInsecureLan || baseUrlSecurity.isLoopback) {
       await clearStoredSessionStrict();
       return null;
     }

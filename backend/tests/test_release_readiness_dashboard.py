@@ -236,6 +236,7 @@ def test_strict_rejects_pending_rr_p0_006_current_evidence(tmp_path):
                 "- Commit SHA: abcdef1234567890",
                 "- Run id: 123",
                 "- CI status: ci_results_unavailable",
+                "- Worktree status: clean",
                 "- Manual sign-off status: manual_signoff_pending",
                 "- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE",
             ]
@@ -274,6 +275,7 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
                 "- Commit SHA: abcdef1234567890",
                 "- Run id: 123",
                 "- CI status: machine_gates_passed",
+                "- Worktree status: clean",
                 "- Manual sign-off status: rc_signoff_recorded",
                 "- Owner signature: release-owner-accepted-rc",
             ]
@@ -301,6 +303,43 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
     assert errors == []
 
 
+def test_strict_rejects_dirty_current_release_evidence(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                "- Commit SHA: abcdef1234567890",
+                "- Run id: 123",
+                "- CI status: machine_gates_passed",
+                "- Worktree status: dirty",
+                "- Manual sign-off status: rc_signoff_recorded",
+                "- Owner signature: release-owner-accepted-rc",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | RC handoff and release-owner sign-off | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+
+    assert any("worktree status must be clean" in e and "dirty" in e for e in errors)
+
+
 def test_strict_waiver_requires_unexpired_expiry_reason_and_followup():
     markdown = (
         "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
@@ -311,8 +350,38 @@ def test_strict_waiver_requires_unexpired_expiry_reason_and_followup():
     assert any("RR-P0-012" in e and "expiry" in e for e in errors)
 
 
+def test_strict_waiver_requires_explicit_followup_reference():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P1-012 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: known issue. |\n"
+        "| RR-P1-013 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: known issue. Follow-up issue: collect real evidence. |\n"
+        "| RR-P1-014 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: known issue. https://example.com/docs |\n"
+    )
+    errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
+
+    assert any("RR-P1-012" in e and "follow-up issue reference" in e for e in errors)
+    assert any("RR-P1-013" in e and "follow-up issue reference" in e for e in errors)
+    assert any("RR-P1-014" in e and "follow-up issue reference" in e for e in errors)
+
+
+def test_strict_waiver_accepts_tracker_or_url_followup():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P1-012 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: maintenance only. Follow-up issue: REL-123 |\n"
+        "| RR-P1-013 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: maintenance only. https://github.com/example/repo/issues/123 |\n"
+        "| RR-P1-014 | X | ev | waived | docs/release/release-readiness-dashboard.md | alice | 2099-01-01 | Reason: maintenance only. See #456 |\n"
+    )
+    errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
+
+    assert not any("RR-P1-012" in e for e in errors)
+    assert not any("RR-P1-013" in e for e in errors)
+    assert not any("RR-P1-014" in e for e in errors)
+
+
 def test_rc_release_rejects_scoped_maintenance_waivers():
-    note = "Reason: maintenance packaging only. Follow-up issue: collect real evidence."
+    note = "Reason: maintenance packaging only. Follow-up issue: REL-456."
     markdown = (
         "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
         "| --- | --- | --- | --- | --- | --- | --- | --- |\n"

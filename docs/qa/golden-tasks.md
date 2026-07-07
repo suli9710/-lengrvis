@@ -33,6 +33,9 @@ python -m pytest backend/tests/test_golden_tasks.py -q
 # 单命令门禁 + 通过率报告（默认阈值 95%）
 npm run golden:gate
 # 报告输出：.tmp/qa-evidence/golden-tasks/golden-tasks-report.json
+
+# 真实 provider 复放质量门禁；默认要求至少 20 条 runs/chat 任务实际运行。
+python scripts/run_real_llm_eval.py --quality-gate
 ```
 
 `backend/tests/test_golden_tasks.py` 位于 `backend/tests` 下，因此 `npm run qa:gate` / `npm run release:check` 会自动执行黄金任务回归；任一任务失败会阻断发布门禁。
@@ -40,6 +43,7 @@ npm run golden:gate
 ## 证据边界（必须遵守的口径）
 
 - 本套件使用 MockProvider / 确定性规划器 / extractive fallback 离线运行。它证明的是**编排、路由、风险分级、审批与脱敏契约**在版本间不回归，**不证明**真实 LLM 下的结果质量。
+- `run_real_llm_eval.py --quality-gate` 使用真实 provider 复放 `runs` / `chat` 入口任务；release 默认要求 `tasks_ran >= 20`，并要求 task success、intent/tool overlap、risk match、param-missing、structured-failure、unknown-tool 等 rate 的有效分母达到各自门槛，避免小样本或误过滤结果被记录成真实 LLM 质量通过。报告会写出每个 rate 的 numerator/denominator。
 - 机器通过率 ≥95% 只是发布门禁的机器自证部分；不能写成"结果质量已验收"。
 - 真人结果质量基线仍需：对数据集中的高频任务（或在真实 LLM 配置下重放同样的输入）逐条记录 成功率 / 可读性 / 是否需返工，目标：综合成功率 ≥90%、需返工比例 ≤10%，结果报告归档并签字。操作清单见 `docs/qa/manual-result-quality-review.md`；评审打包入口：`npm run evidence:result-quality-review`。
 - 不要把本套件结果写成 clean-machine 验收、真机验收或 RC sign-off。

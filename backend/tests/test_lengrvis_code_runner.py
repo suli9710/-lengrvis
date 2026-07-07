@@ -132,7 +132,7 @@ async def test_fake_lengrvis_code_stream_json_becomes_lengrvis_result(tmp_path, 
 
     assert result.finished is True
     assert result.state.phase == RunPhase.COMPLETED
-    assert result.message == "Fake done"
+    assert result.message == "[REDACTED_LENGRVIS_CODE_FINAL_TEXT]"
     payload = result.outputs["lengrvis_code"]
     assert payload["ok"] is True
     assert payload["display_name"] == "Lengrvis Code"
@@ -147,7 +147,8 @@ async def test_fake_lengrvis_code_stream_json_becomes_lengrvis_result(tmp_path, 
     assert tool_proposed["payload"]["source_event_type"] == "assistant"
     assert tool_proposed["payload"]["tool_name"] == "Read"
     assert tool_proposed["payload"]["adapter_tool_name"] == "lengrvis_code"
-    assert "README.md" in tool_proposed["payload"]["tool_input_summary"]
+    assert "README.md" not in tool_proposed["payload"]["tool_input_summary"]
+    assert "file_path=[REDACTED_PATH]" in tool_proposed["payload"]["tool_input_summary"]
 
     record = record_path.read_text(encoding="utf-8")
     assert "--output-format" in record
@@ -385,6 +386,165 @@ def test_lengrvis_code_public_failure_payload_redacts_diagnostics() -> None:
     assert payload["launch_error"] == result.state.transition_reason.removeprefix("Lengrvis Code launch failure: ")
     assert payload["stderr_diagnostics"] == ["stderr references [REDACTED_FILE_NAME] api_key=[REDACTED]"]
     assert payload["invalid_lines"] == ["not-json from [REDACTED_LOCAL_PATH] token=[REDACTED]"]
+
+
+def test_lengrvis_code_public_payload_redacts_semantic_tool_input_fields() -> None:
+    secret_text = "plain confidential notes"
+    raw_file = "C:/Users/Suli/private/project/notes.txt"
+    raw_notebook = "/home/suli/private/notebook.ipynb"
+    raw_command = f"type {raw_file} && echo {secret_text}"
+    raw_source = f"print({secret_text!r})"
+    semicolon_summary = (
+        f"content={secret_text};command={raw_command};input={secret_text} through generic input"
+    )
+    summary = parse_lengrvis_code_ndjson_lines(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "Working"},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_private",
+                                "name": "NotebookEdit",
+                                "input": {
+                                    "content": secret_text,
+                                    "new_source": raw_source,
+                                    "command": raw_command,
+                                    "file_path": raw_file,
+                                    "notebook_path": raw_notebook,
+                                    "input": f"{secret_text} through generic input",
+                                    "edits": [{"old_string": secret_text, "new_string": raw_source}],
+                                },
+                            },
+                        ]
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "streamlined_tool_use_summary",
+                    "summary": {
+                        "tool_name": "NotebookEdit",
+                        "summary": (
+                            f"content={secret_text}, new_source={raw_source}, command={raw_command}, "
+                            f"file_path={raw_file}, notebook_path={raw_notebook}, "
+                            f"input={secret_text} through generic input;{semicolon_summary}"
+                        ),
+                    },
+                }
+            )
+            + "\n",
+            json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "done"}) + "\n",
+        ]
+    )
+    summary.command = ["lengrvis-code", "--print", raw_command, secret_text]
+    state = RunState(run_id="devrun_private_inputs", engine="developer", phase=RunPhase.RUNNING, goal="redact")
+
+    result = lengrvis_code_summary_to_turn_result(state, summary)
+    payload = result.outputs["lengrvis_code"]
+    serialized = json.dumps(
+        {"payload": payload, "observation_payload": result.state.observations[0].payload},
+        sort_keys=True,
+    )
+
+    assert payload["tool_events"][0]["input"]["content"] == "[REDACTED_CONTENT]"
+    assert payload["tool_events"][0]["input"]["new_source"] == "[REDACTED_CONTENT]"
+    assert payload["tool_events"][0]["input"]["command"] == "[REDACTED_COMMAND]"
+    assert payload["tool_events"][0]["input"]["file_path"] == "[REDACTED_PATH]"
+    assert payload["tool_events"][0]["input"]["notebook_path"] == "[REDACTED_PATH]"
+    assert payload["tool_events"][0]["input"]["input"] == "[REDACTED_INPUT]"
+    assert payload["tool_events"][0]["input"]["edits"][0]["old_string"] == "[REDACTED_CONTENT]"
+    assert payload["command"] == ["[REDACTED_COMMAND]"]
+    assert "content=[REDACTED_CONTENT]" in serialized
+    assert "new_source=[REDACTED_CONTENT]" in serialized
+    assert "command=[REDACTED_COMMAND]" in serialized
+    assert "file_path=[REDACTED_PATH]" in serialized
+    assert "notebook_path=[REDACTED_PATH]" in serialized
+    assert "input=[REDACTED_INPUT]" in serialized
+    assert "content=[REDACTED_CONTENT];command=[REDACTED_COMMAND];input=[REDACTED_INPUT]" in serialized
+    for raw in (secret_text, raw_file, raw_notebook, raw_command, raw_source):
+        assert raw not in serialized
+
+
+def test_lengrvis_code_public_payload_summarizes_tool_result_content() -> None:
+    raw_file = "C:/Users/Suli/private/project/notes.txt"
+    secret_text = "private file contents and customer notes"
+    api_key = "sk-tool-result-secret"
+    summary = parse_lengrvis_code_ndjson_lines(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_read",
+                                "name": "Read",
+                                "input": {"file_path": raw_file},
+                            }
+                        ]
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_read",
+                                "tool_name": "Read",
+                                "content": f"{raw_file}\n{secret_text}\napi_key={api_key}",
+                            }
+                        ]
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "result": f"{raw_file}\n{secret_text}\napi_key={api_key}",
+                }
+            )
+            + "\n",
+        ]
+    )
+    state = RunState(
+        run_id="devrun_private_tool_result",
+        engine="developer",
+        phase=RunPhase.RUNNING,
+        goal="redact tool result",
+    )
+
+    result = lengrvis_code_summary_to_turn_result(state, summary)
+    payload = result.outputs["lengrvis_code"]
+    tool_result_event = next(event for event in payload["lengrvis_events"] if event["name"] == "tool.result")
+    serialized = json.dumps(
+        {"payload": payload, "observation_payload": result.state.observations[0].payload},
+        sort_keys=True,
+    )
+
+    assert tool_result_event["payload"]["message"] == "Lengrvis Code tool result completed with redacted text output."
+    assert tool_result_event["payload"]["output"] == {
+        "redacted": True,
+        "is_error": False,
+        "content_type": "str",
+        "char_count": len(f"{raw_file}\n{secret_text}\napi_key={api_key}"),
+    }
+    assert payload["assistant_text"] == "[REDACTED_LENGRVIS_CODE_FINAL_TEXT]"
+    assert payload["result"]["result"] == "[REDACTED_LENGRVIS_CODE_FINAL_TEXT]"
+    for raw in (raw_file, secret_text, api_key):
+        assert raw not in serialized
 
 
 def test_lengrvis_code_split_helpers_remain_available_from_legacy_module() -> None:

@@ -758,6 +758,7 @@ def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -
         }
     run_id = str(args.get("run_id") or context.get("run_id") or "")
     abort_event = context.get("_tool_abort_event")
+    allow_write_tools = bool(args.get("writes_enabled", False))
     summary = _run_lengrvis_code_sync(
         str(args.get("prompt") or ""),
         cwd=str(args.get("cwd") or _default_workspace(settings)),
@@ -765,6 +766,7 @@ def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -
         config=config,
         run_id=run_id,
         abort_event=abort_event if isinstance(abort_event, threading.Event) else None,
+        allow_write_tools=allow_write_tools,
     )
     output = _developer_summary_output(summary)
     if summary.is_error:
@@ -780,6 +782,7 @@ def _run_lengrvis_code_sync(
     config: LengrvisCodeConfig,
     run_id: str,
     abort_event: threading.Event | None,
+    allow_write_tools: bool = False,
 ) -> LengrvisCodeStreamSummary:
     timeout_seconds = _developer_run_timeout(settings)
 
@@ -804,6 +807,7 @@ def _run_lengrvis_code_sync(
                     settings=settings,
                     config=config,
                     run_id=run_id,
+                    allow_write_tools=allow_write_tools,
                 )
             )
             if timeout_seconds is None or timeout_seconds <= 0:
