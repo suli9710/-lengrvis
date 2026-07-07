@@ -79,7 +79,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = Path(__file__).resolve().parents[1]
     backend_dir = root / "backend"
-    source_dir = Path(tempfile.mkdtemp(prefix="lengrvis-backend-src-"))
+    temp_root = root / "build" / "backend-src"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    source_dir = Path(tempfile.mkdtemp(prefix="lengrvis-backend-src-", dir=temp_root))
     shutil.copy2(backend_dir / "main.py", source_dir / "main.py")
     shutil.copytree(
         backend_dir / "app",
