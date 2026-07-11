@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
@@ -19,6 +19,47 @@ def now_iso() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
+
+
+DEFAULT_APPROVAL_TTL_SECONDS = 15 * 60
+APPROVAL_TTL_SECONDS_BY_RISK: dict[str, int] = {
+    RiskLevel.R0_READ_ONLY.value: 15 * 60,
+    RiskLevel.R1_OPEN_ONLY.value: 15 * 60,
+    RiskLevel.R2_REVERSIBLE_MODIFY.value: 10 * 60,
+    RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value: 5 * 60,
+    RiskLevel.R4_FORBIDDEN_OR_HANDOFF.value: 60,
+}
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def approval_ttl_seconds(risk_level: RiskLevel | str | None) -> int:
+    normalized = str(getattr(risk_level, "value", risk_level) or "").strip()
+    return APPROVAL_TTL_SECONDS_BY_RISK.get(normalized, DEFAULT_APPROVAL_TTL_SECONDS)
+
+
+def approval_expiry_iso(
+    created_at: str,
+    ttl_seconds: int | None = None,
+    *,
+    risk_level: RiskLevel | str | None = None,
+) -> str:
+    created = _parse_iso_datetime(created_at)
+    if created is None:
+        return str(created_at or "")
+    effective_ttl = approval_ttl_seconds(risk_level) if ttl_seconds is None else max(1, int(ttl_seconds))
+    return (created + timedelta(seconds=effective_ttl)).isoformat()
 
 
 LEGACY_TASK_STATUS_MAP: dict[str, tuple[TaskPhase, ExecutionStage]] = {
@@ -40,7 +81,8 @@ LEGACY_TASK_STATUS_MAP: dict[str, tuple[TaskPhase, ExecutionStage]] = {
     "failed": (TaskPhase.FAILED, ExecutionStage.IDLE),
     "paused": (TaskPhase.EXECUTION, ExecutionStage.PAUSED),
     "cancelled": (TaskPhase.CANCELLED, ExecutionStage.IDLE),
-    "rolled_back": (TaskPhase.FAILED, ExecutionStage.IDLE),
+    "rolled_back": (TaskPhase.ROLLED_BACK, ExecutionStage.IDLE),
+    "repair_required": (TaskPhase.REPAIR_REQUIRED, ExecutionStage.IDLE),
 }
 
 
@@ -70,7 +112,8 @@ class TaskStatus:
     FAILED = TaskPhase.FAILED
     PAUSED = "paused"
     CANCELLED = TaskPhase.CANCELLED
-    ROLLED_BACK = TaskPhase.FAILED
+    ROLLED_BACK = TaskPhase.ROLLED_BACK
+    REPAIR_REQUIRED = TaskPhase.REPAIR_REQUIRED
 
 
 class StepStatus(StrEnum):
@@ -115,6 +158,13 @@ class MemoryState(StrEnum):
     QUARANTINED = "quarantined"
     ACTIVE = "active"
     REVOKED = "revoked"
+
+
+class MemoryConflictStatus(StrEnum):
+    NONE = "none"
+    CONFLICTING = "conflicting"
+    RESOLVED = "resolved"
+    SUPERSEDED = "superseded"
 
 
 MAX_USER_MESSAGE_CHARS = 16000
@@ -284,6 +334,18 @@ class Task(BaseModel):
         status_text = str(raw_status.value if isinstance(raw_status, StrEnum) else raw_status or "").strip()
         phase_text = str(raw_phase.value if isinstance(raw_phase, StrEnum) else raw_phase or "").strip()
 
+        rollback = (normalized.get("metadata") or {}).get("rollback")
+        if status_text == TaskPhase.FAILED.value and isinstance(rollback, dict) and rollback:
+            rollback_phase = (
+                TaskPhase.ROLLED_BACK
+                if str(rollback.get("state") or "").strip().lower() == "succeeded"
+                else TaskPhase.REPAIR_REQUIRED
+            )
+            normalized["status"] = rollback_phase
+            normalized["phase"] = rollback_phase
+            normalized["execution_stage"] = ExecutionStage.IDLE
+            return normalized
+
         mapped = LEGACY_TASK_STATUS_MAP.get(status_text)
         if mapped is not None:
             phase, stage = mapped
@@ -415,8 +477,14 @@ class ToolCall(BaseModel):
     tool_name: str
     args: dict[str, Any] = Field(default_factory=dict)
     risk_level: RiskLevel
+    execution_key: str = Field(default_factory=lambda: new_id("exec"))
+    plan_revision: int = 0
+    approval_id: str = ""
     status: str = "created"
     dry_run: bool = True
+    started_at: str = ""
+    committed_at: str = ""
+    outcome_unknown_at: str = ""
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -482,7 +550,10 @@ class Approval(BaseModel):
     required_mobile_scopes: list[str] = Field(default_factory=list)
     status: ApprovalStatus = ApprovalStatus.PENDING
     created_at: str = Field(default_factory=now_iso)
+    expires_at: str = ""
     decided_at: str | None = None
+    authorized_at: str | None = None
+    auth_context: dict[str, Any] = Field(default_factory=dict)
     consumed_at: str | None = None
 
     @model_validator(mode="before")
@@ -491,6 +562,13 @@ class Approval(BaseModel):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
+        created_at = str(normalized.get("created_at") or now_iso())
+        normalized["created_at"] = created_at
+        if not str(normalized.get("expires_at") or "").strip():
+            normalized["expires_at"] = approval_expiry_iso(
+                created_at,
+                risk_level=normalized.get("risk_level"),
+            )
         if "policy_mode" not in normalized and "permission_mode" in normalized:
             normalized["policy_mode"] = normalized.get("permission_mode")
         if "permission_mode" not in normalized and "policy_mode" in normalized:
@@ -500,6 +578,23 @@ class Approval(BaseModel):
         if "runtime_fields" not in normalized and "runtime_control_fields" in normalized:
             normalized["runtime_fields"] = normalized.get("runtime_control_fields")
         return normalized
+
+
+def approval_is_expired(approval: Approval | dict[str, Any], *, at: str | datetime | None = None) -> bool:
+    expires_at = approval.expires_at if isinstance(approval, Approval) else str(approval.get("expires_at") or "")
+    expiry = _parse_iso_datetime(expires_at)
+    if expiry is None:
+        return True
+    if isinstance(at, datetime):
+        current = at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+        current = current.astimezone(UTC)
+    elif isinstance(at, str):
+        current = _parse_iso_datetime(at)
+        if current is None:
+            return True
+    else:
+        current = datetime.now(UTC)
+    return expiry <= current
 
 
 class AuditEvent(BaseModel):
@@ -600,7 +695,13 @@ class Wakeup(BaseModel):
 
 class Memory(BaseModel):
     id: str = Field(default_factory=lambda: new_id("mem"))
+    principal_id: str = "local-user"
+    workspace_id: str = "default"
+    domain_scope: str = "general"
     kind: str = "fact"
+    version: int = Field(default=1, ge=1)
+    supersedes: str = ""
+    conflict_status: MemoryConflictStatus = MemoryConflictStatus.NONE
     content: str
     tags: list[str] = Field(default_factory=list)
     task_id: str = ""

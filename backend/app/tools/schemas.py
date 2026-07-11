@@ -11,6 +11,17 @@ ToolInputValidator = Callable[[dict[str, Any], dict[str, Any]], None]
 ToolPermissionPolicy = Callable[[dict[str, Any], dict[str, Any]], bool]
 ToolResultSummarizer = Callable[[dict[str, Any]], str]
 ToolLifecycleHook = Callable[[dict[str, Any], dict[str, Any]], None]
+ToolReconciliationProbe = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+IDEMPOTENCY_SCOPES = frozenset(
+    {
+        "none",
+        "local_execution_key",
+        "resource_state",
+        "provider_idempotency_key",
+    }
+)
+COMPENSATION_STRENGTHS = frozenset({"none", "best_effort", "reversible", "transactional"})
 
 
 @dataclass(slots=True)
@@ -52,6 +63,10 @@ class ToolDefinition:
     external_network: bool = False
     feature_flag: str = ""
     tool_version: str = "1"
+    idempotency_scope: str = "local_execution_key"
+    reconciliation_probe: ToolReconciliationProbe | None = None
+    compensation_strength: str = "none"
+    safe_to_retry_errors: list[str] = field(default_factory=list)
 
     def contract_errors(self) -> list[str]:
         errors: list[str] = []
@@ -77,6 +92,17 @@ class ToolDefinition:
             errors.append("resource_kinds must be declared")
         if not str(self.trust_tier or "").strip() or self.trust_tier == "unknown":
             errors.append("trust_tier must be authoritative")
+        if self.idempotency_scope not in IDEMPOTENCY_SCOPES:
+            errors.append("idempotency_scope must be authoritative")
+        if (
+            self.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+            and self.idempotency_scope == "none"
+        ):
+            errors.append("R2/R3 tools must declare an idempotency scope")
+        if self.compensation_strength not in COMPENSATION_STRENGTHS:
+            errors.append("compensation_strength must be authoritative")
+        if any(not str(error_code or "").strip() for error_code in self.safe_to_retry_errors):
+            errors.append("safe_to_retry_errors must contain non-empty error codes")
         if (
             self.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
             and not self.supports_dry_run
@@ -146,6 +172,10 @@ class ToolDefinition:
             "hooks": self.hooks,
             "progress_schema": self.progress_schema,
             "tool_version": self.tool_version,
+            "idempotency_scope": self.idempotency_scope,
+            "supports_reconciliation": self.reconciliation_probe is not None,
+            "compensation_strength": self.compensation_strength,
+            "safe_to_retry_errors": list(self.safe_to_retry_errors),
             "contract_valid": self.is_model_visible(),
             "contract_errors": self.contract_errors(),
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from app.services.browser_activity_runtime import (
     _read_limited_http_response,
 )
 from app.tools import browser_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 def _stub_public_dns(monkeypatch) -> None:
@@ -232,6 +234,21 @@ def test_runtime_starts_session_observes_and_records_redacted_events() -> None:
     audit_events = db.fetch_many("audit_events", "task_id = ?", ("task-1",), limit=10)
     assert any(event["event_type"] == "browser_activity.observe" for event in audit_events)
     assert "secret-token" not in str(audit_events)
+
+
+def test_cancel_task_sessions_closes_only_matching_active_sessions() -> None:
+    runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
+    first = runtime.session_start({"task_id": "task-1"}, _context())["session"]["id"]
+    second = runtime.session_start({"task_id": "task-2"}, _context())["session"]["id"]
+
+    result = runtime.cancel_task_sessions("task-1")
+
+    assert result == {"ok": True, "closed": 1, "session_ids": [first]}
+    assert runtime.session_info({"session_id": first})["session"]["status"] == "closed"
+    assert runtime.session_info({"session_id": first})["session"]["paused"] is True
+    assert runtime.session_info({"session_id": second})["session"]["status"] == "active"
+    events = runtime.events({"task_id": "task-1"})["events"]
+    assert events[-1]["type"] == "session.cancelled"
 
 
 def test_runtime_event_titles_use_public_redaction() -> None:
@@ -534,6 +551,28 @@ def test_httpx_observe_reads_response_with_hard_byte_limit(monkeypatch) -> None:
     assert "a" * 128 not in html
 
 
+def test_httpx_observe_aborts_before_network_request(monkeypatch) -> None:
+    _stub_public_dns(monkeypatch)
+    abort = threading.Event()
+    abort.set()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"ok", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ToolAbortedError):
+            _read_limited_http_response(
+                client,
+                "https://example.test/page",
+                64,
+                abort_context={"_tool_abort_event": abort},
+            )
+
+    assert calls == []
+
+
 def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
     # SEC-008 regression: redirects are followed manually and re-validated, so a
     # 3xx to an internal/metadata host is rejected instead of fetched.
@@ -555,7 +594,11 @@ def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_error
     monkeypatch.setattr(
         browser_activity_runtime,
         "_read_limited_http_response",
-        lambda _client, url, _max_chars: ("<html><title>Fallback</title><main>Hello</main></html>", url, False),
+        lambda _client, url, _max_chars, **_kwargs: (
+            "<html><title>Fallback</title><main>Hello</main></html>",
+            url,
+            False,
+        ),
     )
 
     result = LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page", "max_chars": 100}, _context())

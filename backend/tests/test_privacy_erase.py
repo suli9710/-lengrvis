@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
@@ -44,6 +46,144 @@ def _seed_user_data(tmp_path) -> None:
     db.upsert_model("tool_results", ToolResult(tool_call_id="tool_sample", ok=True, output={"note": "private"}))
     db.set_setting("preferred_mode", "privacy")
     db.upsert_memory({"id": "mem_sample", "content": "remember my private preference", "kind": "fact"})
+    timestamp = db._now_iso()
+    approval_data = json.dumps(
+        {
+            "id": "approval_sample",
+            "task_id": "task_privacy_erase",
+            "message": "approve private operation",
+            "status": "pending",
+            "created_at": timestamp,
+        }
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO approvals (id, task_id, step_id, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("approval_sample", "task_privacy_erase", "step_sample", approval_data, "pending", timestamp),
+        )
+        device_data = json.dumps(
+            {
+                "id": "device_sample",
+                "device_id": "device_sample",
+                "device_name": "Private phone",
+                "status": "active",
+                "token_epoch": 0,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        )
+        conn.execute(
+            "INSERT INTO mobile_devices (id, data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("device_sample", device_data, timestamp, timestamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO device_credentials
+                (id, device_id, credential_type, status, data, created_at, updated_at, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "credential_sample",
+                "device_sample",
+                "paired_device",
+                "active",
+                json.dumps({"public_key_thumbprint": "private-thumbprint"}),
+                timestamp,
+                timestamp,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO token_families
+                (id, device_id, credential_id, status, current_generation, expires_at, data,
+                 created_at, updated_at, revoked_at, reuse_detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "family_sample",
+                "device_sample",
+                "credential_sample",
+                "active",
+                0,
+                "2099-01-01T00:00:00+00:00",
+                json.dumps({"private": "family metadata"}),
+                timestamp,
+                timestamp,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO mobile_refresh_tokens
+                (id, family_id, device_id, generation, secret_hash, status, expires_at, data,
+                 created_at, updated_at, used_at, replaced_by_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "refresh_sample",
+                "family_sample",
+                "device_sample",
+                0,
+                "private-refresh-hash",
+                "active",
+                "2099-01-01T00:00:00+00:00",
+                json.dumps({"private": "refresh metadata"}),
+                timestamp,
+                timestamp,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO intent_capsules
+                (id, task_id, plan_revision, status, expires_at, data, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "capsule_sample",
+                "task_privacy_erase",
+                1,
+                "active",
+                "2099-01-01T00:00:00+00:00",
+                json.dumps({"user_goal_digest": "private-goal-digest"}),
+                timestamp,
+                timestamp,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO run_budget_ledgers (id, run_id, status, version, data, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "budget_sample",
+                "run_privacy_erase",
+                "active",
+                1,
+                json.dumps({"private": "budget metadata"}),
+                timestamp,
+                timestamp,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_templates (id, name, enabled, current_version, data, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "template_sample",
+                "Private workflow",
+                1,
+                1,
+                json.dumps({"goal": "private automation goal"}),
+                timestamp,
+                timestamp,
+            ),
+        )
+    db.store_sensitive_record_integrity("approvals", "approval_sample", approval_data)
     record("seed.event", "pytest", {"ok": True})
     export_dir = tmp_path / "diagnostic-packages"
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +232,14 @@ def test_erase_deletes_user_content_and_packages_preserving_audit_chain(monkeypa
     assert payload["scope"] == "local_only"
     assert payload["deleted"]["rows_total"] >= 3
     assert payload["deleted"]["rows_by_table"]["tasks"] == 1
+    assert payload["deleted"]["rows_by_table"]["approvals"] == 1
+    assert payload["deleted"]["rows_by_table"]["mobile_refresh_tokens"] == 1
+    assert payload["deleted"]["rows_by_table"]["token_families"] == 1
+    assert payload["deleted"]["rows_by_table"]["device_credentials"] == 1
+    assert payload["deleted"]["rows_by_table"]["intent_capsules"] == 1
+    assert payload["deleted"]["rows_by_table"]["run_budget_ledgers"] == 1
+    assert payload["deleted"]["rows_by_table"]["automation_templates"] == 1
+    assert payload["deleted"]["rows_by_table"]["memory_namespace"] == 1
     assert payload["deleted"]["diagnostic_packages"] == 1
     assert "audit_events" in payload["preserved"]
     assert "app_settings" in payload["preserved"]
@@ -99,6 +247,23 @@ def test_erase_deletes_user_content_and_packages_preserving_audit_chain(monkeypa
     assert db.fetch_many("tasks", limit=10) == []
     assert db.fetch_many("tool_results", limit=10) == []
     assert db.fetch_many("memories", limit=10) == []
+    for table in (
+        "mobile_refresh_tokens",
+        "token_families",
+        "device_credentials",
+        "intent_capsules",
+        "run_budget_ledgers",
+        "automation_templates",
+        "memory_active_successors",
+        "memory_quarantine",
+        "memory_namespace",
+    ):
+        assert _table_count(table) == 0
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sensitive_record_integrity WHERE table_name = 'approvals' AND record_id = ?",
+            ("approval_sample",),
+        ).fetchone() is None
     assert not list((tmp_path / "diagnostic-packages").glob("*.json"))
     # Settings survive a default erase.
     assert db.get_settings_overrides().get("preferred_mode") == "privacy"
@@ -133,6 +298,30 @@ def test_erase_with_include_settings_clears_settings_tables(monkeypatch, tmp_pat
     assert "app_settings" not in payload["preserved"]
     assert db.get_settings_overrides() == {}
     assert verify_chain(limit=None)["ok"] is True
+
+
+def test_erase_rolls_back_all_database_deletes_when_verification_transaction_fails(monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+    _seed_user_data(tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER privacy_erase_test_block
+            BEFORE DELETE ON tasks
+            BEGIN
+                SELECT RAISE(ABORT, 'privacy erase test failure');
+            END;
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="privacy erase test failure"):
+        db.erase_local_user_data()
+
+    assert _table_count("tasks") == 1
+    assert _table_count("tool_results") == 1
+    assert _table_count("mobile_refresh_tokens") == 1
+    assert _table_count("token_families") == 1
+    assert _table_count("device_credentials") == 1
 
 
 def test_erase_accepts_ed25519_native_confirmation_challenge(monkeypatch, tmp_path):
@@ -192,3 +381,8 @@ def _public_key_b64(private_key: Ed25519PrivateKey) -> str:
             format=serialization.PublicFormat.Raw,
         )
     ).decode("ascii").rstrip("=")
+
+
+def _table_count(table: str) -> int:
+    with db.connect() as conn:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])  # noqa: S608

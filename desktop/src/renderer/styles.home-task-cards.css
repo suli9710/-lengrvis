@@ -122,22 +122,22 @@
 
 .task-pilot-card--blocked .task-pilot-action {
   border-color: rgba(210, 130, 0, 0.28);
-  color: var(--amber);
+  color: #855400;
 }
 
 .task-pilot-card--warning .task-pilot-action {
   border-color: rgba(210, 130, 0, 0.26);
-  color: var(--amber);
+  color: #855400;
 }
 
 .task-pilot-card--done .task-pilot-action {
   border-color: rgba(25, 163, 122, 0.24);
-  color: var(--green);
+  color: #0b6b50;
 }
 
 .task-pilot-card--failed .task-pilot-action {
   border-color: rgba(216, 71, 92, 0.24);
-  color: var(--red);
+  color: #9f263b;
 }
 
 .task-workspace-card,
@@ -286,7 +286,7 @@
 }
 
 .home-outcome-card--ready .home-outcome-card__meta small {
-  color: var(--green);
+  color: #0b6b50;
   background: color-mix(in srgb, var(--green-soft) 72%, var(--surface));
 }
 
@@ -296,7 +296,7 @@
 }
 
 .home-outcome-card--warning .home-outcome-card__meta small {
-  color: var(--amber);
+  color: #855400;
   background: color-mix(in srgb, var(--amber-soft) 72%, var(--surface));
 }
 
@@ -306,6 +306,6 @@
 }
 
 .home-outcome-card--blocked .home-outcome-card__meta small {
-  color: var(--red);
+  color: #9f263b;
   background: color-mix(in srgb, var(--red-soft) 72%, var(--surface));
 }

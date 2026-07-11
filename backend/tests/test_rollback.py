@@ -37,6 +37,12 @@ def test_rollback_move_back_returns_file(tmp_path: Path):
     )
     outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
+    assert outcome["verified"] is True
+    assert outcome["verification"]["checks"] == {
+        "source_absent": True,
+        "target_is_file": True,
+        "content_match": True,
+    }
     assert original.exists() and not moved.exists()
 
 
@@ -50,6 +56,7 @@ def test_rollback_trash_created_file_sends_to_recycle_bin(tmp_path: Path):
     )
     outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
+    assert outcome["verification"]["status"] == "passed"
     assert not created.exists() or outcome.get("detail") == "already absent"
 
 
@@ -63,6 +70,7 @@ def test_rollback_delete_folder_if_empty(tmp_path: Path):
     )
     outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
+    assert outcome["verification"]["checks"]["target_absent"] is True
     assert not folder.exists()
 
 
@@ -92,6 +100,11 @@ def test_rollback_restore_backup(tmp_path: Path):
     )
     outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
+    assert outcome["verification"]["checks"] == {
+        "original_is_file": True,
+        "content_match": True,
+        "backup_absent": True,
+    }
     assert original.read_text(encoding="utf-8") == "original-content"
     assert not backup.exists()
 
@@ -282,6 +295,80 @@ def test_rollback_restore_backup_does_not_swallow_unexpected_copy_bugs(
         rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
 
 
+def test_rollback_move_back_fails_when_post_action_state_does_not_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    original = tmp_path / "from.txt"
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-move-noop",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
+    )
+    monkeypatch.setattr(rollback_tools, "safe_move_file", lambda *args, **kwargs: None)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["verified"] is False
+    assert outcome["verification"]["status"] == "failed"
+    assert outcome["verification"]["checks"] == {
+        "source_absent": False,
+        "target_is_file": False,
+        "content_match": False,
+    }
+
+
+def test_rollback_restore_backup_keeps_backup_when_content_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    original = tmp_path / "config.json"
+    original.write_text("changed-content", encoding="utf-8")
+    backup = tmp_path / "config.json.bak"
+    backup.write_text("original-content", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-restore-wrong-content",
+        ok=True,
+        rollback_info={"backup": str(backup)},
+    )
+
+    def copy_wrong_content(*args, **kwargs):  # noqa: ANN001, ANN002
+        original.write_text("wrong-content", encoding="utf-8")
+
+    monkeypatch.setattr(rollback_tools, "safe_copy_file_between_scopes", copy_wrong_content)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["verification"]["status"] == "failed"
+    assert outcome["verification"]["checks"]["content_match"] is False
+    assert backup.exists()
+
+
+def test_rollback_trash_fails_when_os_api_returns_without_removing_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    created = tmp_path / "report.md"
+    created.write_text("# report", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-trash-noop",
+        ok=True,
+        rollback_info={"trash_created_file": str(created)},
+    )
+    monkeypatch.setattr(rollback_tools, "send2trash", lambda *args, **kwargs: None)
+
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is False
+    assert outcome["verification"]["status"] == "failed"
+    assert outcome["verification"]["checks"]["target_absent"] is False
+    assert created.exists()
+
+
 def test_rollback_trash_keeps_os_boundary_failures_best_effort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     created = tmp_path / "report.md"
     created.write_text("# report", encoding="utf-8")
@@ -380,6 +467,12 @@ def test_execute_rollback_uses_effective_authorized_directories(monkeypatch: pyt
     outcome = rollback_tools.execute_rollback("task-1")
 
     assert outcome["count"] == 1
+    assert outcome["state"] == "succeeded"
+    assert outcome["attempted"] == 1
+    assert outcome["succeeded"] == 1
+    assert outcome["verified"] == 1
+    assert outcome["verification_failed"] == 0
+    assert outcome["failed"] == 0
     assert outcome["executed"][0]["ok"] is True
     assert original.exists() and not moved.exists()
 
@@ -406,6 +499,9 @@ def test_execute_rollback_fails_closed_when_settings_context_is_unavailable(
     outcome = rollback_tools.execute_rollback("task-settings-fail")
 
     assert outcome["count"] == 1
+    assert outcome["state"] == "failed"
+    assert outcome["succeeded"] == 0
+    assert outcome["failed"] == 1
     assert outcome["executed"][0]["ok"] is False
     assert "No authorized directories configured" in outcome["executed"][0]["detail"]
     assert moved.exists()
@@ -417,3 +513,23 @@ def test_rollback_noop_when_no_info():
     outcome = rollback_tools.rollback_tool_result(result)
     assert outcome["ok"] is True
     assert outcome["action"] == "noop"
+
+
+@pytest.mark.parametrize(
+    ("executed", "expected"),
+    [
+        ([{"ok": True}, {"ok": False}], {"state": "partial", "succeeded": 1, "failed": 1}),
+        (
+            [{"ok": False, "requires_user_action": True}],
+            {"state": "manual_required", "manual_required": 1},
+        ),
+        (
+            [{"ok": False, "action": "permanent_delete_unrecoverable"}],
+            {"state": "unrecoverable", "unrecoverable": 1},
+        ),
+    ],
+)
+def test_summarize_rollback_classifies_non_success_outcomes(executed, expected):
+    summary = rollback_tools._summarize_rollback(executed)
+
+    assert summary.items() >= expected.items()

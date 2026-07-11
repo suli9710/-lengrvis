@@ -211,6 +211,36 @@ describe("execution mapper contracts", () => {
     });
   });
 
+  it("maps rollback metadata to truthful terminal states", () => {
+    const base = {
+      id: "task_rollback",
+      user_goal: "整理文件",
+      status: "failed",
+      mode: "efficiency",
+      final_summary: "Rollback completed",
+      created_at: "2026-07-11T09:00:00Z",
+      updated_at: "2026-07-11T09:01:00Z"
+    };
+
+    const restored = mapTaskEvent({
+      ...base,
+      metadata: {
+        rollback: { state: "succeeded", attempted: 2, succeeded: 2, failed: 0 }
+      }
+    });
+    const needsRepair = mapTaskEvent({
+      ...base,
+      metadata: {
+        rollback: { state: "partial", attempted: 2, succeeded: 1, failed: 1 }
+      }
+    });
+
+    expect(restored.state).toBe("rolled_back");
+    expect(restored.rollback).toMatchObject({ state: "succeeded", attempted: 2, succeeded: 2 });
+    expect(needsRepair.state).toBe("repair_required");
+    expect(needsRepair.rollback).toMatchObject({ state: "partial", failed: 1 });
+  });
+
   it("maps rejected cleanup approvals to denied requests with cleanup plan payloads", () => {
     const approval = mapApproval({
       id: "approval_1",
@@ -234,7 +264,8 @@ describe("execution mapper contracts", () => {
       },
       risk_level: "R1_LOW",
       status: "rejected",
-      created_at: "2026-06-20T10:00:00Z"
+      created_at: "2026-06-20T10:00:00Z",
+      expires_at: "2026-06-20T10:15:00Z"
     });
 
     expect(approval).toMatchObject({
@@ -244,7 +275,8 @@ describe("execution mapper contracts", () => {
       title: "清理计划审批",
       status: "denied",
       riskLevel: "high",
-      createdAt: "2026-06-20T10:00:00Z"
+      createdAt: "2026-06-20T10:00:00Z",
+      expiresAt: "2026-06-20T10:15:00Z"
     });
     expect(approval.cleanupPlan).toMatchObject({
       id: "cleanup_approval",

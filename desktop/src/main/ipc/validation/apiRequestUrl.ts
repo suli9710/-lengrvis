@@ -61,6 +61,9 @@ export function validateApiEndpoint(
     throw new ApiRequestValidationError("Renderer API endpoint encoding is invalid");
   }
 
+  if (decodedPath.trim() !== decodedPath || /\s|[\u0000-\u001F\u007F]/.test(decodedPath)) {
+    throw new ApiRequestValidationError("Renderer API endpoint contains unsafe decoded characters");
+  }
   if (decodedPath.includes("\\") || decodedPath.includes("//")) {
     throw new ApiRequestValidationError("Renderer API endpoint contains unsafe path separators");
   }

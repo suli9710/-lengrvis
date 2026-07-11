@@ -209,7 +209,11 @@ object LengrvisLanTrust {
     val normalizedOrigin = normalizeHttpsOrigin(origin)
     synchronized(lock) {
       try {
-        readRecordsLocked(context)
+        val now = System.currentTimeMillis()
+        val originRecords = readRecordsLocked(context).filter { it.origin == normalizedOrigin }
+        if (originRecords.isNotEmpty() && originRecords.none { it.isUsable(now) }) {
+          throw SSLPeerUnverifiedException("LAN TLS certificate pin is expired or revoked for origin $normalizedOrigin.")
+        }
       } catch (error: CorruptTlsPinStoreException) {
         throw SSLPeerUnverifiedException("$CORRUPT_STORE_MESSAGE Origin: $normalizedOrigin").also {
           it.initCause(error)

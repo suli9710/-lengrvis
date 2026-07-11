@@ -19,6 +19,8 @@ PHASE_MAP: dict[str | TaskPhase, tuple[TaskPhase, ExecutionStage]] = {
     TaskPhase.COMPLETED: (TaskPhase.COMPLETED, ExecutionStage.IDLE),
     TaskPhase.FAILED: (TaskPhase.FAILED, ExecutionStage.IDLE),
     TaskPhase.CANCELLED: (TaskPhase.CANCELLED, ExecutionStage.IDLE),
+    TaskPhase.ROLLED_BACK: (TaskPhase.ROLLED_BACK, ExecutionStage.IDLE),
+    TaskPhase.REPAIR_REQUIRED: (TaskPhase.REPAIR_REQUIRED, ExecutionStage.IDLE),
 }
 
 _STAGE_BY_LEGACY_STATUS: dict[str, ExecutionStage] = {
@@ -152,6 +154,8 @@ def sync_phase(task: Task) -> Task:
         TaskPhase.COMPLETED,
         TaskPhase.FAILED,
         TaskPhase.CANCELLED,
+        TaskPhase.ROLLED_BACK,
+        TaskPhase.REPAIR_REQUIRED,
     }:
         task.execution_stage = ExecutionStage.IDLE
     else:

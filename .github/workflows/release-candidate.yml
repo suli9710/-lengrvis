@@ -5,6 +5,9 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   rc-gate:
@@ -171,6 +174,95 @@ jobs:
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm run delivery:candidate
 
+      - name: Prepare release candidate attestation subjects
+        shell: pwsh
+        run: |
+          $sbomPath = ".tmp/sbom/lengrvis-sbom.cdx.json"
+          if (-not (Test-Path -LiteralPath $sbomPath -PathType Leaf)) {
+            throw "The successful supply-chain gate did not produce the release candidate SBOM."
+          }
+          $sbom = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
+          if ($sbom.bomFormat -ne "CycloneDX" -or -not $sbom.components) {
+            throw "The release candidate SBOM is not a populated CycloneDX document."
+          }
+
+          $subjects = @()
+          foreach ($relative in @(
+            "dist/backend.exe",
+            "dist/backend-capabilities.json",
+            "dist/Lengrvis-win-portable.zip"
+          )) {
+            if (-not (Test-Path -LiteralPath $relative -PathType Leaf)) {
+              throw "Missing required attestation subject: $relative"
+            }
+            $subjects += Get-Item -LiteralPath $relative
+          }
+
+          $selfExtracting = @(
+            Get-ChildItem -Path "dist/Lengrvis-*-x64-self-extracting.exe" -File -ErrorAction SilentlyContinue
+          )
+          if ($selfExtracting.Count -eq 0) {
+            throw "No self-extracting portable executable was available for attestation."
+          }
+          $subjects += $selfExtracting
+
+          $installers = @(
+            Get-ChildItem -Path "desktop/release/*.exe" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "desktop/release/*.msi" -File -ErrorAction SilentlyContinue
+          )
+          if ($installers.Count -eq 0) {
+            throw "No signed Windows installer was available for attestation."
+          }
+          $subjects += $installers
+          $subjects += @(
+            Get-ChildItem -Path "desktop/release/*.blockmap" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "desktop/release/*.yml" -File -ErrorAction SilentlyContinue
+          )
+
+          $repositoryRoot = (Resolve-Path -LiteralPath ".").Path
+          $checksumLines = @(
+            $subjects |
+              Sort-Object FullName -Unique |
+              ForEach-Object {
+                $relative = [IO.Path]::GetRelativePath($repositoryRoot, $_.FullName).Replace("\", "/")
+                $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                "$digest *$relative"
+              }
+          )
+          if ($checksumLines.Count -lt 5) {
+            throw "Release candidate attestation subject set is unexpectedly incomplete."
+          }
+          New-Item -ItemType Directory -Path build -Force | Out-Null
+          Set-Content -LiteralPath build/release-candidate-subjects.sha256 -Value $checksumLines -Encoding ASCII
+
+      - name: Attest release candidate build provenance
+        id: attest_provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: build/release-candidate-subjects.sha256
+
+      - name: Attest release candidate SBOM
+        id: attest_sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: build/release-candidate-subjects.sha256
+          sbom-path: .tmp/sbom/lengrvis-sbom.cdx.json
+
+      - name: Preserve release candidate attestation bundles
+        shell: pwsh
+        run: |
+          $bundles = [ordered]@{
+            "build-provenance.sigstore.json" = '${{ steps.attest_provenance.outputs.bundle-path }}'
+            "sbom.sigstore.json" = '${{ steps.attest_sbom.outputs.bundle-path }}'
+          }
+          New-Item -ItemType Directory -Path build/attestations -Force | Out-Null
+          foreach ($entry in $bundles.GetEnumerator()) {
+            if ([string]::IsNullOrWhiteSpace($entry.Value) -or -not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+              throw "GitHub did not return the expected $($entry.Key) attestation bundle."
+            }
+            Copy-Item -LiteralPath $entry.Value -Destination (Join-Path build/attestations $entry.Key) -Force
+          }
+
       - name: Upload release candidate artifacts
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -178,14 +270,18 @@ jobs:
           name: release-candidate-artifacts
           path: |
             build/delivery-candidate-verdict.json
+            build/release-candidate-subjects.sha256
+            build/attestations/**
             dist/backend.exe
             dist/backend-capabilities.json
             dist/Lengrvis-win-portable/**
             dist/Lengrvis-win-portable.zip
             dist/Lengrvis-*-x64-self-extracting.exe
             desktop/release/**
+            .tmp/sbom/lengrvis-sbom.cdx.json
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: Upload blocked release candidate diagnostics
@@ -196,8 +292,12 @@ jobs:
           path: |
             build/delivery-verdict.json
             build/delivery-candidate-verdict.json
+            build/release-candidate-subjects.sha256
+            build/attestations/**
             docs/release/current-release-evidence.md
+            .tmp/sbom/lengrvis-sbom.cdx.json
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**
             .tmp/packaging-smoke/**
+          include-hidden-files: true
           if-no-files-found: ignore

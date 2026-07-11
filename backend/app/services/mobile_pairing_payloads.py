@@ -57,6 +57,7 @@ def _latest_plan(task_id: str) -> dict[str, Any] | None:
 
 def _safe_approval_payload(approval: dict[str, Any], claims: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = dict(approval)
+    payload.pop("auth_context", None)
     is_remote_input = _is_remote_input_approval(payload)
     payload["message"] = _safe_mobile_text(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})

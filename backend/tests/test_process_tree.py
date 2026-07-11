@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import psutil
+import pytest
 
 from app.core import process_tree
 
@@ -66,3 +73,40 @@ def test_process_tree_popen_kwargs_starts_posix_session(monkeypatch):
     monkeypatch.setattr(process_tree.os, "name", "posix")
 
     assert process_tree.process_tree_popen_kwargs() == {"start_new_session": True}
+
+
+def test_run_process_tree_cancel_kills_descendant_processes(tmp_path: Path):
+    child_pid_path = tmp_path / "child.pid"
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8'); "
+        "time.sleep(30)"
+    )
+    cancel = threading.Event()
+
+    def request_cancel() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not child_pid_path.exists():
+            time.sleep(0.01)
+        cancel.set()
+
+    canceller = threading.Thread(target=request_cancel, daemon=True)
+    canceller.start()
+    started = time.monotonic()
+
+    with pytest.raises(process_tree.ProcessCancelledError):
+        process_tree.run_process_tree(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            timeout=30,
+            cancel_event=cancel,
+        )
+
+    canceller.join(timeout=1)
+    assert time.monotonic() - started < 2
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and psutil.pid_exists(child_pid):
+        time.sleep(0.02)
+    assert not psutil.pid_exists(child_pid)

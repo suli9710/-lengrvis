@@ -209,6 +209,13 @@ def native_confirmation_public_key_fingerprint() -> str:
     return sha256(public_key.encode("utf-8")).hexdigest()[:16]
 
 
+def native_confirmation_legacy_hmac_fingerprint() -> str:
+    secret = native_confirmation_secret()
+    if not secret:
+        return ""
+    return sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
 def native_confirmation_signing_payload(
     *,
     action: str,
@@ -335,6 +342,7 @@ def _require_legacy_hmac_confirmation(
         "confirmation_id": confirmation_id,
         "confirmed_at_epoch": timestamp_int,
         "legacy_hmac": True,
+        "legacy_hmac_fingerprint": native_confirmation_legacy_hmac_fingerprint(),
     }
 
 

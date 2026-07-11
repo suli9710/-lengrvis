@@ -32,6 +32,7 @@ class LengrvisLanTrustInstrumentedTest {
   private lateinit var baseUrl: String
   private lateinit var fingerprintSha256: String
   private var pairCode: String = ""
+  private var pairClaimSecret: String = ""
 
   @Before
   fun setUp() {
@@ -40,6 +41,7 @@ class LengrvisLanTrustInstrumentedTest {
     baseUrl = requireArgument(args.getString("lengrvisBaseUrl"), "lengrvisBaseUrl").trim().trimEnd('/')
     fingerprintSha256 = requireArgument(args.getString("lengrvisFingerprintSha256"), "lengrvisFingerprintSha256")
     pairCode = args.getString("lengrvisPairCode")?.trim().orEmpty()
+    pairClaimSecret = args.getString("lengrvisPairClaimSecret")?.trim().orEmpty()
     LengrvisLanTrust.install(context)
     LengrvisLanTrust.clearTrustedServers(context)
   }
@@ -229,16 +231,20 @@ class LengrvisLanTrustInstrumentedTest {
     val client = OkHttpClientProvider.createClient(context)
 
     getJson(client, "$baseUrl/api/health")
-    val code = if (pairCode.isNotBlank()) {
-      pairCode
+    val pairing = if (pairCode.isBlank()) {
+      postJson(client, "$baseUrl/api/pair/request", "{}")
     } else {
-      postJson(client, "$baseUrl/api/pair/request", "{}").getString("code")
+      null
     }
+    val code = pairing?.getString("code") ?: pairCode
+    val claimSecret = pairing?.getString("claim_secret")
+      ?: requireArgument(pairClaimSecret, "lengrvisPairClaimSecret")
     val session = postJson(
       client,
       "$baseUrl/api/pair/confirm",
       JSONObject()
         .put("code", code)
+        .put("claim_secret", claimSecret)
         .put("device_name", "Android TLS instrumentation")
         .toString(),
     )

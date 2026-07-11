@@ -10,7 +10,7 @@ from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatu
 from app.orchestration.events import ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import set_step_status
-from app.policy.risk import RiskLevel
+from app.policy.risk import RISK_ORDER, RiskLevel
 from app.tools import rollback_tools
 
 if TYPE_CHECKING:
@@ -118,6 +118,28 @@ class RecoveryHandler:
                 retry_count=self._get_retry_count(key),
             )
         )
+
+        retry_block_reason = self._automatic_recovery_block_reason(step, result)
+        if retry_block_reason:
+            record(
+                "task.recovery_unsafe_retry_blocked",
+                orchestrator.name,
+                {
+                    "step": step.id,
+                    "tool": step.tool_name,
+                    "risk_level": step.risk_level.value,
+                    "error_code": _tool_result_error_code(result),
+                    "reason": retry_block_reason,
+                },
+                task_id=task.id,
+            )
+            return await self.rollback_and_fail(
+                task,
+                plan,
+                step,
+                result,
+                reason="unsafe_retry_error",
+            )
 
         retry_count = self._get_retry_count(key)
         if retry_count >= self.max_retries:
@@ -248,6 +270,29 @@ class RecoveryHandler:
     def _risk_requires_approval(self, risk: RiskLevel) -> bool:
         return risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
 
+    def _automatic_recovery_block_reason(self, step: PlanStep, result: ToolResult | None) -> str:
+        tool = None
+        try:
+            tool = self.orchestrator.registry.get(step.tool_name)
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: missing retry contract fails closed for high risk.
+            if self._risk_requires_approval(step.risk_level):
+                return "high-risk tool retry contract is unavailable"
+            return ""
+        effective_risk = max((step.risk_level, tool.risk_level), key=lambda risk: RISK_ORDER[risk])
+        if not self._risk_requires_approval(effective_risk):
+            return ""
+        if result is None:
+            return "high-risk failure has no structured result"
+        if bool(result.output.get("outcome_unknown")) or bool(result.output.get("automatic_replay_blocked")):
+            return "high-risk execution outcome is unknown"
+        error_code = _tool_result_error_code(result)
+        if not error_code:
+            return "high-risk failure has no classified error code"
+        safe_errors = {str(item).strip() for item in tool.safe_to_retry_errors if str(item).strip()}
+        if error_code not in safe_errors:
+            return "high-risk error code is not declared safe to retry"
+        return ""
+
     def _recovery_observation(
         self,
         step: PlanStep,
@@ -292,3 +337,9 @@ def _recovery_step_key(step: PlanStep) -> tuple[str, str, tuple[str, ...]]:
 
 def _stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _tool_result_error_code(result: ToolResult | None) -> str:
+    if result is None or not isinstance(result.output, dict):
+        return ""
+    return str(result.output.get("error_code") or result.output.get("code") or "").strip()

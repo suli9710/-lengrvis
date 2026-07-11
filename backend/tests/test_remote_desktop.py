@@ -1110,9 +1110,10 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
             approval_type="remote_input",
             message="Matching pending remote input",
             source="remote_input",
-            source_device_id=device_id,
-            source_grant_id=grant_id,
-            created_at="2026-01-01T00:00:00+00:00",
+                source_device_id=device_id,
+                source_grant_id=grant_id,
+                created_at="2026-01-01T00:00:00+00:00",
+                expires_at="2999-01-01T00:00:00+00:00",
         ),
     )
     for index in range(1001):
@@ -1124,9 +1125,10 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
                 approval_type="remote_input",
                 message="Unrelated pending remote input",
                 source="remote_input",
-                source_device_id=f"other_device_{index}",
-                source_grant_id=f"other_grant_{index}",
-                created_at="2026-01-02T00:00:00+00:00",
+                    source_device_id=f"other_device_{index}",
+                    source_grant_id=f"other_grant_{index}",
+                    created_at="2026-01-02T00:00:00+00:00",
+                    expires_at="2999-01-01T00:00:00+00:00",
             ),
         )
 

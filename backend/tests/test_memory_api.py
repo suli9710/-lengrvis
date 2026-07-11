@@ -33,6 +33,57 @@ def test_memory_api_treats_post_as_explicit_user_confirmation(client: TestClient
     assert payload["state"] == "active"
     assert payload["user_confirmed"] is True
     assert payload["content_envelope"]["source_kind"] == "user_input"
+    assert payload["principal_id"] == "local-user"
+    assert payload["workspace_id"] == "default"
+    assert payload["domain_scope"] == "general"
+    assert payload["version"] == 1
+    assert payload["supersedes"] == ""
+    assert payload["conflict_status"] == "none"
+
+
+def test_memory_api_isolates_namespaces_and_scopes_id_based_operations(client: TestClient) -> None:
+    finance = {
+        "principal_id": "alice",
+        "workspace_id": "northwind",
+        "domain_scope": "finance",
+    }
+    legal = {**finance, "domain_scope": "legal"}
+    memory = asyncio.run(
+        routes_memories._agent().remember(
+            "Finance filing rule awaiting confirmation",
+            source="PlannerAgent",
+            user_confirmed=False,
+            **finance,
+        )
+    )
+    legal_memory = client.post(
+        "/api/memories",
+        json={"content": "Legal filing rule", **legal},
+    ).json()
+
+    finance_before = client.post("/api/memories/recall", json={"query": "filing rule", **finance})
+    legal_recall = client.post("/api/memories/recall", json={"query": "filing rule", **legal})
+    wrong_promote = client.post(f"/api/memories/{memory.id}/promote", json=legal)
+    wrong_revoke = client.post(f"/api/memories/{memory.id}/revoke", json=legal)
+    wrong_delete = client.delete(f"/api/memories/{memory.id}", params=legal)
+    promoted = client.post(f"/api/memories/{memory.id}/promote", json=finance)
+    finance_after = client.post("/api/memories/recall", json={"query": "filing rule", **finance})
+
+    assert finance_before.status_code == 200 and finance_before.json() == []
+    assert [item["id"] for item in legal_recall.json()] == [legal_memory["id"]]
+    assert wrong_promote.status_code == 404
+    assert wrong_revoke.status_code == 404
+    assert wrong_delete.status_code == 404
+    assert promoted.status_code == 200
+    assert [item["id"] for item in finance_after.json()] == [memory.id]
+
+    deleted = client.delete(f"/api/memories/{memory.id}", params=finance)
+    assert deleted.status_code == 200
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM memory_namespace WHERE memory_id = ?",
+            (memory.id,),
+        ).fetchone() is None
 
 
 def test_memory_api_promotes_quarantined_record_before_recall(client: TestClient) -> None:

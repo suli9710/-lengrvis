@@ -596,9 +596,9 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
 
 
 def _developer_terminal_run_phase(task: Task) -> RunPhase | None:
-    if task.status == TaskPhase.COMPLETED:
+    if task.status in {TaskPhase.COMPLETED, TaskPhase.ROLLED_BACK}:
         return RunPhase.COMPLETED
-    if task.status == TaskPhase.FAILED:
+    if task.status in {TaskPhase.FAILED, TaskPhase.REPAIR_REQUIRED}:
         return RunPhase.FAILED
     if task.status == TaskPhase.CANCELLED:
         return RunPhase.CANCELLED

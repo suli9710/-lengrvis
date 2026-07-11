@@ -21,6 +21,7 @@ from app.core.schemas import (
     Task,
     TaskStatus,
     ToolResult,
+    approval_is_expired,
     now_iso,
 )
 from app.orchestration.execution_models import APPROVAL_REMAINING_STEPS_SUMMARY
@@ -369,7 +370,15 @@ class StepExecutionHandler:
 
         claimed = db.claim_approval_for_execution(approval.id, now_iso())
         if not claimed:
-            return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+            refreshed = db.fetch_one("approvals", approval.id) or {}
+            reason = str(refreshed.get("expired_reason") or "").strip()
+            if not reason:
+                reason = (
+                    "Approval has already been consumed."
+                    if refreshed.get("consumed_at")
+                    else "Approval is no longer approved."
+                )
+            return self._deny_approved_step(task, plan, step, approval, reason)
         approval = Approval.model_validate(claimed)
 
         approved_args = {
@@ -531,6 +540,8 @@ class StepExecutionHandler:
         return task
 
     def _approval_binding_error(self, approval: Approval, task: Task, plan: Plan, step: PlanStep, tool) -> str:
+        if approval_is_expired(approval):
+            return "Approval authorization expired."
         if approval.status != ApprovalStatus.APPROVED:
             return f"Approval status is {approval.status}; expected approved."
         if approval.consumed_at:

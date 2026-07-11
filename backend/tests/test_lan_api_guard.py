@@ -77,6 +77,17 @@ def test_public_lan_health_redacts_local_runtime_details(monkeypatch, tmp_path):
     assert public_payload == {"status": "ok"}
 
 
+def test_http_responses_include_security_headers(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    for response in (client.get("/api/health"), client.get("/api/settings")):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))

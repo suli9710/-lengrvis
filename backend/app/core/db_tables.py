@@ -65,7 +65,7 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
     "session_contexts": frozenset({"id", "created_at", "updated_at"}),
     "task_recordings": frozenset({"id", "task_id", "step_id", "phase", "captured_at", "created_at"}),
     "tasks": frozenset({"id", "created_at", "updated_at"}),
-    "tool_calls": frozenset({"id", "task_id", "step_id", "created_at"}),
+    "tool_calls": frozenset({"id", "task_id", "step_id", "execution_key", "status", "created_at"}),
     "tool_results": frozenset({"id", "tool_call_id", "created_at"}),
     "wakeups": frozenset({"id", "source", "source_id", "status", "due_at", "created_at", "updated_at"}),
 }
@@ -78,6 +78,7 @@ _ENSURE_COLUMNS_TABLES = frozenset(
         "audit_events",
         "llm_usage_events",
         "perception_suggestions",
+        "tool_calls",
     }
 )
 _SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

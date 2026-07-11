@@ -29,6 +29,7 @@ from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
 from app.security import mobile_jwt
 from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
+from app.security.mobile_identity import create_mobile_session
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     REMOTE_INPUT_SCOPE,
@@ -1406,7 +1407,12 @@ def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failu
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_continue_transport_failure", device_name="Mobile")
-    token = issue_mobile_token(device_id="mobile_continue_transport_failure", device_name="Mobile")
+    session = create_mobile_session(
+        device_id="mobile_continue_transport_failure",
+        device_name="Mobile",
+        scopes=[mobile_jwt.TOKEN_SCOPE],
+    )
+    token = session.token
     task = Task(
         id="task_guardian_mobile_continue_transport_failure",
         user_goal="approve later from mobile",
@@ -1481,6 +1487,9 @@ def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failu
     assert stored is not None
     assert stored["status"] == "approved"
     assert stored["consumed_at"] is None
+    assert stored["auth_context"]["device_id"] == "mobile_continue_transport_failure"
+    assert stored["auth_context"]["token_family_id"] == session.token_family_id
+    assert stored["auth_context"]["credential_id"] == session.device_credential_id
 
 
 def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypatch, tmp_path: Path):

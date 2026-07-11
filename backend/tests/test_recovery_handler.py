@@ -12,6 +12,9 @@ from app.orchestration.dispatcher import EventDispatcher
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.handlers.recovery_handler import RecoveryHandler
 from app.orchestration.task_phase import TaskPhase
+from app.policy.risk import RiskLevel
+from app.tools.registry import ToolRegistry
+from app.tools.schemas import ToolDefinition
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +33,7 @@ class OrchestratorStub:
         self.action = action
         self.executed_recovery_steps: list[PlanStep] = []
         self.persist_messages: list[str] = []
+        self.registry = ToolRegistry()
 
     async def _consult_subagent(self, task, step, *, observation=None):  # noqa: ARG002
         return self.action
@@ -44,7 +48,9 @@ class OrchestratorStub:
             ToolResult(tool_call_id=f"{step.id}_call", ok=True, observation="recovered"),
         )
 
-    def _persist_plan_update(self, plan, content):
+    def _persist_plan_update(self, plan, content, *, revision_change=False):
+        if revision_change:
+            plan.version += 1
         db.upsert_model("plans", plan)
         self.persist_messages.append(content)
 
@@ -58,6 +64,28 @@ class OrchestratorStub:
 
     def _friendly_tool_error(self, error: str) -> str:
         return error
+
+
+def _register_write_tool(orchestrator: OrchestratorStub, *, safe_to_retry_errors: list[str]) -> None:
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="file.write",
+            description="Write a file.",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+            agent_owner="FileAgent",
+            supports_dry_run=True,
+            requires_authorized_path=True,
+            execute=lambda args, context: {"ok": True},
+            read_only=False,
+            concurrency_safe=False,
+            effects=["write"],
+            resource_kinds=["file"],
+            trust_tier="builtin",
+            safe_to_retry_errors=safe_to_retry_errors,
+        )
+    )
 
 
 def test_recovery_handler_creates_and_executes_recovery_step():
@@ -110,6 +138,112 @@ def test_recovery_handler_rolls_back_when_no_alternative(monkeypatch):
     assert rollback_calls == [task.id]
     assert step.status == StepStatus.FAILED
     assert task.status == TaskPhase.FAILED
+
+
+def test_recovery_handler_blocks_unclassified_high_risk_failure_before_consulting(monkeypatch):
+    rollback_calls: list[str] = []
+
+    def fake_rollback(task_id: str):
+        rollback_calls.append(task_id)
+        return {"task_id": task_id, "executed": [], "count": 0}
+
+    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    orchestrator = OrchestratorStub(
+        AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
+    )
+    _register_write_tool(orchestrator, safe_to_retry_errors=[])
+    handler = RecoveryHandler(orchestrator)
+    task = Task(id="task_high_risk_blocked", user_goal="write file")
+    step = PlanStep(
+        task_id=task.id,
+        agent_name="FileAgent",
+        tool_name="file.write",
+        description="write",
+        risk_level=RiskLevel.R0_READ_ONLY,
+    )
+    plan = Plan(id="plan_high_risk_blocked", task_id=task.id, goal=task.user_goal, steps=[step])
+    failed = ToolResult(
+        tool_call_id="call_high_risk_blocked",
+        ok=False,
+        error="temporary lock",
+        output={"error_code": "TEMPORARY_LOCK"},
+    )
+
+    outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
+
+    assert outcome.kind == "fatal_failed"
+    assert orchestrator.executed_recovery_steps == []
+    assert len(plan.steps) == 1
+    assert rollback_calls == [task.id]
+
+
+def test_recovery_handler_allows_explicitly_classified_high_risk_retry(monkeypatch):
+    monkeypatch.setattr(
+        "app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback",
+        lambda task_id: {"task_id": task_id, "executed": [], "count": 0},
+    )
+    orchestrator = OrchestratorStub(
+        AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
+    )
+    _register_write_tool(orchestrator, safe_to_retry_errors=["TEMPORARY_LOCK"])
+    handler = RecoveryHandler(orchestrator)
+    task = Task(id="task_high_risk_retry", user_goal="write file")
+    step = PlanStep(
+        task_id=task.id,
+        agent_name="FileAgent",
+        tool_name="file.write",
+        description="write",
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+    plan = Plan(id="plan_high_risk_retry", task_id=task.id, goal=task.user_goal, steps=[step])
+    failed = ToolResult(
+        tool_call_id="call_high_risk_retry",
+        ok=False,
+        error="temporary lock",
+        output={"error_code": "TEMPORARY_LOCK"},
+    )
+
+    outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
+
+    assert outcome.kind == "recovered"
+    assert len(orchestrator.executed_recovery_steps) == 1
+    assert len(plan.steps) == 2
+
+
+def test_recovery_handler_blocks_high_risk_retry_when_registry_lookup_fails(monkeypatch):
+    rollback_calls: list[str] = []
+
+    def fake_rollback(task_id: str):
+        rollback_calls.append(task_id)
+        return {"task_id": task_id, "executed": [], "count": 0}
+
+    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    orchestrator = OrchestratorStub(
+        AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
+    )
+    handler = RecoveryHandler(orchestrator)
+    task = Task(id="task_missing_retry_contract", user_goal="write file")
+    step = PlanStep(
+        task_id=task.id,
+        agent_name="FileAgent",
+        tool_name="missing.high_risk_tool",
+        description="write",
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+    plan = Plan(id="plan_missing_retry_contract", task_id=task.id, goal=task.user_goal, steps=[step])
+    failed = ToolResult(
+        tool_call_id="call_missing_retry_contract",
+        ok=False,
+        error="temporary lock",
+        output={"error_code": "TEMPORARY_LOCK"},
+    )
+
+    outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
+
+    assert outcome.kind == "fatal_failed"
+    assert orchestrator.executed_recovery_steps == []
+    assert len(plan.steps) == 1
+    assert rollback_calls == [task.id]
 
 
 def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):

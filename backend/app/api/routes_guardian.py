@@ -13,6 +13,7 @@ from app.api.agent_message_wire import wire_safe_agent_message
 from app.api.routes_approvals import (
     _approval_native_confirmation,
     _deny_rejected_step,
+    _desktop_native_authorization,
     _reconcile_runs,
     _record_desktop_native_confirmation,
     _rejection_native_confirmation,
@@ -166,7 +167,12 @@ async def approve_approval(
     approval_id: str,
     native_confirmation: dict[str, Any] = Depends(_approval_native_confirmation),
 ) -> dict:
-    approval = approval_for_execution(approval_id)
+    authorized_at, auth_context = _desktop_native_authorization(native_confirmation)
+    approval = approval_for_execution(
+        approval_id,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     _record_desktop_native_confirmation(approval, "approve", native_confirmation)
     approval = await _wake_full_backend_for_approval(approval) or approval
     return approval_execution_response(approval)
@@ -178,7 +184,12 @@ def reject_approval(
     native_confirmation: dict[str, Any] = Depends(_rejection_native_confirmation),
 ) -> dict:
     before = db.fetch_one("approvals", approval_id)
-    approval = mobile_pairing_service.reject_approval(approval_id)
+    authorized_at, auth_context = _desktop_native_authorization(native_confirmation)
+    approval = mobile_pairing_service.reject_approval(
+        approval_id,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     _record_desktop_native_confirmation(
         Approval.model_validate(before) if before else approval, "reject", native_confirmation
     )

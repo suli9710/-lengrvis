@@ -8,6 +8,7 @@ from app.orchestration.execution_models import LargeResultRef, RunObservation, R
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
+from app.orchestration.tool_execution_journal import load_persisted_observations
 from app.policy.risk import RiskLevel
 
 TERMINAL_STEP_STATUSES = {
@@ -53,6 +54,8 @@ def observations_by_step(state: RunState, *, orchestrator_name: str) -> dict[str
                 task_id=state.task_id,
             )
             continue
+    if state.task_id:
+        observations.update(load_persisted_observations(state.task_id))
     return observations
 
 

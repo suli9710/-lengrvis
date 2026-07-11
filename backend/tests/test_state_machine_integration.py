@@ -187,10 +187,10 @@ def test_task_status_api_returns_app_error_for_invalid_transition():
 
     assert response.status_code == 409
     assert response.json() == {
-        "detail": "Invalid state transition planning -> failed",
+        "detail": "Invalid state transition planning -> rolled_back",
         "error": {
             "code": "invalid_state_transition",
-            "message": "Invalid state transition planning -> failed",
+            "message": "Invalid state transition planning -> rolled_back",
         },
     }
     persisted = Task.model_validate(db.fetch_one("tasks", task.id))
@@ -206,12 +206,77 @@ def test_rollback_accepts_ed25519_native_confirmation_challenge(monkeypatch: pyt
 
     challenge = client.post(f"{endpoint}/native-confirmation-challenge")
     assert challenge.status_code == 200, challenge.text
+    monkeypatch.setattr(
+        "app.api.routes_tasks.rollback_tools.execute_rollback",
+        lambda _task_id: {
+            "task_id": task.id,
+            "executed": [{"tool_call_id": "tool-1", "ok": True}],
+            "count": 1,
+            "state": "succeeded",
+            "attempted": 1,
+            "succeeded": 1,
+            "verified": 1,
+            "verification_failed": 0,
+            "failed": 0,
+            "manual_required": 0,
+            "unrecoverable": 0,
+        },
+    )
     response = client.post(endpoint, headers=signed_native_confirmation_headers(challenge.json(), private_key))
 
     assert response.status_code == 200
     assert response.json()["native_confirmation"]["confirmation_id"] == challenge.json()["confirmation_id"]
+    assert response.json()["task_status"] == TaskPhase.ROLLED_BACK.value
     persisted = Task.model_validate(db.fetch_one("tasks", task.id))
-    assert persisted.status == TaskPhase.FAILED
+    assert persisted.status == TaskPhase.ROLLED_BACK
+    assert persisted.metadata["rollback"] == {
+        "state": "succeeded",
+        "attempted": 1,
+        "succeeded": 1,
+        "verified": 1,
+        "verification_failed": 0,
+        "failed": 0,
+        "manual_required": 0,
+        "unrecoverable": 0,
+    }
+    assert persisted.final_summary == "Rollback completed successfully: 1 of 1 actions restored."
+
+
+def test_partial_rollback_transitions_task_to_repair_required(monkeypatch: pytest.MonkeyPatch):
+    task = _make_task(TaskStatus.COMPLETED)
+    endpoint = f"/api/tasks/{task.id}/rollback"
+    monkeypatch.setattr(
+        "app.api.routes_tasks.rollback_tools.execute_rollback",
+        lambda _task_id: {
+            "task_id": task.id,
+            "executed": [
+                {"tool_call_id": "tool-1", "ok": True},
+                {"tool_call_id": "tool-2", "ok": False, "requires_user_action": True},
+            ],
+            "count": 2,
+            "state": "manual_required",
+            "attempted": 2,
+            "succeeded": 1,
+            "verified": 1,
+            "verification_failed": 0,
+            "failed": 0,
+            "manual_required": 1,
+            "unrecoverable": 0,
+        },
+    )
+
+    response = TestClient(create_app()).post(
+        endpoint,
+        headers=native_confirmation_headers("rollback_task", task.id, endpoint=endpoint),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task_status"] == TaskPhase.REPAIR_REQUIRED.value
+    persisted = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert persisted.status == TaskPhase.REPAIR_REQUIRED
+    assert persisted.execution_stage == ExecutionStage.IDLE
+    assert persisted.metadata["rollback"]["state"] == "manual_required"
+    assert "requires manual repair" in persisted.final_summary.lower()
 
 
 def _public_key_b64(private_key: Ed25519PrivateKey) -> str:

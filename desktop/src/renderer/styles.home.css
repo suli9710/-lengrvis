@@ -137,7 +137,7 @@
 
 .home-status-pill--private {
   border-color: rgba(25, 163, 122, 0.2);
-  color: var(--green);
+  color: #0b6b50;
   background: var(--green-soft);
 }
 

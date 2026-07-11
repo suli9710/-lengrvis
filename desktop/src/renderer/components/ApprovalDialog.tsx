@@ -1,9 +1,10 @@
 import { CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, Trash2, Undo2, XCircle } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { CleanupPlan } from "../../shared/cleanupTypes";
 import type { ApprovalRequest } from "../../shared/executionTypes";
 import { zhAgentName, zhSeverity } from "../lib/zh";
+import { AccessibleDialog } from "./AccessibleDialog";
 import { Badge } from "./Panel";
 
 interface ApprovalDialogProps {
@@ -35,31 +36,22 @@ export function ApprovalDialog({
   onNext,
   onDecision
 }: ApprovalDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedElement = useRef<HTMLElement | null>(null);
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [expiryClock, setExpiryClock] = useState(() => Date.now());
 
   useEffect(() => {
     setNote("");
+    setExpiryClock(Date.now());
   }, [approval?.id]);
 
   useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    previouslyFocusedElement.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const timerId = window.setTimeout(() => {
-      firstFocusableElement(dialogRef.current)?.focus() ?? dialogRef.current?.focus();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timerId);
-      previouslyFocusedElement.current?.focus();
-      previouslyFocusedElement.current = null;
-    };
-  }, [isOpen, approval?.id]);
+    if (!isOpen || !approval?.expiresAt) return undefined;
+    const expiresAt = Date.parse(approval.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return undefined;
+    const timerId = window.setTimeout(() => setExpiryClock(Date.now()), Math.min(expiresAt - Date.now() + 25, 2_147_000_000));
+    return () => window.clearTimeout(timerId);
+  }, [approval?.expiresAt, approval?.id, isOpen]);
 
   if (!isOpen || !approval) {
     return null;
@@ -69,7 +61,9 @@ export function ApprovalDialog({
   const cleanupGroups = splitCleanupItems(cleanupPlan);
   const decisionSummary = buildDecisionSummary(approval, cleanupPlan, cleanupGroups);
   const subtitle = approvalSubtitle(approval, selectionContext, pendingCount, queueIndex);
-  const canDecide = approval.status === "pending";
+  const expiresAt = Date.parse(approval.expiresAt ?? "");
+  const authorizationExpired = !Number.isFinite(expiresAt) || expiresAt <= expiryClock;
+  const canDecide = approval.status === "pending" && !authorizationExpired;
 
   const decide = async (decision: "approved" | "denied") => {
     if (!canDecide) return;
@@ -83,28 +77,11 @@ export function ApprovalDialog({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="approval-title"
-        tabIndex={-1}
-        ref={dialogRef}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            if (isSubmitting) {
-              event.preventDefault();
-              return;
-            }
-            onClose();
-            return;
-          }
-          if (event.key === "Tab") {
-            trapFocus(event, dialogRef.current);
-          }
-        }}
-      >
+    <AccessibleDialog
+      labelledBy="approval-title"
+      closeDisabled={isSubmitting}
+      onClose={onClose}
+    >
         <header className="modal__header">
           <div>
             <span className="panel__eyebrow">审批</span>
@@ -130,6 +107,9 @@ export function ApprovalDialog({
         ) : null}
         <div className="modal__body">
           <ApprovalDecisionOverview summary={decisionSummary} />
+          {authorizationExpired ? (
+            <p className="field-error" role="alert">此审批授权已过期。请刷新任务并重新生成预览。</p>
+          ) : null}
           {cleanupPlan ? (
             <CleanupApprovalPreview
               plan={cleanupPlan}
@@ -157,6 +137,10 @@ export function ApprovalDialog({
             <div>
               <dt>请求方</dt>
               <dd>{zhAgentName(approval.requester)}</dd>
+            </div>
+            <div>
+              <dt>有效期</dt>
+              <dd>{approval.expiresAt ? new Date(approval.expiresAt).toLocaleString() : "缺少有效期，不能批准"}</dd>
             </div>
             <div>
               <dt>原因</dt>
@@ -190,8 +174,7 @@ export function ApprovalDialog({
             </>
           ) : null}
         </footer>
-      </div>
-    </div>
+    </AccessibleDialog>
   );
 }
 
@@ -568,44 +551,6 @@ function buildDecisionSummary(
     guard: warningCount ? `${warningCount} 条风险提示` : "等待你批准",
     tone: highRisk ? "danger" : warningCount ? "warning" : "safe"
   };
-}
-
-const focusableSelector = [
-  "a[href]",
-  "button:not([disabled])",
-  "textarea:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  "[tabindex]:not([tabindex='-1'])"
-].join(",");
-
-function focusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  return Array.from(container.querySelectorAll<HTMLElement>(focusableSelector))
-    .filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
-}
-
-function firstFocusableElement(container: HTMLElement | null): HTMLElement | null {
-  return focusableElements(container)[0] ?? null;
-}
-
-function trapFocus(event: KeyboardEvent, container: HTMLElement | null) {
-  const focusables = focusableElements(container);
-  if (!focusables.length) {
-    event.preventDefault();
-    container?.focus();
-    return;
-  }
-
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
 }
 
 function formatBytes(bytes?: number): string {

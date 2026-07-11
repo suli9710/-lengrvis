@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ConsentRecord, ConsentStatusResult } from "../../../shared/consent";
 import { isWebOnlyDevConsentGateBypassEnabled } from "../../lib/api/transport";
+import { AccessibleDialog } from "../AccessibleDialog";
 import { PrivacyConsentModal } from "./PrivacyConsentModal";
 
 type ConsentBridge = {
@@ -21,6 +22,7 @@ export function ConsentGate({ children }: ConsentGateProps) {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [submissionError, setSubmissionError] = useState("");
+  const retryButtonRef = useRef<HTMLButtonElement>(null);
   const [statusError, setStatusError] = useState("");
 
   useEffect(() => {
@@ -85,24 +87,31 @@ export function ConsentGate({ children }: ConsentGateProps) {
 
   if (statusError) {
     return (
-      <div className="privacy-consent-overlay">
-        <div className="privacy-consent-modal" role="alertdialog" aria-modal="true">
+      <AccessibleDialog
+        role="alertdialog"
+        backdropClassName="privacy-consent-overlay"
+        className="privacy-consent-modal"
+        labelledBy="consent-status-error-title"
+        describedBy="consent-status-error-description"
+        closeDisabled
+        initialFocusRef={retryButtonRef}
+        onClose={handleDecline}
+      >
           <div className="privacy-consent-header">
-            <h2 className="privacy-consent-title">无法验证使用条款</h2>
+            <h2 id="consent-status-error-title" className="privacy-consent-title">无法验证使用条款</h2>
           </div>
           <div className="privacy-consent-body">
-            <p className="privacy-consent-error">{statusError}</p>
+            <p id="consent-status-error-description" className="privacy-consent-error">{statusError}</p>
           </div>
           <div className="privacy-consent-actions">
             <button className="privacy-consent-decline" onClick={handleDecline}>
               退出
             </button>
-            <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            <button ref={retryButtonRef} className="btn btn-primary" onClick={() => window.location.reload()}>
               重试
             </button>
           </div>
-        </div>
-      </div>
+      </AccessibleDialog>
     );
   }
 

@@ -32,6 +32,7 @@ from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
     issue_mobile_token,
+    mobile_token_scopes,
     new_device_id,
 )
 from app.services import mobile_pairing_access as _access_helpers
@@ -296,9 +297,12 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
 
 
 def list_pending_approvals(claims: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    _expire_stale_approval_records()
     approvals = db.fetch_many("approvals", "status = ?", ("pending",))
     return [
-        _safe_approval_payload(row, claims) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)
+        _safe_approval_payload(Approval.model_validate(row).model_dump(mode="json"), claims)
+        for row in approvals
+        if _mobile_claims_allow_approval_for_read(row, claims)
     ]
 
 
@@ -309,6 +313,16 @@ def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) 
     _raise_if_mobile_claims_disallowed_for_read(approval_data, claims)
 
     approval = Approval.model_validate(approval_data)
+    from app.core.schemas import approval_is_expired
+
+    if approval.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED} and approval_is_expired(approval):
+        expired = db.expire_approval_if_unconsumed(
+            approval.id,
+            now_iso(),
+            "Approval authorization expired.",
+        )
+        if expired:
+            approval = Approval.model_validate(expired)
     task_data = db.fetch_one("tasks", approval.task_id)
     task = Task.model_validate(task_data) if task_data else None
     plan = _latest_plan(task.id if task else approval.task_id)
@@ -634,12 +648,36 @@ def revoke_own_mobile_device(device_id: str, claims: dict[str, Any]) -> dict[str
     return revoke_mobile_device(normalized_id)
 
 
-def approve_approval(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
-    return _decide_approval(approval_id, ApprovalStatus.APPROVED, claims=claims)
+def approve_approval(
+    approval_id: str,
+    claims: dict[str, Any] | None = None,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
+    return _decide_approval(
+        approval_id,
+        ApprovalStatus.APPROVED,
+        claims=claims,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
 
 
-def reject_approval(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
-    return _decide_approval(approval_id, ApprovalStatus.REJECTED, claims=claims)
+def reject_approval(
+    approval_id: str,
+    claims: dict[str, Any] | None = None,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
+    return _decide_approval(
+        approval_id,
+        ApprovalStatus.REJECTED,
+        claims=claims,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
 
 
 def refresh_mobile_session_token(refresh_token: str) -> dict[str, Any]:
@@ -848,7 +886,14 @@ def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str,
     )
 
 
-def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[str, Any] | None = None) -> Approval:
+def _decide_approval(
+    approval_id: str,
+    status: ApprovalStatus,
+    *,
+    claims: dict[str, Any] | None = None,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
     existing = db.fetch_one("approvals", approval_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Approval not found")
@@ -857,6 +902,19 @@ def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[s
     else:
         _raise_if_mobile_claims_disallowed(existing, claims)
     existing_approval = Approval.model_validate(existing)
+    from app.core.schemas import approval_is_expired
+
+    if approval_is_expired(existing_approval):
+        expired = db.expire_approval_if_unconsumed(
+            approval_id,
+            now_iso(),
+            "Approval authorization expired.",
+        )
+        if expired:
+            from app.services.approval_event_service import publish_approval_decided
+
+            publish_approval_decided(Approval.model_validate(expired))
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
     if existing_approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
     if existing_approval.status != ApprovalStatus.PENDING:
@@ -871,16 +929,67 @@ def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[s
 
                 publish_approval_decided(Approval.model_validate(expired))
             raise HTTPException(status_code=409, detail="Approval is no longer executable.")
-    data = db.decide_approval_atomically(approval_id, status.value, now_iso())
+    decided_at = now_iso()
+    if claims is not None and authorized_at is None and auth_context is None:
+        authorized_at = decided_at
+        auth_context = mobile_approval_auth_context(claims)
+        if status == ApprovalStatus.APPROVED and (
+            not auth_context["device_id"]
+            or not auth_context["token_family_id"]
+            or not auth_context["credential_id"]
+        ):
+            raise HTTPException(status_code=401, detail="Mobile approval requires a device-bound session")
+    data = db.decide_approval_atomically(
+        approval_id,
+        status.value,
+        decided_at,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     if not data:
         existing_approval = Approval.model_validate(db.fetch_one("approvals", approval_id) or existing)
         raise HTTPException(status_code=409, detail=f"Approval is already {existing_approval.status}.")
+    if data.get("status") == ApprovalStatus.EXPIRED.value:
+        expired_approval = Approval.model_validate(data)
+        from app.services.approval_event_service import publish_approval_decided
+
+        publish_approval_decided(expired_approval)
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
 
     from app.services.approval_event_service import publish_approval_decided
 
     approval = Approval.model_validate(data)
     publish_approval_decided(approval)
     return approval
+
+
+def mobile_approval_auth_context(claims: dict[str, Any]) -> dict[str, Any]:
+    try:
+        token_epoch = int(claims.get("token_epoch") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="Mobile token epoch is invalid") from exc
+    return {
+        "channel": "mobile",
+        "device_id": _text(claims.get("device_id")),
+        "token_family_id": _text(claims.get("family_id")),
+        "credential_id": _text(claims.get("credential_id")),
+        "token_epoch": token_epoch,
+        "scopes": sorted(mobile_token_scopes(claims)),
+        "token_id": _text(claims.get("jti")),
+        "step_up_verified_at": int((claims.get("step_up") or {}).get("verified_at") or 0)
+        if isinstance(claims.get("step_up"), dict)
+        else 0,
+    }
+
+
+def _expire_stale_approval_records() -> None:
+    expired = db.expire_stale_approvals(now_iso())
+    if not expired:
+        return
+    from app.services.approval_event_service import publish_approval_decided
+
+    for item in expired:
+        publish_approval_decided(Approval.model_validate(item))
 
 
 def _approval_state_error(approval_id: str) -> str:

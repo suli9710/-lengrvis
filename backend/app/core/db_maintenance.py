@@ -6,26 +6,43 @@ from app.core import db
 from app.core.db_diagnostics import build_local_product_diagnostics
 
 PERSONAL_DATA_TABLES: tuple[str, ...] = (
-    "tasks",
-    "chat_messages",
-    "plans",
-    "goals",
-    "agent_messages",
-    "runs",
-    "run_events",
+    # Child/auth tables come first so row counts remain accurate even when
+    # SQLite foreign-key cascades are enabled.
+    "mobile_refresh_tokens",
+    "token_families",
+    "device_credentials",
+    "execution_exceptions",
+    "automation_run_items",
+    "automation_runs",
+    "automation_triggers",
+    "automation_template_versions",
+    "application_grants",
+    "automation_templates",
+    "intent_capsules",
+    "run_budget_ledgers",
+    "tool_results",
+    "tool_calls",
+    "approvals",
     "task_recordings",
     "safety_reviews",
-    "tool_calls",
-    "tool_results",
-    "approvals",
+    "run_events",
+    "runs",
+    "agent_messages",
+    "plans",
+    "goals",
+    "chat_messages",
+    "tasks",
     "mobile_pairings",
     "mobile_devices",
     "llm_usage_events",
-    "indexed_files",
-    "document_chunks",
     "document_chunk_embeddings",
+    "document_chunks",
+    "indexed_files",
     "scheduled_tasks",
     "wakeups",
+    "memory_active_successors",
+    "memory_quarantine",
+    "memory_namespace",
     "memories",
     "session_contexts",
     "perception_observations",
@@ -45,11 +62,38 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
     tables = PERSONAL_DATA_TABLES + (SETTINGS_TABLES if include_settings else ())
     counts: dict[str, int] = {}
     with db.connect() as conn:
+        conn.execute("PRAGMA secure_delete = ON")
+        conn.execute("BEGIN IMMEDIATE")
         for table in tables:
             row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
             counts[table] = int(row[0] or 0)
             conn.execute(f"DELETE FROM {table}")  # noqa: S608
+
+        integrity_kinds = ["approvals"]
+        if include_settings:
+            integrity_kinds.extend(SETTINGS_TABLES)
+        placeholders = ",".join("?" for _ in integrity_kinds)
+        row = conn.execute(
+            f"""SELECT COUNT(*) FROM {db.SENSITIVE_RECORD_INTEGRITY_TABLE}
+            WHERE table_name IN ({placeholders})""",  # noqa: S608
+            tuple(integrity_kinds),
+        ).fetchone()
+        counts[db.SENSITIVE_RECORD_INTEGRITY_TABLE] = int(row[0] or 0)
+        conn.execute(
+            f"""DELETE FROM {db.SENSITIVE_RECORD_INTEGRITY_TABLE}
+            WHERE table_name IN ({placeholders})""",  # noqa: S608
+            tuple(integrity_kinds),
+        )
+
+        remaining = {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)  # noqa: S608
+            for table in tables
+        }
+        residual = {table: count for table, count in remaining.items() if count}
+        if residual:
+            raise RuntimeError(f"Local data erase verification failed: {sorted(residual)}")
     with db.connect() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
     if include_settings:
         db._notify_settings_invalidated()

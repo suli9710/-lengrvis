@@ -791,6 +791,8 @@ def test_android_pr_ci_has_manifest_and_connected_tls_regression_contract(projec
     assert "connectedDebugAndroidTest" in lan_tls_smoke
     assert "LENGRVIS_ANDROID_LAN_TLS_BASE_URL" in lan_tls_smoke
     assert "LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256" in lan_tls_smoke
+    assert "LENGRVIS_ANDROID_LAN_TLS_PAIR_CLAIM_SECRET" in lan_tls_smoke
+    assert "lengrvisPairClaimSecret" in lan_tls_smoke
     assert "This release/evidence gate is intentionally not run by PR CI." in lan_tls_smoke
 
 

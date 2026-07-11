@@ -40,7 +40,9 @@ export function zhTaskState(state: TaskState) {
     blocked: "待审批",
     paused: "已暂停",
     completed: "已完成",
-    failed: "失败"
+    failed: "失败",
+    rolled_back: "已回滚",
+    repair_required: "需要修复"
   };
   return labels[state] ?? state;
 }

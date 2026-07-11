@@ -16,16 +16,32 @@ from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 MAX_VISION_GROUNDING_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS = ((MAX_VISION_GROUNDING_IMAGE_BYTES + 2) // 3) * 4
 DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS = 30.0
 
 
-async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
-    if timeout_seconds is None or timeout_seconds <= 0:
-        return await coro
-    return await asyncio.wait_for(coro, timeout=timeout_seconds)
+async def _with_timeout(coro, timeout_seconds: float | None, abort_context: dict[str, Any] | None) -> Any:
+    task = asyncio.create_task(coro)
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout_seconds is None or timeout_seconds <= 0 else loop.time() + timeout_seconds
+    try:
+        while True:
+            raise_if_tool_aborted(abort_context)
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError
+            wait_for = 0.05 if remaining is None else min(0.05, remaining)
+            done, _ = await asyncio.wait({task}, timeout=wait_for)
+            if task in done:
+                return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def _run_ui_automation(
@@ -33,14 +49,15 @@ def _run_ui_automation(
     action: str,
     *,
     timeout_seconds: float | None = DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS,
+    abort_context: dict[str, Any] | None = None,
 ) -> Any:
     try:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(_with_timeout(coro, timeout_seconds))
+            return asyncio.run(_with_timeout(coro, timeout_seconds, abort_context))
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds))
+        future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds, abort_context))
         try:
             guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
             return future.result(timeout=guard_timeout)
@@ -50,13 +67,15 @@ def _run_ui_automation(
             pool.shutdown(wait=False, cancel_futures=True)
     except TimeoutError:
         return {"ok": False, "error": f"UIAutomation {action} timed out."}
+    except ToolAbortedError:
+        raise
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: UIAutomation adapters should fail inline for tool callers.
         return {"ok": False, "error": f"UIAutomation {action} failed: {exc}"}
 
 
 def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    app_context = _run_ui_automation(target.active_window(), "active_window")
+    app_context = _run_ui_automation(target.active_window(), "active_window", abort_context=context)
     if isinstance(app_context, dict):
         return app_context
     return {"ok": bool(app_context.available), "app_context": app_context.model_dump(mode="json")}
@@ -71,20 +90,21 @@ def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             max_elements=int(args.get("max_elements") or args.get("maxElements") or 200),
         ),
         "observe",
+        abort_context=context,
     )
 
 
 def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    element = _run_ui_automation(
-        target.find_element(
+    result = _run_ui_automation(
+        target.inspect_selector(
             _selector_args(args),
+            max_candidates=int(args.get("max_candidates") or args.get("maxCandidates") or 10),
         ),
         "find_element",
+        abort_context=context,
     )
-    if isinstance(element, dict):
-        return element
-    return {"ok": element is not None, "element": element.to_dict() if element else None}
+    return result if isinstance(result, dict) else {"ok": False, "error": "UIAutomation inspection failed."}
 
 
 def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -96,6 +116,7 @@ def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
             poll_interval_seconds=float(args.get("poll_interval_seconds") or args.get("pollIntervalSeconds") or 0.25),
         ),
         "wait_for_element",
+        abort_context=context,
     )
     if isinstance(element, dict):
         return element
@@ -105,7 +126,7 @@ def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
 def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     selector = _selector_args(args)
     if args.get("dry_run", True):
-        return _preview("click", selector)
+        return _semantic_preview("click", selector, context)
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
@@ -118,6 +139,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "click",
+        abort_context=context,
     )
 
 
@@ -125,7 +147,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     selector = _selector_args(args)
     text = str(args.get("text") or "")
     if args.get("dry_run", True):
-        return _preview("type_text", {**selector, "characters": len(text)})
+        return _semantic_preview("type_text", selector, context, detail={"characters": len(text)})
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("type_text")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
@@ -139,17 +161,18 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "type_text",
+        abort_context=context,
     )
 
 
 def focus(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    return _run_ui_automation(target.focus(_selector_args(args)), "focus")
+    return _run_ui_automation(target.focus(_selector_args(args)), "focus", abort_context=context)
 
 
 def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    windows = _run_ui_automation(target.list_windows(), "list_windows")
+    windows = _run_ui_automation(target.list_windows(), "list_windows", abort_context=context)
     if isinstance(windows, dict):
         return windows
     return {"ok": True, "windows": windows, "count": len(windows)}
@@ -166,6 +189,7 @@ def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
             hwnd=_optional_int(args.get("hwnd")),
         ),
         "focus_window",
+        abort_context=context,
     )
 
 
@@ -195,6 +219,7 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "click_at",
+        abort_context=context,
     )
 
 
@@ -226,6 +251,7 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "drag",
+        abort_context=context,
     )
 
 
@@ -247,6 +273,7 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "key_press",
+        abort_context=context,
     )
 
 
@@ -271,6 +298,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             approval_id=str(args.get("approval_id") or ""),
         ),
         "hotkey",
+        abort_context=context,
     )
 
 
@@ -283,6 +311,7 @@ def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             quality=int(args.get("quality") or 50),
         ),
         "screenshot",
+        abort_context=context,
     )
 
 
@@ -291,7 +320,11 @@ def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     if not prop:
         return {"ok": False, "error": "Property name is required."}
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    value = _run_ui_automation(target.get_property(_selector_args(args), prop), "get_property")
+    value = _run_ui_automation(
+        target.get_property(_selector_args(args), prop),
+        "get_property",
+        abort_context=context,
+    )
     if isinstance(value, dict):
         return value
     return {"ok": value is not None, "property": prop, "value": value}
@@ -299,7 +332,11 @@ def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
-    children = _run_ui_automation(target.get_children(_selector_args(args)), "get_children")
+    children = _run_ui_automation(
+        target.get_children(_selector_args(args)),
+        "get_children",
+        abort_context=context,
+    )
     if isinstance(children, dict):
         return children
     return {"ok": True, "children": [child.to_dict() for child in children], "count": len(children)}
@@ -317,7 +354,11 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     description = str(args.get("target") or args.get("description") or "").strip()
 
     if any(selector.values()):
-        element = _run_ui_automation(target.find_element(selector), "locate_on_screen.find_element")
+        element = _run_ui_automation(
+            target.find_element(selector),
+            "locate_on_screen.find_element",
+            abort_context=context,
+        )
         if isinstance(element, dict):
             return element
         if element is not None:
@@ -346,6 +387,7 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     screenshot_payload = _run_ui_automation(
         target.screenshot(max_width=1600, max_height=1000, quality=70),
         "locate_on_screen.screenshot",
+        abort_context=context,
     )
     if not screenshot_payload.get("ok"):
         error = screenshot_payload.get("error", "unknown capture error")
@@ -469,6 +511,36 @@ def _preview(action: str, detail: dict[str, Any]) -> dict[str, Any]:
         "message": "UIAutomation semantic action preview. User approval is required before execution.",
         "diff_preview": [{"action": action, **detail}],
     }
+
+
+def _semantic_preview(
+    action: str,
+    selector: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
+    inspection = _run_ui_automation(
+        target.inspect_selector(selector, max_candidates=10),
+        f"{action}_preview",
+        abort_context=context,
+    )
+    if not isinstance(inspection, dict) or inspection.get("ok") is not True:
+        failure = inspection if isinstance(inspection, dict) else {}
+        return {
+            "ok": False,
+            "dry_run": True,
+            "error": str(failure.get("error") or "UI target could not be resolved uniquely."),
+            "selector": selector,
+            "match_count": int(failure.get("match_count") or 0),
+            "candidates": list(failure.get("candidates") or []),
+        }
+    preview = _preview(action, {**selector, **(detail or {})})
+    resource_state = inspection.get("resource_state")
+    if isinstance(resource_state, dict):
+        preview["_resource_state"] = [resource_state]
+    return preview
 
 
 def _has_approval(args: dict[str, Any]) -> bool:
@@ -663,5 +735,6 @@ def register(registry) -> None:
                     else ""
                 ),
                 sensitive_arg_keys=["text"] if name == "ui_automation.type_text" else [],
+                tool_version="2" if name in {"ui_automation.click", "ui_automation.type_text"} else "1",
             )
         )

@@ -14,6 +14,8 @@ class TaskPhase(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    ROLLED_BACK = "rolled_back"
+    REPAIR_REQUIRED = "repair_required"
 
 
 TASK_PHASE_TRANSITIONS: dict[TaskPhase, set[TaskPhase]] = {
@@ -30,10 +32,23 @@ TASK_PHASE_TRANSITIONS: dict[TaskPhase, set[TaskPhase]] = {
     },
     TaskPhase.EXECUTION: {TaskPhase.FINAL_REVIEW, TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED},
     TaskPhase.FINAL_REVIEW: {TaskPhase.COMPLETED, TaskPhase.EXECUTION, TaskPhase.FAILED, TaskPhase.CANCELLED},
-    TaskPhase.COMPLETED: set(),
-    TaskPhase.FAILED: set(),
+    TaskPhase.COMPLETED: {TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED},
+    TaskPhase.FAILED: {TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED},
     TaskPhase.CANCELLED: set(),
+    TaskPhase.ROLLED_BACK: set(),
+    TaskPhase.REPAIR_REQUIRED: set(),
 }
+
+
+TERMINAL_TASK_PHASES: frozenset[TaskPhase] = frozenset(
+    {
+        TaskPhase.COMPLETED,
+        TaskPhase.FAILED,
+        TaskPhase.CANCELLED,
+        TaskPhase.ROLLED_BACK,
+        TaskPhase.REPAIR_REQUIRED,
+    }
+)
 
 
 def is_phase_transition_allowed(source: TaskPhase, target: TaskPhase) -> bool:

@@ -13,7 +13,26 @@ export interface RunEventPayload {
   replay?: boolean;
 }
 
-export type TaskState = "queued" | "running" | "blocked" | "paused" | "completed" | "failed";
+export type TaskState =
+  | "queued"
+  | "running"
+  | "blocked"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "rolled_back"
+  | "repair_required";
+
+export interface TaskRollbackSummary {
+  state: "succeeded" | "partial" | "manual_required" | "failed" | "unrecoverable" | string;
+  attempted: number;
+  succeeded: number;
+  verified: number;
+  verificationFailed: number;
+  failed: number;
+  manualRequired: number;
+  unrecoverable: number;
+}
 
 export interface TaskBoundaryEvent {
   id: string;
@@ -41,7 +60,10 @@ export interface TaskEvent {
   boundaryEvents?: TaskBoundaryEvent[];
   completionEvidence?: TaskCompletionEvidence;
   resultQuality?: TaskResultQuality;
+  rollback?: TaskRollbackSummary;
 }
+
+export type TaskPilotAction = "open" | "approve" | "compose" | "pause" | "resume" | "stop" | "cancel";
 
 export interface TaskArtifact {
   path: string;
@@ -331,6 +353,7 @@ export interface ApprovalRequest {
   requester: string;
   riskLevel: SafetySeverity;
   createdAt: string;
+  expiresAt?: string;
   proposedAction: string;
   status: "pending" | "approved" | "denied" | "expired" | "unavailable";
   rawPayload?: unknown;
@@ -367,6 +390,8 @@ export interface BackendApprovalPayload {
   engineering_boundary?: unknown;
   status: string;
   created_at: string;
+  expires_at?: string;
+  authorized_at?: string | null;
 }
 
 export interface ApprovalDecision {

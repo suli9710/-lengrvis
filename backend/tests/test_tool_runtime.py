@@ -11,10 +11,22 @@ import pytest
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.automation.intent_capsule import user_goal_digest
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, SafetyReview, StepStatus, Task, TaskStatus
+from app.core.content_provenance import create_content_envelope
+from app.core.schemas import (
+    Approval,
+    ApprovalStatus,
+    Plan,
+    PlanStep,
+    SafetyReview,
+    StepStatus,
+    Task,
+    TaskStatus,
+    ToolCall,
+)
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import StepPhase, set_step_status
+from app.orchestration.tool_execution_journal import build_tool_execution_key, recover_interrupted_tool_executions
 from app.orchestration.tool_runtime import ToolRuntime
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore, PermissionTimeWindow
@@ -323,9 +335,11 @@ def test_tool_runtime_persists_large_result_preview(tmp_path: Path):
 
 def test_tool_runtime_persists_redacted_tool_call_args():
     calls: list[dict[str, Any]] = []
+    journal_statuses: list[str] = []
 
     def execute(args, context):  # noqa: ANN001, ANN202, ARG001
         calls.append(dict(args))
+        journal_statuses.append(db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0]["status"])
         return {"ok": True}
 
     orchestrator = OrchestratorAgent()
@@ -354,6 +368,11 @@ def test_tool_runtime_persists_redacted_tool_call_args():
     rows = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10)
 
     assert execution.kind == "succeeded"
+    assert journal_statuses == ["executing"]
+    assert rows[0]["status"] == "committed"
+    assert rows[0]["execution_key"].startswith("execution:")
+    assert rows[0]["started_at"]
+    assert rows[0]["committed_at"]
     assert calls[0]["selector"] == "#account-token"
     serialized = str(rows)
     assert "secret-token-1234567890" not in serialized
@@ -392,6 +411,191 @@ def test_tool_runtime_persists_content_envelope_for_tool_results():
     assert stored["content_envelope"]["source_id"] == execution.result.tool_call_id
     assert stored["content_envelope"]["task_scope"] == task.id
     assert stored["content_envelope"]["trust_level"] == "internal"
+
+
+def test_tool_runtime_merges_all_upstream_content_envelopes_into_result():
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        return {"value": "combined"}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.provenance_merge",
+        description="merge provenance",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+        resource_kinds=["system"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    runtime.extra_context["upstream_content_envelopes"] = [
+        create_content_envelope(
+            "web input",
+            source_kind="browser",
+            source_id="page-1",
+            trust_level="untrusted",
+            taint_flags=["web_content"],
+            task_scope=task.id,
+        ).model_dump(mode="json"),
+        create_content_envelope(
+            "document input",
+            source_kind="document",
+            source_id="document-1",
+            trust_level="untrusted",
+            taint_flags=["document_content"],
+            task_scope=task.id,
+        ).model_dump(mode="json"),
+    ]
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    stored = db.fetch_many("tool_results", "tool_call_id = ?", (execution.result.tool_call_id,), limit=1)[0]
+
+    assert execution.kind == "succeeded"
+    assert stored["content_envelope"]["trust_level"] == "untrusted"
+    assert {"web_content", "document_content"}.issubset(
+        set(stored["content_envelope"]["taint_flags"])
+    )
+
+
+def test_tool_runtime_crash_window_is_recovered_as_outcome_unknown(monkeypatch: pytest.MonkeyPatch):
+    side_effects: list[str] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        side_effects.append("applied")
+        return {"changed_paths": ["redacted.txt"]}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.crash_window",
+        description="crash window",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    real_upsert = db.upsert_model
+
+    def fail_result_persistence(table, model, **kwargs):  # noqa: ANN001, ANN202
+        if table == "tool_results":
+            raise OSError("simulated process failure after side effect")
+        return real_upsert(table, model, **kwargs)
+
+    monkeypatch.setattr(db, "upsert_model", fail_result_persistence)
+
+    with pytest.raises(OSError, match="simulated process failure"):
+        asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+
+    call = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0]
+    assert side_effects == ["applied"]
+    assert call["status"] == "executing"
+    assert recover_interrupted_tool_executions() == [call["id"]]
+    recovered = db.fetch_one("tool_calls", call["id"])
+    assert recovered["status"] == "outcome_unknown"
+
+
+def test_tool_runtime_reuses_committed_result_without_repeating_side_effect():
+    side_effects: list[str] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        side_effects.append("applied")
+        return {"value": 42}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.idempotent_reuse",
+        description="idempotent reuse",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    task, _plan, step = _task_plan_step(tool.name, {"query": "same"})
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    first = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    second = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+
+    assert first.kind == "succeeded"
+    assert second.kind == "succeeded"
+    assert side_effects == ["applied"]
+    assert second.result is not None and first.result is not None
+    assert second.result.tool_call_id == first.result.tool_call_id
+    assert len(db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10)) == 1
+
+
+def test_tool_runtime_blocks_replay_of_outcome_unknown_execution():
+    side_effects: list[str] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        side_effects.append("applied")
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.unknown_replay",
+        description="unknown replay",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    args = {"target": "same"}
+    task, _plan, step = _task_plan_step(tool.name, args)
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    call = ToolCall(
+        task_id=task.id,
+        step_id=step.id,
+        tool_name=tool.name,
+        args=args,
+        risk_level=tool.risk_level,
+        execution_key=build_tool_execution_key(
+            task=task,
+            step_id=step.id,
+            tool_name=tool.name,
+            tool_version=tool.tool_version,
+            args=args,
+            plan_revision=0,
+            approval_id=None,
+        ),
+        status="outcome_unknown",
+        dry_run=False,
+    )
+    db.upsert_model("tool_calls", call)
+
+    result = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+
+    assert result.kind == "fatal_failed"
+    assert result.result is not None
+    assert result.result.output == {"outcome_unknown": True, "automatic_replay_blocked": True}
+    assert side_effects == []
+    assert len(db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10)) == 1
 
 
 def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):

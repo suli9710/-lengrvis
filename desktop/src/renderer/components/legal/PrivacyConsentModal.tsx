@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { LegalDocId } from "../../../shared/consent";
+import { AccessibleDialog } from "../AccessibleDialog";
 
 interface PrivacyModalProps {
   needsEulaConsent: boolean;
@@ -47,8 +48,13 @@ export function PrivacyConsentModal({
   const [fullDocContent, setFullDocContent] = useState<string | null>(null);
   const [loadingDoc, setLoadingDoc] = useState<ConsentDocId | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [eulaAccepted, setEulaAccepted] = useState(!needsEulaConsent);
   const [privacyAccepted, setPrivacyAccepted] = useState(!needsPrivacyConsent);
+  const fullDocBackRef = useRef<HTMLButtonElement>(null);
+  const eulaTriggerRef = useRef<HTMLButtonElement>(null);
+  const privacyTriggerRef = useRef<HTMLButtonElement>(null);
+  const lastDocTrigger = useRef<ConsentDocId | null>(null);
   const bridge = useMemo(() => {
     return (window as unknown as {
       lengrvis?: {
@@ -61,6 +67,7 @@ export function PrivacyConsentModal({
 
   const handleViewFull = useCallback(async (docId: ConsentDocId) => {
     if (loadingDoc || !bridge?.consent?.readDoc) return;
+    lastDocTrigger.current = docId;
     setLoadingDoc(docId);
     setDocumentError(null);
     try {
@@ -74,37 +81,54 @@ export function PrivacyConsentModal({
     }
   }, [bridge, loadingDoc]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !activeDoc) {
-        onDecline();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeDoc, onDecline]);
+  useLayoutEffect(() => {
+    if (activeDoc) {
+      fullDocBackRef.current?.focus();
+      return;
+    }
+    if (!lastDocTrigger.current) return;
+    const trigger = lastDocTrigger.current === "eula" ? eulaTriggerRef.current : privacyTriggerRef.current;
+    trigger?.focus();
+  }, [activeDoc]);
 
-  if (activeDoc) {
-    return (
-      <div className="privacy-consent-overlay">
-        <div className="privacy-consent-modal privacy-consent-full-doc" role="dialog" aria-modal="true">
-          <h2 className="privacy-consent-full-title">{LEGAL_DOC_LABELS[activeDoc]}（完整）</h2>
+  const canAgree = eulaAccepted && privacyAccepted;
+  const closeDialog = () => {
+    if (activeDoc) {
+      setActiveDoc(null);
+      return;
+    }
+    onDecline();
+  };
+  const submitAgreement = async () => {
+    if (!canAgree || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await onAgree();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <AccessibleDialog
+      backdropClassName="privacy-consent-overlay"
+      className={activeDoc ? "privacy-consent-modal privacy-consent-full-doc" : "privacy-consent-modal"}
+      labelledBy={activeDoc ? "privacy-consent-full-title" : "privacy-consent-title"}
+      closeDisabled={Boolean(loadingDoc) || isSubmitting}
+      onClose={closeDialog}
+    >
+      {activeDoc ? (
+        <>
+          <h2 id="privacy-consent-full-title" className="privacy-consent-full-title">{LEGAL_DOC_LABELS[activeDoc]}（完整）</h2>
           <pre className="privacy-consent-full-body">{fullDocContent ?? ""}</pre>
           <div className="privacy-consent-actions">
-            <button className="btn btn-secondary" onClick={() => setActiveDoc(null)}>
+            <button ref={fullDocBackRef} className="btn btn-secondary" onClick={() => setActiveDoc(null)}>
               返回同意页面
             </button>
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  const canAgree = eulaAccepted && privacyAccepted;
-
-  return (
-    <div className="privacy-consent-overlay">
-      <div className="privacy-consent-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-consent-title">
+        </>
+      ) : (
+        <>
         <div className="privacy-consent-header">
           <h2 id="privacy-consent-title" className="privacy-consent-title">使用条款与隐私说明</h2>
         </div>
@@ -118,6 +142,7 @@ export function PrivacyConsentModal({
           </ul>
           <div className="privacy-consent-document-links">
             <button
+              ref={eulaTriggerRef}
               className="privacy-consent-full-link"
               onClick={() => void handleViewFull("eula")}
               disabled={Boolean(loadingDoc)}
@@ -125,6 +150,7 @@ export function PrivacyConsentModal({
               {loadingDoc === "eula" ? "加载中..." : "查看完整最终用户许可协议"}
             </button>
             <button
+              ref={privacyTriggerRef}
               className="privacy-consent-full-link"
               onClick={() => void handleViewFull("privacy-policy")}
               disabled={Boolean(loadingDoc)}
@@ -158,14 +184,15 @@ export function PrivacyConsentModal({
           {submissionError ? <p className="privacy-consent-error">{submissionError}</p> : null}
         </div>
         <div className="privacy-consent-actions">
-          <button className="privacy-consent-decline" onClick={onDecline}>
+          <button className="privacy-consent-decline" onClick={onDecline} disabled={isSubmitting}>
             拒绝并退出
           </button>
-          <button className="btn btn-primary" onClick={onAgree} disabled={!canAgree}>
-            同意并开始
+          <button className="btn btn-primary" onClick={() => void submitAgreement()} disabled={!canAgree || isSubmitting}>
+            {isSubmitting ? "正在保存..." : "同意并开始"}
           </button>
         </div>
-      </div>
-    </div>
+        </>
+      )}
+    </AccessibleDialog>
   );
 }

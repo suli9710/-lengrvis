@@ -72,7 +72,7 @@ Use this path after the preflight has produced `evidence-summary.redacted.json` 
 1. Record the candidate, build, backend, device/emulator profile, OS/API version, network note, and tester/date in a local run note.
 2. Put the phone/emulator and desktop backend on the same LAN path. Raw IPs, hostnames, and device names stay in a local-only note; the shareable packet uses redacted labels.
 3. Install or configure certificate trust on that exact Android/emulator profile, or document the expected trust failure before trust is added.
-   If the connected Android LAN TLS gate is available for the same profile, run `npm --prefix mobile run gate:android-connected-lan-tls` after setting `LENGRVIS_ANDROID_LAN_TLS_BASE_URL`, `LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256`, and optionally `LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE`; keep its log redacted and treat it as supporting evidence only.
+   If the connected Android LAN TLS gate is available for the same profile, run `npm --prefix mobile run gate:android-connected-lan-tls` after setting `LENGRVIS_ANDROID_LAN_TLS_BASE_URL` and `LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256`. For a desktop-created pairing request, provide both `LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE` and `LENGRVIS_ANDROID_LAN_TLS_PAIR_CLAIM_SECRET`; keep the log redacted and treat it as supporting evidence only.
 4. Pair with the camera QR path when scan-to-pair is claimed. If the operator pastes a payload or enters a code manually, label that artifact as fallback evidence only.
 5. Create a benign approval and prove `/ws/mobile/approvals` connected over WSS from the device. Capture both approve and reject outcomes.
 6. Open remote screen and prove `/ws/remote/screen` connected over WSS, frames render, and the default state is read-only.

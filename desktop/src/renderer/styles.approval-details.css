@@ -111,15 +111,15 @@
 }
 
 .approval-safety--safe {
-  --approval-safety-accent: var(--green);
+  --approval-safety-accent: #0b6b50;
 }
 
 .approval-safety--warning {
-  --approval-safety-accent: var(--amber);
+  --approval-safety-accent: #855400;
 }
 
 .approval-safety--danger {
-  --approval-safety-accent: var(--red);
+  --approval-safety-accent: #9f263b;
 }
 
 .approval-safety__header {
@@ -272,7 +272,7 @@
 
 .approval-cleanup__risks strong,
 .approval-cleanup__risks li {
-  color: var(--red);
+  color: #9f263b;
   font-size: 12px;
 }
 

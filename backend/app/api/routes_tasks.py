@@ -567,7 +567,26 @@ def rollback(
         "confirmation_id": native_confirmation.get("confirmation_id"),
         "desktop_native_confirmed": True,
     }
-    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService", strict=True)
+    rollback_metadata = {
+        key: outcome[key]
+        for key in (
+            "state",
+            "attempted",
+            "succeeded",
+            "verified",
+            "verification_failed",
+            "failed",
+            "manual_required",
+            "unrecoverable",
+        )
+    }
+    task.metadata = {**task.metadata, "rollback": rollback_metadata}
+    task.final_summary = _rollback_final_summary(rollback_metadata)
+    rollback_phase = (
+        TaskStatus.ROLLED_BACK if rollback_metadata["state"] == "succeeded" else TaskStatus.REPAIR_REQUIRED
+    )
+    safe_transition(task, rollback_phase, actor="TaskService", strict=True)
+    outcome["task_status"] = rollback_phase.value
     return outcome
 
 
@@ -600,6 +619,21 @@ def rollback_preview(task_id: str):
 
 def _rollback_preview_hmac(task_id: str) -> str:
     return sha256(_canonical_json(rollback_tools.build_rollback_plan(task_id)).encode("utf-8")).hexdigest()
+
+
+def _rollback_final_summary(summary: dict[str, Any]) -> str:
+    state = str(summary.get("state") or "failed")
+    attempted = int(summary.get("attempted") or 0)
+    succeeded = int(summary.get("succeeded") or 0)
+    if state == "succeeded":
+        return f"Rollback completed successfully: {succeeded} of {attempted} actions restored."
+    if state == "manual_required":
+        return "Rollback requires manual repair: one or more actions must be restored by the user."
+    if state == "unrecoverable":
+        return "Rollback could not fully restore the task because one or more actions are unrecoverable."
+    if state == "partial":
+        return f"Rollback was only partially completed: {succeeded} of {attempted} actions restored."
+    return "Rollback failed before any action could be restored."
 
 
 def _canonical_json(value: Any) -> str:

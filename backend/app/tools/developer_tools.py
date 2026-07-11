@@ -12,13 +12,13 @@ from typing import Any
 from app.config import DEFAULT_DATA_DIR
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
-from app.core.process_tree import run_process_tree
+from app.core.process_tree import ProcessCancelledError, run_process_tree
 from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.security.execution_isolation import arbitrary_execution_denial
 from app.tools.schemas import ToolDefinition
-from app.tools.tool_abort import raise_if_tool_aborted
+from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted, tool_abort_event
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 READONLY_SHELL_COMMANDS = {
@@ -211,7 +211,7 @@ def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
     if command is None:
         return {"ok": False, "cwd": str(root), "error": error}
-    result = _run_command(command, cwd=root)
+    result = _run_command(command, cwd=root, abort_context=context)
     payload = {"ok": result["returncode"] == 0, "cwd": str(root), **result}
     payload["summary"] = _summarize_git_status(payload)
     return payload
@@ -230,7 +230,7 @@ def diff_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     )
     if command is None:
         return {"ok": False, "cwd": str(root), "error": error}
-    result = _run_command(command, cwd=root)
+    result = _run_command(command, cwd=root, abort_context=context)
     diff, diff_truncated = _truncate_text(str(result.get("stdout") or ""), DIFF_PREVIEW_LIMIT)
     payload = {
         "ok": result["returncode"] == 0,
@@ -265,7 +265,7 @@ def shell_readonly(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         )
         if tokens is None:
             return {"ok": False, "error": reason, "readonly": False}
-        result = _run_command(tokens, cwd=root, shell=False)
+        result = _run_command(tokens, cwd=root, shell=False, abort_context=context)
     payload = {"ok": result["returncode"] == 0, "cwd": str(root), "readonly": True, **result}
     payload["summary"] = _summarize_shell_readonly(command, payload)
     return payload
@@ -799,9 +799,16 @@ def _command_token_name(value: str) -> str:
     return Path(text).name
 
 
-def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) -> dict[str, Any]:
+def _run_command(
+    command: list[str] | str,
+    *,
+    cwd: Path,
+    shell: bool = False,
+    abort_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        completed = subprocess.run(  # noqa: S603 - callers pass commands after allowlist validation.
+        raise_if_tool_aborted(abort_context)
+        completed = run_process_tree(
             command,
             cwd=str(cwd),
             shell=shell,
@@ -809,7 +816,10 @@ def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) ->
             capture_output=True,
             timeout=15,
             check=False,
+            cancel_event=tool_abort_event(abort_context),
         )
+    except ProcessCancelledError:
+        raise ToolAbortedError("Tool execution was cancelled.") from None
     except OSError as exc:
         return {
             "returncode": 127,
@@ -850,6 +860,7 @@ def _run_test_foreground(
             capture_output=True,
             timeout=min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS),
             check=False,
+            cancel_event=tool_abort_event(abort_context),
         )
         stdout = decode_process_output(completed.stdout)
         stderr = decode_process_output(completed.stderr)
@@ -862,6 +873,8 @@ def _run_test_foreground(
         returncode = None
         timed_out = True
         error = f"Test run exceeded {min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS)}s timeout."
+    except ProcessCancelledError:
+        raise ToolAbortedError("Tool execution was cancelled.") from None
 
     raise_if_tool_aborted(abort_context)
     stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr, abort_context=abort_context)

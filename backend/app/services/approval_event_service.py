@@ -104,6 +104,7 @@ def _safe_remote_input_grant(grant: dict) -> dict:
 
 def _safe_approval(approval: Approval) -> dict:
     payload = approval.model_dump(mode="json")
+    payload.pop("auth_context", None)
     payload["message"] = redact_value(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     return payload

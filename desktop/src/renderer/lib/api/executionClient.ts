@@ -384,11 +384,45 @@ export function previewRollbackEndpoint(
 export function executeRollbackEndpoint(
   request: ExecutionEndpointRequest,
   taskId: string
-): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
+): Promise<ApiResponse<{
+  executed: unknown[];
+  count: number;
+  state: string;
+  attempted: number;
+  succeeded: number;
+  verified: number;
+  verification_failed: number;
+  failed: number;
+  manual_required: number;
+  unrecoverable: number;
+}>> {
   const response = window.lengrvis?.tasks
     ? window.lengrvis.tasks.rollback(taskId)
     : request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
-  return response as Promise<ApiResponse<{ executed: unknown[]; count: number }>>;
+  return response as Promise<ApiResponse<{
+    executed: unknown[];
+    count: number;
+    state: string;
+    attempted: number;
+    succeeded: number;
+    verified: number;
+    verification_failed: number;
+    failed: number;
+    manual_required: number;
+    unrecoverable: number;
+  }>>;
+}
+
+export function taskLifecycleEndpoint(
+  request: ExecutionEndpointRequest,
+  taskId: string,
+  action: "pause" | "resume" | "cancel"
+): Promise<ApiResponse<BackendTask>> {
+  const bridge = window.lengrvis?.tasks;
+  const response = bridge
+    ? bridge[action](taskId)
+    : request<BackendTask>({ endpoint: `/api/tasks/${taskId}/${action}`, method: "POST" });
+  return response as Promise<ApiResponse<BackendTask>>;
 }
 
 export function subscribeRunEventsEndpoint(

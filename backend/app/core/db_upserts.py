@@ -109,8 +109,25 @@ def upsert_safety_reviews(conn: sqlite3.Connection, data: dict[str, Any], now: s
 
 def upsert_tool_calls(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO tool_calls (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-        (data["id"], data["task_id"], data["step_id"], db._json(data), data.get("created_at", now)),
+        """
+        INSERT INTO tool_calls (id, task_id, step_id, execution_key, status, data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            task_id=excluded.task_id,
+            step_id=excluded.step_id,
+            execution_key=excluded.execution_key,
+            status=excluded.status,
+            data=excluded.data
+        """,
+        (
+            data["id"],
+            data["task_id"],
+            data["step_id"],
+            data.get("execution_key", ""),
+            data.get("status", "created"),
+            db._json(data),
+            data.get("created_at", now),
+        ),
     )
 
 

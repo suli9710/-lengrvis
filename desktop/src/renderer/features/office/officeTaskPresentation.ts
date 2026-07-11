@@ -191,7 +191,7 @@ function taskResultWorkspaceItem(task: TaskEvent | undefined, selectedSkill: Off
     };
   }
 
-  if (task.state === "failed") {
+  if (task.state === "failed" || task.state === "repair_required") {
     return {
       label: "结果状态",
       value: "未完成，需处理",
@@ -224,6 +224,15 @@ function taskResultWorkspaceItem(task: TaskEvent | undefined, selectedSkill: Off
       value: "已暂停，待接回",
       detail: "进度已保留，恢复前不会继续操作",
       tone: "warning"
+    };
+  }
+
+  if (task.state === "rolled_back") {
+    return {
+      label: "结果状态",
+      value: "变更已回滚",
+      detail: "已执行恢复记录，建议核对文件和应用中的最终状态",
+      tone: "ready"
     };
   }
 
@@ -281,7 +290,7 @@ function getHomeCurrentTasks(tasks: TaskEvent[]): TaskEvent[] {
 function getHomeVisibleTasks(tasks: TaskEvent[]): TaskEvent[] {
   const activeTasks = getHomeCurrentTasks(tasks);
   const recentFinishedTasks = sortTasksByUpdatedAt(tasks)
-    .filter((task) => task.state === "completed" || task.state === "failed" || task.state === "paused")
+    .filter((task) => ["completed", "failed", "paused", "rolled_back", "repair_required"].includes(task.state))
     .filter((task) => isRecentTask(task, 24))
     .slice(0, 3);
 

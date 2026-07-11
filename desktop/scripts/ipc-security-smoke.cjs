@@ -326,6 +326,8 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         JSON.stringify({
           ok: true,
           id: "approval-1",
+          status: "pending",
+          expires_at: "2030-01-01T00:00:00.000Z",
           preview_hmac: "preview:hmac-redacted",
           tool_name: "file.write"
         }),

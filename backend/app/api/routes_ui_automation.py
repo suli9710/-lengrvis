@@ -10,6 +10,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus, now_iso
 from app.llm.registry import get_effective_settings
+from app.orchestration.direct_tool_execution import execute_direct_tool_journaled
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
@@ -23,6 +24,7 @@ from app.policy.approval_binding import (
 )
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
+from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
 from app.tools import ui_automation_tools
@@ -115,6 +117,9 @@ def action(payload: dict | None = None):
     if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
         return tool.execute(payload, context)
     if payload.get("dry_run", True) is True:
+        review = _review_tool_call(tool_name, payload, context)
+        if review.verdict == SafetyVerdict.DENY:
+            return _blocked_response(review)
         preview = tool.execute({**payload, "dry_run": True}, context)
         if not preview.get("ok") or preview.get("dry_run") is not True:
             return {
@@ -123,9 +128,6 @@ def action(payload: dict | None = None):
                 "error": preview.get("error") or "GUI automation dry-run preview failed.",
                 "preview": redacted_preview(binding_preview(preview)),
             }
-        review = _review_tool_call(tool_name, payload, context)
-        if review.verdict == SafetyVerdict.DENY:
-            return _blocked_response(review)
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             approval = _create_action_approval(tool_name, payload, preview, review, context)
             return {
@@ -144,7 +146,12 @@ def action(payload: dict | None = None):
     if approval_error is not None:
         return approval_error
     mark_execution_approved(context)
-    return tool.execute(payload, context)
+    return execute_direct_tool_journaled(
+        tool,
+        payload,
+        context,
+        approval_id=str(payload.get("approval_id") or ""),
+    )
 
 
 def _resolve_action_tool(payload: dict[str, Any]) -> str:
@@ -271,6 +278,10 @@ def _claim_valid_gui_approval(
     binding_error = _approval_binding_error(approval, tool_name, payload, context, allow_consumed=False)
     if binding_error:
         return {"ok": False, "status": "denied", "error": binding_error}
+    resource_error = _approval_resource_state_error(approval, tool_name, payload, context)
+    if resource_error:
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), resource_error)
+        return {"ok": False, "status": "denied", "error": resource_error}
     claimed = db.claim_approval_for_execution(approval.id, now_iso())
     if not claimed:
         return {
@@ -283,6 +294,28 @@ def _claim_valid_gui_approval(
     if binding_error:
         return {"ok": False, "status": "denied", "error": binding_error}
     return None
+
+
+def _approval_resource_state_error(
+    approval: Approval,
+    tool_name: str,
+    payload: dict[str, Any],
+    context: dict[str, Any],
+) -> str:
+    if tool_name not in {"ui_automation.click", "ui_automation.type_text"}:
+        return ""
+    approved_state = (approval.diff_preview or {}).get("_resource_state")
+    if not approved_state:
+        return "GUI automation approval is missing the reviewed target state."
+    tool = _tool_definition(tool_name)
+    try:
+        current_preview = tool.execute({**payload, "dry_run": True}, context)
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: fail closed on tool-adapter failures.
+        return f"Could not refresh the approved GUI target state: {redact_value(str(exc))}"
+    current_state = binding_preview(current_preview).get("_resource_state")
+    if current_state != approved_state:
+        return "Approved GUI target state no longer matches the current UI."
+    return ""
 
 
 def _approval_binding_error(

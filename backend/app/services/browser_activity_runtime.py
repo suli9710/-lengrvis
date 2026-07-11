@@ -30,6 +30,7 @@ from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.policy.sensitive_values import looks_sensitive_value
 from app.security.pinned_http_proxy import PinnedHttpProxy
+from app.tools.tool_abort import raise_if_tool_aborted
 
 BROWSER_ACTION_KINDS = {
     "open",
@@ -137,6 +138,7 @@ class LocalBrowserActivityAdapter:
         return {"ok": False, "error": f"Unsupported browser action: {kind}"}
 
     def _observe(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         max_chars = max(
             1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000))
@@ -149,6 +151,7 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 html = page.content()
                 final_url = _validate_final_url(page.url)
@@ -162,7 +165,12 @@ class LocalBrowserActivityAdapter:
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
             with httpx.Client(timeout=30, follow_redirects=False) as client:
-                html, final_url, response_truncated = _read_limited_http_response(client, url, max_chars)
+                html, final_url, response_truncated = _read_limited_http_response(
+                    client,
+                    url,
+                    max_chars,
+                    abort_context=context,
+                )
             final_url = _validate_final_url(final_url)
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "httpx"
@@ -175,6 +183,7 @@ class LocalBrowserActivityAdapter:
         return data
 
     def _screenshot(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         out_dir = Path(
             getattr(_settings(context), "browser_screenshot_dir", "")
@@ -194,6 +203,7 @@ class LocalBrowserActivityAdapter:
                     viewport={"width": int(action.get("width", 1280)), "height": int(action.get("height", 800))}
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 page.screenshot(path=str(out_path), full_page=bool(action.get("full_page", True)))
                 _raise_if_playwright_route_guard_blocked(route_guard)
@@ -211,6 +221,7 @@ class LocalBrowserActivityAdapter:
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
     def _wait(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         selector = str(action.get("selector") or "")
         timeout = int(action.get("timeout_ms") or 10000)
@@ -224,6 +235,7 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 page.wait_for_selector(selector, timeout=timeout)
                 _raise_if_playwright_route_guard_blocked(route_guard)
@@ -241,6 +253,7 @@ class LocalBrowserActivityAdapter:
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
     def _write_like(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         kind = str(action.get("kind") or "").lower()
         route_guard: _PlaywrightRouteGuard | None = None
@@ -251,13 +264,16 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 if kind == "click":
                     page.click(str(action.get("selector") or ""), timeout=8000)
+                    raise_if_tool_aborted(context)
                     _raise_if_playwright_route_guard_blocked(route_guard)
                 elif kind == "fill":
                     fields = action.get("fields") or {}
                     for selector, value in fields.items():
+                        raise_if_tool_aborted(context)
                         # Element-semantics guard: block credential/payment/OTP
                         # fields even when reached via a generic selector.
                         if _playwright_field_is_sensitive(page, str(selector)):
@@ -445,6 +461,32 @@ class BrowserActivityRuntime:
             verdict=SafetyVerdict.ALLOW,
         )
         return {"ok": True, "session": self._session_dict(session), "event": self._event_dict(event)}
+
+    def cancel_task_sessions(self, task_id: str) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return {"ok": False, "error": "task_id is required", "closed": 0, "session_ids": []}
+        with self._lock:
+            sessions = [
+                session
+                for session in self._sessions.values()
+                if session.task_id == normalized_task_id and session.status != "closed"
+            ]
+        closed: list[str] = []
+        for session in sessions:
+            session.status = "closed"
+            session.paused = True
+            session.updated_at = now_iso()
+            self._append_event(
+                session,
+                type="session.cancelled",
+                action={"kind": "close"},
+                ok=True,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                verdict=SafetyVerdict.ALLOW,
+            )
+            closed.append(session.id)
+        return {"ok": True, "closed": len(closed), "session_ids": closed}
 
     def session_info(self, args: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
@@ -787,12 +829,18 @@ def _writes_allowed(context: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _read_limited_http_response(
-    client: httpx.Client, url: str, max_bytes: int, *, max_redirects: int = 5
+    client: httpx.Client,
+    url: str,
+    max_bytes: int,
+    *,
+    max_redirects: int = 5,
+    abort_context: dict[str, Any] | None = None,
 ) -> tuple[str, str, bool]:
     limit = max(1, int(max_bytes or 1))
     allow_private = _private_hosts_allowed()
     current = str(url or "")
     for _ in range(max_redirects + 1):
+        raise_if_tool_aborted(abort_context)
         # Re-validate every hop, then connect to the exact IP we just validated
         # (Host header + SNI restore the name) so a rebinding answer or a
         # redirect to an internal host cannot be reached.
@@ -814,6 +862,7 @@ def _read_limited_http_response(
             if content_length and content_length.isdigit() and int(content_length) > limit:
                 truncated = True
             for chunk in response.iter_bytes():
+                raise_if_tool_aborted(abort_context)
                 if not chunk:
                     continue
                 remaining = limit - len(chunks)

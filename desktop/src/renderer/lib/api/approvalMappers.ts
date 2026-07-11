@@ -25,6 +25,7 @@ export function mapApproval(approval: BackendApproval): ApprovalRequest {
       ? "high"
       : mapRiskSeverity(approval.risk_level ?? ""),
     createdAt: approval.created_at,
+    expiresAt: approval.expires_at,
     proposedAction: formatDiffPreview(approval.diff_preview),
     status: mapApprovalStatus(approval.status),
     rawPayload: approval.diff_preview,

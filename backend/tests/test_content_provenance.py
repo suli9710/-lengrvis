@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.content_provenance import (
     ContentRevalidationRequired,
     assert_content_revalidated,
+    collect_content_envelopes,
     content_binding_payload,
     content_envelope_for_tool_output,
     content_envelope_integrity_valid,
@@ -15,6 +18,8 @@ from app.core.content_provenance import (
     revalidate_content_envelope,
     stable_content_hash,
 )
+from app.core.schemas import ToolResult
+from app.orchestration.handlers.step_scheduler_handler import StepSchedulerHandler
 
 
 def test_stable_content_hash_is_canonical_for_mapping_order() -> None:
@@ -205,3 +210,37 @@ def test_tool_output_wrapper_classifies_reusable_content_boundaries(
     assert envelope.source_id == "tool-1"
     assert envelope.task_scope == "task-1"
     assert required_taints.issubset(set(envelope.taint_flags))
+
+
+def test_dependency_context_preserves_every_parent_envelope() -> None:
+    web = create_content_envelope(
+        "web value",
+        source_kind="browser",
+        source_id="page-1",
+        trust_level="untrusted",
+        taint_flags=["web_content"],
+        task_scope="task-1",
+    )
+    document = create_content_envelope(
+        "document value",
+        source_kind="document",
+        source_id="document-1",
+        trust_level="untrusted",
+        taint_flags=["document_content"],
+        task_scope="task-1",
+    )
+    observations = {
+        "A": ToolResult(tool_call_id="call-a", ok=True, content_envelope=web),
+        "B": ToolResult(tool_call_id="call-b", ok=True, content_envelope=document),
+    }
+    context = {"task_id": "task-1", "nested": {"unchanged": True}}
+    step = SimpleNamespace(depends_on=["A", "B"])
+
+    bound = StepSchedulerHandler(SimpleNamespace())._context_with_dependency_provenance(
+        context, step, observations
+    )
+    envelopes = collect_content_envelopes(bound)
+
+    assert {envelope.source_id for envelope in envelopes} == {"page-1", "document-1"}
+    assert context.get("upstream_content_envelopes") is None
+    assert bound["nested"] is not context["nested"]

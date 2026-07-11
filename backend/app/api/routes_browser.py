@@ -9,6 +9,7 @@ from app.agents.safety_review_agent import SafetyReviewAgent
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
 from app.llm.registry import get_effective_settings
+from app.orchestration.direct_tool_execution import execute_direct_tool_journaled, execute_direct_tool_journaled_async
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
@@ -241,7 +242,13 @@ def act(payload: dict):
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)
     mark_execution_approved(context)
-    return browser_tools.act(payload, context)
+    return execute_direct_tool_journaled(
+        _tool_definition("browser.act"),
+        payload,
+        context,
+        approval_id=str(payload.get("approval_id") or ""),
+        executor=browser_tools.act,
+    )
 
 
 @router.post("/browser/cua-run")
@@ -255,7 +262,13 @@ async def cua_run(payload: dict):
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)
     mark_execution_approved(context)
-    return await browser_tools.cua_run_async(payload, context)
+    return await execute_direct_tool_journaled_async(
+        _tool_definition("browser.cua_run"),
+        payload,
+        context,
+        approval_id=str(payload.get("approval_id") or ""),
+        executor=browser_tools.cua_run_async,
+    )
 
 
 @router.post("/browser/cua")

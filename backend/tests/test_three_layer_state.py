@@ -122,8 +122,41 @@ class TestTaskPhaseTransitions:
             phase_transition(source, target)
 
     def test_terminal_phases_have_no_transitions(self):
-        for terminal in (TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED):
+        for terminal in (TaskPhase.CANCELLED, TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED):
             assert TASK_PHASE_TRANSITIONS[terminal] == set()
+
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.COMPLETED] == {
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.FAILED] == {
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+
+
+@pytest.mark.parametrize(
+    ("rollback_state", "expected_phase"),
+    [
+        ("succeeded", TaskPhase.ROLLED_BACK),
+        ("partial", TaskPhase.REPAIR_REQUIRED),
+        ("manual_required", TaskPhase.REPAIR_REQUIRED),
+        ("unrecoverable", TaskPhase.REPAIR_REQUIRED),
+    ],
+)
+def test_legacy_failed_rollback_record_normalizes_to_explicit_phase(rollback_state, expected_phase):
+    task = Task.model_validate(
+        {
+            "user_goal": "legacy rollback",
+            "status": "failed",
+            "phase": "failed",
+            "metadata": {"rollback": {"state": rollback_state}},
+        }
+    )
+
+    assert task.status == expected_phase
+    assert task.phase == expected_phase
+    assert task.execution_stage == ExecutionStage.IDLE
 
 
 # ===========================================================================

@@ -62,7 +62,12 @@ export function isRendererApiRouteAllowed(pathname: string, method: ApiMethod): 
 }
 
 export function rendererApiRouteTemplateMatches(pathname: string, template: string): boolean {
-  if (!pathname.startsWith("/") || pathname.includes("//")) {
+  if (
+    !pathname.startsWith("/") ||
+    pathname.includes("//") ||
+    pathname.trim() !== pathname ||
+    /\s|[\u0000-\u001F\u007F]/.test(pathname)
+  ) {
     return false;
   }
   const pathSegments = pathname.split("/").filter(Boolean);

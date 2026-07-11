@@ -73,6 +73,7 @@ jobs:
         with:
           name: golden-tasks-report
           path: .tmp/qa-evidence/golden-tasks/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   real-llm-quality:
@@ -127,6 +128,7 @@ jobs:
         with:
           name: real-llm-eval-report
           path: .tmp/qa-evidence/real-llm-eval/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   desktop:
@@ -259,6 +261,7 @@ jobs:
         with:
           name: current-sbom
           path: .tmp/sbom/lengrvis-sbom.cdx.json
+          include-hidden-files: true
           if-no-files-found: error
 
   extension-security:
@@ -293,6 +296,7 @@ jobs:
         with:
           name: extension-security-gate
           path: .tmp/extension-security-gate/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   release-evidence:

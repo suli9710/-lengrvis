@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import inspect
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -24,6 +23,7 @@ from app.orchestration.execution_models import (
     RunState,
 )
 from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.handlers.step_scheduler_handler import context_with_dependency_provenance
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.os_reflection import (
     OSReflectionDecider,
@@ -643,7 +643,7 @@ class OSExecutionEngine(ExecutionEngine):
         for step in selected:
             observation = self._dependency_observation(step, observations_by_step)
             original_observations[step.id] = observation
-            step_context = copy.deepcopy(context)
+            step_context = self._context_with_dependency_provenance(context, step, observations_by_step)
             # Parallel executors mutate step fields across await points; hand each
             # one an isolated snapshot and write it back serially on completion
             # so siblings never observe (or persist) a half-updated step.
@@ -719,6 +719,7 @@ class OSExecutionEngine(ExecutionEngine):
                 results,
                 context,
                 original_observations,
+                observations_by_step,
             )
         return results
 
@@ -729,16 +730,20 @@ class OSExecutionEngine(ExecutionEngine):
         results: list[tuple[PlanStep, StepExecutionOutcome]],
         context: dict[str, Any],
         original_observations: dict[str, ToolResult | None],
+        observations_by_step: dict[str, ToolResult],
     ) -> list[tuple[PlanStep, StepExecutionOutcome]]:
         recovered: list[tuple[PlanStep, StepExecutionOutcome]] = []
         for step, outcome in results:
             if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
+                recovery_context = self._context_with_dependency_provenance(
+                    context, step, observations_by_step
+                )
                 outcome = await self._orchestrator().recovery_handler.recover_failed_step(
                     task,
                     plan,
                     step,
                     outcome.result,
-                    context,
+                    recovery_context,
                     original_observations.get(step.id),
                     threaded_tools=False,
                 )
@@ -756,12 +761,13 @@ class OSExecutionEngine(ExecutionEngine):
         threaded_tools: bool,
     ) -> StepExecutionOutcome:
         observation = self._dependency_observation(step, observations_by_step)
+        step_context = self._context_with_dependency_provenance(context, step, observations_by_step)
         try:
             outcome = await self._orchestrator()._execute_step(
                 task,
                 plan,
                 step,
-                context,
+                step_context,
                 observation,
                 threaded_tools=threaded_tools,
             )
@@ -775,7 +781,7 @@ class OSExecutionEngine(ExecutionEngine):
                 plan,
                 step,
                 outcome.result,
-                context,
+                step_context,
                 observation,
                 threaded_tools=threaded_tools,
             )
@@ -1118,6 +1124,14 @@ class OSExecutionEngine(ExecutionEngine):
 
     def _dependency_observation(self, step: PlanStep, observations_by_step: dict[str, ToolResult]) -> ToolResult | None:
         return self._orchestrator()._dependency_observation(step, observations_by_step)
+
+    def _context_with_dependency_provenance(
+        self,
+        context: dict[str, Any],
+        step: PlanStep,
+        observations_by_step: dict[str, ToolResult],
+    ) -> dict[str, Any]:
+        return context_with_dependency_provenance(context, step, observations_by_step)
 
     def _observations_by_step(self, state: RunState) -> dict[str, ToolResult]:
         return os_state.observations_by_step(state, orchestrator_name=self._orchestrator().name)

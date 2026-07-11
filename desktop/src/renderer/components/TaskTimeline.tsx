@@ -21,6 +21,7 @@ import type {
   TaskExplainEvidence,
   TaskResultQualityState,
   TaskState,
+  TaskPilotAction,
   TaskStepRecording
 } from "../../shared/executionTypes";
 import {
@@ -46,6 +47,7 @@ import {
   zhTaskState,
   zhToolName
 } from "../lib/zh";
+import { AccessibleDialog } from "./AccessibleDialog";
 import { Badge, Panel } from "./Panel";
 import { TechnicalDetails } from "./TechnicalDetails";
 
@@ -53,11 +55,12 @@ interface TaskTimelineProps {
   tasks: TaskEvent[];
   api?: LengrvisApiClient;
   focusedTaskId?: string | null;
-  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
 }
 
 export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: TaskTimelineProps) {
   const focusedTaskRef = useRef<HTMLLIElement | null>(null);
+  const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [previewSteps, setPreviewSteps] = useState<unknown[]>([]);
   const [recordingPlayer, setRecordingPlayer] = useState<{
@@ -98,6 +101,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
 
   const openPreview = async (task: TaskEvent) => {
     if (!api) return;
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
@@ -117,7 +121,20 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
     const response = await api.executeRollback(previewTaskId);
     setIsWorking(false);
     if (response.ok && response.data) {
-      setFeedback(`已回滚 ${response.data.count ?? 0} 个动作。`);
+      const state = response.data.state;
+      if (state === "succeeded") {
+        setFeedback(`回滚完成：已恢复并核验 ${response.data.verified ?? 0}/${response.data.attempted ?? 0} 个动作。`);
+      } else if (state === "manual_required") {
+        setFeedback("回滚尚未完成：有动作需要你手动恢复。");
+      } else if (state === "unrecoverable") {
+        setFeedback("回滚无法完整恢复：包含不可恢复的动作。");
+      } else {
+        const verificationFailure = response.data.verification_failed ?? 0;
+        const verificationCopy = verificationFailure > 0 ? `，其中 ${verificationFailure} 个动作未通过后态核验` : "";
+        setFeedback(
+          `回滚未完整完成：已恢复并核验 ${response.data.verified ?? 0}/${response.data.attempted ?? 0} 个动作${verificationCopy}。`
+        );
+      }
       setPreviewTaskId(null);
       setPreviewSteps([]);
     } else {
@@ -127,6 +144,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
 
   const openExplain = async (task: TaskEvent) => {
     if (!api) return;
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
@@ -145,7 +163,26 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
     setExplainTaskId(null);
   };
 
+  const runTaskControl = async (
+    task: TaskEvent,
+    action: Extract<TaskPilotAction, "pause" | "resume" | "stop" | "cancel">,
+    successMessage: string
+  ) => {
+    if (!onTaskPilotAction) return;
+    setIsWorking(true);
+    setFeedback(null);
+    try {
+      await onTaskPilotAction(task, action);
+      setFeedback(successMessage);
+    } catch (error) { // broad-exception-boundary
+      setFeedback(taskControlFailureMessage(error));
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
   const openRecordingPlayer = (taskTitle: string, recording: TaskStepRecording, frameIndex = 0) => {
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const playableFrames = recording.frames.filter((frame) => frame.url);
     const targetFrame = recording.frames[frameIndex];
     const matchingIndex = playableFrames.findIndex((frame) => frame === targetFrame);
@@ -200,6 +237,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                     onExplain={openExplain}
                     onPreview={openPreview}
                     onTaskPilotAction={onTaskPilotAction}
+                    onTaskControl={runTaskControl}
                   />
                   <TimelineTechnicalDetails
                     task={task}
@@ -219,14 +257,19 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
       {feedback ? <p className="muted" style={{ marginTop: 12 }}>{feedback}</p> : null}
 
       {previewTaskId ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
+        <AccessibleDialog
+          labelledBy="rollback-title"
+          describedBy="rollback-description"
+          closeDisabled={isWorking}
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={() => setPreviewTaskId(null)}
+        >
             <header className="modal__header">
               <h2 id="rollback-title">回滚预览</h2>
               <Badge tone="warning">{previewSteps.length} 个动作</Badge>
             </header>
             <div className="modal__body">
-              <p className="muted">将按倒序执行以下逆向动作。需要用户手动恢复的动作会标记出来。</p>
+              <p className="muted" id="rollback-description">将按倒序执行以下逆向动作。需要用户手动恢复的动作会标记出来。</p>
               <ol className="rollback-preview-list">
                 {previewSteps.map((entry, index) => (
                   <li key={index}>
@@ -244,15 +287,25 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                 确认回滚
               </button>
             </footer>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
 
-      {explain ? <ExplainDialog explain={explain} taskId={explainTaskId} onClose={closeExplain} /> : null}
+      {explain ? (
+        <ExplainDialog
+          explain={explain}
+          taskId={explainTaskId}
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={closeExplain}
+        />
+      ) : null}
 
       {recordingPlayer && activeFrame ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="recording-title">
+        <AccessibleDialog
+          className="modal modal--wide"
+          labelledBy="recording-title"
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={closeRecordingPlayer}
+        >
             <header className="modal__header">
               <div>
                 <span className="panel__eyebrow">步骤录屏</span>
@@ -346,8 +399,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                 关闭
               </button>
             </footer>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
     </Panel>
   );
@@ -377,7 +429,7 @@ function taskMatchesFocus(task: TaskEvent, focusedTaskId?: string | null): boole
 
 function TimelineUserStatus({ task }: { task: TaskEvent }) {
   const copy = timelineUserStatusCopy(task);
-  const role = task.state === "failed" || task.state === "blocked" ? "alert" : "status";
+  const role = task.state === "failed" || task.state === "repair_required" || task.state === "blocked" ? "alert" : "status";
   return (
     <div className={`timeline-user-status timeline-user-status--${copy.tone}`} role={role}>
       <span>
@@ -409,6 +461,12 @@ function timelineUserStatusCopy(task: TaskEvent): {
   }
   if (task.state === "failed") {
     return { stageLabel: "发生了什么", stage: "任务未完成，并已安全停止", nextStep: "重试任务，或打开技术详情查看脱敏原因", tone: "danger" };
+  }
+  if (task.state === "rolled_back") {
+    return { stageLabel: "结果", stage: "任务变更已回滚并核验", nextStep: "可查看回滚记录确认各项后态", tone: "success" };
+  }
+  if (task.state === "repair_required") {
+    return { stageLabel: "发生了什么", stage: "回滚未完整完成", nextStep: "查看回滚结果并完成剩余修复", tone: "danger" };
   }
   if (task.state === "paused") {
     return { stageLabel: "当前阶段", stage: "任务已暂停", nextStep: "恢复任务或调整目标", tone: "neutral" };
@@ -548,7 +606,8 @@ function TimelineResultWorkbench({
   isWorking,
   onExplain,
   onPreview,
-  onTaskPilotAction
+  onTaskPilotAction,
+  onTaskControl
 }: {
   summary: TaskResultTimelineSummary;
   task: TaskEvent;
@@ -556,7 +615,12 @@ function TimelineResultWorkbench({
   isWorking: boolean;
   onExplain: (task: TaskEvent) => Promise<void>;
   onPreview: (task: TaskEvent) => Promise<void>;
-  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
+  onTaskControl: (
+    task: TaskEvent,
+    action: Extract<TaskPilotAction, "pause" | "resume" | "stop" | "cancel">,
+    successMessage: string
+  ) => Promise<void>;
 }) {
   const missingChecks = summary.missingChecks.slice(0, 3);
   const canPreviewRollback = Boolean(api && task.state === "completed");
@@ -586,8 +650,38 @@ function TimelineResultWorkbench({
       </div>
       <span className="timeline-result-workbench__privacy">{summary.privacyNote}</span>
       <div className="timeline-result-workbench__actions">
+        {(task.state === "running" || task.state === "queued") && onTaskPilotAction ? (
+          <>
+            <button className="button button--ghost" onClick={() => void onTaskControl(task, "pause", "任务已暂停。")} disabled={isWorking}>
+              <Pause size={14} aria-hidden="true" />
+              暂停
+            </button>
+            <button className="button button--danger" onClick={() => void onTaskControl(task, "stop", "任务已停止。")} disabled={isWorking}>
+              <XCircle size={14} aria-hidden="true" />
+              停止
+            </button>
+          </>
+        ) : null}
+        {task.state === "paused" && onTaskPilotAction ? (
+          <>
+            <button className="button button--ghost" onClick={() => void onTaskControl(task, "resume", "任务已继续。")} disabled={isWorking}>
+              <Play size={14} aria-hidden="true" />
+              继续
+            </button>
+            <button className="button button--danger" onClick={() => void onTaskControl(task, "cancel", "任务已取消。")} disabled={isWorking}>
+              <XCircle size={14} aria-hidden="true" />
+              取消任务
+            </button>
+          </>
+        ) : null}
+        {task.state === "blocked" && onTaskPilotAction ? (
+          <button className="button button--danger" onClick={() => void onTaskControl(task, "cancel", "任务已取消。")} disabled={isWorking}>
+            <XCircle size={14} aria-hidden="true" />
+            取消任务
+          </button>
+        ) : null}
         {summary.action === "approve" && onTaskPilotAction ? (
-          <button className="button button--ghost" onClick={() => onTaskPilotAction(task, "approve")} disabled={isWorking}>
+          <button className="button button--ghost" onClick={() => void onTaskPilotAction(task, "approve")} disabled={isWorking}>
             <CheckCircle2 size={14} aria-hidden="true" />
             去审批
           </button>
@@ -723,12 +817,26 @@ function formatBytes(bytes?: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
-function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {
+function ExplainDialog({
+  explain,
+  taskId,
+  returnFocusTo,
+  onClose
+}: {
+  explain: TaskExplain;
+  taskId: string | null;
+  returnFocusTo: HTMLElement | null;
+  onClose: () => void;
+}) {
   const completionEvidence = explain.finalResult.completionEvidence;
   const resultQuality = explain.finalResult.resultQuality;
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
+    <AccessibleDialog
+      className="modal modal--wide"
+      labelledBy="explain-title"
+      returnFocusTo={returnFocusTo}
+      onClose={onClose}
+    >
         <header className="modal__header">
           <div>
             <span className="panel__eyebrow">执行解释</span>
@@ -830,9 +938,12 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
             关闭
           </button>
         </footer>
-      </div>
-    </div>
+    </AccessibleDialog>
   );
+}
+
+export function taskControlFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim() ? error.message : "任务控制失败";
 }
 
 function EvidenceList({ evidence }: { evidence: TaskExplainEvidence[] }) {
@@ -923,11 +1034,11 @@ function phaseLabel(phase: string) {
 }
 
 function iconForState(state: TaskState) {
-  if (state === "completed") {
+  if (state === "completed" || state === "rolled_back") {
     return <CheckCircle2 size={16} aria-hidden="true" />;
   }
 
-  if (state === "failed" || state === "blocked") {
+  if (state === "failed" || state === "blocked" || state === "repair_required") {
     return <XCircle size={16} aria-hidden="true" />;
   }
 
@@ -937,12 +1048,14 @@ function iconForState(state: TaskState) {
 function toneForState(state: TaskState): "neutral" | "success" | "warning" | "danger" | "info" {
   switch (state) {
     case "completed":
+    case "rolled_back":
       return "success";
     case "blocked":
       return "warning";
     case "paused":
       return "neutral";
     case "failed":
+    case "repair_required":
       return "danger";
     case "running":
       return "info";

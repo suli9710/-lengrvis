@@ -62,6 +62,11 @@ describe("browserHostBridge", () => {
       session_id: "session_1",
       type: "action"
     });
+    expect(parseBrowserHostBridgeMessage(JSON.stringify({ task_id: "task_1", type: "cancel_task" }))).toEqual({
+      request_id: undefined,
+      task_id: "task_1",
+      type: "cancel_task"
+    });
   });
 
   it("rejects malformed messages and identifies read-only actions", () => {
@@ -159,6 +164,63 @@ describe("browserHostBridge", () => {
     const response = socket.sent.map((payload) => JSON.parse(payload) as { type: string; request_id?: string })
       .find((payload) => payload.type === "result");
     expect(response?.request_id).toBe("request-1");
+    bridge.stop();
+  });
+
+  it("stops only BrowserHost sessions bound to a cancelled task", async () => {
+    const sockets: FakeWebSocket[] = [];
+    class TestWebSocket extends FakeWebSocket {
+      static readonly OPEN = 1;
+
+      constructor(url: string, protocols: string[]) {
+        super(url, protocols);
+        sockets.push(this);
+      }
+    }
+    vi.stubGlobal("WebSocket", TestWebSocket);
+    const snapshot: BrowserHostSnapshot = {
+      sessions: [
+        {
+          id: "session-1", task_id: "task-1", current_url: "about:blank", title: "", status: "idle", mode: "watch",
+          created_at: "", updated_at: "", paused: false, takeover: false
+        },
+        {
+          id: "session-2", task_id: "task-2", current_url: "about:blank", title: "", status: "idle", mode: "watch",
+          created_at: "", updated_at: "", paused: false, takeover: false
+        }
+      ],
+      events: [],
+      activeSessionId: "session-1",
+      visible: false,
+      hostAvailable: true
+    };
+    const stop = vi.fn(async () => ({ ok: true, snapshot }));
+    const bridge = new BrowserHostWebSocketBridge({
+      getSnapshot: () => snapshot,
+      hide: () => ({ ok: true }),
+      onSnapshot: () => () => undefined,
+      open: async () => ({ ok: true }),
+      pause: () => ({ ok: true }),
+      performAction: async () => ({ ok: true }),
+      release: () => ({ ok: true }),
+      resume: () => ({ ok: true }),
+      setBounds: () => ({ ok: true }),
+      show: () => ({ ok: true }),
+      stop
+    }, () => "http://127.0.0.1:8000", () => "desktop-token");
+
+    bridge.start();
+    const socket = sockets[0];
+    socket.open();
+    socket.message(JSON.stringify({ type: "cancel_task", request_id: "cancel-1", task_id: "task-1" }));
+
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledWith("session-1"));
+    expect(stop).not.toHaveBeenCalledWith("session-2");
+    await vi.waitFor(() => {
+      const response = socket.sent.map((payload) => JSON.parse(payload) as { type: string; request_id?: string })
+        .find((payload) => payload.type === "result" && payload.request_id === "cancel-1");
+      expect(response).toBeDefined();
+    });
     bridge.stop();
   });
 });

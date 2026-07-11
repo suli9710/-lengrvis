@@ -38,11 +38,18 @@ export function RouteLoading() {
 }
 
 export function selectedPendingApproval(approvals: ApprovalRequest[], taskId?: string | null): ApprovalRequest | null {
+  const usable = approvals.filter((approval) => approvalAuthorizationIsFresh(approval));
   if (taskId) {
-    const taskApproval = approvals.find((approval) => approval.taskId === taskId);
+    const taskApproval = usable.find((approval) => approval.taskId === taskId);
     if (taskApproval) return taskApproval;
   }
-  return approvals[0] ?? null;
+  return usable[0] ?? null;
+}
+
+export function approvalAuthorizationIsFresh(approval: ApprovalRequest, now = Date.now()): boolean {
+  if (approval.status !== "pending") return false;
+  const expiresAt = Date.parse(approval.expiresAt ?? "");
+  return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
 export function latestLegacyTaskIdFromEvents(
@@ -336,7 +343,7 @@ export function chatMessageFromTaskAgentMessage(
 }
 
 export function chatMessageFromLegacyTaskTerminal(task: TaskEvent): ChatMessage | null {
-  const content = task.state === "completed"
+  const content = task.state === "completed" || task.state === "rolled_back"
     ? terminalLegacyTaskMessage("completed", task.description)
     : terminalLegacyTaskMessage("failed", task.description);
   return {
@@ -345,7 +352,7 @@ export function chatMessageFromLegacyTaskTerminal(task: TaskEvent): ChatMessage 
     author: "主管 Agent",
     content,
     createdAt: task.updatedAt || new Date().toISOString(),
-    status: task.state === "failed" ? "failed" : "sent"
+    status: task.state === "failed" || task.state === "repair_required" ? "failed" : "sent"
   };
 }
 

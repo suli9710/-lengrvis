@@ -15,7 +15,13 @@ from fastapi.testclient import TestClient
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus
 from app.main import create_app
-from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    binding_preview,
+    permission_policy_version,
+    preview_hmac,
+    settings_fingerprint,
+)
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
@@ -239,7 +245,7 @@ def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_pat
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
 
@@ -271,7 +277,7 @@ def test_uninstall_app_redacts_process_output(monkeypatch, tmp_path):
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
     result_text = json.dumps(result, ensure_ascii=False)
@@ -344,7 +350,7 @@ def test_uninstall_app_prefers_quiet_uninstall_string(monkeypatch, tmp_path):
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Quiet Product", "dry_run": False}, _settings_context())
 
@@ -387,7 +393,7 @@ def test_uninstall_app_winget_channel(monkeypatch, tmp_path):
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Winget App", "dry_run": False}, _settings_context())
 
@@ -430,7 +436,7 @@ def test_uninstall_app_appx_channel(monkeypatch, tmp_path):
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Store App", "dry_run": False}, _settings_context())
 
@@ -509,7 +515,7 @@ def test_uninstall_verification_ignores_shortcut_with_same_name(monkeypatch, tmp
 
         return _Completed()
 
-    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(app_tools, "run_process_tree", fake_run)
 
     result = app_tools.uninstall_app({"query": "Shared App", "dry_run": False}, _settings_context())
 
@@ -837,6 +843,16 @@ def test_public_api_routes_expose_windows_core(monkeypatch, tmp_path):
 
 def test_ui_automation_api_dry_run_creates_bound_approval(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path)
+    import app.api.routes_ui_automation as routes_ui_automation
+
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "diff_preview": [{"action": "click", "name": "OK", "control_type": "Button"}],
+        "_resource_state": [{"kind": "ui_automation_element", "fingerprint": {"runtime_id": [1, 2, 3]}}],
+    }
+    tool = routes_ui_automation._tool_definition("ui_automation.click")
+    monkeypatch.setattr(tool, "execute", lambda args, context: preview)  # noqa: ARG005
     client = TestClient(create_app())
 
     response = client.post(
@@ -854,6 +870,47 @@ def test_ui_automation_api_dry_run_creates_bound_approval(monkeypatch, tmp_path)
     assert approval["status"] == "pending"
     assert approval["args_binding_hmac"].startswith("args:")
     assert approval["preview_hmac"].startswith("preview:")
+    assert approval["diff_preview"]["_resource_state"] == preview["_resource_state"]
+
+
+def test_ui_automation_api_live_execution_is_committed_to_tool_journal(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    import app.api.routes_ui_automation as routes_ui_automation
+
+    resource_state = [{"kind": "ui_automation_element", "fingerprint": {"runtime_id": [1, 2, 3]}}]
+
+    def fake_click(args, context):  # noqa: ANN001, ANN202, ARG001
+        if args.get("dry_run") is True:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "diff_preview": [{"action": "click", "name": "OK"}],
+                "_resource_state": resource_state,
+            }
+        return {"ok": True, "clicked": True}
+
+    tool = routes_ui_automation._tool_definition("ui_automation.click")
+    monkeypatch.setattr(tool, "execute", fake_click)
+    client = TestClient(create_app())
+    request = {"action": "click", "name": "OK", "control_type": "Button"}
+    preview_response = client.post("/api/ui-automation/action", json=request).json()
+    approval = Approval.model_validate(db.fetch_one("approvals", preview_response["approval_id"]))
+    approval.status = ApprovalStatus.APPROVED
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    response = client.post(
+        "/api/ui-automation/action",
+        json={**request, "dry_run": False, "approved": True, "approval_id": approval.id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["clicked"] is True
+    calls = db.fetch_many("tool_calls", "task_id = ?", (approval.task_id,), limit=10)
+    assert len(calls) == 1
+    assert calls[0]["status"] == "committed"
+    results = db.fetch_many("tool_results", "tool_call_id = ?", (calls[0]["id"],), limit=10)
+    assert len(results) == 1
+    assert results[0]["ok"] is True
 
 
 def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_path):
@@ -861,12 +918,21 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
     import app.api.routes_ui_automation as routes_ui_automation
 
     calls: list[dict] = []
+    resource_state = [{"kind": "ui_automation_element", "fingerprint": {"runtime_id": [1, 2, 3]}}]
 
     def fake_click(args, context):  # noqa: ANN001, ANN202
+        if args.get("dry_run") is True:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "diff_preview": [{"action": "click", "name": "OK"}],
+                "_resource_state": resource_state,
+            }
         calls.append({"args": dict(args), "context": dict(context)})
         return {"ok": True}
 
-    monkeypatch.setattr(routes_ui_automation.ui_automation_tools, "click", fake_click)
+    tool = routes_ui_automation._tool_definition("ui_automation.click")
+    monkeypatch.setattr(tool, "execute", fake_click)
     payload = {
         "action": "click",
         "name": "OK",
@@ -875,7 +941,14 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
         "approved": True,
     }
     settings = _settings_context()["settings"]
-    preview = {"ok": True, "dry_run": True, "diff_preview": [{"action": "click", "name": "OK"}]}
+    preview = binding_preview(
+        {
+            "ok": True,
+            "dry_run": True,
+            "diff_preview": [{"action": "click", "name": "OK"}],
+            "_resource_state": resource_state,
+        }
+    )
     approval = Approval(
         task_id="direct_ui_automation_api",
         step_id=None,
@@ -886,7 +959,7 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
         preview_hmac=preview_hmac(preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
-        tool_version="1",
+        tool_version="2",
         diff_preview=preview,
     )
     payload["approval_id"] = approval.id
@@ -918,6 +991,72 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
     assert calls == []
     refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
     assert refreshed.consumed_at
+
+
+def test_ui_automation_api_expires_approval_when_target_state_changes(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    import app.api.routes_ui_automation as routes_ui_automation
+
+    approved_state = [{"kind": "ui_automation_element", "fingerprint": {"runtime_id": [1, 2, 3]}}]
+    current_state = [{"kind": "ui_automation_element", "fingerprint": {"runtime_id": [9, 9, 9]}}]
+
+    def fake_click(args, context):  # noqa: ANN001, ANN202, ARG001
+        return {
+            "ok": True,
+            "dry_run": True,
+            "diff_preview": [{"action": "click", "name": "OK"}],
+            "_resource_state": current_state,
+        }
+
+    tool = routes_ui_automation._tool_definition("ui_automation.click")
+    monkeypatch.setattr(tool, "execute", fake_click)
+    payload = {
+        "action": "click",
+        "name": "OK",
+        "control_type": "Button",
+        "dry_run": False,
+        "approved": True,
+    }
+    settings = _settings_context()["settings"]
+    preview = binding_preview(
+        {
+            "ok": True,
+            "dry_run": True,
+            "diff_preview": [{"action": "click", "name": "OK"}],
+            "_resource_state": approved_state,
+        }
+    )
+    approval = Approval(
+        task_id="direct_ui_target_changed",
+        message="Approve GUI click",
+        status=ApprovalStatus.APPROVED,
+        tool_name="ui_automation.click",
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="2",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "ui_automation.click",
+        {key: value for key, value in payload.items() if key not in {"approved", "approval_id", "dry_run"}},
+        task_id=approval.task_id,
+        step_id=approval.step_id,
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    response = TestClient(create_app()).post("/api/ui-automation/action", json=payload)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "target state no longer matches" in result["error"].lower()
+    stored = db.fetch_one("approvals", approval.id)
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
 
 
 def test_ui_automation_api_blocks_unknown_and_sensitive_actions(monkeypatch, tmp_path):

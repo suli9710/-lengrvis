@@ -11,7 +11,7 @@ import type {
   FileSearchMeta
 } from "../shared/types";
 import type { SystemInfo } from "../shared/systemTypes";
-import type { ApprovalRequest, TaskEvent } from "../shared/executionTypes";
+import type { ApprovalRequest, TaskEvent, TaskPilotAction } from "../shared/executionTypes";
 import type { AppSettings } from "../shared/settingsTypes";
 import type { DocumentIntentAction, FileToolTab } from "./components/FileSearchPanel";
 import { AppSurface } from "./app/AppSurface";
@@ -446,8 +446,20 @@ export function App() {
     setActiveView(item.targetView ?? "settings");
   };
 
-  const handleTaskPilotAction = (task: TaskEvent | null, action: "open" | "approve" | "compose") => {
+  const handleTaskPilotAction = async (task: TaskEvent | null, action: TaskPilotAction) => {
     const targetTaskId = task?.sourceTaskId ?? task?.id ?? null;
+    if (action === "pause" || action === "resume" || action === "stop" || action === "cancel") {
+      if (!targetTaskId) return;
+      const response = action === "pause"
+        ? await api.pauseTask(targetTaskId)
+        : action === "resume"
+          ? await api.resumeTask(targetTaskId)
+          : await api.cancelTask(targetTaskId);
+      if (!response.ok) throw new Error(response.error?.message ?? "任务控制失败");
+      setFocusedTaskId(targetTaskId);
+      await refreshWorkspace();
+      return;
+    }
     if (action === "approve") {
       if (targetTaskId) setFocusedTaskId(targetTaskId);
       const matchingApproval = selectedPendingApproval(pendingApprovals, targetTaskId ?? focusedTaskId);

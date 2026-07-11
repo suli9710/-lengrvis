@@ -31,7 +31,7 @@ from app.orchestration.execution_models import (
 )
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
-from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
 from app.policy.redaction import redact_run_payload, redact_value
 from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
@@ -474,7 +474,7 @@ def resume_run(run_id: str) -> Run:
         return run
     if run.task_id:
         task = get_task(run.task_id)
-        if task.status in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}:
+        if task.status in TERMINAL_TASK_PHASES:
             # A stale Run must never revive work belonging to a terminal task.
             record(
                 "run.resume_terminal_task_ignored",
@@ -1322,9 +1322,9 @@ def _publish_terminal_event(run_id: str, state: RunState, result: EngineTurnResu
 def _phase_for_task(task: Any) -> RunPhase:
     if task.execution_stage.value == "awaiting_approval":
         return RunPhase.AWAITING_APPROVAL
-    if task.status == TaskPhase.COMPLETED:
+    if task.status in {TaskPhase.COMPLETED, TaskPhase.ROLLED_BACK}:
         return RunPhase.COMPLETED
-    if task.status == TaskPhase.FAILED:
+    if task.status in {TaskPhase.FAILED, TaskPhase.REPAIR_REQUIRED}:
         return RunPhase.FAILED
     if task.status == TaskPhase.CANCELLED:
         return RunPhase.CANCELLED

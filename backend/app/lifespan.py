@@ -74,9 +74,20 @@ async def guardian_lifespan(app: FastAPI):
 
 
 def _prepare_run_runtime() -> None:
+    from app.orchestration.tool_execution_journal import recover_interrupted_tool_executions
     from app.services.run_service import enter_foreground_runtime, recover_interrupted_runs
 
     enter_foreground_runtime()
+    try:
+        unknown_tool_calls = recover_interrupted_tool_executions()
+        if unknown_tool_calls:
+            record(
+                "lifespan.tool_executions_recovered",
+                "lifespan",
+                {"outcome_unknown_tool_call_ids": unknown_tool_calls},
+            )
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
+        record("lifespan.tool_execution_recovery_failed", "lifespan", {"error": str(exc)})
     try:
         recovered = recover_interrupted_runs()
         if recovered:

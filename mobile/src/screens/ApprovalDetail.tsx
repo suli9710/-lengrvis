@@ -26,6 +26,7 @@ import {
 } from "../api/client";
 import {
   approvalApproveBlockedReason,
+  approvalAuthorizationExpired,
   approvalDecisionGuard,
   remoteInputMobileDecisionBlockedReason,
   type ApprovalActiveGrantContext,
@@ -91,7 +92,8 @@ export function ApprovalDetail({
   }, []);
 
   const currentApproval = detail?.approval ?? approval;
-  const pending = currentApproval.status === "pending";
+  const authorizationExpired = approvalAuthorizationExpired(currentApproval);
+  const pending = currentApproval.status === "pending" && !authorizationExpired;
   const steps = useMemo(() => detail?.plan?.steps ?? [], [detail?.plan?.steps]);
   const usableRemoteInputGrant = useMemo(() => isRemoteInputGrantUsable(remoteInputGrant) ? remoteInputGrant : null, [remoteInputGrant]);
   const activeGrantContext = useMemo<ApprovalActiveGrantContext | null>(
@@ -187,6 +189,9 @@ export function ApprovalDetail({
             <Text style={styles.sectionTitle}>请求</Text>
             <Text style={styles.body}>{safeDisplayText(currentApproval.message, "请求内容已隐藏，请在电脑端查看。")}</Text>
             <Text style={styles.meta}>创建于 {shortDate(currentApproval.created_at)}</Text>
+            <Text style={styles.meta}>
+              {currentApproval.expires_at ? `授权有效期至 ${shortDate(currentApproval.expires_at)}` : "缺少授权有效期，不能批准"}
+            </Text>
           </View>
 
           <View style={styles.section}>

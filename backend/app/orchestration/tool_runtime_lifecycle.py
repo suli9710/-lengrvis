@@ -25,6 +25,7 @@ from app.orchestration.resource_state import (
 )
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.tool_execution_journal import build_tool_execution_key, reserve_prepared_tool_call
 from app.orchestration.tool_runtime_paths import (
     is_write_tool,
 )
@@ -48,21 +49,37 @@ class ToolRuntimeLifecycleMixin:
         task: Task,
         step: PlanStep,
         tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
         args: dict[str, Any],
         *,
         approval_id: str | None,
-    ) -> ToolCall:
+    ) -> tuple[ToolCall, bool]:
         orchestrator = self.orchestrator
         safe_args = self._redact_tool_args(args, tool)
+        plan_revision = int(runtime.extra_context.get("plan_revision") or 0)
         call = ToolCall(
             task_id=task.id,
             step_id=step.id,
             tool_name=step.tool_name,
             args=safe_args,
             risk_level=tool.risk_level,
+            execution_key=build_tool_execution_key(
+                task=task,
+                step_id=step.id,
+                tool_name=step.tool_name,
+                tool_version=str(getattr(tool, "tool_version", "1") or "1"),
+                args=args,
+                plan_revision=plan_revision,
+                approval_id=approval_id,
+            ),
+            plan_revision=plan_revision,
+            approval_id=approval_id or "",
+            status="prepared",
             dry_run=False,
         )
-        db.upsert_model("tool_calls", call)
+        call, created = reserve_prepared_tool_call(call)
+        if not created:
+            return call, False
         safe_call_payload = call.model_dump()
         orchestrator.bus.publish_text(
             task.id,
@@ -83,7 +100,7 @@ class ToolRuntimeLifecycleMixin:
             structured_payload=safe_call_payload,
             metadata={"approval_id": approval_id, "approved_by_user": bool(approval_id)} if approval_id else None,
         )
-        return call
+        return call, True
 
     async def _execute_tool_call(
         self,

@@ -131,11 +131,13 @@ export function approvalConfirmationDialogOptions(
   const riskLevel = stringField(approval, "risk_level") || stringField(approval, "riskLevel") || "unknown";
   const dryRunSummary = stringField(approval, "dry_run_summary") || stringField(approval, "dryRunSummary");
   const message = stringField(approval, "message") || stringField(approval, "reason") || "No approval summary was provided.";
+  const expiresAt = stringField(approval, "expires_at") || stringField(approval, "expiresAt");
   const lines = [
     `Approval id: ${approvalId}`,
     `Task: ${taskSummary || "unknown"}`,
     `Tool: ${toolName}`,
     `Risk: ${riskLevel}`,
+    `Authorization expires: ${expiresAt || "missing"}`,
     "",
     "Request:",
     truncateForDialog(message),
@@ -150,6 +152,28 @@ export function approvalConfirmationDialogOptions(
     message: action === "approve" ? "Approve this pending agent action?" : "Reject this pending agent action?",
     detail: lines.join("\n")
   };
+}
+
+export function approvalAuthorizationError(
+  payload: unknown,
+  action: "approve" | "reject",
+  now = Date.now()
+): string {
+  const detail = isPlainRecord(payload) ? payload : {};
+  const approval = isPlainRecord(detail.approval) ? detail.approval : detail;
+  const status = stringField(approval, "status");
+  const allowedStatuses = action === "approve" ? new Set(["pending", "approved"]) : new Set(["pending"]);
+  if (!allowedStatuses.has(status)) {
+    return `Approval is not ${action === "approve" ? "executable" : "rejectable"} in status '${status || "unknown"}'.`;
+  }
+  const expiresAt = Date.parse(stringField(approval, "expires_at") || stringField(approval, "expiresAt"));
+  if (!Number.isFinite(expiresAt)) {
+    return "Approval authorization expiry is missing or invalid.";
+  }
+  if (expiresAt <= now) {
+    return "Approval authorization has expired. Refresh and generate a new preview.";
+  }
+  return "";
 }
 
 export function truncateForDialog(value: string): string {

@@ -133,19 +133,19 @@ export class BrowserHost {
       try {
         await entry.container.view.webContents.session.clearStorageData();
         await this.stop(entry.session.id);
-      } catch (error) {
+      } catch (error) { // broad-exception-boundary: collect every local erasure failure before reporting an incomplete wipe.
         failures.push(error);
       }
     }
     try {
       await this.screenshotStore.clear();
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary: screenshot cleanup failure must fail the coordinated privacy erase.
       failures.push(error);
     }
     try {
       this.credentialTickets.clear();
       this.credentialVault.clear();
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary: credential cleanup failure must fail the coordinated privacy erase.
       failures.push(error);
     }
     if (failures.length) throw new Error("Electron private browser data could not be fully erased");

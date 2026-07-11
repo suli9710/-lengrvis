@@ -6,12 +6,14 @@ API endpoint must stay fail-closed until the user opts in.
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from app.core import db
 from app.core.schemas import Run, RunEvent, RunPhase, Task
 from app.orchestration.task_phase import TaskPhase
-from app.services.local_metrics_service import collect_local_metrics
+from app.services.local_metrics_service import _task_metrics, collect_local_metrics
 
 
 def _setup_env(monkeypatch, tmp_path) -> None:
@@ -84,6 +86,19 @@ def test_collect_local_metrics_counts_only(monkeypatch, tmp_path):
     flat = str(payload)
     assert "metrics seed" not in flat
     assert "m1" not in payload.get("runs", {}).get("by_phase", {})
+
+
+def test_task_metrics_normalize_legacy_failed_rollback_records() -> None:
+    rows = [
+        {"data": json.dumps({"status": "failed", "metadata": {"rollback": {"state": "succeeded"}}})},
+        {"data": json.dumps({"status": "failed", "metadata": {"rollback": {"state": "partial"}}})},
+    ]
+
+    metrics = _task_metrics(rows)
+
+    assert metrics["terminal"] == 2
+    assert metrics["succeeded"] == 1
+    assert metrics["by_status"] == {"repair_required": 1, "rolled_back": 1}
 
 
 def test_collect_local_metrics_empty_db(monkeypatch, tmp_path):

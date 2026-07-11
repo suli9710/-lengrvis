@@ -119,6 +119,8 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             step_id TEXT NOT NULL,
+            execution_key TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'created',
             data TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
@@ -356,6 +358,34 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
         BEGIN
             SELECT RAISE(ABORT, 'audit_chain_heads is append-only');
         END;
+        """
+    )
+    ensure_columns(
+        conn,
+        "tool_calls",
+        {
+            "execution_key": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'created'",
+        },
+    )
+    conn.execute(
+        """
+        UPDATE tool_calls
+        SET execution_key = COALESCE(NULLIF(json_extract(data, '$.execution_key'), ''), execution_key),
+            status = COALESCE(NULLIF(json_extract(data, '$.status'), ''), status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_execution_key
+            ON tool_calls(execution_key)
+            WHERE execution_key <> ''
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_calls_status_created
+            ON tool_calls(status, created_at, id)
         """
     )
     ensure_columns(

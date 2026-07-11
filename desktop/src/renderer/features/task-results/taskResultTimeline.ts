@@ -58,7 +58,8 @@ export function buildTaskResultTimelineSummary(tasks: TaskEvent[], hasDraft = fa
   const missingChecks = quality?.missingChecks ?? task.completionEvidence?.missing ?? [];
   const safeFailure = resultState === "safe_failure";
   const blocked = task.state === "blocked";
-  const failed = task.state === "failed" || safeFailure;
+  const failed = task.state === "failed" || task.state === "repair_required" || safeFailure;
+  const rolledBack = task.state === "rolled_back";
   const verified = resultState === "verified_result" && canTreatAsDone;
   const visibleProgress = resultState === "visible_progress";
   const evidenceOnly = resultState === "task_evidence_only";
@@ -70,7 +71,7 @@ export function buildTaskResultTimelineSummary(tasks: TaskEvent[], hasDraft = fa
     detail: resultDetail(task, quality, resultState),
     action: blocked ? "approve" : "open",
     actionLabel: blocked ? "去确认" : failed ? "查看原因" : verified ? "查看结果" : "核对时间线",
-    tone: blocked ? "blocked" : failed ? "failed" : verified ? "ready" : task.state === "running" || task.state === "queued" ? "active" : "warning",
+    tone: blocked ? "blocked" : failed ? "failed" : verified || rolledBack ? "ready" : task.state === "running" || task.state === "queued" ? "active" : "warning",
     resultState,
     canTreatAsDone,
     missingChecks,
@@ -128,6 +129,8 @@ function resultStatusLabel(
   if (task.state === "running") return "正在处理";
   if (task.state === "queued") return "等待执行";
   if (task.state === "paused") return "已暂停";
+  if (task.state === "rolled_back") return "已回滚";
+  if (task.state === "repair_required") return "回滚需修复";
   if (task.state === "failed") return "未完成";
   if (resultState === "visible_progress") return "有进度，待核验";
   if (resultState === "task_evidence_only") return "仅有任务记录";
@@ -145,6 +148,8 @@ function resultDetail(task: TaskEvent, quality: TaskResultQuality | undefined, r
   if (task.state === "blocked") return "任务已停在确认点，批准前不会继续执行。";
   if (task.state === "running" || task.state === "queued") return "任务正在推进，结果出现前会继续显示进度。";
   if (task.state === "failed") return "任务没有形成可核验结果，请先查看原因。";
+  if (task.state === "rolled_back") return "已按回滚记录恢复变更，并完成资源后态重读核验。";
+  if (task.state === "repair_required") return "回滚没有完整恢复变更，需要查看记录并完成剩余修复。";
   if (task.state === "completed") return "任务状态已结束，仍需核对是否具备完成结果记录。";
   return task.description || "等待任务产生可复核记录。";
 }
@@ -169,7 +174,7 @@ function executeStepState(task: TaskEvent, failed: boolean, blocked: boolean): T
   if (blocked) return "blocked";
   if (task.state === "running" || task.state === "queued") return "current";
   if (task.state === "paused") return "blocked";
-  if (task.state === "completed") return "done";
+  if (task.state === "completed" || task.state === "rolled_back") return "done";
   return "idle";
 }
 
@@ -179,6 +184,8 @@ function executeStepDetail(task: TaskEvent, visibleProgress: boolean, evidenceOn
   if (task.state === "paused") return "进度已保留";
   if (task.state === "blocked") return "暂停等待审批";
   if (task.state === "failed") return "没有完成";
+  if (task.state === "rolled_back") return "变更已恢复";
+  if (task.state === "repair_required") return "恢复不完整";
   if (visibleProgress) return "已有进度记录";
   if (evidenceOnly) return "只有提交记录";
   return "执行已结束";
@@ -191,8 +198,8 @@ function verifyStepState(
   missingChecks: string[]
 ): TaskResultTimelineStepState {
   if (verified) return "done";
-  if (safeFailure || task.state === "failed") return "failed";
-  if (task.state === "completed" || missingChecks.length > 0) return "blocked";
+  if (safeFailure || task.state === "failed" || task.state === "repair_required") return "failed";
+  if (task.state === "completed" || task.state === "rolled_back" || missingChecks.length > 0) return "blocked";
   if (task.state === "running" || task.state === "queued") return "idle";
   return "idle";
 }

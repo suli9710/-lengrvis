@@ -636,6 +636,345 @@ def _validate_memory_quarantine_foundation(conn: sqlite3.Connection) -> None:
         raise RuntimeError("memory quarantine migration left memories without normalized lifecycle rows")
 
 
+def _memory_namespace_foundation(conn: sqlite3.Connection) -> None:
+    _execute_migration_script(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS memory_namespace (
+            memory_id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            domain_scope TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            supersedes TEXT,
+            conflict_status TEXT NOT NULL
+                CHECK (conflict_status IN ('none', 'conflicting', 'resolved', 'superseded')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY(supersedes) REFERENCES memories(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_namespace_recall
+            ON memory_namespace(
+                principal_id, workspace_id, domain_scope, conflict_status, memory_id
+            );
+        CREATE INDEX IF NOT EXISTS idx_memory_namespace_lineage
+            ON memory_namespace(supersedes, version, memory_id);
+        """,
+    )
+    _backfill_memory_namespace(conn)
+
+
+def _backfill_memory_namespace(conn: sqlite3.Connection) -> None:
+    memory_ids = {str(row[0]) for row in conn.execute("SELECT id FROM memories").fetchall()}
+    rows = conn.execute("SELECT id, data, created_at FROM memories ORDER BY id").fetchall()
+    for row in rows:
+        payload = _safe_memory_payload(row[1])
+        principal_id = _nonempty_text(payload.get("principal_id")) or "local-user"
+        workspace_id = _nonempty_text(payload.get("workspace_id")) or "default"
+        domain_scope = _nonempty_text(payload.get("domain_scope")) or "general"
+        try:
+            version = max(1, int(payload.get("version") or 1))
+        except (TypeError, ValueError):
+            version = 1
+        supersedes = _nonempty_text(payload.get("supersedes"))
+        if supersedes == str(row[0]) or supersedes not in memory_ids:
+            supersedes = ""
+        conflict_status = _nonempty_text(payload.get("conflict_status")).casefold()
+        if conflict_status not in {"none", "conflicting", "resolved", "superseded"}:
+            conflict_status = "none"
+        created_at = _nonempty_text(row[2]) or _now_iso()
+        conn.execute(
+            """
+            INSERT INTO memory_namespace (
+                memory_id, principal_id, workspace_id, domain_scope, version, supersedes,
+                conflict_status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(memory_id) DO NOTHING
+            """,
+            (
+                str(row[0]),
+                principal_id,
+                workspace_id,
+                domain_scope,
+                version,
+                supersedes or None,
+                conflict_status,
+                created_at,
+                created_at,
+            ),
+        )
+
+
+def backfill_missing_memory_metadata(conn: sqlite3.Connection) -> None:
+    """Conservatively normalize legacy rows written after the schema migration ran."""
+    _backfill_memory_quarantine(conn)
+    _backfill_memory_namespace(conn)
+
+
+def _validate_memory_namespace_foundation(conn: sqlite3.Connection) -> None:
+    _require_table_columns(
+        conn,
+        {
+            "memory_namespace": {
+                "memory_id",
+                "principal_id",
+                "workspace_id",
+                "domain_scope",
+                "version",
+                "supersedes",
+                "conflict_status",
+                "created_at",
+                "updated_at",
+            }
+        },
+    )
+    _require_primary_key_columns(conn, {"memory_namespace": ("memory_id",)})
+    _require_not_null_columns(
+        conn,
+        {
+            "memory_namespace": {
+                "principal_id",
+                "workspace_id",
+                "domain_scope",
+                "version",
+                "conflict_status",
+                "created_at",
+                "updated_at",
+            }
+        },
+    )
+    _require_index_columns(
+        conn,
+        {
+            "idx_memory_namespace_recall": (
+                "principal_id",
+                "workspace_id",
+                "domain_scope",
+                "conflict_status",
+                "memory_id",
+            ),
+            "idx_memory_namespace_lineage": ("supersedes", "version", "memory_id"),
+        },
+    )
+    _require_foreign_key(
+        conn,
+        table="memory_namespace",
+        from_column="memory_id",
+        target_table="memories",
+        target_column="id",
+        on_delete="CASCADE",
+    )
+    _require_foreign_key(
+        conn,
+        table="memory_namespace",
+        from_column="supersedes",
+        target_table="memories",
+        target_column="id",
+        on_delete="SET NULL",
+    )
+    missing = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM memories AS memory
+        LEFT JOIN memory_namespace AS namespace ON namespace.memory_id = memory.id
+        WHERE namespace.memory_id IS NULL
+        """
+    ).fetchone()
+    if missing is not None and int(missing[0]) != 0:
+        raise RuntimeError("memory namespace migration left memories without normalized namespace rows")
+
+
+_MEMORY_ACTIVE_SUCCESSOR_TRIGGERS = {
+    "trg_memory_quarantine_active_successor_insert",
+    "trg_memory_quarantine_active_successor_update",
+    "trg_memory_quarantine_active_successor_delete",
+    "trg_memory_namespace_active_successor_insert",
+    "trg_memory_namespace_active_successor_update",
+    "trg_memory_namespace_active_successor_delete",
+}
+
+
+def _memory_active_successor_guard(conn: sqlite3.Connection) -> None:
+    duplicate_parents = conn.execute(
+        """
+        SELECT scope.supersedes
+        FROM memory_namespace AS scope
+        JOIN memory_quarantine AS quarantine ON quarantine.memory_id = scope.memory_id
+        WHERE scope.supersedes IS NOT NULL
+          AND scope.conflict_status IN ('none', 'resolved')
+          AND quarantine.state = 'active'
+        GROUP BY scope.supersedes
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for row in duplicate_parents:
+        conn.execute(
+            """
+            UPDATE memory_namespace
+            SET conflict_status = 'conflicting', updated_at = ?
+            WHERE supersedes = ?
+              AND conflict_status IN ('none', 'resolved')
+              AND memory_id IN (
+                  SELECT memory_id FROM memory_quarantine WHERE state = 'active'
+              )
+            """,
+            (_now_iso(), str(row[0])),
+        )
+
+    _execute_migration_script(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS memory_active_successors (
+            parent_memory_id TEXT PRIMARY KEY NOT NULL,
+            successor_memory_id TEXT NOT NULL UNIQUE,
+            FOREIGN KEY(parent_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY(successor_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+        SELECT scope.supersedes, scope.memory_id
+        FROM memory_namespace AS scope
+        JOIN memory_quarantine AS quarantine ON quarantine.memory_id = scope.memory_id
+        WHERE scope.supersedes IS NOT NULL
+          AND scope.conflict_status IN ('none', 'resolved')
+          AND quarantine.state = 'active';
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_quarantine_active_successor_insert
+        AFTER INSERT ON memory_quarantine
+        WHEN NEW.state = 'active'
+        BEGIN
+            INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+            SELECT scope.supersedes, NEW.memory_id
+            FROM memory_namespace AS scope
+            WHERE scope.memory_id = NEW.memory_id
+              AND scope.supersedes IS NOT NULL
+              AND scope.conflict_status IN ('none', 'resolved');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_quarantine_active_successor_update
+        AFTER UPDATE OF state ON memory_quarantine
+        BEGIN
+            DELETE FROM memory_active_successors WHERE successor_memory_id = NEW.memory_id;
+            INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+            SELECT scope.supersedes, NEW.memory_id
+            FROM memory_namespace AS scope
+            WHERE NEW.state = 'active'
+              AND scope.memory_id = NEW.memory_id
+              AND scope.supersedes IS NOT NULL
+              AND scope.conflict_status IN ('none', 'resolved');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_quarantine_active_successor_delete
+        AFTER DELETE ON memory_quarantine
+        BEGIN
+            DELETE FROM memory_active_successors WHERE successor_memory_id = OLD.memory_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_namespace_active_successor_insert
+        AFTER INSERT ON memory_namespace
+        WHEN NEW.supersedes IS NOT NULL AND NEW.conflict_status IN ('none', 'resolved')
+        BEGIN
+            INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+            SELECT NEW.supersedes, NEW.memory_id
+            FROM memory_quarantine AS quarantine
+            WHERE quarantine.memory_id = NEW.memory_id AND quarantine.state = 'active';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_namespace_active_successor_update
+        AFTER UPDATE OF supersedes, conflict_status ON memory_namespace
+        BEGIN
+            DELETE FROM memory_active_successors WHERE successor_memory_id = NEW.memory_id;
+            INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+            SELECT NEW.supersedes, NEW.memory_id
+            FROM memory_quarantine AS quarantine
+            WHERE NEW.supersedes IS NOT NULL
+              AND NEW.conflict_status IN ('none', 'resolved')
+              AND quarantine.memory_id = NEW.memory_id
+              AND quarantine.state = 'active';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_memory_namespace_active_successor_delete
+        AFTER DELETE ON memory_namespace
+        BEGIN
+            DELETE FROM memory_active_successors WHERE successor_memory_id = OLD.memory_id;
+        END;
+        """,
+    )
+
+
+def _validate_memory_active_successor_guard(conn: sqlite3.Connection) -> None:
+    _require_table_columns(
+        conn,
+        {"memory_active_successors": {"parent_memory_id", "successor_memory_id"}},
+    )
+    _require_primary_key_columns(conn, {"memory_active_successors": ("parent_memory_id",)})
+    _require_not_null_columns(
+        conn,
+        {"memory_active_successors": {"parent_memory_id", "successor_memory_id"}},
+    )
+    _require_unique_index_columns(conn, {"memory_active_successors": {("successor_memory_id",)}})
+    _require_foreign_key(
+        conn,
+        table="memory_active_successors",
+        from_column="parent_memory_id",
+        target_table="memories",
+        target_column="id",
+        on_delete="CASCADE",
+    )
+    _require_foreign_key(
+        conn,
+        table="memory_active_successors",
+        from_column="successor_memory_id",
+        target_table="memories",
+        target_column="id",
+        on_delete="CASCADE",
+    )
+    triggers = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%active_successor%'"
+        ).fetchall()
+    }
+    missing_triggers = sorted(_MEMORY_ACTIVE_SUCCESSOR_TRIGGERS - triggers)
+    if missing_triggers:
+        raise RuntimeError(
+            "memory active-successor migration left missing triggers: " + ", ".join(missing_triggers)
+        )
+    missing = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_namespace AS scope
+        JOIN memory_quarantine AS quarantine ON quarantine.memory_id = scope.memory_id
+        LEFT JOIN memory_active_successors AS active
+          ON active.parent_memory_id = scope.supersedes
+         AND active.successor_memory_id = scope.memory_id
+        WHERE scope.supersedes IS NOT NULL
+          AND scope.conflict_status IN ('none', 'resolved')
+          AND quarantine.state = 'active'
+          AND active.parent_memory_id IS NULL
+        """
+    ).fetchone()
+    stale = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_active_successors AS active
+        LEFT JOIN memory_namespace AS scope
+          ON scope.memory_id = active.successor_memory_id
+         AND scope.supersedes = active.parent_memory_id
+        LEFT JOIN memory_quarantine AS quarantine
+          ON quarantine.memory_id = active.successor_memory_id
+        WHERE scope.memory_id IS NULL
+           OR scope.conflict_status NOT IN ('none', 'resolved')
+           OR quarantine.memory_id IS NULL
+           OR quarantine.state != 'active'
+        """
+    ).fetchone()
+    if (missing is not None and int(missing[0]) != 0) or (stale is not None and int(stale[0]) != 0):
+        raise RuntimeError("memory active-successor guard is inconsistent with normalized lifecycle state")
+
+
 def _execute_migration_script(conn: sqlite3.Connection, script: str) -> None:
     """Execute a static SQL script without sqlite3.executescript's implicit commit."""
 
@@ -815,6 +1154,15 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     ),
     SchemaMigration(
         4, "memory_quarantine_foundation", _memory_quarantine_foundation, _validate_memory_quarantine_foundation
+    ),
+    SchemaMigration(
+        5, "memory_namespace_foundation", _memory_namespace_foundation, _validate_memory_namespace_foundation
+    ),
+    SchemaMigration(
+        6,
+        "memory_active_successor_guard",
+        _memory_active_successor_guard,
+        _validate_memory_active_successor_guard,
     ),
 )
 

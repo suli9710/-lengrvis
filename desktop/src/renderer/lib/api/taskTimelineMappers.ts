@@ -1,7 +1,7 @@
 import type { CleanupPlan } from "../../../shared/cleanupTypes";
 import type { AgentConversation, TaskEvent } from "../../../shared/executionTypes";
 import { zhBackendTaskStatus, zhBackendText } from "../zh";
-import type { BackendAgentMessage, BackendStepRecordingFrame, BackendStepRecordingPayload, BackendTask, BackendTimeline } from "./executionBackendTypes";
+import type { BackendAgentMessage, BackendRollbackSummary, BackendStepRecordingFrame, BackendStepRecordingPayload, BackendTask, BackendTimeline } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
 import { mapOptionalTaskResultQuality } from "./resultQualityMappers";
@@ -14,12 +14,13 @@ export function mapTaskEvent(task: BackendTask): TaskEvent {
     resultVerified: task.result_verified,
     completedResult: task.completed_result
   });
+  const rollback = mapRollbackSummary(task.metadata?.rollback);
   return {
     id: task.id,
     sourceTaskId: task.id,
     title: task.user_goal,
     description: zhBackendText(task.final_summary) || `当前后端状态：${zhBackendTaskStatus(task.status)}`,
-    state: mapTaskState(task.status),
+    state: rollback ? (rollback.state === "succeeded" ? "rolled_back" : "repair_required") : mapTaskState(task.status),
     agent: "调度 Agent",
     createdAt: task.created_at,
     updatedAt: task.updated_at,
@@ -27,7 +28,22 @@ export function mapTaskEvent(task: BackendTask): TaskEvent {
     cleanupPlan,
     boundaryEvents: mapBoundaryEvents(task.boundary_events),
     completionEvidence,
-    resultQuality: mapOptionalTaskResultQuality(task.result_quality, completionEvidence)
+    resultQuality: mapOptionalTaskResultQuality(task.result_quality, completionEvidence),
+    rollback
+  };
+}
+
+function mapRollbackSummary(value?: BackendRollbackSummary): TaskEvent["rollback"] {
+  if (!value || typeof value !== "object") return undefined;
+  return {
+    state: String(value.state ?? "failed"),
+    attempted: Number(value.attempted ?? 0),
+    succeeded: Number(value.succeeded ?? 0),
+    verified: Number(value.verified ?? value.succeeded ?? 0),
+    verificationFailed: Number(value.verification_failed ?? 0),
+    failed: Number(value.failed ?? 0),
+    manualRequired: Number(value.manual_required ?? 0),
+    unrecoverable: Number(value.unrecoverable ?? 0)
   };
 }
 

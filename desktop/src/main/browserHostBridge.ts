@@ -124,6 +124,19 @@ export class BrowserHostWebSocketBridge {
       case "stop":
         result = this.deniedRemoteWriteAction("BrowserHost remote stop requires a desktop approval grant.");
         break;
+      case "cancel_task": {
+        const matchingSessions = this.browserHost.getSnapshot().sessions
+          .filter((session) => session.task_id === message.task_id)
+          .map((session) => session.id);
+        const stopped = await Promise.allSettled(matchingSessions.map((sessionId) => this.browserHost.stop(sessionId)));
+        const failed = stopped.filter((entry) => entry.status === "rejected").length;
+        result = {
+          ok: failed === 0,
+          error: failed > 0 ? `Failed to stop ${failed} BrowserHost task session(s).` : undefined,
+          snapshot: this.browserHost.getSnapshot()
+        };
+        break;
+      }
       case "action":
         result = isReadOnlyBrowserHostAction(message.action)
           ? await this.browserHost.performAction(message.session_id, message.action)
@@ -221,6 +234,7 @@ export type BrowserHostBridgeMessage =
   | { type: "hide"; request_id?: string }
   | { type: "set_bounds"; request_id?: string; bounds: BrowserHostBounds }
   | { type: "action"; request_id?: string; session_id: string; action: BrowserAction }
+  | { type: "cancel_task"; request_id?: string; task_id: string }
   | { type: "ping"; request_id?: string };
 
 export function parseBrowserHostBridgeMessage(rawData: unknown): BrowserHostBridgeMessage | null {
@@ -258,6 +272,11 @@ export function parseBrowserHostBridgeMessage(rawData: unknown): BrowserHostBrid
     if (type === "action" && isBrowserActionMessage(data.action)) {
       const session_id = optionalMessageString(data.session_id);
       return session_id ? { type, request_id, session_id, action: data.action } : null;
+    }
+
+    if (type === "cancel_task") {
+      const task_id = optionalMessageString(data.task_id);
+      return task_id ? { type, request_id, task_id } : null;
     }
 
     return null;

@@ -392,7 +392,7 @@ function WorkbenchPanel({
             最近回复
           </span>
         </div>
-        <div className="workbench-message-list">
+        <div className="workbench-message-list" role="region" aria-label="最近回复列表" tabIndex={0}>
           {recentMessages.length ? recentMessages.map((message) => (
             <div className="workbench-message" key={message.id}>
               <strong>{friendlyMessageAuthor(message)}</strong>
@@ -438,7 +438,7 @@ function getWorkbenchState({
   const activeTask = visibleTasks.find((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
   const latestTask = visibleTasks[0];
   const latestMessage = messages[messages.length - 1];
-  const hasError = latestTask?.state === "failed" || latestMessage?.status === "failed";
+  const hasError = latestTask?.state === "failed" || latestTask?.state === "repair_required" || latestMessage?.status === "failed";
 
   if (connectionState === "offline" && !activeTask) {
     return {
@@ -476,7 +476,7 @@ function getWorkbenchState({
     };
   }
 
-  if (latestTask?.state === "completed") {
+  if (latestTask?.state === "completed" || latestTask?.state === "rolled_back") {
     return {
       state: "completed" as const,
       title: "刚完成一项工作",

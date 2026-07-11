@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 import types
 
 import pytest
 
+from app.api import routes_ui_automation
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview
 from app.perception import ui_automation as uia
@@ -17,13 +19,20 @@ from app.perception.ui_automation import (
     WindowsCOMUIAutomationTarget,
     create_ui_automation_target,
 )
-from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    binding_preview,
+    permission_policy_version,
+    preview_hmac,
+    settings_fingerprint,
+)
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import ui_automation_tools
 from app.tools.registry import register_all_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 class FakePolicy:
@@ -88,11 +97,17 @@ class FakeNative:
         automation_id: str = "send_button",
         control_type: str = "Button",
         children: list[FakeNative] | None = None,
+        runtime_id: tuple[int, ...] = (1, 2, 3),
+        enabled: bool = True,
+        offscreen: bool = False,
     ) -> None:
         self.CurrentName = name
         self.CurrentAutomationId = automation_id
         self.CurrentControlType = control_type
         self.children = children or []
+        self.runtime_id = runtime_id
+        self.CurrentIsEnabled = enabled
+        self.CurrentIsOffscreen = offscreen
         self.invoked = False
         self.value = ""
         self.focused = False
@@ -112,6 +127,9 @@ class FakeNative:
 
     def SetFocus(self) -> None:
         self.focused = True
+
+    def GetRuntimeId(self):
+        return self.runtime_id
 
     def FindAll(self, scope: int, condition):
         return FakeCollection(self.children)
@@ -172,6 +190,30 @@ def test_ui_automation_bridge_timeout_returns_from_running_event_loop() -> None:
 
     assert result["ok"] is False
     assert "timed out" in result["error"]
+    assert time.monotonic() - started < 0.5
+
+
+def test_ui_automation_bridge_observes_tool_abort_with_low_latency() -> None:
+    abort = threading.Event()
+
+    async def slow_call() -> dict:
+        await asyncio.sleep(30)
+        return {"ok": True}
+
+    timer = threading.Timer(0.05, abort.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(ToolAbortedError):
+            ui_automation_tools._run_ui_automation(
+                slow_call(),
+                "slow",
+                timeout_seconds=30,
+                abort_context={"_tool_abort_event": abort},
+            )
+    finally:
+        timer.cancel()
+
     assert time.monotonic() - started < 0.5
 
 
@@ -236,6 +278,233 @@ async def test_windows_adapter_finds_and_clicks_native_element_with_policy():
     assert native.invoked is True
     assert policy.calls[0][0] == "ui_automation.click"
     assert found.to_perception_element().attributes["automation_id"] == "send_button"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click", "type_text", "focus"])
+async def test_write_actions_fail_closed_when_selector_matches_multiple_elements(action: str):
+    first = FakeNative(name="Duplicate", automation_id="shared")
+    second = FakeNative(name="Duplicate", automation_id="shared")
+    root = FakeNative(name="Root", automation_id="root", children=[first, second])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+
+    if action == "type_text":
+        result = await target.type_text({"automation_id": "shared"}, "hello")
+    else:
+        result = await getattr(target, action)({"automation_id": "shared"})
+
+    assert result["ok"] is False
+    assert result["match_count"] == 2
+    assert "matched multiple elements" in result["error"]
+    assert first.invoked is False and second.invoked is False
+    assert first.value == "" and second.value == ""
+    assert first.focused is False and second.focused is False
+
+
+@pytest.mark.asyncio
+async def test_find_element_fails_closed_on_duplicates_and_inspection_returns_candidates():
+    first = FakeNative(name="Duplicate", automation_id="shared", runtime_id=(1,))
+    second = FakeNative(name="Duplicate", automation_id="shared", runtime_id=(2,))
+    root = FakeNative(name="Root", automation_id="root", children=[first, second])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+
+    found = await target.find_element({"automation_id": "shared"})
+    inspection = await target.inspect_selector({"automation_id": "shared"})
+
+    assert found is None
+    assert inspection["ok"] is False
+    assert inspection["match_count"] == 2
+    assert len(inspection["candidates"]) == 2
+    assert "multiple elements" in inspection["error"]
+
+
+@pytest.mark.asyncio
+async def test_selector_search_fails_closed_when_traversal_limit_is_exceeded():
+    children = [FakeNative(name=f"Item {index}", automation_id=f"item_{index}") for index in range(5001)]
+    children[0].CurrentAutomationId = "target"
+    root = FakeNative(name="Root", automation_id="root", children=children)
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+
+    found = await target.find_element({"automation_id": "target"})
+    inspection = await target.inspect_selector({"automation_id": "target"})
+
+    assert found is None
+    assert inspection["ok"] is False
+    assert inspection["search_truncated"] is True
+    assert "traversal limit" in inspection["error"]
+
+
+@pytest.mark.asyncio
+async def test_element_object_action_still_rechecks_selector_uniqueness():
+    first = FakeNative(name="Duplicate", automation_id="shared", runtime_id=(1,))
+    second = FakeNative(name="Duplicate", automation_id="shared", runtime_id=(2,))
+    root = FakeNative(name="Root", automation_id="root", children=[first, second])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+    first_element = uia._element_from_native(first)
+
+    result = await target.click(first_element)
+
+    assert result["ok"] is False
+    assert result["match_count"] == 2
+    assert first.invoked is False and second.invoked is False
+
+
+def test_semantic_preview_binds_unique_target_resource_state(monkeypatch):
+    native = FakeNative(runtime_id=(7, 8, 9))
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+
+    preview = ui_automation_tools.click({"automation_id": "send_button", "dry_run": True}, {})
+
+    assert preview["ok"] is True
+    assert preview["_resource_state"][0]["kind"] == "ui_automation_element"
+    assert preview["_resource_state"][0]["fingerprint"]["runtime_id"] == [7, 8, 9]
+
+
+def test_runtime_id_lookup_failure_degrades_without_dropping_element():
+    class RuntimeIdFailingNative(FakeNative):
+        def GetRuntimeId(self):
+            raise RuntimeError("COM identity unavailable")
+
+    element = uia._element_from_native(RuntimeIdFailingNative())
+
+    assert element.automation_id == "send_button"
+    assert "runtime_id" not in element.properties
+
+
+def test_stale_runtime_id_collection_degrades_without_dropping_element():
+    class StaleRuntimeId:
+        Length = 1
+
+        def GetElement(self, index: int):  # noqa: ARG002
+            raise RuntimeError("stale COM collection")
+
+    class StaleRuntimeIdNative(FakeNative):
+        def GetRuntimeId(self):
+            return StaleRuntimeId()
+
+    element = uia._element_from_native(StaleRuntimeIdNative())
+
+    assert element.automation_id == "send_button"
+    assert "runtime_id" not in element.properties
+
+
+def test_semantic_preview_rejects_ambiguous_target(monkeypatch):
+    first = FakeNative(name="Duplicate", automation_id="shared")
+    second = FakeNative(name="Duplicate", automation_id="shared")
+    root = FakeNative(name="Root", automation_id="root", children=[first, second])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+
+    preview = ui_automation_tools.click({"automation_id": "shared", "dry_run": True}, {})
+
+    assert preview["ok"] is False
+    assert preview["match_count"] == 2
+    assert "multiple elements" in preview["error"]
+
+
+def test_direct_gui_approval_detects_target_replacement(monkeypatch):
+    original = FakeNative(runtime_id=(1, 2, 3))
+    replacement = FakeNative(runtime_id=(9, 9, 9))
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(original))
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+    payload = {"automation_id": "send_button", "dry_run": True}
+    preview = ui_automation_tools.click(payload, {})
+    approval = Approval(
+        task_id="task_gui_target_state",
+        message="Approve semantic click",
+        tool_name="ui_automation.click",
+        diff_preview=binding_preview(preview),
+    )
+    target._automation = FakeAutomation(replacement)
+
+    error = routes_ui_automation._approval_resource_state_error(
+        approval,
+        "ui_automation.click",
+        {**payload, "dry_run": False},
+        {"settings": None, "allowed_directories": []},
+    )
+
+    assert "no longer matches" in error
+
+
+def test_direct_gui_approval_refresh_failure_is_redacted_and_fails_closed(monkeypatch):
+    def fail_refresh(tool_args, context):  # noqa: ANN001, ANN202, ARG001
+        raise RuntimeError("provider failed with token=secret-token-1234567890")
+
+    monkeypatch.setattr(
+        routes_ui_automation,
+        "_tool_definition",
+        lambda tool_name: types.SimpleNamespace(execute=fail_refresh),  # noqa: ARG005
+    )
+    approval = Approval(
+        task_id="task_gui_refresh_failure",
+        message="Approve semantic click",
+        tool_name="ui_automation.click",
+        diff_preview={"_resource_state": [{"kind": "ui_automation_element"}]},
+    )
+
+    error = routes_ui_automation._approval_resource_state_error(
+        approval,
+        "ui_automation.click",
+        {"automation_id": "send_button", "dry_run": False},
+        {"settings": None, "allowed_directories": []},
+    )
+
+    assert error.startswith("Could not refresh the approved GUI target state:")
+    assert "secret-token-1234567890" not in error
+    assert "[REDACTED]" in error
+
+
+@pytest.mark.asyncio
+async def test_click_revalidates_runtime_identity_and_blocks_replaced_target():
+    original = FakeNative(runtime_id=(1, 2, 3))
+    replacement = FakeNative(runtime_id=(9, 9, 9))
+
+    class ReplacingAutomation(FakeAutomation):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def GetRootElement(self):
+            self.calls += 1
+            return original if self.calls == 1 else replacement
+
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=ReplacingAutomation())
+
+    result = await target.click({"automation_id": "send_button"})
+
+    assert result["ok"] is False
+    assert "changed before execution" in result["error"]
+    assert original.invoked is False
+    assert replacement.invoked is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "offscreen", "expected_error"),
+    [(False, False, "disabled"), (True, True, "offscreen")],
+)
+async def test_click_blocks_disabled_or_offscreen_target(enabled: bool, offscreen: bool, expected_error: str):
+    native = FakeNative(enabled=enabled, offscreen=offscreen)
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+
+    result = await target.click({"automation_id": "send_button"})
+
+    assert result["ok"] is False
+    assert expected_error in result["error"]
+    assert native.invoked is False
 
 
 @pytest.mark.asyncio

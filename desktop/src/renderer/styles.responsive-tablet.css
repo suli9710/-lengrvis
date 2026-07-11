@@ -8,7 +8,13 @@
     height: auto;
     min-height: 100vh;
     grid-template-columns: 1fr;
-    overflow: auto;
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  .lengrvis-shell::before,
+  .lengrvis-shell::after {
+    display: none;
   }
 
   .lengrvis-workbench-layout {

@@ -10,6 +10,7 @@ from app.core.schemas import MessageType, Plan, PlanStep, StepStatus, Task, Task
 from app.orchestration.plan_snapshot import snapshot_step, write_back_step
 from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.tool_execution_journal import load_persisted_observations
 from app.policy.risk import SafetyVerdict
 
 if TYPE_CHECKING:
@@ -39,6 +40,24 @@ class _ScheduleState:
     stop_requested: bool = False
 
 
+def context_with_dependency_provenance(
+    context: dict[str, Any],
+    step: PlanStep,
+    observations: dict[str, ToolResult],
+) -> dict[str, Any]:
+    step_context = copy.deepcopy(context)
+    existing = step_context.get("upstream_content_envelopes")
+    envelopes = list(existing) if isinstance(existing, list | tuple) else []
+    envelopes.extend(
+        observations[dependency].content_envelope.model_dump(mode="json")
+        for dependency in step.depends_on
+        if dependency in observations and observations[dependency].content_envelope is not None
+    )
+    if envelopes:
+        step_context["upstream_content_envelopes"] = envelopes
+    return step_context
+
+
 class StepSchedulerHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
@@ -55,7 +74,12 @@ class StepSchedulerHandler:
             return
 
         context = self.orchestrator._tool_context()
-        state = _ScheduleState(pending=self._initial_pending_step_ids(plan), by_id=by_id)
+        finished_step_ids = {step.id for step in plan.steps if self._dependency_finished(step)}
+        state = _ScheduleState(
+            pending=self._initial_pending_step_ids(plan),
+            by_id=by_id,
+            observations=load_persisted_observations(task.id, step_ids=finished_step_ids),
+        )
 
         try:
             await self._run_schedule_loop(task, plan, context, state)
@@ -132,7 +156,8 @@ class StepSchedulerHandler:
         orchestrator = self.orchestrator
         state.pending.remove(step.id)
         observation = self._dependency_observation(step, state.observations)
-        outcome = await orchestrator._execute_step(task, plan, step, context, observation, threaded_tools=False)
+        step_context = self._context_with_dependency_provenance(context, step, state.observations)
+        outcome = await orchestrator._execute_step(task, plan, step, step_context, observation, threaded_tools=False)
         if outcome.result is not None:
             state.observations[step.id] = outcome.result
         if outcome.kind == "failed":
@@ -141,7 +166,7 @@ class StepSchedulerHandler:
                 plan,
                 step,
                 outcome.result,
-                context,
+                step_context,
                 observation,
                 threaded_tools=False,
             )
@@ -163,7 +188,7 @@ class StepSchedulerHandler:
         for step in ready:
             state.pending.remove(step.id)
             observation = self._dependency_observation(step, state.observations)
-            step_context = copy.deepcopy(context)
+            step_context = self._context_with_dependency_provenance(context, step, state.observations)
             # Parallel executors mutate step fields across await points; hand each
             # one an isolated snapshot and write it back serially on completion
             # so siblings never observe (or persist) a half-updated step.
@@ -206,12 +231,13 @@ class StepSchedulerHandler:
                 state.observations[step.id] = outcome.result
             if outcome.kind == "failed":
                 dependency_observation = self._dependency_observation(step, state.observations)
+                recovery_context = self._context_with_dependency_provenance(context, step, state.observations)
                 outcome = await orchestrator.recovery_handler.recover_failed_step(
                     task,
                     plan,
                     step,
                     outcome.result,
-                    context,
+                    recovery_context,
                     dependency_observation,
                     threaded_tools=True,
                 )
@@ -395,6 +421,14 @@ class StepSchedulerHandler:
             if dependency in observations:
                 return observations[dependency]
         return None
+
+    def _context_with_dependency_provenance(
+        self,
+        context: dict[str, Any],
+        step: PlanStep,
+        observations: dict[str, ToolResult],
+    ) -> dict[str, Any]:
+        return context_with_dependency_provenance(context, step, observations)
 
     def _mark_blocked_steps(self, pending: set[str], by_id: dict[str, PlanStep]) -> None:
         orchestrator = self.orchestrator

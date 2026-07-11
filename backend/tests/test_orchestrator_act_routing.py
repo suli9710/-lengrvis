@@ -11,6 +11,7 @@ import pytest
 from app.agents.base import AgentContext
 from app.agents.file_agent import FileAgent
 from app.agents.orchestrator_agent import OrchestratorAgent
+from app.automation.intent_capsule import user_goal_digest
 from app.core import db
 from app.core.schemas import (
     AgentAction,
@@ -453,6 +454,13 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
         settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="1",
+        engineering_boundary={
+            "intent": {
+                "task_id": task.id,
+                "user_goal_digest": user_goal_digest(task.user_goal),
+                "plan_revision": plan.version,
+            }
+        },
         status=ApprovalStatus.APPROVED,
     )
     db.upsert_model("approvals", approval)

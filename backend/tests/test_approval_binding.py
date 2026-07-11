@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from native_confirmation_helpers import TEST_NATIVE_CONFIRMATION_SECRET, native_confirmation_headers
 
 from app.agents.orchestrator_agent import OrchestratorAgent
+from app.automation.intent_capsule import user_goal_digest
 from app.api import routes_approvals, routes_runtime
 from app.config import AppSettings
 from app.core import db
@@ -79,6 +80,16 @@ class ActionAgent:
         return "reflected"
 
 
+def _intent_boundary(task: Task, plan: Plan) -> dict[str, Any]:
+    return {
+        "intent": {
+            "task_id": task.id,
+            "user_goal_digest": user_goal_digest(task.user_goal),
+            "plan_revision": plan.version,
+        }
+    }
+
+
 def _setup_bound_approval(
     *,
     args: dict[str, Any] | None = None,
@@ -137,6 +148,7 @@ def _setup_bound_approval(
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version=tool.tool_version,
         diff_preview=preview,
+        engineering_boundary=_intent_boundary(task, plan),
     )
     db.upsert_model("approvals", approval, status=approval.status)
     return orchestrator, task, plan, step, approval, calls
@@ -893,6 +905,7 @@ def test_approval_resource_state_mismatch_blocks_execution():
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version=tool.tool_version,
         diff_preview=preview,
+        engineering_boundary=_intent_boundary(task, plan),
     )
     db.upsert_model("approvals", approval, status=approval.status)
 

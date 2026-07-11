@@ -23,6 +23,32 @@ from app.security.lan import (
 )
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 
+SECURITY_RESPONSE_HEADERS = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"no-referrer"),
+)
+
+
+class SecurityResponseHeadersMiddleware:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {name.lower() for name, _ in headers}
+                headers.extend((name, value) for name, value in SECURITY_RESPONSE_HEADERS if name not in existing)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
 
 class TrustedProxyHeadersMiddleware:
     def __init__(self, app) -> None:
@@ -160,6 +186,7 @@ def register_security_middleware(app: FastAPI) -> None:
         return await call_next(request)
 
     app.add_middleware(TrustedProxyHeadersMiddleware)
+    app.add_middleware(SecurityResponseHeadersMiddleware)
 
 
 async def reject_audit_fail_closed_websocket(websocket: WebSocket) -> None:

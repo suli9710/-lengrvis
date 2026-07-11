@@ -162,7 +162,8 @@ import {
   startRunEndpoint,
   submitApprovalDecisionEndpoint,
   subscribeRunEventsEndpoint,
-  subscribeTaskMessagesEndpoint
+  subscribeTaskMessagesEndpoint,
+  taskLifecycleEndpoint
 } from "./executionClient";
 import {
   getHardwareAccelerationStatusEndpoint,
@@ -712,8 +713,31 @@ export class LengrvisApiClient {
     return previewRollbackEndpoint(this.requestEndpoint, taskId);
   }
 
-  executeRollback(taskId: string): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
+  executeRollback(taskId: string): Promise<ApiResponse<{
+    executed: unknown[];
+    count: number;
+    state: string;
+    attempted: number;
+    succeeded: number;
+    verified: number;
+    verification_failed: number;
+    failed: number;
+    manual_required: number;
+    unrecoverable: number;
+  }>> {
     return executeRollbackEndpoint(this.requestEndpoint, taskId);
+  }
+
+  pauseTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "pause");
+  }
+
+  resumeTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "resume");
+  }
+
+  cancelTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "cancel");
   }
 
   subscribeRunEvents(

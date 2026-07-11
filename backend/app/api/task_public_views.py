@@ -334,6 +334,10 @@ def task_status_summary(task: Task | None, completion_evidence: dict[str, Any]) 
         if completion_result_verified(task, completion_evidence):
             return "Completed with verified result evidence; manual sign-off is still separate."
         return "Completed, but result evidence is not verified yet."
+    if status == "rolled_back":
+        return "Rolled back with verified restoration evidence."
+    if status == "repair_required":
+        return "Rollback is incomplete; review the remaining repair actions."
     if status == "failed":
         return "Failed; review the evidence trail before retrying."
     if status == "cancelled":
@@ -357,6 +361,10 @@ def task_next_step(task: Task | None, counts: dict[str, int], completion_evidenc
             return "Open the task explanation to inspect the verified result evidence before manual sign-off."
         missing = completion_missing_text(completion_evidence)
         return f"Open the task explanation and collect missing evidence before treating the result as done{missing}."
+    if status == "rolled_back":
+        return "Inspect the rollback evidence before closing the task."
+    if status == "repair_required":
+        return "Review the rollback details and complete the remaining repair actions."
     if status == "failed":
         return "Review the failed evidence trail, fix the cause, then retry only if the goal is still safe."
     if status == "cancelled":

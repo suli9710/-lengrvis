@@ -7,10 +7,15 @@ from typing import Any
 
 import pytest
 
+from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
+from app.core.content_provenance import collect_content_envelopes, create_content_envelope
 from app.core.errors import AppError, StateTransitionError
-from app.core.schemas import Plan, PlanStep, Run, RunEngine, RunPhase, StepStatus, Task
+from app.core.schemas import Plan, PlanStep, Run, RunEngine, RunPhase, StepStatus, Task, ToolCall, ToolResult
 from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.orchestrator_registry import orchestrator_registry
+from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel
 from app.services import run_service, task_pool, task_service
@@ -74,6 +79,142 @@ def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytes
     assert len(submitted) == 1
     assert submitted[0]["task"].id == task.id
     assert submitted[0]["runner"].__name__ == "_resume_task_through_orchestrator"
+
+
+def test_existing_plan_resume_restores_multi_parent_provenance_from_journal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        user_goal="continue after approved and read-only parent steps",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.PAUSED,
+    )
+    parent_steps = [
+        PlanStep(
+            id="approved-parent",
+            task_id=task.id,
+            order=1,
+            agent_name="FileAgent",
+            tool_name="test.approved_parent",
+            description="approved parent",
+            args={},
+            risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+            requires_approval=True,
+            status=StepStatus.SUCCEEDED,
+        ),
+        PlanStep(
+            id="read-parent",
+            task_id=task.id,
+            order=2,
+            agent_name="DocumentAgent",
+            tool_name="test.read_parent",
+            description="read parent",
+            args={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            status=StepStatus.SUCCEEDED,
+        ),
+    ]
+    child = PlanStep(
+        id="child",
+        task_id=task.id,
+        order=3,
+        agent_name="FileAgent",
+        tool_name="test.child",
+        description="consume both parents",
+        args={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        status=StepStatus.PENDING,
+        depends_on=[step.id for step in parent_steps],
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[*parent_steps, child])
+    db.upsert_model("tasks", task)
+    db.upsert_model("plans", plan)
+
+    for index, step in enumerate(parent_steps, start=1):
+        call = ToolCall(
+            id=f"tool-{step.id}",
+            task_id=task.id,
+            step_id=step.id,
+            tool_name=step.tool_name,
+            risk_level=step.risk_level,
+            execution_key=f"execution:{step.id}",
+            status="committed",
+            approval_id="approval-approved-parent" if step.id == "approved-parent" else "",
+            committed_at=f"2026-07-11T00:00:0{index}+00:00",
+            dry_run=False,
+        )
+        result = ToolResult(
+            tool_call_id=call.id,
+            ok=True,
+            output={"parent": step.id},
+            content_envelope=create_content_envelope(
+                step.id,
+                source_kind="tool_result",
+                source_id=step.id,
+                task_scope=task.id,
+            ),
+        )
+        db.upsert_model("tool_calls", call)
+        db.upsert_model("tool_results", result)
+
+    orchestrator = OrchestratorAgent()
+    captured_contexts: list[dict[str, Any]] = []
+
+    async def execute_child(
+        task_arg: Task,
+        plan_arg: Plan,
+        step: PlanStep,
+        context: dict[str, Any],
+        observation: ToolResult | None,
+        *,
+        threaded_tools: bool = False,
+    ) -> StepExecutionOutcome:
+        assert task_arg.id == task.id
+        assert plan_arg.task_id == task.id
+        assert step.id == child.id
+        assert observation is not None
+        assert threaded_tools is False
+        captured_contexts.append(context)
+        set_step_status(step, StepStatus.SUCCEEDED, actor="test")
+        return StepExecutionOutcome(
+            "succeeded",
+            ToolResult(tool_call_id="tool-child", ok=True, output={"ok": True}),
+        )
+
+    async def skip_duplicate_finalize(task_arg: Task, plan_arg: Plan) -> Task:  # noqa: ARG001
+        return task_arg
+
+    monkeypatch.setattr(orchestrator, "_execute_step", execute_child)
+    monkeypatch.setattr(orchestrator.completion_handler, "finalize", skip_duplicate_finalize)
+    monkeypatch.setattr(task_service, "OrchestratorAgent", lambda: orchestrator)
+    submitted: list[tuple[Task, Any]] = []
+
+    class Pool:
+        def active_task(self, task_id: str) -> Task | None:  # noqa: ARG002
+            return None
+
+        def submit_nowait(self, submitted_task: Task, runner: Any) -> None:
+            submitted.append((submitted_task, runner))
+
+    monkeypatch.setattr(task_service, "get_pool", lambda: Pool())
+    orchestrator_registry.release_task(task.id)
+    try:
+
+        async def resume_and_run() -> None:
+            resumed = task_service.resume_task(task.id)
+            assert resumed.execution_stage == ExecutionStage.STEP_RUNNING
+            assert len(submitted) == 1
+            submitted_task, runner = submitted[0]
+            await runner(submitted_task)
+
+        asyncio.run(resume_and_run())
+    finally:
+        orchestrator_registry.release_task(task.id)
+
+    assert len(captured_contexts) == 1
+    envelopes = collect_content_envelopes(captured_contexts[0].get("upstream_content_envelopes"))
+    assert {envelope.source_id for envelope in envelopes} == {"approved-parent", "read-parent"}
 
 
 def test_resume_task_without_running_loop_fails_closed() -> None:
@@ -332,6 +473,10 @@ def test_cancel_task_cancels_pool_worker_and_bound_run(monkeypatch: pytest.Monke
         assert cancelled_task.status == TaskPhase.CANCELLED
         assert cancelled.is_set()
         assert spawned.cancelled()
+        cancel_events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=100)
+        completed = [event for event in cancel_events if event["event_type"] == "task.cancel_completed"]
+        assert len(completed) == 1
+        assert completed[0]["payload"]["elapsed_ms"] < 1000
         return spawned
 
     try:

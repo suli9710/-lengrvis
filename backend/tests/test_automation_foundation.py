@@ -46,6 +46,8 @@ def test_schema_migration_creates_versioned_automation_tables() -> None:
         "mobile_refresh_tokens",
         "automation_trigger_events",
         "memory_quarantine",
+        "memory_namespace",
+        "memory_active_successors",
     }
     with db.connect() as conn:
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
@@ -57,6 +59,8 @@ def test_schema_migration_creates_versioned_automation_tables() -> None:
         (2, "mobile_identity_foundation"),
         (3, "automation_file_trigger_foundation"),
         (4, "memory_quarantine_foundation"),
+        (5, "memory_namespace_foundation"),
+        (6, "memory_active_successor_guard"),
     ]
 
 

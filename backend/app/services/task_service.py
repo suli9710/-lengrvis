@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any
 
 from app.agents.delegation_metadata import build_task_delegation_metadata
@@ -17,7 +18,7 @@ from app.orchestration.engine_router import route_engine
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.state_machine import safe_transition
-from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
 from app.services.task_pool import get_pool
 
 
@@ -224,15 +225,59 @@ async def pause_task(task_id: str) -> Task:
 
 
 async def cancel_task(task_id: str, *, strict: bool | None = None) -> Task:
+    started = time.monotonic()
     get_task(task_id)
-    await get_pool().cancel(task_id)
+    await asyncio.gather(
+        _cancel_browser_host_sessions(task_id),
+        get_pool().cancel(task_id),
+    )
     from app.services import run_service
 
     run_service.cancel_runs_for_task(task_id, active_grace_seconds=0.0)
     task = get_task(task_id)
     if task.status == TaskPhase.CANCELLED:
+        _record_task_cancel_completed(task_id, started)
         return task
-    return safe_transition(task, TaskStatus.CANCELLED, actor="TaskService", strict=strict)
+    cancelled = safe_transition(task, TaskStatus.CANCELLED, actor="TaskService", strict=strict)
+    _record_task_cancel_completed(task_id, started)
+    return cancelled
+
+
+def _record_task_cancel_completed(task_id: str, started: float) -> None:
+    record(
+        "task.cancel_completed",
+        "TaskService",
+        {"elapsed_ms": round(max(0.0, time.monotonic() - started) * 1000, 3)},
+        task_id=task_id,
+    )
+
+
+async def _cancel_browser_host_sessions(task_id: str) -> None:
+    from app.services.browser_host_bridge_service import BrowserHostBridgeUnavailable, browser_host_bridge_hub
+    from app.tools.browser_tools import get_browser_activity_runtime
+
+    local_result = get_browser_activity_runtime().cancel_task_sessions(task_id)
+    record(
+        "task.browser_sessions_cancelled",
+        "TaskService",
+        {"closed": int(local_result.get("closed") or 0)},
+        task_id=task_id,
+    )
+    try:
+        result = await browser_host_bridge_hub.request_task_cancel(task_id=task_id)
+        record(
+            "task.browser_host_cancelled",
+            "TaskService",
+            {"ok": bool(result.get("ok")), "error": str(result.get("error") or "")},
+            task_id=task_id,
+        )
+    except (BrowserHostBridgeUnavailable, TimeoutError) as exc:
+        record(
+            "task.browser_host_cancel_unavailable",
+            "TaskService",
+            {"error": str(exc)},
+            task_id=task_id,
+        )
 
 
 def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
@@ -291,7 +336,7 @@ async def _resume_task_through_orchestrator(task: Task) -> Task:
 
 def _persist_resume_failure_if_active(task_id: str, exc: Exception) -> Task:
     latest = get_task(task_id)
-    if latest.status in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED} or (
+    if latest.status in TERMINAL_TASK_PHASES or (
         latest.status == TaskPhase.EXECUTION and latest.execution_stage == ExecutionStage.PAUSED
     ):
         record(

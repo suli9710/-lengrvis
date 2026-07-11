@@ -38,6 +38,7 @@ on:
 
 permissions:
   actions: read
+  attestations: read
   contents: write
 
 concurrency:
@@ -200,6 +201,108 @@ jobs:
           gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name "release-candidate-artifacts" --dir $destination
           if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts." }
 
+      - name: Verify immutable candidate checksums and provenance
+        shell: pwsh
+        run: |
+          $candidateRoot = (Resolve-Path -LiteralPath "build/promotion-input/candidate").Path
+          $manifestPath = Join-Path $candidateRoot "build/release-candidate-subjects.sha256"
+          $provenanceBundle = Join-Path $candidateRoot "build/attestations/build-provenance.sigstore.json"
+          $sbomBundle = Join-Path $candidateRoot "build/attestations/sbom.sigstore.json"
+          $sbomPath = Join-Path $candidateRoot ".tmp/sbom/lengrvis-sbom.cdx.json"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Candidate artifact is missing its checksum manifest."
+          }
+          foreach ($bundle in @($provenanceBundle, $sbomBundle)) {
+            if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) {
+              throw "Candidate artifact is missing required attestation bundle: $bundle"
+            }
+            Get-Content -LiteralPath $bundle -Raw | ConvertFrom-Json | Out-Null
+          }
+          if (-not (Test-Path -LiteralPath $sbomPath -PathType Leaf)) {
+            throw "Candidate artifact is missing the attested CycloneDX SBOM."
+          }
+          $sbomDocument = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
+          if ($sbomDocument.bomFormat -ne "CycloneDX" -or -not $sbomDocument.components) {
+            throw "Candidate artifact contains an invalid or empty CycloneDX SBOM."
+          }
+
+          $sbomBundleDocument = Get-Content -LiteralPath $sbomBundle -Raw | ConvertFrom-Json
+          $payload = $sbomBundleDocument.dsseEnvelope.payload
+          if ([string]::IsNullOrWhiteSpace($payload)) {
+            throw "Candidate SBOM attestation bundle is missing its signed statement payload."
+          }
+          $statementJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+          $statement = $statementJson | ConvertFrom-Json
+          if ($statement.predicateType -ne "https://cyclonedx.org/bom") {
+            throw "Candidate SBOM attestation uses an unexpected predicate type."
+          }
+          $signedSbom = $statement.predicate | ConvertTo-Json -Depth 100 -Compress
+          $downloadedSbom = $sbomDocument | ConvertTo-Json -Depth 100 -Compress
+          if ($signedSbom -cne $downloadedSbom) {
+            throw "Downloaded CycloneDX SBOM does not match the signed attestation predicate."
+          }
+
+          $lines = @(
+            Get-Content -LiteralPath $manifestPath |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($lines.Count -lt 5) {
+            throw "Candidate checksum manifest is unexpectedly incomplete."
+          }
+
+          $candidatePrefix = "$candidateRoot$([IO.Path]::DirectorySeparatorChar)"
+          $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in $lines) {
+            if ($line -notmatch '^(?<digest>[0-9a-f]{64}) \*(?<path>.+)$') {
+              throw "Candidate checksum manifest contains an invalid line."
+            }
+            $expectedDigest = $Matches.digest
+            $relative = $Matches.path.Replace("\", "/")
+            if (-not (
+              $relative.StartsWith("dist/", [StringComparison]::OrdinalIgnoreCase) -or
+              $relative.StartsWith("desktop/release/", [StringComparison]::OrdinalIgnoreCase)
+            )) {
+              throw "Candidate checksum manifest contains a path outside the release artifact allowlist."
+            }
+            if (-not $seen.Add($relative)) {
+              throw "Candidate checksum manifest contains a duplicate artifact path."
+            }
+
+            $artifactPath = [IO.Path]::GetFullPath((Join-Path $candidateRoot $relative))
+            if (-not $artifactPath.StartsWith($candidatePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Candidate checksum manifest path escapes the immutable candidate root."
+            }
+            if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+              throw "Candidate checksum manifest references a missing artifact: $relative"
+            }
+            $actualDigest = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualDigest -ne $expectedDigest) {
+              throw "Candidate artifact digest does not match the immutable manifest: $relative"
+            }
+
+            gh attestation verify "$artifactPath" `
+              --bundle "$provenanceBundle" `
+              --predicate-type "https://slsa.dev/provenance/v1" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "GitHub provenance verification failed for candidate artifact: $relative"
+            }
+
+            gh attestation verify "$artifactPath" `
+              --bundle "$sbomBundle" `
+              --predicate-type "https://cyclonedx.org/bom" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "GitHub SBOM attestation verification failed for candidate artifact: $relative"
+            }
+          }
+
       - name: Download reviewed release evidence into isolated staging
         shell: pwsh
         run: |
@@ -226,7 +329,10 @@ jobs:
             Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $pair[1] -Recurse -Force
           }
 
-          foreach ($relative in @("build/delivery-candidate-verdict.json")) {
+          foreach ($relative in @(
+            "build/delivery-candidate-verdict.json",
+            ".tmp/sbom/lengrvis-sbom.cdx.json"
+          )) {
             $source = Join-Path $candidateRoot $relative
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Candidate artifact is missing required file: $relative" }
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $relative) | Out-Null
@@ -387,6 +493,13 @@ jobs:
             throw "Downloaded candidate does not contain a Windows installer."
           }
           $uploadAssets += @($installers | ForEach-Object { $_.FullName })
+          $sbomSource = ".tmp/sbom/lengrvis-sbom.cdx.json"
+          $sbomTarget = "dist/Lengrvis-$version-sbom.cdx.json"
+          if (-not (Test-Path -LiteralPath $sbomSource -PathType Leaf)) {
+            throw "Verified candidate SBOM was not materialized for release."
+          }
+          Copy-Item -LiteralPath $sbomSource -Destination $sbomTarget -Force
+          $uploadAssets += (Resolve-Path -LiteralPath $sbomTarget).Path
           $checksumLines = @($uploadAssets | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $(Split-Path -Leaf $_)"
@@ -443,4 +556,5 @@ jobs:
             desktop/release/**
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**
+          include-hidden-files: true
           if-no-files-found: ignore

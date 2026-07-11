@@ -95,7 +95,7 @@ function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
 
   const executableCount = task.cleanupPlan.items.filter((item) => item.disposition === "permanent_delete" || item.disposition === "trash").length;
   const candidateSummary = `${task.cleanupPlan.items.length} 个候选项`;
-  if (task.state === "failed" || isSafeFailureEvidence(task)) {
+  if (task.state === "failed" || task.state === "repair_required" || isSafeFailureEvidence(task)) {
     return {
       id: "cleanup",
       eyebrow: "清理计划",
@@ -275,6 +275,8 @@ function taskOutcomeStatusLabel(task: TaskEvent): string {
   if (task.state === "blocked") return "等待你确认";
   if (isSafeFailureEvidence(task)) return "安全停止，需处理";
   if (task.state === "failed") return "未完成，需处理";
+  if (task.state === "repair_required") return "回滚需修复";
+  if (task.state === "rolled_back") return "变更已回滚";
   if (task.state === "paused") return "已暂停，可接回";
   if (task.state === "running") return "正在处理";
   if (task.state === "queued") return "等待执行";

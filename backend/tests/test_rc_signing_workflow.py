@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-candidate.yml"
 RELEASE_PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-publish.yml"
 REVIEWED_EVIDENCE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-reviewed-evidence.yml"
@@ -36,11 +39,44 @@ def test_release_candidate_workflow_splits_success_and_failure_artifacts() -> No
     assert "dist/Lengrvis-win-portable.zip" in success_section
     assert "dist/Lengrvis-*-x64-self-extracting.exe" in success_section
     assert "desktop/release/**" in success_section
+    assert ".tmp/sbom/lengrvis-sbom.cdx.json" in success_section
+    assert "include-hidden-files: true" in success_section
+    assert "build/release-candidate-subjects.sha256" in success_section
+    assert "build/attestations/**" in success_section
     assert "build/*-evidence-reviewed.json" not in success_section
     assert "build/android-real-device-evidence-reviewed.json" not in success_section
     assert "if: failure()" in failure_section
+    assert "include-hidden-files: true" in failure_section
     assert "docs/release/current-release-evidence.md" in failure_section
     assert "desktop/release" not in failure_section
+
+
+def test_release_candidate_workflow_attests_provenance_and_sbom() -> None:
+    text = RC_WORKFLOW.read_text(encoding="utf-8")
+    prepare_index = text.index("Prepare release candidate attestation subjects")
+    provenance_index = text.index("Attest release candidate build provenance")
+    sbom_index = text.index("Attest release candidate SBOM")
+    preserve_index = text.index("Preserve release candidate attestation bundles")
+    upload_index = text.index("Upload release candidate artifacts")
+
+    assert "id-token: write" in text
+    assert "attestations: write" in text
+    assert "artifact-metadata: write" in text
+    assert text.count("actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1") == 2
+    assert "subject-checksums: build/release-candidate-subjects.sha256" in text
+    assert "sbom-path: .tmp/sbom/lengrvis-sbom.cdx.json" in text
+    assert '$sbom.bomFormat -ne "CycloneDX"' in text
+    assert "Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256" in text
+    assert "build-provenance.sigstore.json" in text
+    assert "sbom.sigstore.json" in text
+    assert (
+        text.index("Automated candidate delivery verdict")
+        < prepare_index
+        < provenance_index
+        < sbom_index
+        < preserve_index
+        < upload_index
+    )
 
 
 def test_release_candidate_workflow_runs_delivery_rc_once() -> None:
@@ -79,6 +115,40 @@ def test_release_publish_promotes_downloaded_candidate_bytes_after_strict_verifi
     assert "desktop/release/*.exe" in text
 
 
+def test_release_publish_verifies_candidate_manifest_and_github_provenance_before_materializing() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    download_index = text.index("Download immutable candidate artifacts into isolated staging")
+    verify_index = text.index("Verify immutable candidate checksums and provenance")
+    materialize_index = text.index("Materialize only allowed staged release inputs")
+    verify_section = text[verify_index:materialize_index]
+
+    assert "attestations: read" in text
+    assert download_index < verify_index < materialize_index
+    assert "build/release-candidate-subjects.sha256" in verify_section
+    assert "build/attestations/build-provenance.sigstore.json" in verify_section
+    assert "build/attestations/sbom.sigstore.json" in verify_section
+    assert "Candidate checksum manifest contains an invalid line" in verify_section
+    assert 'StartsWith("dist/"' in verify_section
+    assert 'StartsWith("desktop/release/"' in verify_section
+    assert "Candidate checksum manifest path escapes the immutable candidate root" in verify_section
+    assert "Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256" in verify_section
+    assert verify_section.count('gh attestation verify "$artifactPath"') == 2
+    assert '--bundle "$provenanceBundle"' in verify_section
+    assert '--predicate-type "https://slsa.dev/provenance/v1"' in verify_section
+    assert '--bundle "$sbomBundle"' in verify_section
+    assert '--predicate-type "https://cyclonedx.org/bom"' in verify_section
+    assert '--repo "$env:GITHUB_REPOSITORY"' in verify_section
+    assert '--signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml"' in verify_section
+    assert '--source-digest "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT"' in verify_section
+    assert "--deny-self-hosted-runners" in verify_section
+    assert verify_section.count("$LASTEXITCODE -ne 0") >= 2
+    assert "GitHub provenance verification failed" in verify_section
+    assert "GitHub SBOM attestation verification failed" in verify_section
+    assert "$sbomBundleDocument.dsseEnvelope.payload" in verify_section
+    assert '$statement.predicateType -ne "https://cyclonedx.org/bom"' in verify_section
+    assert "$signedSbom -cne $downloadedSbom" in verify_section
+
+
 def test_release_publish_materializes_complete_strict_inputs_without_literal_wildcards() -> None:
     text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     section = text[
@@ -90,6 +160,7 @@ def test_release_publish_materializes_complete_strict_inputs_without_literal_wil
     assert "$candidateRoot" in section
     for relative_path in (
         "build/delivery-candidate-verdict.json",
+        ".tmp/sbom/lengrvis-sbom.cdx.json",
         "build/distribution-release-evidence-reviewed.json",
         "build/clean-machine-release-evidence-reviewed.json",
         "build/result-quality-review-evidence-reviewed.json",
@@ -98,6 +169,36 @@ def test_release_publish_materializes_complete_strict_inputs_without_literal_wil
         "build/android/lengrvis-production.apk",
     ):
         assert relative_path in section
+
+
+def test_release_publish_includes_verified_sbom_as_a_release_asset() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    prepare_section = text[
+        text.index("Prepare verified GitHub Release assets and checksums") : text.index(
+            "Create or update draft GitHub Release"
+        )
+    ]
+
+    assert '$sbomSource = ".tmp/sbom/lengrvis-sbom.cdx.json"' in prepare_section
+    assert '$sbomTarget = "dist/Lengrvis-$version-sbom.cdx.json"' in prepare_section
+    assert "Copy-Item -LiteralPath $sbomSource -Destination $sbomTarget" in prepare_section
+    assert "$uploadAssets += (Resolve-Path -LiteralPath $sbomTarget).Path" in prepare_section
+
+
+def test_upload_artifact_steps_preserve_explicit_dot_directory_evidence() -> None:
+    for workflow_path in (CI_WORKFLOW, RC_WORKFLOW, RELEASE_PUBLISH_WORKFLOW):
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                uses = str(step.get("uses") or "")
+                if not uses.startswith("actions/upload-artifact@"):
+                    continue
+                inputs = step.get("with") or {}
+                if ".tmp/" not in str(inputs.get("path") or ""):
+                    continue
+                assert inputs.get("include-hidden-files") is True, (
+                    f"{workflow_path.name}: {step.get('name')} drops dot-directory evidence"
+                )
 
 
 def test_reviewed_evidence_workflow_produces_the_publish_contract() -> None:

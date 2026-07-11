@@ -33,6 +33,8 @@ def test_cleanup_expires_business_content_but_preserves_status_and_audit_chain(t
     old_run_id = "run_old_retention"
     old_tool_call_id = "tool_old_retention"
     old_approval_id = "approval_old_retention"
+    orphan_tool_call_id = "tool_orphan_retention"
+    orphan_approval_id = "approval_orphan_retention"
 
     old_task = {
         "id": old_task_id,
@@ -165,7 +167,134 @@ def test_cleanup_expires_business_content_but_preserves_status_and_audit_chain(t
             "INSERT INTO chat_messages (id, data, created_at) VALUES (?, ?, ?)",
             ("chat_recent", json.dumps({"content": "recent chat"}), recent_at),
         )
+        conn.execute(
+            "INSERT INTO tool_calls (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                orphan_tool_call_id,
+                "task_missing_retention",
+                "step_orphan",
+                json.dumps({"args": {"value": secret}}),
+                old_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO tool_results (id, tool_call_id, data, created_at) VALUES (?, ?, ?, ?)",
+            (
+                "result_orphan_retention",
+                orphan_tool_call_id,
+                json.dumps({"output": {"value": secret}}),
+                old_at,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO tool_results (id, tool_call_id, data, created_at) VALUES (?, ?, ?, ?)",
+            (
+                "result_missing_call_retention",
+                "tool_missing_retention",
+                json.dumps({"output": {"value": secret}}),
+                old_at,
+            ),
+        )
+        orphan_approval_data = json.dumps(
+            {
+                "id": orphan_approval_id,
+                "task_id": "task_missing_retention",
+                "message": f"approve orphan {secret}",
+                "status": "approved",
+                "created_at": old_at,
+            }
+        )
+        conn.execute(
+            "INSERT INTO approvals (id, task_id, step_id, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                orphan_approval_id,
+                "task_missing_retention",
+                "step_orphan",
+                orphan_approval_data,
+                "approved",
+                old_at,
+            ),
+        )
+        for memory_id, content, data, created_at in (
+            (
+                "mem_old_quarantined",
+                secret,
+                {
+                    "id": "mem_old_quarantined",
+                    "content": secret,
+                    "kind": "fact",
+                    "source": "agent",
+                    "state": "quarantined",
+                    "user_confirmed": False,
+                    "created_at": old_at,
+                },
+                old_at,
+            ),
+            (
+                "mem_recent_quarantined",
+                "recent quarantine",
+                {
+                    "id": "mem_recent_quarantined",
+                    "content": "recent quarantine",
+                    "kind": "fact",
+                    "source": "agent",
+                    "state": "quarantined",
+                    "user_confirmed": False,
+                    "created_at": recent_at,
+                },
+                recent_at,
+            ),
+            (
+                "mem_active_confirmed",
+                "explicit long term preference",
+                {
+                    "id": "mem_active_confirmed",
+                    "content": "explicit long term preference",
+                    "kind": "preference",
+                    "source": "user",
+                    "state": "active",
+                    "user_confirmed": True,
+                    "created_at": old_at,
+                },
+                old_at,
+            ),
+            (
+                "mem_legacy_user",
+                "legacy explicit preference",
+                {
+                    "id": "mem_legacy_user",
+                    "content": "legacy explicit preference",
+                    "kind": "preference",
+                    "source": "user",
+                    "created_at": old_at,
+                },
+                old_at,
+            ),
+            (
+                "mem_expired_confirmed",
+                secret,
+                {
+                    "id": "mem_expired_confirmed",
+                    "content": secret,
+                    "kind": "fact",
+                    "source": "user",
+                    "state": "active",
+                    "user_confirmed": True,
+                    "expires_at": old_at,
+                    "created_at": recent_at,
+                },
+                recent_at,
+            ),
+        ):
+            conn.execute(
+                """
+                INSERT INTO memories (id, kind, content, tags, task_id, embedding, data, created_at, last_used_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (memory_id, data["kind"], content, "[]", "", None, json.dumps(data), created_at, created_at),
+            )
     db.store_sensitive_record_integrity("approvals", old_approval_id, approval_data)
+    db.store_sensitive_record_integrity("approvals", orphan_approval_id, orphan_approval_data)
     record("task.completed", "pytest", {"status": "completed"}, task_id=old_task_id)
     original_audit_count = _count("audit_events")
 
@@ -183,6 +312,8 @@ def test_cleanup_expires_business_content_but_preserves_status_and_audit_chain(t
     assert result["counts"]["tasks_expired"] == 1
     assert result["counts"]["runs_expired"] == 1
     assert result["counts"]["task_recordings_deleted"] == 1
+    assert result["counts"]["memories_deleted"] == 2
+    assert result["memory_review_retention_days"] == 30
     assert result["counts"]["diagnostic_packages_deleted"] == 1
     assert not old_diagnostic.exists()
 
@@ -208,6 +339,11 @@ def test_cleanup_expires_business_content_but_preserves_status_and_audit_chain(t
         assert _count(table) == 0
     assert _count("plans") == 1
     assert _count("chat_messages") == 1
+    assert {row["id"] for row in db.fetch_many("memories", limit=20)} == {
+        "mem_recent_quarantined",
+        "mem_active_confirmed",
+        "mem_legacy_user",
+    }
     assert _count("audit_events") == original_audit_count + 1
     with db.connect() as conn:
         proof = conn.execute(
@@ -222,6 +358,98 @@ def test_cleanup_expires_business_content_but_preserves_status_and_audit_chain(t
     repeated = cleanup_expired_task_details(now=now, retention_days=30, vacuum=False)
     assert repeated["rows_changed"] == 0
     assert repeated["counts"]["tasks_expired"] == 0
+
+
+def test_cleanup_uses_authoritative_memory_review_state() -> None:
+    now = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    old_at = (now - timedelta(days=31)).isoformat()
+    recent_at = (now - timedelta(days=1)).isoformat()
+    memory_ids = {
+        "old_quarantine",
+        "recent_quarantine",
+        "old_conflict",
+        "recent_conflict",
+        "normalized_expired",
+        "authoritative_active",
+    }
+    for memory_id in memory_ids:
+        db.upsert_memory(
+            {
+                "id": memory_id,
+                "kind": "fact",
+                "content": memory_id,
+                "source": "user",
+                "state": "active",
+                "user_confirmed": True,
+                "conflict_status": "none",
+                "created_at": old_at,
+                "last_used_at": old_at,
+            }
+        )
+
+    with db.connect() as conn:
+        for memory_id, updated_at in (
+            ("old_quarantine", old_at),
+            ("recent_quarantine", recent_at),
+        ):
+            conn.execute(
+                """
+                UPDATE memory_quarantine
+                SET state = 'quarantined', user_confirmed = 0, updated_at = ?
+                WHERE memory_id = ?
+                """,
+                (updated_at, memory_id),
+            )
+        for memory_id, updated_at in (
+            ("old_conflict", old_at),
+            ("recent_conflict", recent_at),
+        ):
+            conn.execute(
+                """
+                UPDATE memory_namespace
+                SET conflict_status = 'conflicting', updated_at = ?
+                WHERE memory_id = ?
+                """,
+                (updated_at, memory_id),
+            )
+        conn.execute(
+            "UPDATE memory_quarantine SET expires_at = ?, updated_at = ? WHERE memory_id = ?",
+            (old_at, recent_at, "normalized_expired"),
+        )
+        stale_payload = {
+            "id": "authoritative_active",
+            "kind": "fact",
+            "content": "authoritative_active",
+            "state": "quarantined",
+            "user_confirmed": False,
+            "conflict_status": "conflicting",
+            "created_at": old_at,
+        }
+        conn.execute(
+            "UPDATE memories SET data = ? WHERE id = ?",
+            (json.dumps(stale_payload), "authoritative_active"),
+        )
+
+    result = cleanup_expired_task_details(
+        now=now,
+        retention_days=30,
+        memory_review_retention_days=30,
+        vacuum=False,
+    )
+
+    assert result["counts"]["memories_deleted"] == 3
+    assert {row["id"] for row in db.fetch_many("memories", limit=20)} == {
+        "recent_quarantine",
+        "recent_conflict",
+        "authoritative_active",
+    }
+    with db.connect() as conn:
+        for table in ("memory_quarantine", "memory_namespace"):
+            deleted_metadata = conn.execute(
+                f"SELECT memory_id FROM {table} WHERE memory_id IN (?, ?, ?)",  # noqa: S608
+                ("old_quarantine", "old_conflict", "normalized_expired"),
+            ).fetchall()
+            assert deleted_metadata == []
 
 
 def _count(table: str) -> int:

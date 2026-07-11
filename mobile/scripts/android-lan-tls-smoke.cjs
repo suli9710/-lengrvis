@@ -73,6 +73,7 @@ function assertSourceContract() {
     'CORRUPT_STATE_KEY = "tls_pin_store_corrupt_v1"',
     'GOVERNED_STATE_KEY = "tls_pin_store_governed_v1"',
     "assertRequestTrustStateHealthy",
+    "originRecords.none { it.isUsable(now) }",
     "failCorruptStoreLocked",
   ]) {
     assert.ok(trust.includes(fragment), `LAN TLS trust implementation must include ${fragment}`);
@@ -177,6 +178,7 @@ function runConnectedGate() {
   const baseUrl = (process.env.LENGRVIS_ANDROID_LAN_TLS_BASE_URL || "").trim();
   const fingerprint = (process.env.LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256 || "").trim();
   const pairCode = (process.env.LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE || "").trim();
+  const pairClaimSecret = (process.env.LENGRVIS_ANDROID_LAN_TLS_PAIR_CLAIM_SECRET || "").trim();
   const normalizedFingerprint = fingerprint.replaceAll(":", "");
 
   if (!baseUrl || !fingerprint) {
@@ -186,6 +188,7 @@ function runConnectedGate() {
         "  LENGRVIS_ANDROID_LAN_TLS_BASE_URL=https://...",
         "  LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256=<64 hex chars, colons optional>",
         "  LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE=<optional pre-created pairing code>",
+        "  LENGRVIS_ANDROID_LAN_TLS_PAIR_CLAIM_SECRET=<required with a pre-created pairing code>",
         "This release/evidence gate is intentionally not run by PR CI.",
       ].join("\n"),
     );
@@ -195,6 +198,11 @@ function runConnectedGate() {
     normalizedFingerprint,
     /^[A-Fa-f0-9]{64}$/,
     "LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256 must be a SHA-256 certificate fingerprint",
+  );
+  assert.equal(
+    Boolean(pairCode),
+    Boolean(pairClaimSecret),
+    "LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE and LENGRVIS_ANDROID_LAN_TLS_PAIR_CLAIM_SECRET must be provided together",
   );
 
   const gradleArgs = [
@@ -207,6 +215,11 @@ function runConnectedGate() {
   ];
   if (pairCode) {
     gradleArgs.splice(4, 0, `-Pandroid.testInstrumentationRunnerArguments.lengrvisPairCode=${pairCode}`);
+    gradleArgs.splice(
+      5,
+      0,
+      `-Pandroid.testInstrumentationRunnerArguments.lengrvisPairClaimSecret=${pairClaimSecret}`,
+    );
   }
   runGradle(gradleArgs);
 }

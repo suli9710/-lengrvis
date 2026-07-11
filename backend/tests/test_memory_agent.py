@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,12 +12,16 @@ from app.agents import memory_agent as memory_agent_module
 from app.agents.memory_agent import MemoryAgent
 from app.core import db
 from app.core.content_provenance import create_content_envelope
-from app.core.schemas import MemoryState
+from app.core.schemas import MemoryConflictStatus, MemoryState
 
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
+    async def fake_embed_texts(texts: list[str]) -> list[list[float]]:
+        return [[float(len(text) or 1), 1.0] for text in texts]
+
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(memory_agent_module, "embed_texts", fake_embed_texts)
     db.init_db()
     yield
 
@@ -54,6 +59,152 @@ def test_forget_removes_record():
     memory = asyncio.run(agent.remember("临时记录"))
     assert agent.forget(memory.id) is True
     assert agent.forget(memory.id) is False  # second call no-op
+
+
+def test_recall_and_record_management_are_namespace_scoped() -> None:
+    finance = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="finance")
+    legal = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="legal")
+    other_user = MemoryAgent(principal_id="bob", workspace_id="northwind", domain_scope="finance")
+    inferred = asyncio.run(
+        finance.remember(
+            "Invoices require user review before filing",
+            source="PlannerAgent",
+            user_confirmed=False,
+        )
+    )
+    asyncio.run(legal.remember("Legal invoices are retained for seven years"))
+    asyncio.run(other_user.remember("Bob files invoices every Friday"))
+
+    assert asyncio.run(finance.recall("invoices", k=10)) == []
+    assert legal.promote(inferred.id) is None
+    assert other_user.revoke(inferred.id) is None
+    assert other_user.forget(inferred.id) is False
+
+    promoted = finance.promote(inferred.id)
+    assert promoted is not None
+    assert promoted.principal_id == "alice"
+    assert promoted.workspace_id == "northwind"
+    assert promoted.domain_scope == "finance"
+    assert [item.id for item in asyncio.run(finance.recall("invoices", k=10))] == [inferred.id]
+    assert inferred.id not in {item.id for item in asyncio.run(legal.recall("invoices", k=10))}
+    assert inferred.id not in {item.id for item in asyncio.run(other_user.recall("invoices", k=10))}
+
+    revoked = finance.revoke(inferred.id)
+    assert revoked is not None and revoked.state == MemoryState.REVOKED
+    assert finance.forget(inferred.id) is True
+    assert db.get_memory(
+        inferred.id,
+        principal_id="alice",
+        workspace_id="northwind",
+        domain_scope="finance",
+    ) is None
+
+
+def test_version_lineage_supersedes_stale_memory_and_blocks_cross_namespace_parent() -> None:
+    agent = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="finance")
+    base = asyncio.run(agent.remember("File invoices in the legacy folder", kind="preference"))
+    successor = asyncio.run(
+        agent.remember(
+            "File invoices in the current-year folder",
+            kind="preference",
+            supersedes=base.id,
+        )
+    )
+
+    assert successor.version == 2
+    assert successor.supersedes == base.id
+    stored_base = db.get_memory(
+        base.id,
+        principal_id="alice",
+        workspace_id="northwind",
+        domain_scope="finance",
+    )
+    assert stored_base is not None
+    assert stored_base["conflict_status"] == MemoryConflictStatus.SUPERSEDED.value
+    assert [item.id for item in asyncio.run(agent.recall("file invoices", k=10))] == [successor.id]
+
+    other_domain = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="legal")
+    with pytest.raises(ValueError, match="current namespace"):
+        asyncio.run(
+            other_domain.remember(
+                "Try to replace a finance preference",
+                kind="preference",
+                supersedes=base.id,
+            )
+        )
+
+
+def test_version_lineage_allows_only_one_active_successor() -> None:
+    agent = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="finance")
+    base = asyncio.run(agent.remember("File invoices in the legacy folder", kind="preference"))
+    active = asyncio.run(
+        agent.remember(
+            "File invoices in the current-year folder",
+            kind="preference",
+            supersedes=base.id,
+        )
+    )
+
+    with pytest.raises(ValueError, match="already has an active successor"):
+        asyncio.run(
+            agent.remember(
+                "File invoices in another active folder",
+                kind="preference",
+                supersedes=base.id,
+            )
+        )
+
+    quarantined = asyncio.run(
+        agent.remember(
+            "Candidate replacement awaiting review",
+            kind="preference",
+            supersedes=base.id,
+            source="PlannerAgent",
+            user_confirmed=False,
+        )
+    )
+    with pytest.raises(ValueError, match="already has an active successor"):
+        agent.promote(quarantined.id)
+
+    assert agent.revoke(active.id) is not None
+    promoted = agent.promote(quarantined.id)
+    assert promoted is not None and promoted.state == MemoryState.ACTIVE
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT successor_memory_id FROM memory_active_successors WHERE parent_memory_id = ?",
+            (base.id,),
+        ).fetchone()
+    assert row is not None and row["successor_memory_id"] == quarantined.id
+
+    with db.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="parent_memory_id"):
+            conn.execute(
+                """
+                INSERT INTO memory_active_successors (parent_memory_id, successor_memory_id)
+                VALUES (?, ?)
+                """,
+                (base.id, active.id),
+            )
+
+
+def test_conflicting_memory_requires_explicit_resolution_before_recall() -> None:
+    agent = MemoryAgent(principal_id="alice", workspace_id="northwind", domain_scope="finance")
+    memory = asyncio.run(
+        agent.remember(
+            "Invoices may belong in the archive folder",
+            source="PlannerAgent",
+            user_confirmed=False,
+            conflict_status=MemoryConflictStatus.CONFLICTING,
+        )
+    )
+
+    assert agent.promote(memory.id) is not None
+    assert asyncio.run(agent.recall("invoices archive")) == []
+
+    resolved = agent.promote(memory.id, conflict_status=MemoryConflictStatus.RESOLVED)
+    assert resolved is not None
+    assert resolved.conflict_status == MemoryConflictStatus.RESOLVED
+    assert [item.id for item in asyncio.run(agent.recall("invoices archive"))] == [memory.id]
 
 
 def test_recall_tag_filter_excludes_other_kinds():
