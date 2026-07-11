@@ -20,6 +20,7 @@ PYTHON_REQUIREMENT_RE = re.compile(
 PYTHON_HASH_RE = re.compile(r"--hash\s*=\s*sha256:(?P<hash>[a-fA-F0-9]{64})")
 PYTHON_LOCK_SOURCES = (
     "backend/requirements-lock.txt",
+    "requirements-dev-lock.txt",
     "backend/requirements-build-lock.txt",
     "scripts/acceleration-requirements-lock.txt",
 )

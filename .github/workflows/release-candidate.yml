@@ -2,28 +2,25 @@ name: Release Candidate Gate
 
 on:
   workflow_dispatch:
-    inputs:
-      release_owner_signature:
-        description: "Release-owner signature for RR-P0-006 RC sign-off"
-        required: true
-        type: string
-      manual_signoff_status:
-        description: "Current-release evidence manual sign-off status"
-        required: true
-        default: "rc_signoff_recorded"
-        type: choice
-        options:
-          - rc_signoff_recorded
-          - release_signoff_recorded
 
 permissions:
   contents: read
 
 jobs:
   rc-gate:
-    name: Build artifacts + strict release gate
+    name: Build and verify immutable candidate artifacts
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: windows-latest
     timeout-minutes: 120
+    environment: release-candidate
+    env:
+      LENGRVIS_STRICT_STATE_MACHINE: "true"
+      LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+      LENGRVIS_RELEASE_CANDIDATE_COMMIT: ${{ github.sha }}
+      LENGRVIS_RELEASE_BUILD_IDENTIFIER: rc-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+      LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ github.run_id }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -35,9 +32,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Verify checked-out candidate binding
+        run: python scripts/verify_release_candidate_binding.py --require-checkout-match
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -46,9 +44,7 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
-          python -m pip install pip-audit
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
 
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
@@ -60,6 +56,40 @@ jobs:
         run: |
           python -m playwright install chromium
           npm --prefix desktop exec playwright install chromium
+
+      - name: Validate full review scorecard
+        run: npm run review:scorecard
+
+      - name: Validate Agentic threat model
+        run: npm run security:threat-model
+
+      - name: Run release hygiene and dependency preflight
+        id: hygiene
+        run: npm run deps:verify
+
+      - name: Run backend, desktop, and mobile quality preflight
+        id: qa_gate
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
+        run: npm run qa:gate
+
+      - name: Run real-provider quality preflight
+        id: real_llm_quality
+        env:
+          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
+          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
+          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+        run: python scripts/run_real_llm_eval.py --quality-gate
+
+      - name: Run supply-chain preflight
+        id: supply_chain
+        run: npm run supply-chain:verify && npm run audit:deps && npm run security:secrets
+
+      - name: Run extension security preflight
+        id: extension_security
+        run: npm run security:extensions
 
       - name: Build release artifacts
         env:
@@ -88,7 +118,7 @@ jobs:
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
-        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1 -AllowModuleInstall
 
       - name: Sign portable launcher
         env:
@@ -127,26 +157,19 @@ jobs:
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm --prefix desktop run dist:signed
 
-      - name: Strict delivery verdict
-        if: always()
+      - name: Automated candidate delivery verdict
+        # A failed prerequisite stops the job. These are step outcomes from
+        # this candidate run, never a synthetic all-success declaration.
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
-          LENGRVIS_STRICT_STATE_MACHINE: "true"
           LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
           LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
           LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
           LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
-          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
           LENGRVIS_MODE: efficiency
-          RELEASE_OWNER: ${{ github.actor }}
-          RELEASE_OWNER_SIGNATURE: ${{ inputs.release_owner_signature }}
-          RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS: ${{ inputs.manual_signoff_status }}
-          RELEASE_EVIDENCE_NEEDS_JSON: >-
-            {"hygiene":{"result":"success"},"backend":{"result":"success"},"real-llm-quality":{"result":"success"},"desktop":{"result":"success"},"mobile":{"result":"success"},"supply-chain":{"result":"success"},"extension-security":{"result":"success"}}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
-        run: npm run delivery:rc
+        run: npm run delivery:candidate
 
       - name: Upload release candidate artifacts
         if: success()
@@ -154,15 +177,16 @@ jobs:
         with:
           name: release-candidate-artifacts
           path: |
-            build/delivery-verdict.json
-            docs/release/current-release-evidence.md
+            build/delivery-candidate-verdict.json
             dist/backend.exe
+            dist/backend-capabilities.json
             dist/Lengrvis-win-portable/**
             dist/Lengrvis-win-portable.zip
             dist/Lengrvis-*-x64-self-extracting.exe
             desktop/release/**
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**
+          if-no-files-found: error
 
       - name: Upload blocked release candidate diagnostics
         if: failure()
@@ -171,6 +195,7 @@ jobs:
           name: blocked-release-candidate-diagnostics
           path: |
             build/delivery-verdict.json
+            build/delivery-candidate-verdict.json
             docs/release/current-release-evidence.md
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**

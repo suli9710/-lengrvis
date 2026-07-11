@@ -4,7 +4,8 @@ import {
   assertBrowserHostUrlAllowed,
   isBlockedBrowserHostHostname,
   isBlockedBrowserHostNavigation,
-  isBrowserHostRequestAllowed
+  isBrowserHostRequestAllowed,
+  resolveBrowserHostPinnedAddress
 } from "./browserHostNetworkGuard";
 
 const PRIVATE_NETWORK_ENV = "LENGRVIS_BROWSER_HOST_ALLOW_PRIVATE_NETWORK";
@@ -26,6 +27,11 @@ describe("browserHostNetworkGuard", () => {
     expect(isBlockedBrowserHostHostname("app.localhost")).toBe(true);
     expect(isBlockedBrowserHostHostname("metadata.google.internal")).toBe(true);
     expect(isBlockedBrowserHostHostname("10.10.10.10")).toBe(true);
+    expect(isBlockedBrowserHostHostname("192.0.2.1")).toBe(true);
+    expect(isBlockedBrowserHostHostname("198.51.100.1")).toBe(true);
+    expect(isBlockedBrowserHostHostname("224.0.0.1")).toBe(true);
+    expect(isBlockedBrowserHostHostname("240.0.0.1")).toBe(true);
+    expect(isBlockedBrowserHostHostname("ff02::1")).toBe(true);
     expect(isBlockedBrowserHostHostname("::ffff:127.0.0.1")).toBe(true);
     expect(isBlockedBrowserHostHostname("93.184.216.34")).toBe(false);
   });
@@ -47,6 +53,18 @@ describe("browserHostNetworkGuard", () => {
     await expect(
       isBrowserHostRequestAllowed("https://example.test", async () => [{ address: "93.184.216.34" }])
     ).resolves.toBe(true);
+  });
+
+  it("pins only literal IP answers so a malformed resolver result cannot trigger a second DNS lookup", async () => {
+    await expect(
+      resolveBrowserHostPinnedAddress("example.test", async () => [{ address: "rebinding.invalid" }])
+    ).rejects.toThrow(/valid IP address/);
+    await expect(
+      resolveBrowserHostPinnedAddress("example.test", async () => [
+        { address: "93.184.216.34" },
+        { address: "rebinding.invalid" }
+      ])
+    ).rejects.toThrow(/valid IP address/);
   });
 
   it("allows private hostnames only with the explicit development override", async () => {

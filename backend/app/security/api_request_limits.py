@@ -46,6 +46,10 @@ def guarded_api_endpoint_from_path(path: str) -> str | None:
         return "schedules"
     if normalized.startswith("/api/approvals/"):
         return "approvals"
+    if normalized.startswith("/api/tasks/") or normalized == "/api/mobile/tasks" or normalized.startswith(
+        "/api/mobile/tasks/"
+    ):
+        return "tasks"
     if _is_state_changing_settings_post(normalized):
         return "settings"
     return None
@@ -57,6 +61,25 @@ def chat_run_endpoint_from_path(path: str) -> str | None:
         return endpoint
     return None
 
+
+
+def _is_execution_admission_request(path: str, endpoint: str) -> bool:
+    """Return whether this POST can start or resume background execution.
+
+    Pause/cancel operations remain available under saturation so callers can
+    always relieve pressure; task creation, follow-up, and resume share the
+    same global worker budget as chat and run submissions.
+    """
+    if endpoint in {"chat", "runs"}:
+        return True
+    if endpoint != "tasks":
+        return False
+    normalized = str(path or "").rstrip("/") or "/"
+    return (
+        normalized == "/api/mobile/tasks"
+        or normalized.endswith("/resume")
+        or normalized.endswith("/follow-up")
+    )
 
 def _is_state_changing_settings_post(path: str) -> bool:
     if path == "/api/settings" or path.startswith("/api/settings/"):
@@ -70,7 +93,7 @@ def enforce_chat_run_request_guard(request: Request) -> None:
     if request.method.upper() != "POST" or endpoint is None:
         return
     _raise_if_chat_run_body_too_large(request)
-    if endpoint in {"chat", "runs"}:
+    if _is_execution_admission_request(request.url.path, endpoint):
         _raise_if_chat_run_concurrency_exceeded()
     scope = f"{endpoint}:{_client_scope(request)}"
     _enforce_sqlite_rate_limit(scope)

@@ -4,8 +4,10 @@ export {
   activeOfficeAgentIds,
   createOfficeAgentState,
   inferActiveOfficeAgentId,
+  officeAgentIdForTask,
   officeAgents,
   officeViewBox,
-  projectOfficePoint
+  projectOfficePoint,
+  shouldRefreshOfficeAgentRuntime
 } from "./model";
 export type { OfficeAgentDefinition, OfficeAgentPose, OfficeAgentRuntime, OfficeMapSize } from "./model";

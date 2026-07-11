@@ -122,13 +122,21 @@ def apply_reflection_decision(
         added = _add_reflection_steps(plan, decision.steps)
         if added:
             _retire_reflected_failed_steps(plan, decision.target_step_ids)
-            orchestrator._persist_plan_update(plan, decision.reason or "Added reflected pending step(s).")
+            orchestrator._persist_plan_update(
+                plan,
+                decision.reason or "Added reflected pending step(s).",
+                revision_change=True,
+            )
             _publish_reflection(orchestrator, task, decision, added_step_ids=[step.id for step in added])
         return {"added_step_ids": [step.id for step in added]}
     if decision.action == "replace_pending":
         replaced = _replace_pending_steps(plan, decision.steps)
         if replaced:
-            orchestrator._persist_plan_update(plan, decision.reason or "Replaced pending step(s) after reflection.")
+            orchestrator._persist_plan_update(
+                plan,
+                decision.reason or "Replaced pending step(s) after reflection.",
+                revision_change=True,
+            )
             _publish_reflection(orchestrator, task, decision, added_step_ids=[step.id for step in replaced])
         return {"added_step_ids": [step.id for step in replaced], "replaced_pending": True}
     _publish_reflection(orchestrator, task, decision, added_step_ids=[])

@@ -339,7 +339,7 @@ function errorStatus(error: unknown): number {
 }
 
 export function isNetworkOrCertificateError(message: string): boolean {
-  return isNetworkError(message) || message.includes("ssl") || message.includes("cert");
+  return isNetworkError(message) || message.includes("ssl") || message.includes("cert") || message.includes("tls") || message.includes("pinning");
 }
 
 export function isNetworkError(message: string): boolean {

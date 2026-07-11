@@ -2,6 +2,7 @@ import type { WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  blockBrowserHostDownload,
   handleBrowserHostBeforeRequest,
   hardenEmbeddedWebContents
 } from "./browserHostWebContentsHardening";
@@ -10,6 +11,10 @@ describe("browserHostWebContentsHardening", () => {
   it("hardens embedded contents with denied popups, navigation, permissions, and audio", () => {
     const captured: {
       willNavigate?: (event: { preventDefault: () => void }, url: string) => void;
+      willDownload?: (
+        event: { preventDefault: () => void },
+        item: { cancel: () => void; getURL: () => string }
+      ) => void;
       permissionRequest?: (_contents: unknown, _permission: string, callback: (allowed: boolean) => void) => void;
       permissionCheck?: () => boolean;
     } = {};
@@ -24,6 +29,11 @@ describe("browserHostWebContentsHardening", () => {
         }
       }),
       session: {
+        on: vi.fn((eventName: string, handler: typeof captured.willDownload) => {
+          if (eventName === "will-download") {
+            captured.willDownload = handler;
+          }
+        }),
         webRequest: { onBeforeRequest },
         setPermissionRequestHandler: vi.fn(
           (handler: (_contents: unknown, _permission: string, callback: (allowed: boolean) => void) => void) => {
@@ -36,8 +46,9 @@ describe("browserHostWebContentsHardening", () => {
       },
       setAudioMuted
     } as unknown as WebContents;
+    const onDownloadBlocked = vi.fn();
 
-    hardenEmbeddedWebContents(webContents);
+    hardenEmbeddedWebContents(webContents, { onDownloadBlocked });
 
     expect(setWindowOpenHandler.mock.calls[0][0]()).toEqual({ action: "deny" });
     expect(onBeforeRequest).toHaveBeenCalledTimes(1);
@@ -53,6 +64,34 @@ describe("browserHostWebContentsHardening", () => {
     });
     expect(permissionAllowed).toBe(false);
     expect(captured.permissionCheck?.()).toBe(false);
+
+    const preventDownload = vi.fn();
+    const cancelDownload = vi.fn();
+    captured.willDownload?.(
+      { preventDefault: preventDownload },
+      { cancel: cancelDownload, getURL: () => "https://example.test/report.csv" }
+    );
+    expect(preventDownload).toHaveBeenCalledTimes(1);
+    expect(cancelDownload).toHaveBeenCalledTimes(1);
+    expect(onDownloadBlocked).toHaveBeenCalledWith({ url: "https://example.test/report.csv" });
+  });
+
+  it("keeps downloads blocked when cancellation or observability throws", () => {
+    const preventDefault = vi.fn();
+
+    expect(() => blockBrowserHostDownload(
+      { preventDefault },
+      {
+        cancel: () => {
+          throw new Error("item already disposed");
+        },
+        getURL: () => "https://example.test/file.zip"
+      },
+      () => {
+        throw new Error("observer unavailable");
+      }
+    )).not.toThrow();
+    expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
   it("fails request interception closed for local file URLs", async () => {

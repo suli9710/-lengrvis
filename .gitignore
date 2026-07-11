@@ -12,6 +12,8 @@ node_modules/
 dist/
 build/
 .turbo/
+mobile/.expo/
+mobile/android/.kotlin/
 
 # Keep the signed macOS release entitlement template in the repo while
 # continuing to ignore generated build output.
@@ -44,6 +46,7 @@ tmp-office-review/
 desktop/tmp-office-review/
 .codex_remote/
 .claude/settings.local.json
+.cursor/
 .superpowers/
 /puzzler_bards*.json
 UsersSuliAppDataLocalTempLengrvis-Code-review
@@ -84,3 +87,5 @@ replay_pid*
 # Signing keystores must never be committed
 *.keystore
 *.jks
+# Generated signed installer assets consumed only by release workflows.
+desktop/release/

@@ -12,6 +12,8 @@ from app.services.mobile_pairing_access import (
     _approval_required_mobile_scopes,
     _approval_source_grant_id,
     _is_remote_input_approval,
+    _mobile_approval_requires_step_up,
+    _mobile_claims_have_fresh_step_up,
 )
 from app.services.mobile_pairing_common import _text, mobile_device_trust_metadata
 from app.services.mobile_pairing_remote_input import _normalized_remote_input_grants, _safe_remote_input_grant
@@ -59,6 +61,8 @@ def _safe_approval_payload(approval: dict[str, Any], claims: dict[str, Any] | No
     payload["message"] = _safe_mobile_text(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     payload["model_action"] = _safe_mobile_model_action(payload.get("model_action") or {})
+    payload["mobile_step_up_required"] = _mobile_approval_requires_step_up(approval)
+    payload["mobile_step_up_satisfied"] = _mobile_claims_have_fresh_step_up(claims)
     for key in (
         "dry_run_summary",
         "tool_effects",

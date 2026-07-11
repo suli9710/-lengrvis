@@ -70,7 +70,7 @@ def test_app_skill_metadata_is_attached_to_registered_tools(test_data_dir: Path)
 
 def test_orchestrator_recall_memory_includes_lessons():
     memory = MemoryAgent()
-    asyncio.run(
+    lesson = asyncio.run(
         memory.remember_lesson(
             {
                 "goal_pattern": "open attachment in WPS",
@@ -82,6 +82,8 @@ def test_orchestrator_recall_memory_includes_lessons():
             task_id="task_lesson",
         )
     )
+    assert asyncio.run(memory.recall("open attachment in WPS", tags=["lesson"])) == []
+    assert memory.promote(lesson.id) is not None
     orchestrator = OrchestratorAgent()
 
     recalled = asyncio.run(orchestrator._recall_memory("open attachment in WPS"))

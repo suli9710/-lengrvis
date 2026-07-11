@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from app.api import routes_commerce
 from app.commerce import licensing
 from app.commerce.device_identity import DeviceIdentityError, LocalDeviceIdentity, collect_activation_device_identity
-from app.commerce.entitlements import Plan
+from app.commerce.entitlements import PLAN_CATALOG_CURRENT, Plan
 from app.commerce.licensing import (
     LicenseError,
     apply_licensed_plan,
@@ -62,11 +62,21 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def _make_token(plan: str = "max", expires_at: str | None = None, **extra: object) -> str:
-    payload: dict[str, object] = {"plan": plan, "subject": "ACME", **extra}
+def _make_token(plan: str = "pro", expires_at: str | None = None, **extra: object) -> str:
+    payload: dict[str, object] = {
+        "schema": 2,
+        "plan_catalog": PLAN_CATALOG_CURRENT,
+        "plan": plan,
+        "subject": "ACME",
+        **extra,
+    }
     if expires_at is not None:
         payload["expires_at"] = expires_at
     return sign_license(payload, PRIVATE_KEY)
+
+
+def _make_legacy_token(plan: str, **extra: object) -> str:
+    return sign_license({"schema": 1, "plan": plan, "subject": "ACME", **extra}, PRIVATE_KEY)
 
 
 def _make_revocations(*, generated_at: datetime | None = None) -> str:
@@ -106,7 +116,7 @@ def test_sign_and_parse_roundtrip() -> None:
         ),
         PUBLIC_KEY,
     )
-    assert lic.plan is Plan.MAX
+    assert lic.plan is Plan.PRO
     assert lic.license_id == "lic_acme"
     assert lic.subject == "ACME"
     assert lic.issuer == "Lengrvis Sales"
@@ -117,13 +127,25 @@ def test_sign_and_parse_roundtrip() -> None:
 
 def test_plan_alias_normalized() -> None:
     lic = parse_license(_make_token(plan="self-hosted"), PUBLIC_KEY)
-    assert lic.plan is Plan.MAX
+    assert lic.plan is Plan.PRO
 
 
-def test_legacy_team_license_normalizes_to_max() -> None:
-    lic = parse_license(_make_token(plan="team"), PUBLIC_KEY)
-    assert lic.plan is Plan.MAX
-    assert lic.plan.value == "max"
+def test_legacy_plan_claims_do_not_silently_upgrade() -> None:
+    old_pro = parse_license(_make_legacy_token("pro"), PUBLIC_KEY)
+    old_max = parse_license(_make_legacy_token("team"), PUBLIC_KEY)
+    assert old_pro.plan is Plan.PLUS
+    assert old_max.plan is Plan.PRO
+    assert old_max.plan.value == "pro"
+
+
+def test_unknown_plan_catalog_is_rejected() -> None:
+    token = sign_license(
+        {"schema": 2, "plan_catalog": "unknown-catalog", "plan": "pro", "subject": "ACME"},
+        PRIVATE_KEY,
+    )
+    with pytest.raises(LicenseError) as excinfo:
+        parse_license(token, PUBLIC_KEY)
+    assert excinfo.value.code == "license_plan_catalog_invalid"
 
 
 def test_subscription_status_must_be_active_or_trialing() -> None:
@@ -151,7 +173,7 @@ def test_license_status_reports_inactive_subscription(monkeypatch: pytest.Monkey
 
     assert status["state"] == "subscription_inactive"
     assert status["active"] is False
-    assert status["plan"] == "max"
+    assert status["plan"] == "pro"
     assert status["subscription_status"] == "canceled"
 
 
@@ -321,14 +343,14 @@ def test_deprecated_hmac_signing_key_is_not_a_runtime_verifier(monkeypatch: pyte
 def test_load_and_apply_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="max"))
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
-    assert resolve_licensed_plan() is Plan.MAX
+    assert resolve_licensed_plan() is Plan.PRO
 
     class _S:
         plan = "free"
 
     settings = _S()
     applied = apply_licensed_plan(settings)
-    assert applied.plan == "max"
+    assert applied.plan == "pro"
 
 
 def test_apply_plan_noop_without_license(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,7 +410,7 @@ def test_license_status_reports_ignored_paid_plan_override(
     status = license_status(_S())
 
     assert status["state"] == "absent"
-    assert status["requested_env_plan"] == "max"
+    assert status["requested_env_plan"] == "pro"
     assert status["plan_env_ignored"] is True
 
 
@@ -980,7 +1002,7 @@ def test_commerce_api_activation_records_safe_audit(
     )
 
     assert response["state"] == "active"
-    assert response["plan"] == "max"
+    assert response["plan"] == "pro"
     assert response["subscription_id"] == "sub_activated"
     assert audit_events[0][0] == "commerce.license.activated"
     assert audit_events[0][2]["subscription_id"] == "sub_activated"

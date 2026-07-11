@@ -165,6 +165,7 @@ def test_registry_hides_tools_missing_model_visible_contract() -> None:
         supports_dry_run=False,
         requires_authorized_path=False,
         execute=_noop,
+        origin="test_extension",
     )
 
     registry.register(tool)

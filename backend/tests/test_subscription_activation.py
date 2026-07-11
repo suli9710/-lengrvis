@@ -86,12 +86,12 @@ def _configure_server(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     monkeypatch.setenv("LENGRVIS_ACTIVATION_DB", str(db_path))
 
 
-def test_activation_server_issues_signed_max_license(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_activation_server_issues_signed_pro_license(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db_path = tmp_path / "activation.sqlite"
     _configure_server(monkeypatch, db_path)
     upsert_subscription_key(
         activation_key="key-valid",
-        plan="max",
+        plan="pro",
         subscription_id="sub_001",
         status="active",
         subject="subject-redacted",
@@ -113,8 +113,9 @@ def test_activation_server_issues_signed_max_license(monkeypatch: pytest.MonkeyP
     )
 
     license_ = parse_license(result.license_token, PUBLIC_KEY)
-    assert result.plan.value == "max"
-    assert license_.plan.value == "max"
+    assert result.plan.value == "pro"
+    assert license_.plan.value == "pro"
+    assert license_.plan_catalog == "free-plus-pro-v1"
     assert license_.subscription_id == "sub_001"
     assert license_.subscription_status == "active"
     assert license_.device_id == "dev_redacted_001"
@@ -759,7 +760,7 @@ def test_subscription_activation_lifecycle_is_closed_across_admin_activation_and
         "/api/admin/subscriptions",
         headers=admin_headers,
         json={
-            "plan": "max",
+            "plan": "pro",
             "subscription_id": "sub_lifecycle_closed",
             "status": "active",
             "subject": "lifecycle-customer-redacted",
@@ -781,7 +782,7 @@ def test_subscription_activation_lifecycle_is_closed_across_admin_activation_and
     assert activated.status_code == 200, activated.text
     activated_body = activated.json()
     assert activated_body["active"] is True
-    assert activated_body["plan"] == "max"
+    assert activated_body["plan"] == "pro"
     assert activated_body["subscription_id"] == "sub_lifecycle_closed"
     assert activated_body["subscription_status"] == "active"
     assert activated_body["subscription_confirmation_fresh"] is True
@@ -790,7 +791,7 @@ def test_subscription_activation_lifecycle_is_closed_across_admin_activation_and
     plan = commerce_client.get("/api/commerce/plan")
     assert plan.status_code == 200
     plan_body = plan.json()
-    assert plan_body["plan"] == "max"
+    assert plan_body["plan"] == "pro"
     assert plan_body["features"][Feature.POLICY_MANAGEMENT.value] is True
 
     renewed_until = datetime.now(UTC) + timedelta(days=90)
@@ -813,7 +814,7 @@ def test_subscription_activation_lifecycle_is_closed_across_admin_activation_and
     assert refreshed_status.status_code == 200, refreshed_status.text
     refreshed_body = refreshed_status.json()
     assert refreshed_body["active"] is True
-    assert refreshed_body["plan"] == "max"
+    assert refreshed_body["plan"] == "pro"
     assert refreshed_body["seats"] == 3
     assert refreshed_body["subscription_confirmation_fresh"] is True
     assert refreshed_body["license_id"] == activated_body["license_id"]
@@ -864,7 +865,7 @@ def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.Mon
                 {
                     "schema": 1,
                     "license_id": "lic_client",
-                    "plan": "max",
+                    "plan": "pro",
                     "subject": "subject-redacted",
                     "subscription_id": "sub_client",
                     "subscription_status": "active",

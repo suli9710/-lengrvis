@@ -69,7 +69,7 @@ from app.services.task_explain_service import (
     build_task_completion_evidence,
     build_task_explain,
 )
-from app.services.task_service import cancel_task, get_task, list_tasks, resume_task, set_task_status
+from app.services.task_service import cancel_task, get_task, list_tasks, pause_task, resume_task
 from app.tools import rollback_tools
 
 router = APIRouter()
@@ -525,12 +525,12 @@ def safety_reviews(task_id: str):
 
 
 @router.post("/tasks/{task_id}/pause")
-def pause(task_id: str):
-    return set_task_status(task_id, TaskStatus.PAUSED)
+async def pause(task_id: str):
+    return await pause_task(task_id)
 
 
 @router.post("/tasks/{task_id}/resume")
-def resume(task_id: str):
+async def resume(task_id: str):
     return resume_task(task_id)
 
 

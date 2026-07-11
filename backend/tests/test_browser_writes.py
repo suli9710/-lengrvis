@@ -10,6 +10,7 @@ from app.config import AppSettings
 from app.core import db
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS, PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.services import browser_activity_runtime
 from app.tools import browser_tools
 from app.tools.schemas import ToolDefinition
 
@@ -17,6 +18,19 @@ from app.tools.schemas import ToolDefinition
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        browser_activity_runtime.socket,
+        "getaddrinfo",
+        lambda _host, _port, **_kwargs: [
+            (
+                browser_activity_runtime.socket.AF_INET,
+                browser_activity_runtime.socket.SOCK_STREAM,
+                browser_activity_runtime.socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 0),
+            )
+        ],
+    )
     db.init_db()
     yield
 

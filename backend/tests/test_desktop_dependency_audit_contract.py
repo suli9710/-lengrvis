@@ -84,6 +84,7 @@ def test_desktop_high_severity_audit_gate_stays_in_ci_and_security_audit(
     assert "npm audit --audit-level=$AuditLevel" in audit_script
     for python_lock in (
         "backend/requirements-lock.txt",
+        "requirements-dev-lock.txt",
         "backend/requirements-build-lock.txt",
         "scripts/acceleration-requirements-lock.txt",
     ):
@@ -136,13 +137,54 @@ def test_secret_scan_uses_strict_config_and_bypasses_line_fingerprint_ignore(
     assert "hunter2-" + "proposed-secret" not in strict_config
     assert "private-key" in historical_ignore
     assert "Historical test-only TLS fixture private key" in strict_config
+    assert "Historical task-result redaction fixture" in strict_config
+    assert "19671fb2c05d65d9ea1628e4afe2e1ec72af57ad" in strict_config
+    assert r"^desktop/src/renderer/features/task-results/taskResultTimeline\.test\.ts$" in strict_config
+    # Keep the historical exception tied to the exact redaction fixture; a
+    # path- or commit-only exception would make history scanning permissive.
+    historical_fixture_pattern = r"token=abc123[4]56789"
+    assert historical_fixture_pattern in strict_config
+    assert re.search(historical_fixture_pattern, "token=" + "abc123456789")
     assert "-----BEGIN RSA PRIVATE KEY-----" not in (project_root / "backend/tests/tls_test_material.py").read_text(
         encoding="utf-8"
     )
 
 
+def test_dev_toolchain_uses_the_patched_pytest_release(project_root: Path) -> None:
+    requirements = (project_root / "requirements-dev.txt").read_text(encoding="utf-8")
+    lock = (project_root / "requirements-dev-lock.txt").read_text(encoding="utf-8")
+
+    # Keep the advisory-fixed pytest release reproducible while the repository
+    # validates its plugin suite against pytest 9.  A floating <10 constraint
+    # can silently move release CI to a newer, unqualified minor release.
+    assert "pytest==9.0.3" in requirements
+    assert _python_direct_pins(lock)["pytest"] == "9.0.3"
+
+
+def test_backend_dev_requirements_delegate_to_the_patched_hashed_lock(
+    project_root: Path,
+) -> None:
+    backend_requirements = (
+        project_root / "backend" / "requirements-dev.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "-r ../requirements-dev-lock.txt" in backend_requirements
+    assert "pytest>=8.0,<9.0" not in backend_requirements
+
+    lock_verifier = (
+        project_root / "scripts" / "verify_dependency_locks.ps1"
+    ).read_text(encoding="utf-8")
+    assert "Test-BackendDevRequirementsAlias" in lock_verifier
+    assert '"backend\\requirements-dev.txt"' in lock_verifier
+
+
 def test_desktop_generic_bridge_blocks_sensitive_backend_routes(project_root: Path) -> None:
     shared_ipc = (project_root / "desktop/src/shared/ipc.ts").read_text(encoding="utf-8")
+    generic_allowlist = (project_root / "desktop/src/shared/apiRequestAllowlist.ts").read_text(encoding="utf-8")
+    typed_handlers = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (project_root / "desktop/src/main").glob("ipc*Handlers.ts")
+    )
 
     for exact_path in (
         "/api/browser/observe",
@@ -164,13 +206,24 @@ def test_desktop_generic_bridge_blocks_sensitive_backend_routes(project_root: Pa
         "/api/settings/onnx/test-ocr",
         "/api/settings/onnx/test-image-embedding",
     ):
-        assert f'"{exact_path}"' in shared_ipc
+        assert f'"{exact_path}"' not in generic_allowlist
 
-    assert 'pathPrefix: "/api/perception/suggestions/"' in shared_ipc
-    assert 'pathSuffix: "/launch"' in shared_ipc
-    assert 'path: "/api/memories"' in shared_ipc
-    assert 'pathPrefix: "/api/memories/"' in shared_ipc
-    assert '"/api/memories",' not in shared_ipc
+    for typed_path in (
+        "/api/browser/observe",
+        "/api/browser/replay-export",
+        "/api/commerce/license/activate",
+        "/api/commerce/license/install",
+        "/api/commerce/policy/import",
+        "/api/memories/recall",
+        "/api/settings/test-llm-provider",
+        "/api/settings/onnx/warmup",
+        "/api/settings/onnx/test-generate",
+        "/api/settings/onnx/test-embedding",
+        "/api/settings/onnx/test-ocr",
+        "/api/settings/onnx/test-image-embedding",
+    ):
+        assert f'"{typed_path}"' in typed_handlers
+
     for channel_name in (
         "perceptionSuggestionLaunch",
         "hardwareAccelerationSmoke",
@@ -192,6 +245,7 @@ def test_sbom_includes_all_python_locks_and_npm_locks(project_root: Path) -> Non
 
     for source in (
         "backend/requirements-lock.txt",
+        "requirements-dev-lock.txt",
         "backend/requirements-build-lock.txt",
         "scripts/acceleration-requirements-lock.txt",
         "desktop/package-lock.json",

@@ -161,9 +161,15 @@ def write_text_with_windows_handle(
 ) -> None:
     import msvcrt
 
-    handle = _open_windows_file_handle(path, access=_win_generic_write(), creation=_win_create_always())
+    handle = _open_windows_authorized_file_handle(
+        path,
+        allowed,
+        context,
+        access=_win_generic_write() | _win_file_read_attributes(),
+        creation=_win_create_always(),
+    )
     try:
-        _assert_windows_handle_authorized(handle, allowed, context)
+        _truncate_windows_handle(handle)
         fd = msvcrt.open_osfhandle(handle, os.O_WRONLY)
         handle = None
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -182,12 +188,23 @@ def copy_file_with_windows_handles(
 ) -> None:
     import msvcrt
 
-    src_handle = _open_windows_file_handle(src, access=_win_generic_read(), creation=_win_open_existing())
+    src_handle = _open_windows_authorized_file_handle(
+        src,
+        src_allowed,
+        context,
+        access=_win_generic_read() | _win_file_read_attributes(),
+        creation=_win_open_existing(),
+    )
     dst_handle = None
     try:
-        _assert_windows_handle_authorized(src_handle, src_allowed, context)
-        dst_handle = _open_windows_file_handle(dst, access=_win_generic_write(), creation=_win_create_always())
-        _assert_windows_handle_authorized(dst_handle, dst_allowed, context)
+        dst_handle = _open_windows_authorized_file_handle(
+            dst,
+            dst_allowed,
+            context,
+            access=_win_generic_write() | _win_file_read_attributes(),
+            creation=_win_create_always(),
+        )
+        _truncate_windows_handle(dst_handle)
         src_fd = msvcrt.open_osfhandle(src_handle, os.O_RDONLY)
         src_handle = None
         dst_fd = msvcrt.open_osfhandle(dst_handle, os.O_WRONLY)
@@ -202,13 +219,14 @@ def copy_file_with_windows_handles(
 
 
 def delete_file_with_windows_handle(src: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
-    handle = _open_windows_file_handle(
+    handle = _open_windows_authorized_file_handle(
         src,
+        allowed,
+        context,
         access=_win_delete_access() | _win_file_read_attributes(),
         creation=_win_open_existing(),
     )
     try:
-        _assert_windows_handle_authorized(handle, allowed, context)
         _delete_windows_handle_on_close(handle)
     finally:
         _close_windows_handle(handle)
@@ -223,27 +241,115 @@ def _assert_windows_handle_authorized(handle: int, allowed: list[str], context: 
     reject_reparse_points(base, real_target)
 
 
-def _open_windows_file_handle(path: Path, *, access: int, creation: int) -> int:
+def _open_windows_authorized_file_handle(
+    path: Path,
+    allowed: list[str],
+    context: dict[str, Any] | None,
+    *,
+    access: int,
+    creation: int,
+) -> int:
+    """Open a child relative to an authorized parent handle.
+
+    Absolute CreateFileW calls re-resolve every path component and therefore
+    permit a junction swap between authorization and open. NtCreateFile with a
+    RootDirectory handle binds the child open to the exact directory object we
+    authorized. CREATE_ALWAYS is deliberately mapped to OPEN_IF; truncation is
+    performed only after the returned child handle has also been authorized.
+    """
+    parent_handle = _open_windows_directory_handle(path.parent)
+    handle: int | None = None
+    try:
+        _assert_windows_handle_authorized(parent_handle, allowed, context)
+        handle = _open_windows_file_relative(parent_handle, path.name, access=access, creation=creation)
+        _assert_windows_handle_authorized(handle, allowed, context)
+        return handle
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: close a newly opened unauthorized child handle.
+        if handle is not None:
+            _close_windows_handle(handle)
+        raise
+    finally:
+        _close_windows_handle(parent_handle)
+
+
+def _open_windows_file_relative(parent_handle: int, name: str, *, access: int, creation: int) -> int:
     import ctypes
     from ctypes import wintypes
 
-    parent_handle = _open_windows_directory_handle(path.parent)
-    try:
-        _assert_windows_handle_not_reparse_point(parent_handle)
-        handle = _kernel32().CreateFileW(
-            str(path),
-            access,
-            _win_share_read() | _win_share_write() | _win_share_delete(),
-            None,
-            creation,
-            _win_file_attribute_normal() | _win_file_flag_open_reparse_point(),
-            None,
-        )
-    finally:
-        _close_windows_handle(parent_handle)
-    if handle == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
-    return int(handle)
+    if not name or name in {".", ".."} or any(token in name for token in ("/", "\\", ":")):
+        raise SecurityError("Invalid Windows mutation target name.")
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(UnicodeString)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", wintypes.LPVOID),
+            ("SecurityQualityOfService", wintypes.LPVOID),
+        ]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_long), ("Information", ctypes.c_size_t)]
+
+    name_buffer = ctypes.create_unicode_buffer(name)
+    char_bytes = ctypes.sizeof(ctypes.c_wchar)
+    unicode_name = UnicodeString(
+        len(name) * char_bytes,
+        (len(name) + 1) * char_bytes,
+        ctypes.cast(name_buffer, wintypes.LPWSTR),
+    )
+    attributes = ObjectAttributes(
+        ctypes.sizeof(ObjectAttributes),
+        wintypes.HANDLE(parent_handle),
+        ctypes.pointer(unicode_name),
+        _win_obj_case_insensitive(),
+        None,
+        None,
+    )
+    io_status = IoStatusBlock()
+    handle = wintypes.HANDLE()
+    disposition = _win_file_open() if creation == _win_open_existing() else _win_file_open_if()
+    ntdll = _ntdll()
+    ntdll.NtCreateFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes),
+        ctypes.POINTER(IoStatusBlock),
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.LPVOID,
+        wintypes.ULONG,
+    ]
+    status = ntdll.NtCreateFile(
+        ctypes.byref(handle),
+        access | _win_synchronize(),
+        ctypes.byref(attributes),
+        ctypes.byref(io_status),
+        None,
+        _win_file_attribute_normal(),
+        _win_share_read() | _win_share_write() | _win_share_delete(),
+        disposition,
+        _win_file_non_directory_file()
+        | _win_file_synchronous_io_nonalert()
+        | _win_file_flag_open_reparse_point(),
+        None,
+        0,
+    )
+    if status < 0 or not handle.value:
+        error_code = int(ntdll.RtlNtStatusToDosError(status))
+        raise OSError(error_code, f"NtCreateFile failed for relative target {name}: {ctypes.FormatError(error_code)}")
+    return int(handle.value)
 
 
 def _open_windows_directory_handle(path: Path) -> int:
@@ -252,7 +358,7 @@ def _open_windows_directory_handle(path: Path) -> int:
 
     handle = _kernel32().CreateFileW(
         str(path),
-        _win_file_read_attributes(),
+        _win_file_read_attributes() | _win_file_traverse() | _win_synchronize(),
         _win_share_read() | _win_share_write() | _win_share_delete(),
         None,
         _win_open_existing(),
@@ -329,6 +435,17 @@ def _delete_windows_handle_on_close(handle: int) -> None:
         raise OSError(ctypes.get_last_error(), "SetFileInformationByHandle(FileDispositionInfo) failed")
 
 
+def _truncate_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    position = ctypes.c_longlong(0)
+    if not _kernel32().SetFilePointerEx(wintypes.HANDLE(handle), position, None, _win_file_begin()):
+        raise OSError(ctypes.get_last_error(), "SetFilePointerEx failed before authorized truncate")
+    if not _kernel32().SetEndOfFile(wintypes.HANDLE(handle)):
+        raise OSError(ctypes.get_last_error(), "SetEndOfFile failed after authorization")
+
+
 def _kernel32():
     import ctypes
     from ctypes import wintypes
@@ -360,9 +477,29 @@ def _kernel32():
         wintypes.DWORD,
     ]
     kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        wintypes.DWORD,
+    ]
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    kernel32.SetEndOfFile.argtypes = [wintypes.HANDLE]
+    kernel32.SetEndOfFile.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
     return kernel32
+
+
+def _ntdll():
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    ntdll.RtlNtStatusToDosError.argtypes = [ctypes.c_long]
+    ntdll.RtlNtStatusToDosError.restype = wintypes.ULONG
+    return ntdll
 
 
 def _win_generic_read() -> int:
@@ -379,6 +516,14 @@ def _win_delete_access() -> int:
 
 def _win_file_read_attributes() -> int:
     return 0x00000080
+
+
+def _win_file_traverse() -> int:
+    return 0x00000020
+
+
+def _win_synchronize() -> int:
+    return 0x00100000
 
 
 def _win_share_read() -> int:
@@ -401,6 +546,14 @@ def _win_create_always() -> int:
     return 2
 
 
+def _win_file_open() -> int:
+    return 1
+
+
+def _win_file_open_if() -> int:
+    return 3
+
+
 def _win_file_attribute_normal() -> int:
     return 0x00000080
 
@@ -415,6 +568,22 @@ def _win_file_flag_open_reparse_point() -> int:
 
 def _win_file_flag_backup_semantics() -> int:
     return 0x02000000
+
+
+def _win_file_non_directory_file() -> int:
+    return 0x00000040
+
+
+def _win_file_synchronous_io_nonalert() -> int:
+    return 0x00000020
+
+
+def _win_obj_case_insensitive() -> int:
+    return 0x00000040
+
+
+def _win_file_begin() -> int:
+    return 0
 
 
 def _win_file_attribute_tag_info() -> int:

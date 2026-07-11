@@ -1,6 +1,6 @@
 # Release Readiness Dashboard
 
-This dashboard is the single fail-closed view for deciding whether a Lengrvis candidate can move from engineering validation to RC or public release.
+This dashboard is the single fail-closed view for deciding whether a Lengrvis candidate can move from engineering validation to public Beta, RC, or public release.
 
 It intentionally distinguishes **machine evidence**, **manual evidence**, **waivers**, and **release-owner sign-off**. A helper or template output is not a pass until the matching evidence row is marked `passed` with an artifact label and owner.
 
@@ -10,12 +10,12 @@ This dashboard covers engineering delivery. A paid or publicly advertised commer
 
 | Field | Value |
 | --- | --- |
-| Candidate commit | `2bbfe6613ecba87c535e13225b3a6d474775f7dd` |
-| Build id | `main CI 28770782160` |
+| Candidate commit | `307c968e421131fa7ce62afdadef404ff02e94a6` |
+| Build id | `v0.1.2 local/manual` |
 | Platform | `Windows primary; Android companion preview` |
 | Release owner | `suli9710` |
-| Dashboard last reviewed UTC | `2026-07-06T06:32:01Z` |
-| Decision | `machine gates completed, but release evidence remains incomplete because real LLM quality evidence and manual sign-off are pending` |
+| Dashboard last reviewed UTC | `2026-07-09T01:01:02Z` |
+| Decision | `current v0.1.2 candidate evidence refreshed; public Beta and release remain blocked because candidate-bound threat-model review, CI results, real LLM quality evidence, clean-machine/manual evidence, and owner sign-off are pending` |
 
 ## Stop-ship blockers
 
@@ -23,12 +23,13 @@ Status values are restricted to: `blocked`, `in_progress`, `passed`, `waived`.
 
 | ID | Area | Required evidence | Status | Artifact / link label | Owner | Expiry / next review | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| RR-P0-001 | Clean-machine Windows install | Reviewed `clean-machine-release-evidence-reviewed` accepted by `npm run evidence:clean-machine-verify`: install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback, and artifact redaction review on a clean Windows machine/profile. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but clean-machine/manual acceptance remains pending in `docs/release/current-release-evidence.md`. |
-| RR-P0-002 | Local model clean-machine path | Reviewed clean-machine evidence accepted by `npm run evidence:clean-machine-verify -- --require-local-model`: runtime install/start/pull, model version, privacy-mode task smoke, or explicit blocked handoff if unavailable. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but local-model clean-machine/manual acceptance remains pending in `docs/release/current-release-evidence.md`. |
-| RR-P0-003 | Android real-device / emulator LAN-WSS | Strict `npm run android:release-gate` with installable APK and reviewed Android evidence JSON: QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate mobile CI gates completed, but reviewed Android real-device / emulator LAN-WSS evidence remains pending. |
-| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate real LLM quality gate was skipped because `LENGRVIS_REAL_LLM_API_KEY` is not configured for this workflow context. |
-| RR-P0-005 | Diagnostics external-share review | Actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Current candidate machine gates completed, but diagnostics external-share manual review remains pending. |
-| RR-P0-006 | RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | in_progress | [main CI run 28770782160](https://github.com/suli9710/-lengrvis/actions/runs/28770782160) | suli9710 | next RC review | Release owner signature remains pending for this candidate. |
+| RR-P0-001 | Clean-machine Windows install | Reviewed `clean-machine-release-evidence-reviewed` accepted by `npm run evidence:clean-machine-verify`: install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback, and artifact redaction review on a clean Windows machine/profile. | in_progress | docs/release/current-release-evidence.md | suli9710 | next RC review | Current v0.1.2 candidate evidence is refreshed, but CI results and clean-machine/manual acceptance remain pending. |
+| RR-P0-002 | Local model clean-machine path | Reviewed clean-machine evidence accepted by `npm run evidence:clean-machine-verify -- --require-local-model`: runtime install/start/pull, model version, privacy-mode task smoke, or explicit blocked handoff if unavailable. | in_progress | docs/release/current-release-evidence.md | suli9710 | next RC review | Current v0.1.2 candidate evidence is refreshed, but local-model clean-machine/manual acceptance remains pending. |
+| RR-P0-003 | Android real-device / emulator LAN-WSS | Strict `npm run android:release-gate` with installable APK and reviewed Android evidence JSON: QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | in_progress | docs/release/current-release-evidence.md | suli9710 | next RC review | Current v0.1.2 candidate evidence is refreshed, but reviewed Android real-device / emulator LAN-WSS evidence remains pending. |
+| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | in_progress | docs/release/current-release-evidence.md | suli9710 | next RC review | Current v0.1.2 candidate evidence is refreshed, but the real LLM quality gate has not supplied a passing result for this candidate. |
+| RR-P0-005 | Diagnostics external-share review | `npm run evidence:diagnostics-review` template plus signed `diagnostics-external-review-evidence-reviewed` accepted by `npm run evidence:diagnostics-verify`: actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | in_progress | docs/release/current-release-evidence.md | suli9710 | next RC review | Machine chain is wired through export contract tests, the fail-closed review template, reviewed-evidence verifier, release packet summary, and strict `diagnostics-evidence` delivery stage; remaining RR-P0-005 work is the human content-review artifact for the actual exported package. |
+| RR-P0-006 | Public Beta/RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | in_progress | docs/release/current-release-evidence.md | suli9710 | next public Beta review | Release owner signature and strict public Beta/RC handoff remain pending for the current v0.1.2 candidate. |
+| RR-P0-007 | Agentic threat model and OWASP control map | `npm run security:threat-model` passes for a versioned model covering Electron, FastAPI, SQLite, LLM, browser, documents, MCP, Skill, mobile, and update-chain boundaries; OWASP ASI01-ASI10 rows name controls, tests/evidence, owners, and residual risk; candidate-bound security/release-owner review records acceptance of open residual risk. | in_progress | docs/compliance/agentic-threat-model.md | suli9710 | next public Beta review | The versioned model, control map, validator, and release-pipeline wiring exist. Candidate-bound review evidence and owner acceptance of residual risk are still pending, so this row is not passed. |
 
 ## P1 hardening backlog
 
@@ -44,6 +45,9 @@ Status values are restricted to: `blocked`, `in_progress`, `passed`, `waived`.
 ```powershell
 npm run hygiene
 npm run deps:verify
+npm run maintainability:gate
+npm run review:scorecard
+npm run security:threat-model
 npm run supply-chain:verify
 npm run security:extensions
 npm run qa:gate
@@ -57,7 +61,7 @@ npm run market:readiness
 npm run market:readiness:strict
 ```
 
-Strict readiness accepts explicit release-owner-approved `waived` rows for scoped maintenance packaging. RC/GA readiness must use `npm run release:readiness:rc`, which fails until every P0 blocker is `passed`.
+Strict readiness accepts explicit release-owner-approved `waived` rows for scoped maintenance packaging. Public Beta, RC, and GA readiness must use `npm run release:readiness:rc`, which fails until every P0 blocker is `passed`.
 
 ## Manual evidence rules
 

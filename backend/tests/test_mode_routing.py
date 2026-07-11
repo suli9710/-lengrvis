@@ -17,6 +17,14 @@ from app.llm.registry import get_provider_for_mode
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes, can_use_cloud_model
 
 
+@pytest.fixture(autouse=True)
+def _stable_public_dns(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.outbound_url._system_resolve_outbound_ips",
+        lambda _hostname: ("93.184.216.34",),
+    )
+
+
 def _cloud_settings(**overrides) -> AppSettings:
     base = AppSettings(
         provider_name="openai",

@@ -96,7 +96,7 @@ ADMIN_SCRIPT_LIST = r"""    async function loadSubscriptions() {
     function renderMetrics() {
       const items = state.items || [];
       const active = items.filter(item => ['active', 'trialing'].includes(String(item.status || ''))).length;
-      const paid = items.filter(item => ['pro', 'max'].includes(String(item.plan || ''))).length;
+      const paid = items.filter(item => ['plus', 'pro'].includes(String(item.plan || ''))).length;
       const devices = items.reduce((sum, item) => sum + Number(item.device_count || 0), 0);
       $('metricTotal').textContent = String(items.length);
       $('metricActive').textContent = String(active);

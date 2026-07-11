@@ -112,7 +112,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 2
-        versionName "0.1.1"
+        versionName "0.1.2"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -140,6 +140,9 @@ android {
         // In production, populate these from environment variables or a
         // secrets file that is NOT committed to the repository.
         release {
+            enableV1Signing false
+            enableV2Signing true
+            enableV3Signing true
             if (releaseSigningConfigured) {
                 storeFile file(releaseSigningValues.keystoreFile)
                 storePassword releaseSigningValues.keystorePassword

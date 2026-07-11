@@ -22,6 +22,7 @@ from app.orchestration.execution_models import (
     RunPhase,
     RunState,
 )
+from app.security.execution_isolation import arbitrary_execution_allowed
 
 DEFAULT_ENGINE_ENV = "LENGRVIS_DEFAULT_ENGINE"
 
@@ -78,7 +79,15 @@ def route_engine(
     fallback_engine: EngineSelection = "os",
     developer_writes_enabled: bool = False,
 ) -> EngineRouteDecision:
+    developer_subprocess_allowed = arbitrary_execution_allowed()
     if requested_engine in {"os", "developer"}:
+        if requested_engine == "developer" and not developer_subprocess_allowed:
+            return EngineRouteDecision(
+                requested_engine=requested_engine,
+                selected_engine="os",
+                reason="developer subprocess disabled until Windows execution isolation is attested",
+                rule="developer_isolation_fallback",
+            )
         return EngineRouteDecision(
             requested_engine=requested_engine,
             selected_engine=requested_engine,
@@ -93,7 +102,7 @@ def route_engine(
     os_goal = goal_has_os_intent(normalized)
 
     if developer_goal and goal_has_developer_write_intent(normalized):
-        if developer_writes_enabled:
+        if developer_writes_enabled and developer_subprocess_allowed:
             return EngineRouteDecision(
                 requested_engine="auto",
                 selected_engine="developer",
@@ -101,11 +110,16 @@ def route_engine(
                 rule="developer_write_enabled",
             )
 
+        reason = "write-intent development goal requires the OS approval/runtime path"
+        rule = "developer_write_os"
+        if developer_writes_enabled and not developer_subprocess_allowed:
+            reason = "developer write subprocess disabled until Windows execution isolation is attested"
+            rule = "developer_write_isolation_fallback"
         return EngineRouteDecision(
             requested_engine="auto",
             selected_engine="os",
-            reason="write-intent development goal requires the OS approval/runtime path",
-            rule="developer_write_os",
+            reason=reason,
+            rule=rule,
         )
 
     if goal_is_system_diagnostics(normalized):
@@ -117,6 +131,13 @@ def route_engine(
         )
 
     if developer_goal and not os_goal:
+        if not developer_subprocess_allowed:
+            return EngineRouteDecision(
+                requested_engine="auto",
+                selected_engine="os",
+                reason="read-only code analysis routed through in-process tools while developer subprocess is disabled",
+                rule="developer_read_only_isolation_fallback",
+            )
         return EngineRouteDecision(
             requested_engine="auto",
             selected_engine="developer",
@@ -133,6 +154,8 @@ def route_engine(
         )
 
     selected_fallback: EngineName = fallback_engine if fallback_engine in {"os", "developer"} else "os"
+    if selected_fallback == "developer" and not developer_subprocess_allowed:
+        selected_fallback = "os"
 
     return EngineRouteDecision(
         requested_engine="auto",

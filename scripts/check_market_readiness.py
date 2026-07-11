@@ -27,6 +27,17 @@ ISSUE_URL_RE = re.compile(
     r")(?:[/?#][^\s)]*)?",
     re.IGNORECASE,
 )
+SEMVER_PATTERN = (
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+SEMVER_RE = re.compile(SEMVER_PATTERN)
+WAIVER_RELEASE_RE = re.compile(
+    rf"(?<![0-9A-Za-z])waiver\s+release\s*:\s*v(?P<version>{SEMVER_PATTERN})"
+    r"(?=\s*(?:[;,]|$)|\.(?:\s|$))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -65,7 +76,12 @@ def parse_rows(markdown: str) -> list[MarketRow]:
 
 
 def validate(
-    rows: list[MarketRow], *, strict: bool, paid_launch: bool = False, artifact_root: Path | None = None
+    rows: list[MarketRow],
+    *,
+    strict: bool,
+    paid_launch: bool = False,
+    artifact_root: Path | None = None,
+    release_version: str | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -89,7 +105,7 @@ def validate(
                     f"{row.row_id}: {row.status} row requires an artifact/link label."
                 )
         if row.status == "waived":
-            waiver_error = _waiver_error(row)
+            waiver_error = _waiver_error(row, release_version=release_version)
             if waiver_error:
                 errors.append(f"{row.row_id}: {waiver_error}")
         if strict and row.status == "passed" and not _artifact_is_verifiable(row.artifact, artifact_root):
@@ -111,7 +127,7 @@ def validate(
     return errors, warnings
 
 
-def _waiver_error(row: MarketRow) -> str:
+def _waiver_error(row: MarketRow, *, release_version: str | None = None) -> str:
     match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", row.notes)
     if not match:
         return "waived row requires an ISO expiry date."
@@ -126,6 +142,13 @@ def _waiver_error(row: MarketRow) -> str:
         return "waived row notes require a reason."
     if not _has_follow_up_reference(row.notes):
         return "waived row notes require an explicit follow-up issue reference."
+    waiver_versions = [match.group("version") for match in WAIVER_RELEASE_RE.finditer(row.notes)]
+    if len(waiver_versions) != 1:
+        return "waived row notes require exactly one explicit 'Waiver release: v<version>' scope."
+    if not release_version:
+        return "waived row validation requires the current release version context."
+    if waiver_versions[0] != release_version:
+        return f"waived row notes must bind the waiver to current release version v{release_version}."
     return ""
 
 
@@ -155,6 +178,18 @@ def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
     except ValueError:
         return False
     return candidate.exists()
+
+
+def load_release_version(repo_root: Path) -> tuple[str | None, list[str]]:
+    package_path = repo_root / "package.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"Unable to read package release version: {exc}"]
+    version = package.get("version")
+    if not isinstance(version, str) or not SEMVER_RE.fullmatch(version):
+        return None, ["package.json version must be a semantic release version."]
+    return version, []
 
 
 def validate_sources(repo_root: Path) -> list[str]:
@@ -272,19 +307,24 @@ def main() -> int:
         )
         return 2
 
+    repo_root = Path.cwd()
+    release_version, version_errors = load_release_version(repo_root)
     rows = parse_rows(dashboard_path.read_text(encoding="utf-8"))
     errors, warnings = validate(
         rows,
         strict=args.strict or args.paid_launch,
         paid_launch=args.paid_launch,
-        artifact_root=Path.cwd(),
+        artifact_root=repo_root,
+        release_version=release_version,
     )
-    errors.extend(validate_sources(Path.cwd()))
+    errors.extend(version_errors)
+    errors.extend(validate_sources(repo_root))
     summary = {
         "ok": not errors,
         "strict": args.strict,
         "paid_launch": args.paid_launch,
         "dashboard": str(dashboard_path),
+        "release_version": release_version,
         "p0_total": len(rows),
         "p0_passed": sum(row.status == "passed" for row in rows),
         "p0_waived": sum(row.status == "waived" for row in rows),

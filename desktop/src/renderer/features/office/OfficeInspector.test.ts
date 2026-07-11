@@ -59,7 +59,7 @@ const displayedTask = {
 };
 
 const presentation: OfficeTaskPresentation = {
-  currentTasks: [],
+  currentTasks: [displayedTask],
   displayedTasks: [displayedTask],
   activeTaskLabel: "当前没有正在处理的任务",
   recentTaskLabel: "显示最近 1 项",
@@ -81,6 +81,28 @@ const presentation: OfficeTaskPresentation = {
 };
 
 describe("OfficeInspector", () => {
+  it("discloses how to start, expected output, and safety boundaries before selection", () => {
+    const html = renderToStaticMarkup(createElement(OfficeInspector, {
+      quickSkills: [quickSkill],
+      selectedQuickSkill: null,
+      readinessItems,
+      trustItems,
+      presentation,
+      pendingApprovalCount: 0,
+      safetyAlert: false,
+      onQuickSkillClick: vi.fn(),
+      onReadinessAction: vi.fn(),
+      onTaskPilotAction: vi.fn()
+    }));
+
+    expect(html).toContain("点发送开始");
+    expect(html).toContain("产出：健康摘要");
+    expect(html).toContain("边界：只读读取");
+    expect(html).toContain("本机");
+    expect(html).toContain("不上传");
+    expect(html).toContain("无改动");
+  });
+
   it("renders the template wizard, status strip, and recent task through one interface", () => {
     const html = renderToStaticMarkup(createElement(OfficeInspector, {
       quickSkills: [quickSkill],
@@ -98,6 +120,8 @@ describe("OfficeInspector", () => {
     expect(html).toContain('data-testid="office-template-check-computer"');
     expect(html).toContain('data-testid="office-template-wizard"');
     expect(html).toContain('data-testid="home-status-strip"');
+    expect(html).toContain("<strong>结果时间线</strong>");
+    expect(html).toContain("已开始处理任务");
     expect(html).toContain("检查电脑状态");
     expect(html).toContain("1/1 已就绪");
   });

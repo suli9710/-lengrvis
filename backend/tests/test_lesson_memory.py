@@ -8,7 +8,7 @@ import pytest
 
 from app.agents.memory_agent import MemoryAgent
 from app.core import db
-from app.core.schemas import Plan, PlanStep, StepStatus, Task
+from app.core.schemas import MemoryState, Plan, PlanStep, StepStatus, Task
 from app.orchestration.handlers.completion_handler import CompletionHandler
 
 
@@ -81,3 +81,43 @@ def test_completion_handler_extracts_lessons_for_successful_steps():
     payload = json.loads(lessons[0].content)
     assert payload["tool"] == "file.move"
     assert payload["args_pattern"]["source"] == "<path>"
+
+
+def test_completion_auto_learning_is_disabled_by_default(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_MEMORY_AUTO_LEARNING_ENABLED", "false")
+
+    class Orchestrator:
+        name = "OrchestratorAgent"
+
+        def __init__(self):
+            self.memory = MemoryAgent()
+
+    task = Task(id="task_disabled", user_goal="organize invoices", final_summary="done")
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[])
+    handler = CompletionHandler(Orchestrator())
+
+    asyncio.run(handler.consolidate_memory(task, plan))
+
+    assert handler.orchestrator.memory.list_all() == []
+
+
+def test_completion_auto_learning_opt_in_writes_to_quarantine(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_MEMORY_AUTO_LEARNING_ENABLED", "true")
+
+    class Orchestrator:
+        name = "OrchestratorAgent"
+
+        def __init__(self):
+            self.memory = MemoryAgent()
+
+    task = Task(id="task_enabled", user_goal="organize invoices", final_summary="done")
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[])
+    handler = CompletionHandler(Orchestrator())
+
+    asyncio.run(handler.consolidate_memory(task, plan))
+
+    memories = handler.orchestrator.memory.list_all()
+    assert len(memories) == 1
+    assert memories[0].kind == "task_summary"
+    assert memories[0].state == MemoryState.QUARANTINED
+    assert asyncio.run(handler.orchestrator.memory.recall("organize invoices")) == []

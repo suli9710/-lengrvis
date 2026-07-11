@@ -1,7 +1,9 @@
-export type BackendCommercePlan = "free" | "pro" | "max" | "team";
+export type BackendCommercePlan = "free" | "plus" | "pro" | "max" | "team";
 
 export interface BackendCommercePlanStatus {
   plan: BackendCommercePlan;
+  monthly_price_cny?: number;
+  model_tier?: "standard" | "advanced";
   remote_desktop_enabled: boolean;
   features: Record<string, boolean>;
   high_risk_features: string[];

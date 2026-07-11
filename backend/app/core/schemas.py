@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
@@ -109,6 +109,12 @@ class ApprovalStatus(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     EXPIRED = "expired"
+
+
+class MemoryState(StrEnum):
+    QUARANTINED = "quarantined"
+    ACTIVE = "active"
+    REVOKED = "revoked"
 
 
 MAX_USER_MESSAGE_CHARS = 16000
@@ -414,6 +420,24 @@ class ToolCall(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class ContentEnvelope(BaseModel):
+    """Provenance and taint metadata that stays attached to derived content."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_kind: str
+    source_id: str = ""
+    origin: str = ""
+    content_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    trust_level: Literal["untrusted", "unknown", "internal", "user_confirmed", "trusted"] = "unknown"
+    taint_flags: list[str] = Field(default_factory=list)
+    observed_at: str = Field(default_factory=now_iso)
+    task_scope: str = ""
+    user_confirmed: bool = False
+    sanitizers_applied: list[str] = Field(default_factory=list)
+    integrity_hmac: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+
+
 class ToolResult(BaseModel):
     id: str = Field(default_factory=lambda: new_id("result"))
     tool_call_id: str
@@ -423,6 +447,7 @@ class ToolResult(BaseModel):
     changed_paths: list[str] = Field(default_factory=list)
     rollback_info: dict[str, Any] = Field(default_factory=dict)
     observation: str = ""
+    content_envelope: ContentEnvelope | None = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -580,6 +605,12 @@ class Memory(BaseModel):
     tags: list[str] = Field(default_factory=list)
     task_id: str = ""
     source: str = "user"
+    state: MemoryState = MemoryState.ACTIVE
+    user_confirmed: bool = False
+    expires_at: str = ""
+    reviewed_at: str = ""
+    reviewed_by: str = ""
+    content_envelope: ContentEnvelope | None = None
     use_count: int = 0
     last_used_at: str = ""
     embedding_dim: int = 0

@@ -13,7 +13,10 @@ when recording trend snapshots in release evidence.
 Use `npm run maintainability:gate` as the fail-closed anti-regrowth check. It
 keeps the existing hotspot inventory honest by enforcing current-generation
 p95 and per-area max-file thresholds without claiming that the large modules are
-already healthy. CI runs this gate in the `hygiene` job so new oversized source
+already healthy. The gate also enforces a 900-line default source-file ceiling
+with an explicit legacy allowlist for current oversized hotspots; any new
+oversized file, or any oversized file not named in that allowlist, fails the
+machine gate. CI runs this gate in the `hygiene` job so new oversized source
 growth fails the machine gate and is reflected in release evidence status.
 
 | Area | Current size | Current risk | Owner seam | Target state | Next safe step |
@@ -156,6 +159,7 @@ Before RC, at minimum:
 
 - `npm run maintainability:size`
 - `npm run maintainability:gate`
+- `npm run review:scorecard`
 - `.venv\Scripts\python.exe scripts\check_source_size.py --json`
 - `npm --prefix desktop run typecheck`
 - `npm --prefix desktop test -- settingsMappers`
@@ -179,7 +183,11 @@ Before RC, at minimum:
 - `npm --prefix desktop run smoke:ipc`
 - `npm --prefix desktop run smoke:browser-activity`
 
-Latest local verification on 2026-07-06: `npm run maintainability:gate` passes with p95 at 745 lines, backend max at 1339, desktop code max at 828, desktop style max at 633, mobile max at 819, and scripts max at 2359. The 2026-07-05 desktop typecheck and all 171 Vitest tests passed; the renderer compiled successfully, but its bundle-budget post-check reported 704.5 KB against a 700 KB budget. The exception-boundary test has one existing unrelated failure at `backend/app/services/mobile_pairing_transport.py:93`.
+Latest local verification on 2026-07-09: `npm run maintainability:size`
+passes with p95 at 737 lines, backend max at 1339, desktop code max at 828,
+desktop style max at 633, mobile max at 819, and scripts max at 2359.
+`npm run review:scorecard` also passes and keeps the full-review scorecard from
+claiming 100/100 while RR-P0 release evidence remains unfinished.
 - CSS split equivalence check: ordered `styles.*.css` concatenation equals `HEAD:desktop/src/renderer/styles.css` after LF normalization.
 - `.venv\Scripts\python.exe -m pytest backend\tests\test_context_management.py backend\tests\test_context_compaction.py backend\tests\test_context_usage.py backend\tests\test_openai_compatible_resilience.py -q`
 - `.venv\Scripts\python.exe -m pytest backend\tests\test_context_compact_boundaries.py backend\tests\test_context_management.py backend\tests\test_context_compaction.py -q`

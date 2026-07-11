@@ -3,14 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
-import { clearRemoteInputGrantTokens, getApprovalDetail, type PairingSession, type RemoteInputGrant } from "../src/api/client";
+import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, isExpiredTimestamp, refreshMobileSession, type PairingSession, type RemoteInputGrant } from "../src/api/client";
 import { resolveAndroidBack } from "../src/androidBackNavigation";
 import { addApprovalNotificationResponseListener, getLastApprovalNotificationApprovalId } from "../src/notifications";
 import { reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs, isRemoteInputGrantUsable } from "../src/remoteInputGrant";
 import { ConsentScreen } from "../src/screens/ConsentScreen";
 import { PairScreen } from "../src/screens/PairScreen";
 import { MobileCompanionProvider, useMobileCompanion } from "../src/state/MobileCompanionContext";
-import { clearSession, loadSession } from "../src/store/auth";
+import { sessionRefreshDelayMs, sessionRefreshRetryDelayMs } from "../src/sessionLifecycle";
+import { clearSession, loadSession, replaceSessionIfTokenMatches } from "../src/store/auth";
 import { loadConsentState } from "../src/store/consent";
 import { colors } from "../src/ui/theme";
 
@@ -23,6 +24,7 @@ export default function RootLayout() {
   const [session, setSession] = useState<PairingSession | null>(null);
   const [sessionLoadState, setSessionLoadState] = useState<SessionLoadState>("loading");
   const [sessionLoadAttempt, setSessionLoadAttempt] = useState(0);
+  const [sessionRefreshAttempt, setSessionRefreshAttempt] = useState(0);
   const [remoteInputGrant, setRemoteInputGrant] = useState<RemoteInputGrant | null>(null);
   const [consentGate, setConsentGate] = useState<ConsentGateState>("checking");
 
@@ -47,11 +49,18 @@ export default function RootLayout() {
     let isActive = true;
     setSessionLoadState("loading");
     void loadSession()
-      .then((stored) => {
+      .then(async (storedSession) => {
         if (!isActive) return;
+        let stored = storedSession;
+        if (stored && isExpiredTimestamp(stored.expiresAt)) {
+          const refreshed = await refreshMobileSession(stored);
+          const replaced = await replaceSessionIfTokenMatches(stored.token, refreshed);
+          if (!replaced || !isActive) return;
+          stored = refreshed;
+        }
         if (!stored) {
           setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
-          if (pathname !== "/") router.replace("/");
+          router.replace("/");
         }
         setSession(stored);
         setSessionLoadState("ready");
@@ -61,12 +70,12 @@ export default function RootLayout() {
         setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
         setSession(null);
         setSessionLoadState("failed");
-        if (pathname !== "/") router.replace("/");
+        router.replace("/");
       });
     return () => {
       isActive = false;
     };
-  }, [consentGate, pathname, router, sessionLoadAttempt]);
+  }, [consentGate, router, sessionLoadAttempt]);
 
   useEffect(() => {
     if (!remoteInputGrant) return undefined;
@@ -109,6 +118,40 @@ export default function RootLayout() {
         router.replace("/");
       });
   }, [resetShellState, router]);
+
+  useEffect(() => {
+    if (!session) return undefined;
+    const baseSession = session;
+    const refreshDelay = sessionRefreshDelayMs(baseSession);
+    if (refreshDelay === null) return undefined;
+    let active = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const refreshTimer = setTimeout(() => {
+      void refreshMobileSession(baseSession)
+        .then(async (nextSession) => {
+          const replaced = await replaceSessionIfTokenMatches(baseSession.token, nextSession);
+          if (!active || !replaced) return;
+          setSessionRefreshAttempt(0);
+          setSession((current) => current?.token === baseSession.token ? nextSession : current);
+        })
+        .catch((error: unknown) => {
+          if (!active) return;
+          if (error instanceof AuthExpiredError) {
+            clearLocalSessionOrShowRecovery();
+            return;
+          }
+          retryTimer = setTimeout(
+            () => setSessionRefreshAttempt((attempt) => attempt + 1),
+            sessionRefreshRetryDelayMs(sessionRefreshAttempt),
+          );
+        });
+    }, refreshDelay);
+    return () => {
+      active = false;
+      clearTimeout(refreshTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [clearLocalSessionOrShowRecovery, session, sessionRefreshAttempt]);
 
   const handlePaired = useCallback((nextSession: PairingSession) => {
     resetShellState();

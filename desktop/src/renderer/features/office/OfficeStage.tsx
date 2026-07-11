@@ -1,29 +1,27 @@
 import type { CSSProperties } from "react";
 
-import xiaomaWalkingGif from "../../assets/xiaoma-agent/fc_walking_h.gif";
-import xiaomaCoffeeGif from "../../assets/xiaoma-agent/fc_drink_coffee.gif";
 import xiaomaScreenAppGif from "../../assets/xiaoma-agent/fc_screen_working_apk_use.gif";
 import xiaomaScreenFileGif from "../../assets/xiaoma-agent/fc_screen_working_file_use.gif";
 import xiaomaScreenMainGif from "../../assets/xiaoma-agent/fc_screen_working_main.gif";
 import xiaomaScreenSearchGif from "../../assets/xiaoma-agent/fc_screen_working_search_or_browser_use.gif";
 import xiaomaScreenComputerGif from "../../assets/xiaoma-agent/fc_screen_working_win_use.gif";
-import xiaomaPoopingGif from "../../assets/xiaoma-agent/fc_pooping-0_cropped.gif";
-import xiaomaTreadmillGif from "../../assets/xiaoma-agent/running_treadmill_cropped.gif";
-import xiaomaSaluteGif from "../../assets/xiaoma-agent/salute.gif";
-import xiaomaSleepingGif from "../../assets/xiaoma-agent/sleeping.gif";
-import xiaomaStandbyGif from "../../assets/xiaoma-agent/standby.gif";
-import xiaomaWorkingGif from "../../assets/xiaoma-agent/working.gif";
+import xiaomaScreenAppStill from "../../assets/xiaoma-agent/fc_screen_working_apk_use_still.png?no-inline";
+import xiaomaScreenFileStill from "../../assets/xiaoma-agent/fc_screen_working_file_use_still.png?no-inline";
+import xiaomaScreenMainStill from "../../assets/xiaoma-agent/fc_screen_working_main_still.png?no-inline";
+import xiaomaScreenSearchStill from "../../assets/xiaoma-agent/fc_screen_working_search_or_browser_use_still.png?no-inline";
+import xiaomaScreenComputerStill from "../../assets/xiaoma-agent/fc_screen_working_win_use_still.png?no-inline";
 import officeChair from "../../assets/office-analysis/workstation-parts/chair.png";
 import officeChairBoss from "../../assets/office-analysis/workstation-parts/chair_boss.png";
 import officeDesk from "../../assets/office-analysis/workstation-parts/desk.png";
 import officeDeskBoss from "../../assets/office-analysis/workstation-parts/desk_boss.png";
-import officeScreenIdle from "../../assets/office-analysis/workstation-parts/screen_img.png";
-import officeScreenOn from "../../assets/office-analysis/workstation-parts/screen_on.png";
+import officeScreenIdle from "../../assets/office-analysis/workstation-parts/screen_img.png?no-inline";
+import officeScreenOn from "../../assets/office-analysis/workstation-parts/screen_on.png?no-inline";
 import officeShadow from "../../assets/office-analysis/workstation-parts/shadow.png";
 import officeShadowBoss from "../../assets/office-analysis/workstation-parts/shadow_boss.png";
 import officeToilet from "../../assets/office-analysis/workstation-parts/toilet.png";
 import officeTreadmill from "../../assets/office-analysis/workstation-parts/treadmill.png";
 import officeWaterBar from "../../assets/office-analysis/workstation-parts/water_bar.png";
+import { useUiPreferences } from "../../lib/uiPreferences";
 import {
   projectOfficePoint,
   type OfficeAgentDefinition,
@@ -31,6 +29,9 @@ import {
   type OfficeAgentRuntime,
   type OfficeMapSize
 } from "./model";
+import { PonyRig, type PonyFeedback } from "./PonyRig";
+import { ponyClipForOfficePose } from "./ponyMotion";
+import { useOfficeTravelController } from "./useOfficeTravelController";
 
 interface OfficeSlot {
   agentId: string;
@@ -39,13 +40,6 @@ interface OfficeSlot {
   boss?: boolean;
 }
 
-interface PonyAgentProps {
-  accent: string;
-  pose: OfficeAgentPose;
-  isLead?: boolean;
-  isWorking: boolean;
-  isMoving: boolean;
-}
 
 interface OfficeAgentVisualMetrics {
   width: number;
@@ -60,15 +54,6 @@ interface OfficeAgentVisualMetrics {
   haloHeight: number;
 }
 
-const xiaomaPoseGifs: Record<OfficeAgentPose, string> = {
-  working: xiaomaWorkingGif,
-  coffee: xiaomaCoffeeGif,
-  treadmill: xiaomaTreadmillGif,
-  restroom: xiaomaPoopingGif,
-  nap: xiaomaSleepingGif,
-  wander: xiaomaWalkingGif,
-  review: xiaomaSaluteGif
-};
 
 const xiaomaScreenWorkingGifs: Record<string, string> = {
   pm: xiaomaScreenMainGif,
@@ -77,6 +62,15 @@ const xiaomaScreenWorkingGifs: Record<string, string> = {
   computer: xiaomaScreenComputerGif,
   browser: xiaomaScreenSearchGif,
   search: xiaomaScreenSearchGif
+};
+
+const xiaomaScreenWorkingStills: Record<string, string> = {
+  pm: xiaomaScreenMainStill,
+  app: xiaomaScreenAppStill,
+  file: xiaomaScreenFileStill,
+  computer: xiaomaScreenComputerStill,
+  browser: xiaomaScreenSearchStill,
+  search: xiaomaScreenSearchStill
 };
 
 const officeSlots: OfficeSlot[] = [
@@ -88,19 +82,19 @@ const officeSlots: OfficeSlot[] = [
   { agentId: "search", x: 864, y: 672 }
 ];
 
-const xiaomaBaseVisualMetrics: Record<OfficeAgentPose, Omit<OfficeAgentVisualMetrics, "haloLeft" | "haloTop">> = {
-  working: { width: 140, height: 105, offsetX: 0, offsetY: 0, bubbleY: -132, labelY: 10, haloWidth: 160, haloHeight: 116 },
-  coffee: { width: 140, height: 105, offsetX: 0, offsetY: 0, bubbleY: -132, labelY: 10, haloWidth: 160, haloHeight: 116 },
-  treadmill: { width: 118, height: 108, offsetX: 0, offsetY: 0, bubbleY: -134, labelY: 10, haloWidth: 132, haloHeight: 116 },
-  restroom: { width: 96, height: 132, offsetX: 0, offsetY: 0, bubbleY: -156, labelY: 10, haloWidth: 118, haloHeight: 140 },
-  nap: { width: 150, height: 112, offsetX: 0, offsetY: 0, bubbleY: -140, labelY: 10, haloWidth: 170, haloHeight: 122 },
-  wander: { width: 140, height: 105, offsetX: 0, offsetY: 0, bubbleY: -132, labelY: 10, haloWidth: 160, haloHeight: 116 },
-  review: { width: 140, height: 105, offsetX: 0, offsetY: 0, bubbleY: -132, labelY: 10, haloWidth: 160, haloHeight: 116 }
+const xiaomaBaseVisualMetrics: Omit<OfficeAgentVisualMetrics, "haloLeft" | "haloTop"> = {
+  width: 150,
+  height: 124,
+  offsetX: 0,
+  offsetY: 0,
+  bubbleY: -150,
+  labelY: 8,
+  haloWidth: 168,
+  haloHeight: 136
 };
 
 const safetySharedAnchorFallback = { x: 1030, y: 382 };
 const sharedAnchorTolerance = 1.5;
-export const agentTravelDurationMs = 4200;
 
 const agentAnchorStyle = {
   position: "absolute",
@@ -112,8 +106,8 @@ const agentAnchorStyle = {
 
 const agentGroundAnchorStyle = {
   position: "absolute",
-  left: 0,
-  top: 0,
+  left: "50%",
+  top: "100%",
   width: 0,
   height: 0,
   pointerEvents: "none"
@@ -158,7 +152,9 @@ export function OfficeAgent({
   mapSize,
   agentScale,
   isWorking,
-  isMoving,
+  isPrimary,
+  motionVisible,
+  feedback,
   onSelect
 }: {
   agent: OfficeAgentDefinition;
@@ -166,9 +162,12 @@ export function OfficeAgent({
   mapSize: OfficeMapSize;
   agentScale: number;
   isWorking: boolean;
-  isMoving: boolean;
+  isPrimary: boolean;
+  motionVisible: boolean;
+  feedback?: PonyFeedback;
   onSelect: () => void;
 }) {
+  const { effectiveMotion } = useUiPreferences();
   const runtime = state ?? {
     x: agent.x,
     y: agent.y,
@@ -176,28 +175,43 @@ export function OfficeAgent({
     pose: "working" as OfficeAgentPose
   };
   const targetPose: OfficeAgentPose = isWorking ? "working" : runtime.pose;
-  const pose: OfficeAgentPose = isMoving ? "wander" : targetPose;
+  const { anchorRef, phase, facing } = useOfficeTravelController({
+    target: { x: runtime.x, y: runtime.y },
+    mapSize,
+    reducedMotion: effectiveMotion === "reduced",
+    paused: effectiveMotion === "full" && !motionVisible
+  });
+  const isMoving = phase !== "idle";
+  const displayPose: OfficeAgentPose = isMoving ? "wander" : targetPose;
+  const clip = ponyClipForOfficePose(targetPose, phase);
   const helper = getFriendlyAgentCopy(agent);
-  const activity = isMoving ? "移动中" : isWorking ? "正在协作" : "待命";
-  const isLead = agent.scale === "lead" && isWorking;
+  const activity = feedback === "completed"
+    ? "已经完成"
+    : feedback === "failed"
+      ? "需要处理"
+      : feedback === "approval"
+        ? "等你确认"
+        : feedback === "selected"
+          ? "我来帮你"
+          : phase === "turning"
+            ? "正在转身"
+            : isMoving
+              ? "正在就位"
+              : runtime.activity || (isWorking ? "正在处理" : "随时待命");
+  const isLead = agent.scale === "lead";
   const screenPosition = projectOfficePoint(runtime.x, runtime.y, mapSize);
-  const visualMetrics = getXiaomaVisualMetrics(pose, isLead, agentScale);
+  const visualMetrics = getXiaomaVisualMetrics(isLead, agentScale);
   const hitWidth = roundMetric(Math.max(52, visualMetrics.width * (agent.id === "safety" ? 0.56 : 0.7)));
   const hitHeight = roundMetric(Math.max(48, visualMetrics.height * (agent.id === "safety" ? 0.6 : 0.72)));
   const style = {
     ...agentAnchorStyle,
-    left: `${screenPosition.x}px`,
-    top: `${screenPosition.y}px`,
     "--agent-accent": agent.accent,
     "--agent-glow": agent.glow,
-    "--agent-delay": `${agent.delay}s`,
-    "--agent-duration": `${agent.duration}s`,
     "--agent-anchor-x": `${screenPosition.x}px`,
     "--agent-anchor-y": `${screenPosition.y}px`,
     "--agent-map-x": `${runtime.x}px`,
     "--agent-map-y": `${runtime.y}px`,
     "--agent-z-index": Math.round(runtime.y + (isWorking ? 8 : 0)),
-    "--agent-scale": agentScale,
     "--agent-width": `${hitWidth}px`,
     "--agent-height": `${hitHeight}px`,
     "--agent-visual-width": `${visualMetrics.width}px`,
@@ -211,37 +225,59 @@ export function OfficeAgent({
     "--agent-halo-width": `${visualMetrics.haloWidth}px`,
     "--agent-halo-height": `${visualMetrics.haloHeight}px`
   } as CSSProperties;
+  const animateCharacter = effectiveMotion === "full" && motionVisible && (
+    isPrimary || isWorking || isMoving || Boolean(feedback)
+  );
   const className = cx(
     "office-agent",
-    `office-agent--${pose}`,
-    `office-agent--pose-${pose}`,
+    `office-agent--${displayPose}`,
+    `office-agent--pose-${displayPose}`,
     `office-agent--runtime-${runtime.pose}`,
     `office-agent--target-${targetPose}`,
+    `office-agent--phase-${phase}`,
+    `office-agent--facing-${facing}`,
     `office-agent--agent-${agent.id}`,
     isWorking ? "office-agent--active" : "office-agent--idle",
     isMoving ? "office-agent--moving" : "office-agent--still",
-    isLead ? "office-agent--lead" : "office-agent--standard"
+    isLead ? "office-agent--lead" : "office-agent--standard",
+    animateCharacter ? "office-agent--animated" : "office-agent--static",
+    !motionVisible ? "office-agent--motion-paused" : null,
+    isPrimary ? "office-agent--primary" : "office-agent--secondary",
+    feedback ? `office-agent--feedback-${feedback}` : null
   );
 
   return (
     <button
+      ref={anchorRef}
       type="button"
       className={className}
       style={style}
       onClick={onSelect}
       aria-label={`${helper.name}, ${helper.role}, ${activity}`}
       data-agent-id={agent.id}
-      data-pose={pose}
+      data-pose={displayPose}
       data-runtime-pose={runtime.pose}
       data-target-pose={targetPose}
       data-anchor-x={runtime.x}
       data-anchor-y={runtime.y}
+      data-facing={facing}
+      data-motion-phase={phase}
+      data-clip={clip}
     >
       <span className="office-agent__ground-anchor" aria-hidden="true" style={agentGroundAnchorStyle} />
       <span className="office-agent__halo" aria-hidden="true" style={agentHaloStyle} />
       <span className="office-agent__bubble" style={agentBubbleStyle}>{activity}</span>
       <span className="office-agent__visual" aria-hidden="true" style={agentSpriteStyle}>
-        <PonyAgent accent={agent.accent} pose={pose} isLead={isLead} isWorking={isWorking} isMoving={isMoving} />
+        <PonyRig
+          accent={agent.accent}
+          clip={clip}
+          facing={facing}
+          motionPhase={phase}
+          feedback={feedback}
+          isLead={isLead}
+          animate={animateCharacter}
+          paused={!motionVisible}
+        />
       </span>
       <span className="office-agent__label" style={agentLabelStyle}>
         <strong>{helper.name}</strong>
@@ -273,24 +309,15 @@ export function resolveOfficeAgentRuntime(
   };
 }
 
-export function getMovingAgentIds(
-  agents: OfficeAgentDefinition[],
-  current: Record<string, OfficeAgentRuntime>,
-  next: Record<string, OfficeAgentRuntime>
-) {
-  const moving = new Set<string>();
-  for (const agent of agents) {
-    const prev = current[agent.id];
-    const incoming = next[agent.id];
-    if (!prev || !incoming) continue;
-    const dx = Math.abs(prev.x - incoming.x);
-    const dy = Math.abs(prev.y - incoming.y);
-    if (dx > 1.5 || dy > 1.5) moving.add(agent.id);
-  }
-  return moving;
-}
-
-export function OfficeLayout({ workingAgentIds }: { workingAgentIds: ReadonlySet<string> }) {
+export function OfficeLayout({
+  workingAgentIds,
+  motionVisible
+}: {
+  workingAgentIds: ReadonlySet<string>;
+  motionVisible: boolean;
+}) {
+  const { effectiveMotion } = useUiPreferences();
+  const animateScreens = effectiveMotion === "full" && motionVisible;
   return (
     <div className="office-layout" aria-hidden="true">
       <div className="office-grid" />
@@ -298,7 +325,12 @@ export function OfficeLayout({ workingAgentIds }: { workingAgentIds: ReadonlySet
       <img className="office-furniture office-furniture--treadmill" src={officeTreadmill} alt="" draggable={false} />
       <img className="office-furniture office-furniture--toilet" src={officeToilet} alt="" draggable={false} />
       {officeSlots.map((slot) => (
-        <Workstation key={slot.agentId} slot={slot} active={workingAgentIds.has(slot.agentId)} />
+        <Workstation
+          key={slot.agentId}
+          slot={slot}
+          active={workingAgentIds.has(slot.agentId)}
+          animate={animateScreens}
+        />
       ))}
     </div>
   );
@@ -328,23 +360,22 @@ function isSameOfficePoint(a: Pick<OfficeAgentRuntime, "x" | "y">, b: Pick<Offic
   return Math.abs(a.x - b.x) <= sharedAnchorTolerance && Math.abs(a.y - b.y) <= sharedAnchorTolerance;
 }
 
-function getXiaomaVisualMetrics(pose: OfficeAgentPose, isLead: boolean, agentScale = 1): OfficeAgentVisualMetrics {
-  const base = xiaomaBaseVisualMetrics[pose];
+function getXiaomaVisualMetrics(isLead: boolean, agentScale = 1): OfficeAgentVisualMetrics {
   const scale = (isLead ? 168 / 140 : 1) * agentScale;
-  const width = roundMetric(base.width * scale);
-  const height = roundMetric(base.height * scale);
-  const offsetX = roundMetric(base.offsetX * scale);
-  const offsetY = roundMetric(base.offsetY * scale);
-  const haloWidth = roundMetric(base.haloWidth * scale);
-  const haloHeight = roundMetric(base.haloHeight * scale);
+  const width = roundMetric(xiaomaBaseVisualMetrics.width * scale);
+  const height = roundMetric(xiaomaBaseVisualMetrics.height * scale);
+  const offsetX = roundMetric(xiaomaBaseVisualMetrics.offsetX * scale);
+  const offsetY = roundMetric(xiaomaBaseVisualMetrics.offsetY * scale);
+  const haloWidth = roundMetric(xiaomaBaseVisualMetrics.haloWidth * scale);
+  const haloHeight = roundMetric(xiaomaBaseVisualMetrics.haloHeight * scale);
 
   return {
     width,
     height,
     offsetX,
     offsetY,
-    bubbleY: roundMetric(base.bubbleY * scale),
-    labelY: roundMetric(base.labelY * scale),
+    bubbleY: roundMetric(xiaomaBaseVisualMetrics.bubbleY * scale),
+    labelY: roundMetric(xiaomaBaseVisualMetrics.labelY * scale),
     haloLeft: roundMetric(offsetX - haloWidth / 2),
     haloTop: roundMetric(offsetY - height - 6 * scale),
     haloWidth,
@@ -352,34 +383,8 @@ function getXiaomaVisualMetrics(pose: OfficeAgentPose, isLead: boolean, agentSca
   };
 }
 
-function PonyAgent({ accent, pose, isLead, isWorking, isMoving }: PonyAgentProps) {
-  const gif = isMoving ? xiaomaWalkingGif : xiaomaPoseGifs[pose] ?? xiaomaStandbyGif;
-  const className = cx(
-    "pony-agent-svg",
-    `pony-agent-svg--${pose}`,
-    `pony-agent-svg--pose-${pose}`,
-    isLead ? "pony-agent-svg--lead" : "pony-agent-svg--standard",
-    isWorking ? "pony-agent-svg--working" : "pony-agent-svg--idle",
-    isMoving ? "pony-agent-svg--moving" : "pony-agent-svg--still"
-  );
-
-  return (
-    <span
-      className={className}
-      aria-hidden="true"
-      style={{ "--agent-accent": accent, width: "100%", height: "100%" } as CSSProperties}
-    >
-      <img className="xiaoma-agent-gif" src={gif} alt="" draggable={false} />
-    </span>
-  );
-}
-
-function Workstation({ slot, active }: { slot: OfficeSlot; active: boolean }) {
-  const screenImage = active
-    ? xiaomaScreenWorkingGifs[slot.agentId] ?? officeScreenOn
-    : slot.boss
-      ? officeScreenOn
-      : officeScreenIdle;
+function Workstation({ slot, active, animate }: { slot: OfficeSlot; active: boolean; animate: boolean }) {
+  const screen = resolveWorkstationScreen(slot.agentId, Boolean(slot.boss), active, animate);
   const style = {
     "--slot-x": `${slot.x}px`,
     "--slot-y": `${slot.y}px`
@@ -389,10 +394,38 @@ function Workstation({ slot, active }: { slot: OfficeSlot; active: boolean }) {
     <div className={slot.boss ? "office-workstation office-workstation--boss" : "office-workstation"} style={style}>
       <img className="office-workstation__shadow" src={slot.boss ? officeShadowBoss : officeShadow} alt="" draggable={false} />
       <img className="office-workstation__desk" src={slot.boss ? officeDeskBoss : officeDesk} alt="" draggable={false} />
-      <img className="office-workstation__screen" src={screenImage} alt="" draggable={false} />
+      <img
+        key={screen.src}
+        className="office-workstation__screen"
+        src={screen.src}
+        alt=""
+        draggable={false}
+        decoding="async"
+        onError={(event) => {
+          const image = event.currentTarget;
+          if (image.dataset.fallbackApplied === "true" || screen.fallbackSrc === screen.src) {
+            image.onerror = null;
+            return;
+          }
+          image.dataset.fallbackApplied = "true";
+          image.src = screen.fallbackSrc;
+        }}
+      />
       <img className="office-workstation__chair" src={slot.boss ? officeChairBoss : officeChair} alt="" draggable={false} />
     </div>
   );
+}
+
+export function resolveWorkstationScreen(agentId: string, boss: boolean, active: boolean, animate: boolean) {
+  const stillSrc = xiaomaScreenWorkingStills[agentId] ?? officeScreenOn;
+  if (active) {
+    return {
+      src: animate ? xiaomaScreenWorkingGifs[agentId] ?? stillSrc : stillSrc,
+      fallbackSrc: stillSrc
+    };
+  }
+  const idleSrc = boss ? officeScreenOn : officeScreenIdle;
+  return { src: idleSrc, fallbackSrc: officeScreenOn };
 }
 
 function roundMetric(value: number) {

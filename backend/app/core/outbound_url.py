@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
+from app.config import env_flag
+
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".intranet")
-# RFC 2544 benchmarking range used by local tunneling proxies; literal fake-IP URLs stay blocked.
-_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 # Cloud instance metadata endpoints (AWS/GCP/Azure link-local).
 _METADATA_HOSTS = frozenset({"169.254.169.254", "metadata.google.internal"})
+_BENCHMARK_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_TRUSTED_FAKE_IP_TUN_ENV = "LENGRVIS_TRUSTED_FAKE_IP_TUN"
+OutboundResolver = Callable[
+    [str],
+    Iterable[str | ipaddress.IPv4Address | ipaddress.IPv6Address],
+]
 
 
 def is_local_base_url(url: str) -> bool:
@@ -29,7 +36,12 @@ def is_local_base_url(url: str) -> bool:
     return address.is_loopback or address.is_private or address.is_link_local
 
 
-def validate_outbound_http_url(url: str, *, allow_private: bool = False) -> str:
+def validate_outbound_http_url(
+    url: str,
+    *,
+    allow_private: bool = False,
+    resolver: OutboundResolver | None = None,
+) -> str:
     """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
     raw = str(url or "").strip()
     parsed = urlparse(raw)
@@ -38,7 +50,7 @@ def validate_outbound_http_url(url: str, *, allow_private: bool = False) -> str:
     hostname = parsed.hostname or ""
     if _is_cloud_metadata_host(hostname):
         raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
-    if not allow_private and _is_blocked_outbound_host(hostname):
+    if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
         raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
     return raw
 
@@ -72,7 +84,12 @@ class PinnedOutboundRequest:
     extensions: dict[str, str] = field(default_factory=dict)
 
 
-def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOutboundRequest:
+def pin_outbound_http_url(
+    url: str,
+    *,
+    allow_private: bool = False,
+    resolver: OutboundResolver | None = None,
+) -> PinnedOutboundRequest:
     """Validate an outbound URL and pin its connect target to a checked IP.
 
     Returns the URL unchanged (no pin) when the host is already a literal IP,
@@ -81,7 +98,7 @@ def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOut
     Raises ``ValueError`` when validation fails or every resolved address is
     blocked.
     """
-    raw = validate_outbound_http_url(url, allow_private=allow_private)
+    raw = validate_outbound_http_url(url, allow_private=allow_private, resolver=resolver)
     split = urlsplit(raw)
     hostname = split.hostname or ""
     try:
@@ -95,7 +112,7 @@ def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOut
                 "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
             )
         return PinnedOutboundRequest(url=raw)
-    pinned_ip = _resolve_pinned_outbound_ip(hostname)
+    pinned_ip = _resolve_pinned_outbound_ip(hostname, resolver=resolver)
     if pinned_ip is None:
         raise ValueError("Outbound URL hostname could not be resolved; refusing unpinned connect to prevent SSRF.")
     host_for_url = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
@@ -106,22 +123,9 @@ def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOut
     return PinnedOutboundRequest(url=pinned_url, headers={"Host": host_header}, extensions=extensions)
 
 
-def _resolve_pinned_outbound_ip(hostname: str) -> str | None:
-    try:
-        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-    except OSError as exc:
-        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.") from exc
-    for info in infos:
-        addr = str(info[4][0]).split("%")[0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP_NETWORK:
-            # Local tunneling proxy fake-IP: connecting to it is the intended
-            # behavior, so it is a safe pin target.
-            return str(ip)
-        if _is_blocked_ip(ip):
+def _resolve_pinned_outbound_ip(hostname: str, *, resolver: OutboundResolver | None = None) -> str | None:
+    for ip in _resolved_outbound_ips(hostname, resolver=resolver):
+        if _is_blocked_ip(ip) and not _is_explicitly_trusted_fake_ip_answer(hostname, ip):
             continue
         return str(ip)
     # The name resolved but only to blocked addresses: the benign answer seen
@@ -155,25 +159,63 @@ def _is_statically_blocked_host(hostname: str) -> bool:
     return lowered == "localhost" or lowered.endswith(_LOCAL_HOST_SUFFIXES) or "." not in lowered
 
 
-def _is_blocked_outbound_host(hostname: str) -> bool:
+def _is_blocked_outbound_host(hostname: str, *, resolver: OutboundResolver | None = None) -> bool:
     if _is_statically_blocked_host(hostname):
         return True
-    try:
-        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-    except OSError as exc:
-        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.") from exc
-    for info in infos:
-        addr = str(info[4][0]).split("%")[0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP_NETWORK:
-            continue
-        if _is_blocked_ip(ip):
+    for ip in _resolved_outbound_ips(hostname, resolver=resolver):
+        if _is_blocked_ip(ip) and not _is_explicitly_trusted_fake_ip_answer(hostname, ip):
             return True
     return False
 
 
+def _resolved_outbound_ips(
+    hostname: str,
+    *,
+    resolver: OutboundResolver | None = None,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    """Resolve a hostname once through an injectable, deterministic boundary."""
+
+    try:
+        raw_addresses = tuple(resolver(hostname)) if resolver is not None else _system_resolve_outbound_ips(hostname)
+    except (OSError, TypeError) as exc:
+        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.") from exc
+
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for raw_address in raw_addresses:
+        try:
+            addresses.append(ipaddress.ip_address(str(raw_address).split("%")[0]))
+        except (TypeError, ValueError):
+            continue
+    if not addresses:
+        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.")
+    return tuple(addresses)
+
+
+def _system_resolve_outbound_ips(hostname: str) -> tuple[str, ...]:
+    infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    return tuple(str(info[4][0]) for info in infos)
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+
+
+def _is_explicitly_trusted_fake_ip_answer(
+    hostname: str,
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Allow a TUN-managed fake DNS answer without allowing literal reserved-IP URLs.
+
+    Operators must explicitly opt in because 198.18.0.0/15 is otherwise a
+    reserved/blocked range. Literal IP targets remain blocked by the static URL
+    validation path, and all private/link-local/metadata ranges remain blocked.
+    """
+    if not env_flag(_TRUSTED_FAKE_IP_TUN_ENV):
+        return False
+    try:
+        ipaddress.ip_address(hostname.split("%")[0])
+    except ValueError:
+        pass
+    else:
+        return False
+    return isinstance(ip, ipaddress.IPv4Address) and ip in _BENCHMARK_FAKE_IP_NETWORK

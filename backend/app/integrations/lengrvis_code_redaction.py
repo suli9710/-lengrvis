@@ -60,7 +60,10 @@ def _public_lengrvis_code_json(value: Any, *, limit: int = 500) -> str:
 
 def _public_lengrvis_code_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {str(key): _public_lengrvis_code_value(item) for key, item in value.items()}
+        redacted = redact_value(dict(value))
+        if not isinstance(redacted, Mapping):
+            return _public_lengrvis_code_text(redacted)
+        return {str(key): _public_lengrvis_code_value(item) for key, item in redacted.items()}
     if isinstance(value, list):
         return [_public_lengrvis_code_value(item) for item in value]
     if isinstance(value, tuple):

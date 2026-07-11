@@ -13,6 +13,7 @@ from pathlib import PureWindowsPath
 from typing import Any
 
 from app.core.audit import record
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.core.subprocess_output import decode_process_output
 from app.llm.registry import get_effective_settings
@@ -39,6 +40,50 @@ BLOCKED_UNINSTALL_EXECUTABLES = {
     "mshta.exe",
 }
 BLOCKED_UNINSTALL_EXTENSIONS = {".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta"}
+BLOCKED_OPEN_FILE_EXTENSIONS = frozenset(
+    {
+        ".appinstaller",
+        ".appref-ms",
+        ".appx",
+        ".appxbundle",
+        ".bat",
+        ".cmd",
+        ".com",
+        ".cpl",
+        ".diagcab",
+        ".exe",
+        ".hta",
+        ".inf",
+        ".jar",
+        ".jse",
+        ".js",
+        ".library-ms",
+        ".lnk",
+        ".msc",
+        ".msi",
+        ".msix",
+        ".msixbundle",
+        ".msp",
+        ".pif",
+        ".pl",
+        ".ps1",
+        ".psd1",
+        ".psm1",
+        ".py",
+        ".pyw",
+        ".reg",
+        ".scr",
+        ".scf",
+        ".sct",
+        ".sh",
+        ".url",
+        ".vbe",
+        ".vbs",
+        ".wsc",
+        ".wsf",
+        ".wsh",
+    }
+)
 UNINSTALL_TIMEOUT_SECONDS = 300
 UNINSTALL_SCAN_TIMEOUT_SECONDS = 60
 UNINSTALL_VERIFY_ATTEMPTS = 4
@@ -831,6 +876,13 @@ def open_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(str(args.get("path", "")), settings.allowed_directories)
     if not path.is_file():
         return {"ok": False, "error": "Path is not a file."}
+    extension = PureWindowsPath(path.name.rstrip(". ")).suffix.lower()
+    if extension in BLOCKED_OPEN_FILE_EXTENSIONS:
+        raise SecurityError(
+            "Opening executable, script, shortcut, URL, or installer files directly is blocked. "
+            "Reveal the file in Explorer instead.",
+            code="unsafe_file_open",
+        )
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "path": str(path)}
     raise_if_tool_aborted(context)

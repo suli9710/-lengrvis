@@ -1,0 +1,7 @@
+# Release-only overlay. Copy this to a private config.yaml or supply equivalent
+# environment variables on the controlled release runner; do not put secrets here.
+llm:
+  allow_mock_fallback: false
+
+privacy:
+  strict_state_machine: true

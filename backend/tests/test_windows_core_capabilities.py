@@ -622,6 +622,39 @@ def test_app_open_authorized_file_and_folder_dry_run(monkeypatch, tmp_path):
     assert folder_result == {"ok": True, "dry_run": True, "path": str(workspace.resolve())}
 
 
+def test_app_open_file_api_rejects_dangerous_shell_association(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script = workspace / "payload.cmd"
+    script.write_text("@echo unsafe", encoding="utf-8")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOWED_DIRECTORIES=str(workspace))
+    calls: list[str] = []
+    monkeypatch.setattr(app_tools.os, "startfile", lambda path: calls.append(str(path)), raising=False)
+
+    response = TestClient(create_app()).post("/api/apps/open-file", json={"path": str(script)})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "unsafe_file_open"
+    assert calls == []
+
+
+@pytest.mark.parametrize("extension", [".exe", ".ps1", ".lnk", ".url", ".msi"])
+def test_app_open_file_api_rejects_other_dangerous_associations(monkeypatch, tmp_path, extension):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    payload = workspace / f"payload{extension}"
+    payload.write_text("unsafe", encoding="utf-8")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOWED_DIRECTORIES=str(workspace))
+    calls: list[str] = []
+    monkeypatch.setattr(app_tools.os, "startfile", lambda path: calls.append(str(path)), raising=False)
+
+    response = TestClient(create_app()).post("/api/apps/open-file", json={"path": str(payload)})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "unsafe_file_open"
+    assert calls == []
+
+
 def test_app_open_file_aborts_before_startfile(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

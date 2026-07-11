@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.schemas import PlanStep, Task, ToolResult
+from app.orchestration.automation_runtime_guard import (
+    AutomationExecutionDenied,
+    authorize_automation_execution,
+)
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.tools.schemas import ToolDefinition
 
@@ -17,6 +21,29 @@ async def build_approval_dry_run_preview_result(
     threaded_tools: bool,
 ) -> ToolResult:
     orchestrator = runtime_host.orchestrator
+    dry_run_args = {**step.args, "dry_run": True}
+    try:
+        authorization = authorize_automation_execution(
+            task=task,
+            step=step,
+            tool=tool,
+            runtime=runtime,
+            args=dry_run_args,
+            threaded_tools=threaded_tools,
+        )
+    except AutomationExecutionDenied as exc:
+        runtime.abort_requested = True
+        return ToolResult(
+            tool_call_id=f"{step.id}_automation_guard_dry_run",
+            ok=False,
+            error=exc.reason,
+            observation=f"{step.tool_name} dry-run was blocked by the automation execution guard.",
+        )
+    if authorization is not None:
+        runtime.extra_context["automation_action_fingerprint"] = authorization.action_fingerprint
+        runtime.extra_context["automation_intent_capsule_id"] = authorization.capsule_id
+        runtime.extra_context["automation_budget_version"] = authorization.budget_version
+        runtime.extra_context["automation_budget_soft_exceeded"] = authorization.soft_exceeded
     before_frame = await orchestrator._capture_step_frame(task, step, "before_dry_run")
     dry_run_context = runtime.tool_context()
     dry_run_context.update({"task_id": task.id, "step_id": step.id})
@@ -24,7 +51,7 @@ async def build_approval_dry_run_preview_result(
         preview = await runtime_host.execute_tool_with_locks(
             tool,
             step,
-            {**step.args, "dry_run": True},
+            dry_run_args,
             dry_run_context,
             threaded=threaded_tools,
         )

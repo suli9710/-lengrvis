@@ -1,21 +1,22 @@
 import { CornerDownLeft, LockKeyhole, Radio, Sparkles } from "lucide-react";
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskEvent } from "../../../shared/executionTypes";
 import type { ConnectionState, ViewKey } from "../../store";
+import { useUiPreferences } from "../../lib/uiPreferences";
 import {
   activeOfficeAgentIds,
   createOfficeAgentState,
+  officeAgentIdForTask,
   officeViewBox,
+  shouldRefreshOfficeAgentRuntime,
   type OfficeAgentDefinition,
   type OfficeAgentRuntime,
   type OfficeMapSize
 } from "./model";
 import { OfficeInspector } from "./OfficeInspector";
 import {
-  agentTravelDurationMs,
   getFriendlyAgentCopy,
-  getMovingAgentIds,
   OfficeAgent,
   OfficeLayout,
   resolveOfficeAgentRuntime
@@ -97,6 +98,7 @@ type CommandPreviewStep = readonly [
 ];
 
 type CommandPreviewIntent = OfficeQuickSkill["id"] | null;
+type AgentFeedbackKind = "selected" | "completed" | "failed" | "approval";
 
 export function OfficeScene({
   agents,
@@ -118,48 +120,87 @@ export function OfficeScene({
   pendingApprovalCount,
   safetyAlert
 }: OfficeSceneProps) {
+  const { effectiveMotion } = useUiPreferences();
   const initialOfficeAgentId = activeAgentId || "pm";
   const officeMapRef = useRef<HTMLDivElement | null>(null);
   const syncedActiveAgentIdRef = useRef(initialOfficeAgentId);
   const [officeMapSize, setOfficeMapSize] = useState<OfficeMapSize>({ width: 0, height: 0 });
   const [workingAgentId, setWorkingAgentId] = useState<string>(initialOfficeAgentId);
   const workingAgentIds = useMemo(
-    () => activeOfficeAgentIds(workingAgentId, recentTasks, safetyAlert),
-    [recentTasks, safetyAlert, workingAgentId]
+    () => activeOfficeAgentIds(workingAgentId, recentTasks, safetyAlert, isSubmitting),
+    [isSubmitting, recentTasks, safetyAlert, workingAgentId]
   );
   const [agentState, setAgentState] = useState<Record<string, OfficeAgentRuntime>>(() =>
-    createOfficeAgentState(agents, activeOfficeAgentIds(initialOfficeAgentId, recentTasks, safetyAlert), true)
+    createOfficeAgentState(
+      agents,
+      activeOfficeAgentIds(initialOfficeAgentId, recentTasks, safetyAlert, isSubmitting),
+      true
+    )
   );
-  const [movingAgents, setMovingAgents] = useState<Set<string>>(() => new Set());
-  const walkClearIdRef = useRef<number | undefined>(undefined);
+  const [agentFeedback, setAgentFeedback] = useState<{ agentId: string; kind: AgentFeedbackKind } | null>(null);
+  const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || !document.hidden);
+  const [isNarrowOffice, setIsNarrowOffice] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia?.("(max-width: 720px)").matches
+  );
+  const feedbackClearIdRef = useRef<number | undefined>(undefined);
+  const feedbackFrameIdRef = useRef<number | undefined>(undefined);
+  const previousTaskStatesRef = useRef<Record<string, TaskEvent["state"]>>({});
+  const previousSafetyAlertRef = useRef(safetyAlert);
   const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const didSyncWorkingAgentsRef = useRef(false);
   const [quickSkillNotice, setQuickSkillNotice] = useState("");
   const [quickSkillIntent, setQuickSkillIntent] = useState<CommandPreviewIntent>(null);
 
-  const refreshAgentState = (nextWorkingAgentIds: ReadonlySet<string>, refreshIdleAgents: boolean) => {
+  const clearFeedbackTimer = useCallback(() => {
+    if (feedbackFrameIdRef.current !== undefined) {
+      window.cancelAnimationFrame(feedbackFrameIdRef.current);
+      feedbackFrameIdRef.current = undefined;
+    }
+    if (feedbackClearIdRef.current !== undefined) {
+      window.clearTimeout(feedbackClearIdRef.current);
+      feedbackClearIdRef.current = undefined;
+    }
+  }, []);
+
+  const triggerAgentFeedback = useCallback((agentId: string, kind: AgentFeedbackKind, persistent = false) => {
+    clearFeedbackTimer();
+    setAgentFeedback(null);
+    feedbackFrameIdRef.current = window.requestAnimationFrame(() => {
+      feedbackFrameIdRef.current = undefined;
+      setAgentFeedback({ agentId, kind });
+      if (!persistent) {
+        feedbackClearIdRef.current = window.setTimeout(() => {
+          setAgentFeedback((current) => current?.agentId === agentId && current.kind === kind ? null : current);
+          feedbackClearIdRef.current = undefined;
+        }, kind === "completed" ? 1100 : 820);
+      }
+    });
+  }, [clearFeedbackTimer]);
+
+  const refreshAgentState = useCallback((nextWorkingAgentIds: ReadonlySet<string>, refreshOneIdleAgent: boolean) => {
     setAgentState((current) => {
       const sampled = createOfficeAgentState(agents, nextWorkingAgentIds, true);
+      const idleCandidates = refreshOneIdleAgent
+        ? agents.filter((agent) => !nextWorkingAgentIds.has(agent.id))
+        : [];
+      const idleAgentId = idleCandidates.length
+        ? idleCandidates[Math.floor(Math.random() * idleCandidates.length)]?.id
+        : undefined;
       const next = Object.fromEntries(
         agents.map((agent) => [
           agent.id,
-          refreshIdleAgents || nextWorkingAgentIds.has(agent.id)
+          shouldRefreshOfficeAgentRuntime(
+            current[agent.id],
+            nextWorkingAgentIds.has(agent.id),
+            agent.id === idleAgentId
+          )
             ? sampled[agent.id]
             : current[agent.id] ?? sampled[agent.id]
         ])
       ) as Record<string, OfficeAgentRuntime>;
-      const moving = getMovingAgentIds(agents, current, next);
-      if (moving.size > 0) {
-        setMovingAgents(moving);
-        if (walkClearIdRef.current) window.clearTimeout(walkClearIdRef.current);
-        walkClearIdRef.current = window.setTimeout(() => {
-          setMovingAgents(new Set());
-          walkClearIdRef.current = undefined;
-        }, agentTravelDurationMs);
-      }
       return next;
     });
-  };
+  }, [agents]);
 
   useEffect(() => {
     const element = officeMapRef.current;
@@ -177,18 +218,36 @@ export function OfficeScene({
   }, []);
 
   useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const handleVisibilityChange = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return undefined;
+    const query = window.matchMedia("(max-width: 720px)");
+    const handleChange = (event: MediaQueryListEvent) => setIsNarrowOffice(event.matches);
+    setIsNarrowOffice(query.matches);
+    query.addEventListener?.("change", handleChange);
+    return () => query.removeEventListener?.("change", handleChange);
+  }, []);
+
+  const idleMotionAllowed = effectiveMotion === "full" && pageVisible && !isNarrowOffice;
+
+  useEffect(() => {
+    if (!idleMotionAllowed) return undefined;
+
     const intervalId = window.setInterval(() => {
       refreshAgentState(workingAgentIds, true);
-    }, 14000);
+    }, 18000);
 
-    return () => {
-      window.clearInterval(intervalId);
-      if (walkClearIdRef.current) {
-        window.clearTimeout(walkClearIdRef.current);
-        walkClearIdRef.current = undefined;
-      }
-    };
-  }, [agents, workingAgentIds]);
+    return () => window.clearInterval(intervalId);
+  }, [idleMotionAllowed, refreshAgentState, workingAgentIds]);
+
+  useEffect(() => () => {
+    clearFeedbackTimer();
+  }, [clearFeedbackTimer]);
 
   useEffect(() => {
     if (!didSyncWorkingAgentsRef.current) {
@@ -196,22 +255,57 @@ export function OfficeScene({
       return;
     }
     refreshAgentState(workingAgentIds, false);
-  }, [workingAgentIds]);
+  }, [refreshAgentState, workingAgentIds]);
 
   useEffect(() => {
     if (activeAgentId && activeAgentId !== syncedActiveAgentIdRef.current) {
       syncedActiveAgentIdRef.current = activeAgentId;
       setWorkingAgentId(activeAgentId);
     }
-  }, [activeAgentId, agents, recentTasks, safetyAlert]);
+  }, [activeAgentId]);
+
+  useEffect(() => {
+    const previous = previousTaskStatesRef.current;
+    const transitioned = [...recentTasks]
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+      .find((task) => {
+        const before = previous[task.id];
+        return before && before !== task.state && (task.state === "completed" || task.state === "failed");
+      });
+
+    previousTaskStatesRef.current = Object.fromEntries(recentTasks.map((task) => [task.id, task.state]));
+
+    const transitionedAgentId = transitioned ? officeAgentIdForTask(transitioned) || workingAgentId : workingAgentId;
+    if (transitioned?.state === "completed") {
+      triggerAgentFeedback(transitionedAgentId, "completed");
+    } else if (transitioned?.state === "failed") {
+      triggerAgentFeedback(transitionedAgentId, "failed", true);
+    } else if (recentTasks.some((task) => task.state === "running" || task.state === "queued")) {
+      setAgentFeedback((current) => current?.kind === "failed" ? null : current);
+    }
+  }, [recentTasks, triggerAgentFeedback, workingAgentId]);
+
+  useEffect(() => {
+    const wasAlerting = previousSafetyAlertRef.current;
+    previousSafetyAlertRef.current = safetyAlert;
+    if (!wasAlerting && safetyAlert) {
+      triggerAgentFeedback("safety", "approval");
+    } else if (wasAlerting && !safetyAlert) {
+      setAgentFeedback((current) => current?.kind === "approval" ? null : current);
+    }
+  }, [safetyAlert, triggerAgentFeedback]);
 
   const activateAgent = (agent: OfficeAgentDefinition) => {
     setWorkingAgentId(agent.id);
+    triggerAgentFeedback(agent.id, "selected");
     onAgentSelect(agent.prompt);
   };
 
   const handleQuickSkillClick = (skill: OfficeQuickSkill) => {
+    const responseAgentId = officeAgentForSkill(skill.id);
     setQuickSkillIntent(skill.id);
+    setWorkingAgentId(responseAgentId);
+    triggerAgentFeedback(responseAgentId, "selected");
 
     if (skill.kind === "prompt") {
       onQuickSkill(skill);
@@ -275,6 +369,10 @@ export function OfficeScene({
     : 1;
   const agentVisualScale = isOfficeMapReady ? Math.min(1, Math.max(0.56, officeScale / 0.58)) : 1;
   const officeMapStyle = { "--office-scale": officeScale } as CSSProperties;
+  const primaryOfficeAgentId = safetyAlert ? "safety" : agentFeedback?.agentId ?? workingAgentId;
+  const renderedAgents = isNarrowOffice
+    ? agents.filter((agent) => agent.id === primaryOfficeAgentId)
+    : agents;
 
   return (
     <div className="office-workspace" aria-label="Lengrvis 办公室">
@@ -308,35 +406,6 @@ export function OfficeScene({
               />
               <strong>{activeHelper.name}</strong>
             </span>
-          </div>
-        </div>
-
-        <div className="office-map" ref={officeMapRef} style={officeMapStyle}>
-          <OfficeLayout workingAgentIds={workingAgentIds} />
-
-          <span className="office-zone-label office-zone-label--pantry">茶水区</span>
-          <span className="office-zone-label office-zone-label--gym">专注区</span>
-          <span className="office-zone-label office-zone-label--lounge">休息区</span>
-          <span className="office-zone-label office-zone-label--restroom">隐私区</span>
-          <span className="office-zone-label office-zone-label--workstations">工位区</span>
-          <span className="office-zone-label office-zone-label--meeting">计划板</span>
-          <div className={`office-patrol-scan ${safetyAlert ? "office-patrol-scan--active" : ""}`} />
-
-          <div className={`office-agents ${isOfficeMapReady ? "office-agents--ready" : ""}`}>
-            {isOfficeMapReady
-              ? agents.map((agent) => (
-                  <OfficeAgent
-                    key={agent.id}
-                    agent={agent}
-                    state={resolveOfficeAgentRuntime(agent, agentState[agent.id], agentState, workingAgentIds)}
-                    mapSize={officeMapSize}
-                    agentScale={agentVisualScale}
-                    isWorking={workingAgentIds.has(agent.id)}
-                    isMoving={movingAgents.has(agent.id)}
-                    onSelect={() => activateAgent(agent)}
-                  />
-                ))
-              : null}
           </div>
         </div>
 
@@ -394,6 +463,43 @@ export function OfficeScene({
             </button>
           </div>
         </div>
+
+        <div className="office-map" ref={officeMapRef} style={officeMapStyle}>
+          <OfficeLayout
+            workingAgentIds={workingAgentIds}
+            motionVisible={pageVisible && !isNarrowOffice}
+          />
+
+          <span className="office-zone-label office-zone-label--pantry">茶水区</span>
+          <span className="office-zone-label office-zone-label--gym">专注区</span>
+          <span className="office-zone-label office-zone-label--lounge">休息区</span>
+          <span className="office-zone-label office-zone-label--restroom">隐私区</span>
+          <span className="office-zone-label office-zone-label--workstations">工位区</span>
+          <span className="office-zone-label office-zone-label--meeting">计划板</span>
+          <div className={`office-patrol-scan ${safetyAlert ? "office-patrol-scan--active" : ""}`} />
+
+          <div className={`office-agents ${isOfficeMapReady ? "office-agents--ready" : ""}`}>
+            {isOfficeMapReady
+              ? renderedAgents.map((agent) => {
+                  const isPrimary = agent.id === primaryOfficeAgentId;
+                  return (
+                    <OfficeAgent
+                      key={agent.id}
+                      agent={agent}
+                      state={resolveOfficeAgentRuntime(agent, agentState[agent.id], agentState, workingAgentIds)}
+                      mapSize={officeMapSize}
+                      agentScale={agentVisualScale}
+                      isWorking={workingAgentIds.has(agent.id)}
+                      isPrimary={isPrimary}
+                      motionVisible={pageVisible && (!isNarrowOffice || isPrimary)}
+                      feedback={agentFeedback?.agentId === agent.id ? agentFeedback.kind : undefined}
+                      onSelect={() => activateAgent(agent)}
+                    />
+                  );
+                })
+              : null}
+          </div>
+        </div>
       </div>
 
       <OfficeInspector
@@ -410,6 +516,15 @@ export function OfficeScene({
       />
     </div>
   );
+}
+
+function officeAgentForSkill(skillId: string): string {
+  if (/document|file|download|large/i.test(skillId)) return "file";
+  if (/computer|system|device/i.test(skillId)) return "computer";
+  if (/browser|web/i.test(skillId)) return "browser";
+  if (/search/i.test(skillId)) return "search";
+  if (/app/i.test(skillId)) return "app";
+  return "pm";
 }
 
 function buildCommandPreviewSteps(

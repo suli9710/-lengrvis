@@ -4,10 +4,13 @@ const path = require("node:path");
 const rendererDir = path.join(__dirname, "..", "dist", "renderer");
 const assetsDir = path.join(rendererDir, "assets");
 
+// Renderer-local UI preferences and progressive technical details add a small,
+// intentional baseline cost. Character stills remain external assets via
+// `?no-inline`, so these limits cover application code rather than image data.
 const budgets = {
-  entryJs: Number(process.env.LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB || 230),
+  entryJs: Number(process.env.LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB || 235),
   chunkJs: Number(process.env.LENGRVIS_RENDERER_CHUNK_JS_BUDGET_KB || 160),
-  totalJs: Number(process.env.LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB || 715),
+  totalJs: Number(process.env.LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB || 740),
   totalCss: Number(process.env.LENGRVIS_RENDERER_TOTAL_CSS_BUDGET_KB || 190),
 };
 

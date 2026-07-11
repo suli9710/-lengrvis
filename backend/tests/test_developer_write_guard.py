@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +85,26 @@ def test_git_worktree_diff_preview_reports_changed_files(tmp_path) -> None:
     assert preview["changed_files"][0]["path"].endswith("sample.py")
 
 
+def test_git_worktree_diff_preview_reports_untracked_files(tmp_path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Dev"], cwd=workspace, check=True, capture_output=True)
+    tracked = workspace / "README.md"
+    tracked.write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True)
+    new_file = workspace / "backend" / "app" / "new_file.py"
+    new_file.parent.mkdir(parents=True)
+    new_file.write_text("print('new')\n", encoding="utf-8")
+
+    preview = git_worktree_diff_preview(workspace, allowed_directories=[str(workspace)])
+
+    assert preview["dry_run"] is True
+    assert {"status": "??", "path": "backend/app/new_file.py"} in preview["changed_files"]
+
+
 @pytest.mark.asyncio
 async def test_developer_engine_applies_write_verification_on_success(tmp_path, monkeypatch) -> None:
     from app.config import AppSettings
@@ -105,17 +127,21 @@ async def test_developer_engine_applies_write_verification_on_success(tmp_path, 
     )
     subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True)
+    raw_path = "C:/Users/Suli/private/project/runtime.py"
+    raw_secret = "plain-runtime-secret"
 
     async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
         prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
     ):
         assert allow_write_tools is True
         return LengrvisCodeStreamSummary(
-            result={"is_error": False, "result": "patched test"},
-            assistant_text=["done"],
+            result={"is_error": False, "result": f"patched test with {raw_secret}"},
+            assistant_text=[f"done with {raw_secret}"],
             tool_events=[
                 {"name": "Edit", "input": {"file_path": "backend/tests/test_sample.py"}},
             ],
+            system_events=[{"type": "system", "subtype": "init", "cwd": raw_path, "api_key": raw_secret}],
+            runtime_health={"ok": True, "source_root": raw_path, "api_key": raw_secret},
         )
 
     monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", spy_run_lengrvis_code)
@@ -147,6 +173,10 @@ async def test_developer_engine_applies_write_verification_on_success(tmp_path, 
     assert "write_verification" in result.outputs
     assert result.outputs["write_verification"]["verification_command"] is not None
     assert result.state.current_plan["write_verification"]["ok"] is True
+    tool_results = db.fetch_many("tool_results", limit=20)
+    serialized_results = json.dumps(tool_results, sort_keys=True)
+    assert raw_path not in serialized_results
+    assert raw_secret not in serialized_results
 
 
 @pytest.mark.asyncio
@@ -191,6 +221,36 @@ async def test_developer_engine_permission_denial_enters_awaiting_approval(tmp_p
     assert result.state.phase == RunPhase.AWAITING_APPROVAL
     assert result.outputs["lengrvis_code"]["awaiting_write_approval"] is True
     assert result.state.current_plan["pending_write_approvals"]
+
+
+def test_await_write_approval_redacts_permission_denials() -> None:
+    from app.orchestration.developer_engine import _await_write_approval
+    from app.orchestration.execution_models import EngineTurnResult, RunPhase, RunState
+
+    raw_path = "C:/Users/Suli/private/project/secret.py"
+    raw_secret = "plain-denial-secret"
+    state = RunState(
+        run_id="devrun_permission_denial",
+        engine="developer",
+        phase=RunPhase.RUNNING,
+        goal="edit file",
+        current_plan={"steps": []},
+    )
+    result = EngineTurnResult(state=state, outputs={"lengrvis_code": {}})
+    summary = SimpleNamespace(
+        permission_denials=[
+            {"tool_name": "Write", "reason": f"default permission mode blocked {raw_path}", "api_key": raw_secret}
+        ]
+    )
+
+    updated = _await_write_approval(result, summary)
+
+    assert updated.state.phase == RunPhase.AWAITING_APPROVAL
+    serialized_plan = json.dumps(updated.state.current_plan, sort_keys=True)
+    assert raw_path not in serialized_plan
+    assert raw_secret not in serialized_plan
+    assert "[REDACTED_LOCAL_PATH]" in serialized_plan
+    assert updated.state.current_plan["pending_write_approvals"][0]["api_key"] == "***"
 
 
 def test_run_write_verification_without_writes_is_ok(tmp_path) -> None:

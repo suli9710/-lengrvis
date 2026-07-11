@@ -1,6 +1,6 @@
 
 /* ==========================================================================
-   Shell 三栏布局
+   Shell 专注工作台布局
    ========================================================================== */
 
 .lengrvis-shell {
@@ -65,7 +65,7 @@
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 23vw, 340px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding-right: 14px;
   overflow: hidden;

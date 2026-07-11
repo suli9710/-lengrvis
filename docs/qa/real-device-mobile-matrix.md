@@ -9,9 +9,11 @@ Historical automated support evidence for the 2026-06-09 development workspace i
 How this connects to the Android gate:
 
 - `npm run evidence:mobile-lan-wss` and `npm run android:release-gate -- -PreflightOnly` are setup checks only; they are not camera QR, APK install, HTTPS/WSS, certificate trust, or remote-input pass evidence.
+- `npm --prefix mobile run gate:android-connected-lan-tls` is a release/evidence-only connected Android regression for wrong-pin failure, pinned HTTPS pairing, and approval WSS when a configured device/emulator and LAN TLS backend are available. Attach it as supporting trust-path evidence, not as a replacement for reviewed screenshots/logs or the strict Android evidence JSON.
 - `npm run evidence:android-real-device-template` is only a fail-closed starting point for the reviewed JSON; leave pass/claim-control fields false until the artifacts in this matrix exist.
-- The generated `android-real-device-evidence.redacted.template.json` is not the strict-gate input until a reviewer fills a separate reviewed JSON with `real_device_result=passed`, `review.status=reviewed_passed`, redacted `device`, `transport`, `certificate`, and `evidence_artifacts_redacted` fields, and every required check below is backed by phone/emulator artifacts.
-- Strict `npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"` may be recorded as Android gate evidence only after the reviewed JSON is backed by this matrix's phone/emulator artifacts.
+- The generated `android-real-device-evidence.redacted.template.json` is not the strict-gate input until a reviewer fills a separate reviewed JSON with `real_device_result=passed`, `review.status=reviewed_passed`, redacted `device`, `transport`, `certificate`, `evidence_artifacts_redacted`, and all five immutable `candidate` fields, and every required check below is backed by phone/emulator artifacts.
+- Seal the completed JSON with `npm run evidence:android-real-device-seal` while the protected `LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET` and immutable candidate context are present. The HMAC key must be generated from a cryptographically secure source, contain at least 32 bytes, and must not be a human password or development/CI placeholder. A template or an unsigned JSON is not strict-gate input.
+- Strict `npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<sealed android evidence json>" -ExpectedSignerCertificateSha256 "<controlled release certificate sha256>" -RequireCandidateBinding` may be recorded as Android gate evidence only after Android SDK v2/v3 signature verification, controlled signer matching, package/version inspection, candidate-bound `app.provenance`, and this matrix's phone/emulator artifacts all pass.
 - New operators should use the generated `real-device-evidence-checklist.redacted.md` as the checklist, keep raw LAN/device values in local-only notes, and attach only redacted screenshots, clips, logs, and the reviewed Android evidence JSON to the QA packet.
 
 ## Evidence Header
@@ -41,12 +43,13 @@ The preflight can say the LAN/TLS prerequisites are ready, but it still runs wit
 | `operator_collection_order` | Keep every step unchecked until real Android/emulator artifacts exist; the preflight output alone does not complete any step. |
 | `device_identity_redacted` | Record a redacted device/emulator label, not a personal device name. |
 | `device.kind`, `device.profile_label_redacted` | Fill `android_phone` or `android_emulator` plus a redacted profile label before strict Android gate review. |
-| `app.artifact_label_redacted`, `app.artifact_sha256` | Match the installable APK under test; the SHA-256 must match the APK passed to the strict gate. |
+| `app.artifact_label_redacted`, `app.artifact_sha256`, `app.package_name`, `app.version_name`, `app.version_code`, `app.signer_certificate_sha256` | Match Android SDK inspection of the exact installable APK under test; the signer digest must also match the protected release certificate identity. |
+| `app.provenance` | Record `reviewed-build-record/v1`, reviewed builder/invocation labels, UTC build time, candidate source repository/commit, and the same APK digest, package/version, build profile, and signer digest. This reviewed record is HMAC sealed but does not claim SLSA provenance. |
 | `https_origin_redacted`, `approval_wss_origin_redacted`, `remote_screen_wss_origin_redacted`, `remote_input_wss_origin_redacted` | Use redacted origins from the preflight or from reviewed artifacts; do not paste token-bearing URLs. |
 | `transport.https_origin_redacted`, `transport.approval_wss_origin_redacted`, `transport.remote_screen_wss_origin_redacted`, `transport.remote_input_wss_origin_redacted` | Fill the strict-gate transport fields with redacted `https://[redacted-host]` and `wss://[redacted-host]/...` labels only after device-originated evidence exists. |
 | `certificate_trust_path` | Fill only after explicit Android/emulator trust evidence exists. |
 | `certificate.trust_path_label_redacted`, `certificate.fingerprint_label_redacted` | Record the Android/emulator trust path, CA, or fingerprint label without raw hostnames, private paths, cert secrets, or key material. |
-| `review.status`, `review.reviewer_label`, `review.reviewed_at_utc`, `evidence_artifacts_redacted` | Fill only after a human reviews the actual screenshots, clips, logs, and notes; these are required before the strict gate can treat the reviewed JSON as passed. |
+| `review.status`, `review.reviewer_label`, `review.reviewed_at_utc`, `evidence_artifacts_redacted`, `evidence` | Fill only after a human reviews the actual screenshots, clips, logs, and notes; seal the completed JSON so the strict gate can verify the canonical hash and HMAC. |
 | `camera_qr_path_evidence`, `actual_device_https_wss_evidence` | Leave as `uncollected` unless real camera/QR and device HTTPS/WSS evidence is attached. |
 | `approval_wss_evidence`, `remote_screen_wss_evidence`, `remote_input_wss_evidence` | Fill separately. Approval WSS evidence does not prove remote screen or input, and remote screen evidence does not prove input. |
 | `certificate_trust_evidence` | Leave as `uncollected` until the exact Android/emulator profile's certificate trust path is documented. |
@@ -69,6 +72,7 @@ Use this path after the preflight has produced `evidence-summary.redacted.json` 
 1. Record the candidate, build, backend, device/emulator profile, OS/API version, network note, and tester/date in a local run note.
 2. Put the phone/emulator and desktop backend on the same LAN path. Raw IPs, hostnames, and device names stay in a local-only note; the shareable packet uses redacted labels.
 3. Install or configure certificate trust on that exact Android/emulator profile, or document the expected trust failure before trust is added.
+   If the connected Android LAN TLS gate is available for the same profile, run `npm --prefix mobile run gate:android-connected-lan-tls` after setting `LENGRVIS_ANDROID_LAN_TLS_BASE_URL`, `LENGRVIS_ANDROID_LAN_TLS_FINGERPRINT_SHA256`, and optionally `LENGRVIS_ANDROID_LAN_TLS_PAIR_CODE`; keep its log redacted and treat it as supporting evidence only.
 4. Pair with the camera QR path when scan-to-pair is claimed. If the operator pastes a payload or enters a code manually, label that artifact as fallback evidence only.
 5. Create a benign approval and prove `/ws/mobile/approvals` connected over WSS from the device. Capture both approve and reject outcomes.
 6. Open remote screen and prove `/ws/remote/screen` connected over WSS, frames render, and the default state is read-only.
@@ -118,7 +122,8 @@ Use a candidate-specific folder outside tracked source, for example `.tmp/qa-evi
 - `run-notes.md`: evidence header plus scenario outcomes.
 - `real-device-evidence-checklist.redacted.md`: generated checklist from the preflight, kept as preflight/config evidence until filled by reviewed phone/emulator artifacts.
 - `evidence-summary.redacted.json`: generated preflight JSON with `manual_real_device_evidence_template`.
-- `android-real-device-evidence.redacted.json`: reviewed strict-gate input using `artifact_type=android-real-device-remote-control-evidence`; it should contain only redacted labels plus passed/blocked fields, not raw tokens, raw host/IPs, raw device ids, or raw grant ids.
+- `android-real-device-evidence.redacted.json`: completed human-reviewed draft using `artifact_type=android-real-device-remote-control-evidence`; it should contain only redacted labels plus passed/blocked fields, not raw tokens, raw host/IPs, raw device ids, or raw grant ids.
+- `android-real-device-evidence-reviewed.json`: sealed strict-gate input with a valid canonical HMAC and exact immutable candidate binding.
 - `android-real-device-evidence.redacted.template.json`: optional fail-closed output from `npm run evidence:android-real-device-template`; keep it as a starting template only, not pass evidence.
 - `android-release-gate.redacted.json`: output from `.\scripts\verify_android_release_gate.ps1 -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"`.
 - `screens/`: redacted screenshots or short clips.

@@ -199,21 +199,24 @@ def test_root_health_omits_local_llm_snapshot_by_default(monkeypatch):
     response = TestClient(create_app()).get("/health")
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert payload["mode"] == "efficiency"
-    assert "local_llm" not in payload
+    assert response.json() == {"status": "ok"}
 
 
-def test_root_health_includes_local_llm_snapshot_for_privacy_mode(monkeypatch):
+@pytest.mark.requires_desktop_api_token
+def test_authenticated_health_diagnostics_include_local_llm_snapshot_for_privacy_mode(monkeypatch):
     monkeypatch.setenv("LENGRVIS_MODE", "privacy")
     monkeypatch.setattr("app.llm.local_provider.detect_onnx_backend", lambda settings=None: None)
     monkeypatch.setattr("app.llm.local_provider.onnx_health_snapshot", lambda settings=None: {"available": False})
     monkeypatch.setattr("app.llm.local_provider.detect_local_backend", lambda **kwargs: None)
 
     from app.main import create_app
+    from app.security.desktop_api import desktop_api_token_headers
 
-    response = TestClient(create_app()).get("/health")
+    client = TestClient(create_app())
+
+    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/api/health/diagnostics").status_code == 401
+    response = client.get("/api/health/diagnostics", headers=desktop_api_token_headers())
 
     assert response.status_code == 200
     payload = response.json()

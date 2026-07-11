@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.security.sensitive_data_crypto import ENCRYPTED_PAYLOAD_PREFIX
 from app.services import task_recording_service
 from app.services.task_recording_service import list_recording_frames, persist_recording_frame, read_recording_image
 from app.tools.registry import register_all_tools
@@ -182,7 +184,7 @@ def test_timeline_redacts_recordings_and_image_route_requires_explicit_file_name
     assert image.content.startswith(b"\x89PNG")
 
 
-def test_recording_frames_are_stored_as_sqlite_blobs(fake_capture):
+def test_recording_frames_are_stored_as_encrypted_sqlite_blobs(fake_capture):
     task_id = "task_blob"
     step_id = "step_blob"
 
@@ -197,6 +199,62 @@ def test_recording_frames_are_stored_as_sqlite_blobs(fake_capture):
     image, mime_type = read_recording_image(task_id, before["file_name"])
     assert mime_type == "image/png"
     assert image == _tiny_png()
+    with db.connect() as conn:
+        stored = bytes(
+            conn.execute("SELECT image FROM task_recordings WHERE id = ?", (before["recording_id"],)).fetchone()[
+                "image"
+            ]
+        )
+    assert stored.startswith(ENCRYPTED_PAYLOAD_PREFIX)
+    assert stored != _tiny_png()
+    assert _tiny_png() not in stored
+
+
+def test_reading_legacy_plaintext_recording_migrates_it_before_returning():
+    recording_id = "rec_legacy_plaintext"
+    task_id = "task_legacy_plaintext"
+    file_name = "legacy.png"
+    metadata = {
+        "id": recording_id,
+        "kind": "step_screenshot",
+        "task_id": task_id,
+        "step_id": "step_legacy",
+        "phase": "before",
+        "captured_at": "2026-07-01T00:00:00+00:00",
+        "file_name": file_name,
+        "mime_type": "image/png",
+    }
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO task_recordings
+                (id, task_id, step_id, phase, file_name, mime_type, width, height, image, data, captured_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                recording_id,
+                task_id,
+                "step_legacy",
+                "before",
+                file_name,
+                "image/png",
+                1,
+                1,
+                _tiny_png(),
+                json.dumps(metadata),
+                metadata["captured_at"],
+                metadata["captured_at"],
+            ),
+        )
+
+    image, mime_type = read_recording_image(task_id, file_name)
+
+    assert image == _tiny_png()
+    assert mime_type == "image/png"
+    with db.connect() as conn:
+        row = conn.execute("SELECT image, data FROM task_recordings WHERE id = ?", (recording_id,)).fetchone()
+    assert bytes(row["image"]).startswith(ENCRYPTED_PAYLOAD_PREFIX)
+    assert json.loads(row["data"])["storage_encrypted"] is True
 
 
 def test_capture_step_screenshot_is_disabled_by_default_without_writing(monkeypatch: pytest.MonkeyPatch):

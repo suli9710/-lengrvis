@@ -22,8 +22,8 @@ market readiness 仍为 waived 时，下列内容仅是内部产品/规划 claim
 
 | Claim | 公开使用前需要的证据 |
 | --- | --- |
-| Free、Pro、Max 是计划中的付费套餐层级。 | 权益测试和 `docs/pricing.md` 审查。 |
-| Pro 和 Max 可解锁远程控制准入资格。 | 权益门控加逐次审批证据。 |
+| Free、Plus（¥49/月）、Pro（¥129/月）是已锁定的商业套餐层级。 | 权益测试和 `docs/pricing.md` 审查；支付 GA 仍受市场与法务门禁阻断。 |
+| Plus 和 Pro 可解锁正式自动化与跨网能力。 | 权益门控加逐次 IntentCapsule、预算与高风险审批证据。 |
 | 云端额度通过用量窗口强制执行。 | 用量测试和成本 owner 对公开额度文案的批准。 |
 | 离线许可证使用 Ed25519 签名验证。 | 生产公钥、签发方 custody 和吊销 manifest 证据。 |
 | 退款可以撤销付费权益。 | 退款演练加签名吊销 manifest 部署证据。 |

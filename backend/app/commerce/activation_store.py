@@ -21,7 +21,12 @@ from app.commerce.activation_policy import (
 from app.commerce.activation_policy import (
     safe_label as _safe_label,
 )
-from app.commerce.entitlements import normalize_plan
+from app.commerce.entitlements import (
+    PLAN_CATALOG_CURRENT,
+    PLAN_CATALOG_LEGACY,
+    normalize_plan,
+    normalize_plan_claim,
+)
 
 ACTIVATION_STORE_UNSET = object()
 """Sentinel distinguishing omitted fields from explicit NULL updates."""
@@ -46,6 +51,7 @@ class ActivationStore:
                 CREATE TABLE IF NOT EXISTS subscription_keys (
                     key_hash TEXT PRIMARY KEY,
                     plan TEXT NOT NULL,
+                    plan_catalog TEXT NOT NULL DEFAULT 'free-plus-pro-v1',
                     subscription_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     subject TEXT NOT NULL DEFAULT '',
@@ -60,6 +66,7 @@ class ActivationStore:
                 )
                 """
             )
+            _ensure_subscription_plan_catalog_column(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS activation_devices (
@@ -111,12 +118,13 @@ class ActivationStore:
             conn.execute(
                 """
                 INSERT INTO subscription_keys (
-                    key_hash, plan, subscription_id, status, subject, seats, max_devices,
+                    key_hash, plan, plan_catalog, subscription_id, status, subject, seats, max_devices,
                     expires_at, renews_at, cancel_at_period_end, order_ref, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key_hash) DO UPDATE SET
                     plan = excluded.plan,
+                    plan_catalog = excluded.plan_catalog,
                     subscription_id = excluded.subscription_id,
                     status = excluded.status,
                     subject = excluded.subject,
@@ -131,6 +139,7 @@ class ActivationStore:
                 (
                     key_hash,
                     normalized_plan.value,
+                    PLAN_CATALOG_CURRENT,
                     _safe_label(subscription_id, max_length=128),
                     normalized_status,
                     _safe_label(subject, max_length=256),
@@ -378,7 +387,10 @@ class ActivationStore:
         return {
             "key_hash": key_hash,
             "key_hash_prefix": key_hash[:12],
-            "plan": normalize_plan(row["plan"]).value,
+            "plan": normalize_plan_claim(
+                row["plan"],
+                catalog=str(row_value(row, "plan_catalog") or PLAN_CATALOG_LEGACY),
+            ).value,
             "subscription_id": str(row["subscription_id"] or ""),
             "status": normalize_subscription_status(row["status"]),
             "subject": str(row["subject"] or ""),
@@ -411,6 +423,18 @@ def _ensure_activation_device_columns(conn: sqlite3.Connection) -> None:
         WHERE server_device_ref != ''
         """
     )
+
+
+def _ensure_subscription_plan_catalog_column(conn: sqlite3.Connection) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(subscription_keys)").fetchall()}
+    if "plan_catalog" not in columns:
+        # Existing rows used the former Free/Pro/Max meanings. Marking them as
+        # legacy prevents an old Pro subscription from silently becoming the
+        # new top-tier Pro subscription.
+        conn.execute(
+            "ALTER TABLE subscription_keys ADD COLUMN plan_catalog TEXT NOT NULL "
+            f"DEFAULT '{PLAN_CATALOG_LEGACY}'"
+        )
 
 
 def _backfill_activation_server_device_refs(conn: sqlite3.Connection) -> None:

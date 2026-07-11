@@ -245,7 +245,7 @@ describe("LengrvisApiClient endpoint group delegates", () => {
     expect(response.data).toMatchObject({
       state: "active",
       active: true,
-      requestedEnvPlan: "max",
+      requestedEnvPlan: "pro",
       licenseId: "lic_123",
       plan: "pro"
     });

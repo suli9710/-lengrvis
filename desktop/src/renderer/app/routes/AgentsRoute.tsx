@@ -1,7 +1,8 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { PlanViewer } from "../../components/PlanViewer";
 import { RouteLoading } from "../../appViewModel";
+import { useUiPreferences } from "../../lib/uiPreferences";
 import type { AppSurfaceProps } from "../AppSurfaceTypes";
 
 const AgentConversationPanel = lazy(() => import("../../components/AgentConversationPanel").then((module) => ({ default: module.AgentConversationPanel })));
@@ -24,14 +25,26 @@ export function AgentsRoute({
   tasks,
   onRevealPath
 }: AgentsRouteProps) {
+  const { preferences } = useUiPreferences();
+  const [isMoreOpen, setIsMoreOpen] = useState(preferences.detailMode === "expert");
+
+  useEffect(() => {
+    setIsMoreOpen(preferences.detailMode === "expert");
+  }, [preferences.detailMode]);
+
   return (
     <section className="detail-grid">
-      <Suspense fallback={<RouteLoading />}>
-        <AgentConversationPanel conversations={agentConversations} />
-        <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} onTaskPilotAction={onTaskPilotAction} />
-      </Suspense>
       <PlanViewer plan={plan} />
-      <details className="progress-more detail-grid__full" data-testid="progress-more">
+      <Suspense fallback={<RouteLoading />}>
+        <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} onTaskPilotAction={onTaskPilotAction} />
+        <AgentConversationPanel conversations={agentConversations} />
+      </Suspense>
+      <details
+        className="progress-more detail-grid__full"
+        data-testid="progress-more"
+        open={isMoreOpen}
+        onToggle={(event) => setIsMoreOpen(event.currentTarget.open)}
+      >
         <summary className="progress-more__summary">
           <span>更多：定时任务、成果产物与本机指标</span>
           <em>需要时再展开，默认聚焦当前进展</em>

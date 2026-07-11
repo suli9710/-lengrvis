@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import threading
-from collections.abc import Coroutine
 from typing import Any
 
 from app.agents.delegation_metadata import build_task_delegation_metadata
@@ -13,22 +11,14 @@ from app.agents.path_detection import find_explicit_path
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.core import db
 from app.core.audit import record
+from app.core.errors import AppError, StateTransitionError
 from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, RunEngine, RunPhase, Task, TaskStatus
 from app.orchestration.engine_router import route_engine
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services.task_pool import get_pool
-
-# The event loop only keeps weak references to tasks; fire-and-forget tasks
-# must be held here until done or they can be garbage collected mid-run.
-_BACKGROUND_TASKS: set[asyncio.Task] = set()
-
-
-def _spawn_background(coro: Coroutine[Any, Any, Any]) -> None:
-    spawned = asyncio.create_task(coro)
-    _BACKGROUND_TASKS.add(spawned)
-    spawned.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 async def create_task(message: str, mode: str) -> ChatResponse:
@@ -164,7 +154,7 @@ async def _delegate_task(
     # Callers (handle_chat, mobile task routes) are async handlers, so a
     # running loop is guaranteed; all runs go through the TaskPool to respect
     # its concurrency bound.
-    _spawn_background(get_pool().submit(task, _run_task_through_orchestrator))
+    get_pool().submit_nowait(task, _run_task_through_orchestrator)
     reply = decision.reply or "收到，我会交给对应 Agent 执行，并把进展反馈给你。"
     assistant_message = ChatMessage(
         role=OpenAIMessageRole.ASSISTANT,
@@ -187,8 +177,10 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
         task = get_task(task.id)
         return await orchestrator.run_task(task)
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-        task.final_summary = f"任务执行失败：{exc}"
-        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
+        # The worker may have been cancelled after its initial task snapshot
+        # was taken. Reload before persisting a failure so a late exception
+        # cannot turn a user-requested pause/cancel back into FAILED.
+        _persist_resume_failure_if_active(task.id, exc)
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
         raise
 
@@ -213,6 +205,24 @@ def set_task_status(task_id: str, status: TaskStatus, *, strict: bool | None = N
     return safe_transition(task, status, actor="TaskService", strict=strict)
 
 
+async def pause_task(task_id: str) -> Task:
+    task = get_task(task_id)
+    # Persist the user-visible stop state before cancellation so any worker
+    # that reaches a write boundary can observe it and fail closed.
+    if task.status == TaskPhase.EXECUTION and task.execution_stage == ExecutionStage.PAUSED:
+        paused = task
+    else:
+        paused = safe_transition(task, TaskStatus.PAUSED, actor="TaskService", strict=True)
+    # A repeated pause is deliberately convergent: a prior cancellation may
+    # have raced registration, so always fan out cancellation to both worker
+    # owners even if the persisted task already says paused.
+    await get_pool().cancel(task_id)
+    from app.services import run_service
+
+    run_service.pause_runs_for_task(task_id)
+    return get_task(paused.id)
+
+
 async def cancel_task(task_id: str, *, strict: bool | None = None) -> Task:
     get_task(task_id)
     await get_pool().cancel(task_id)
@@ -231,17 +241,41 @@ def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
         task = get_task(task_id)
         record("task.resume_duplicate_ignored", "TaskService", {"task_id": task.id}, task_id=task.id)
         return task
-    task = set_task_status(task_id, TaskStatus.EXECUTING_STEP, strict=strict)
+    task = get_task(task_id)
+    if task.status != TaskPhase.EXECUTION or task.execution_stage != ExecutionStage.PAUSED:
+        raise StateTransitionError(
+            f"{task.status.value}:{task.execution_stage.value}",
+            f"{TaskPhase.EXECUTION.value}:{ExecutionStage.STEP_RUNNING.value}",
+        )
     try:
         asyncio.get_running_loop()
-    except RuntimeError:
-        if not pool.claim_external(task.id, "resume_thread"):
-            record("task.resume_duplicate_ignored", "TaskService", {"task_id": task.id}, task_id=task.id)
-            return task
-        _start_resume_thread(task, pool)
-    else:
-        _spawn_background(pool.submit(task, _resume_task_through_orchestrator))
-    record("task.resume_requested", "TaskService", {"task_id": task.id}, task_id=task.id)
+    except RuntimeError as exc:
+        raise AppError(
+            code="task_runtime_unavailable",
+            message="Task resume requires the managed asynchronous runtime.",
+            status_code=503,
+        ) from exc
+    # Resuming is an execution boundary, so it must fail closed even when the
+    # application's general state-machine compatibility mode is non-strict.
+    # Otherwise a terminal task is returned unchanged and still scheduled.
+    task = set_task_status(task.id, TaskStatus.EXECUTING_STEP, strict=True)
+    from app.services import run_service
+
+    # A task created through the run API has a persistent Run owner. Resume
+    # that owner instead of also creating a TaskPool worker for the same plan;
+    # two independent executors could otherwise perform the same step twice.
+    bound_runs = db.fetch_many("runs", "task_id = ?", (task.id,), limit=100)
+    has_nonterminal_bound_run = any(
+        RunPhase(item.get("phase", RunPhase.PENDING.value)) not in run_service.TERMINAL_PHASES
+        for item in bound_runs
+    )
+    if has_nonterminal_bound_run:
+        run_service.resume_runs_for_task(task.id)
+        record("task.resume_requested", "TaskService", {"task_id": task.id, "owner": "run"}, task_id=task.id)
+        return get_task(task.id)
+
+    pool.submit_nowait(task, _resume_task_through_orchestrator)
+    record("task.resume_requested", "TaskService", {"task_id": task.id, "owner": "task_pool"}, task_id=task.id)
     return task
 
 
@@ -250,38 +284,25 @@ async def _resume_task_through_orchestrator(task: Task) -> Task:
         await _run_existing_plan(task)
         return task
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-        task.final_summary = f"Task resume failed: {exc}"
-        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
+        _persist_resume_failure_if_active(task.id, exc)
         record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
         raise
 
 
-async def _resume_task_background(task: Task) -> None:
-    try:
-        await _run_existing_plan(task)
-    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-        task.final_summary = f"Task resume failed: {exc}"
-        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
-        record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
-        raise
-
-
-def _start_resume_thread(task: Task, pool: Any) -> None:
-    def _run() -> None:
-        status = "completed"
-        try:
-            asyncio.run(_resume_task_background(task))
-        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: thread boundary records and releases singleflight claim.
-            status = f"failed:{exc}"
-        finally:
-            pool.release_external(task.id, status)
-
-    thread = threading.Thread(
-        target=_run,
-        name=f"task-resume-{task.id}",
-        daemon=True,
-    )
-    thread.start()
+def _persist_resume_failure_if_active(task_id: str, exc: Exception) -> Task:
+    latest = get_task(task_id)
+    if latest.status in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED} or (
+        latest.status == TaskPhase.EXECUTION and latest.execution_stage == ExecutionStage.PAUSED
+    ):
+        record(
+            "task.late_resume_failure_ignored",
+            "TaskService",
+            {"persisted_status": latest.status.value, "error": str(exc)},
+            task_id=task_id,
+        )
+        return latest
+    latest.final_summary = f"Task resume failed: {exc}"
+    return safe_transition(latest, TaskStatus.FAILED, actor="TaskService", strict=True)
 
 
 async def _run_existing_plan(task: Task) -> None:

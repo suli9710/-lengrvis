@@ -783,6 +783,7 @@ def _assert_support_package_review_metadata(redaction: dict):
     assert redaction["review_required"] is True
     assert redaction["external_sharing_allowed"] is False
     assert redaction["fail_closed"] is True
+    _assert_reviewed_artifact_contract(redaction["reviewed_artifact_contract"])
     assert external_review["schema_version"] == 1
     assert external_review["status"] == "manual_review_required"
     assert external_review["review_status"] == "manual_review_required"
@@ -792,6 +793,7 @@ def _assert_support_package_review_metadata(redaction: dict):
     assert external_review["external_sharing_allowed"] is False
     assert external_review["fail_closed"] is True
     assert external_review["machine_decision"] == "block_external_sharing_until_manual_review"
+    _assert_reviewed_artifact_contract(external_review["reviewed_artifact_contract"])
     checklist = external_review["checklist"]
     assert isinstance(checklist, list)
     assert {item["id"] for item in checklist} == {
@@ -821,6 +823,37 @@ def _assert_support_package_review_metadata(redaction: dict):
     }
     assert external_review["checklist_summary"] == expected_summary
     assert redaction["checklist_summary"] == expected_summary
+
+
+def _assert_reviewed_artifact_contract(contract: dict):
+    assert contract["schema_version"] == 1
+    assert contract["artifact_type"] == "diagnostics-external-review-evidence-reviewed"
+    assert contract["validator"] == "scripts/verify_diagnostics_external_reviewed_evidence.py"
+    assert contract["actual_package_content_review_required"] is True
+    assert contract["template_helper_can_satisfy"] is False
+    assert contract["allowed_review_decisions"] == ["do_not_share", "support_only"]
+    assert contract["required_checks"] == [
+        "actual_exported_package_opened",
+        "logs_reviewed",
+        "path_labels_reviewed",
+        "task_traces_reviewed",
+        "model_traces_reviewed",
+        "device_identifiers_reviewed",
+        "credentials_and_secrets_reviewed",
+        "redaction_reviewed",
+        "external_sharing_decision_recorded",
+    ]
+    assert contract["required_summary"] == {
+        "diagnostics_review_pass": True,
+        "public_safe": False,
+        "external_sharing_allowed": False,
+        "rc_signoff": False,
+        "release_signoff": False,
+    }
+    assert contract["machine_gate"] == {
+        "strict_pipeline_stage": "diagnostics-evidence",
+        "rr_id": "RR-P0-005",
+    }
 
 
 def _assert_current_response_contract(redaction: dict, *, contains_local_paths: bool):

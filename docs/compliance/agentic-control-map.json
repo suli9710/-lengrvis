@@ -1,0 +1,110 @@
+{
+  "schema": "lengrvis-agentic-control-map/v1",
+  "threat_model_version": "TM-2026-07-11-v1",
+  "last_reviewed": "2026-07-11",
+  "trust_boundaries": [
+    "TB-01",
+    "TB-02",
+    "TB-03",
+    "TB-04",
+    "TB-05",
+    "TB-06",
+    "TB-07",
+    "TB-08",
+    "TB-09",
+    "TB-10",
+    "TB-11"
+  ],
+  "controls": [
+    {
+      "id": "ASI01",
+      "title": "Agent goal hijack",
+      "threats": ["Untrusted content changes the user goal or plan scope."],
+      "controls": ["ContentEnvelope taint", "IntentCapsule goal and plan binding", "execution-point policy review"],
+      "tests": ["backend/tests/test_content_provenance.py", "backend/tests/test_intent_capsule.py"],
+      "owner": "Agent Runtime",
+      "residual_risk": "Semantic extraction can be wrong even when authority does not propagate."
+    },
+    {
+      "id": "ASI02",
+      "title": "Tool misuse and exploitation",
+      "threats": ["A plan selects an excessive or malformed tool action."],
+      "controls": ["Tool schema validation", "R0-R4 policy", "approval and intent binding", "RunBudgetLedger"],
+      "tests": ["backend/tests/test_permission_policy.py", "backend/tests/test_run_budget_ledger.py"],
+      "owner": "Policy Engine",
+      "residual_risk": "A defect in a first-party tool can still create an unintended effect."
+    },
+    {
+      "id": "ASI03",
+      "title": "Identity and privilege abuse",
+      "threats": ["Stale approval, mobile token, or credential reference is reused."],
+      "controls": ["Single-use approvals", "short-lived access and refresh rotation", "device revocation", "high-impact mobile denial until PoP and biometric step-up"],
+      "tests": ["backend/tests/test_mobile_token_family.py", "backend/tests/test_credential_types.py", "backend/tests/test_relay_types.py"],
+      "owner": "Identity and Mobile",
+      "residual_risk": "A compromised same-user session can act with the user's local authority."
+    },
+    {
+      "id": "ASI04",
+      "title": "Agentic supply-chain compromise",
+      "threats": ["A dependency, prompt, Skill, MCP server, or update is malicious or substituted."],
+      "controls": ["Dependency locks", "SBOM", "Skill signatures", "candidate binding", "capability manifest"],
+      "tests": ["backend/tests/test_delivery_pipeline.py", "backend/tests/test_app_skill_packages.py"],
+      "owner": "Release Engineering",
+      "residual_risk": "Signed third-party content may still be malicious."
+    },
+    {
+      "id": "ASI05",
+      "title": "Unexpected code execution",
+      "threats": ["Generated or extension code runs with full user privileges."],
+      "controls": ["Release-profile execution disabled", "future AppContainer broker", "Job Object limits", "network broker"],
+      "tests": ["backend/tests/test_developer_write_guard.py", "backend/tests/test_app_skill_packages.py"],
+      "owner": "Developer Engine",
+      "residual_risk": "No claim of safe local execution is permitted before OS sandbox evidence."
+    },
+    {
+      "id": "ASI06",
+      "title": "Memory and context poisoning",
+      "threats": ["Hostile external text is persisted and recalled as trusted guidance."],
+      "controls": ["Automatic lesson disabled", "memory quarantine", "TTL and scope", "explicit promotion and revoke"],
+      "tests": ["backend/tests/test_memory_agent.py", "backend/tests/test_content_provenance.py"],
+      "owner": "Memory Runtime",
+      "residual_risk": "User-approved memories may still contain inaccurate information."
+    },
+    {
+      "id": "ASI07",
+      "title": "Insecure inter-agent communication",
+      "threats": ["Agent or tool messages lose provenance or carry hidden instructions."],
+      "controls": ["ContentEnvelope propagation", "structured messages", "tainted-to-write reauthorization"],
+      "tests": ["backend/tests/test_content_provenance.py", "backend/tests/test_agent_bus_state_machine.py"],
+      "owner": "Agent Runtime",
+      "residual_risk": "Legacy unwrapped message paths require incremental migration."
+    },
+    {
+      "id": "ASI08",
+      "title": "Cascading failures",
+      "threats": ["Retries, fan-out, or repeated side effects amplify a failure."],
+      "controls": ["RunBudgetLedger", "idempotency keys", "duplicate-action detection", "kill switch"],
+      "tests": ["backend/tests/test_run_budget_ledger.py", "backend/tests/test_task_pool.py"],
+      "owner": "Orchestration",
+      "residual_risk": "External systems may not expose idempotent or reversible APIs."
+    },
+    {
+      "id": "ASI09",
+      "title": "Human-agent trust exploitation",
+      "threats": ["Misleading completion, approval fatigue, or hidden target changes cause unsafe consent."],
+      "controls": ["Preview evidence", "completion verification", "structured exception", "explicit unverified state"],
+      "tests": ["backend/tests/test_task_explain.py", "backend/tests/test_approval_binding.py"],
+      "owner": "Product Safety",
+      "residual_risk": "Users can still approve a clearly presented but incorrect business action."
+    },
+    {
+      "id": "ASI10",
+      "title": "Rogue or compromised agents",
+      "threats": ["A model, connector, or extension intentionally exceeds its declared role."],
+      "controls": ["Deterministic policy", "least-privilege tool registry", "capability revocation", "audit and incident response"],
+      "tests": ["backend/tests/test_orchestrator_registry.py", "backend/tests/test_skill_loader.py"],
+      "owner": "Security",
+      "residual_risk": "Unknown implementation defects require external testing and runtime monitoring."
+    }
+  ]
+}

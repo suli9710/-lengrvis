@@ -1261,6 +1261,31 @@ def test_pause_updates_persisted_run_state_phase(monkeypatch, tmp_path):
     assert run_service._state_from_run(paused).phase == EngineRunPhase.PAUSED
 
 
+def test_pause_run_cancels_active_engine_work(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="osrun_pause_cancels_active",
+        message="pause active engine",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        state={"run_id": "osrun_pause_cancels_active", "engine": "os", "phase": "running"},
+    )
+    db.upsert_model("runs", run)
+    active = concurrent.futures.Future()
+    run_service._track_active_run(run.id, active)
+
+    try:
+        paused = run_service.pause_run(run.id)
+
+        assert paused.phase == run_service.RunPhase.PAUSED
+        assert active.cancelled()
+    finally:
+        run_service._untrack_active_run(run.id)
+
+
 def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()

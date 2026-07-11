@@ -88,11 +88,11 @@ function Invoke-Checked([string]$FailureMessage, [scriptblock]$Command) {
 
 if (-not $SkipPython) {
     $python = Resolve-DevPython
-    $requirementsPath = Join-Path $Root "requirements-dev.txt"
+    $requirementsPath = Join-Path $Root "requirements-dev-lock.txt"
 
     Write-Step "Installing Python development dependencies"
     Invoke-Checked "Failed to upgrade pip. See the output above." { & $python -m pip install -U pip }
-    Invoke-Checked "Failed to install Python development dependencies. See the output above." { & $python -m pip install -r $requirementsPath }
+    Invoke-Checked "Failed to install Python development dependencies. See the output above." { & $python -m pip install --require-hashes -r $requirementsPath }
 }
 
 if (-not $SkipDesktop) {

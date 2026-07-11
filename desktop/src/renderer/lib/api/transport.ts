@@ -4,12 +4,8 @@ import type {
   ApiRequest,
   ApiResponse
 } from "../../../shared/desktopBridgeTypes";
+import { isRendererApiRouteAllowed } from "../../../shared/apiRequestAllowlist";
 import { backendErrorMessage } from "../../../shared/backendError";
-import {
-  API_REQUEST_DENIED_EXACT_PATHS,
-  API_REQUEST_DENIED_METHOD_PATHS,
-  API_REQUEST_DENIED_PATH_PREFIXES
-} from "../../../shared/ipc";
 import { zhUserFacingError } from "../zh";
 
 
@@ -17,7 +13,6 @@ export const FALLBACK_BACKEND_URL = "http://127.0.0.1:8000";
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
 export const WEB_ONLY_DEV_MUTATING_METHODS = new Set<ApiMethod>(["POST", "PUT", "PATCH", "DELETE"]);
-export const API_REQUEST_DENIED_EXACT_PATH_SET = new Set<string>(API_REQUEST_DENIED_EXACT_PATHS);
 
 export interface LocalModelInstallRequest {
   model?: string;
@@ -340,31 +335,7 @@ export function normalizeRendererApiPath(endpoint: string): string {
 }
 
 export function isDeniedRendererApiPath(pathname: string, method: ApiMethod): boolean {
-  if (API_REQUEST_DENIED_EXACT_PATH_SET.has(pathname)) {
-    return true;
-  }
-  if (
-    API_REQUEST_DENIED_PATH_PREFIXES.some(
-      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
-    )
-  ) {
-    return true;
-  }
-  return API_REQUEST_DENIED_METHOD_PATHS.some((rule) => {
-    if (rule.method !== method) {
-      return false;
-    }
-    if ("path" in rule) {
-      return pathname === rule.path;
-    }
-    if (!pathname.startsWith(rule.pathPrefix)) {
-      return false;
-    }
-    if ("pathSuffix" in rule) {
-      return pathname.endsWith(rule.pathSuffix);
-    }
-    return true;
-  });
+  return !isRendererApiRouteAllowed(pathname, method);
 }
 
 export async function parseResponseBody(response: Response): Promise<unknown> {

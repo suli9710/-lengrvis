@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.agents.delegation_metadata import merge_run_task_metadata
 from app.config import AppSettings
 from app.core import db
+from app.core.audit import record
 from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, StepStatus, now_iso
 from app.llm.registry import get_effective_settings
 from app.observability.best_effort import log_best_effort_failure
@@ -424,27 +425,65 @@ def runtime_status() -> dict[str, Any]:
     }
 
 
-def pause_run(run_id: str) -> Run:
+def pause_run(run_id: str, *, update_task_status: bool = True) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES:
         return run
     if run.task_id:
         expired = _expire_pending_approvals(run.task_id, "pause_requested")
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
-        try:
-            set_task_status(run.task_id, "paused")
-        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: pausing the run should still proceed.
-            log_best_effort_failure(logger, "pause_run.set_task_status", exc, run_id=run.id, task_id=run.task_id)
+        if update_task_status:
+            try:
+                set_task_status(run.task_id, "paused")
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: pausing the run should still proceed.
+                log_best_effort_failure(logger, "pause_run.set_task_status", exc, run_id=run.id, task_id=run.task_id)
     _sync_persisted_state_phase(run, RunPhase.PAUSED, "pause_requested")
     _update_run(run, phase=RunPhase.PAUSED)
+    _cancel_active_run_task(run.id)
     run_event_bus.publish(run.id, "turn.completed", {"reason": "pause_requested", "phase": run.phase.value})
     return run
+
+
+def pause_runs_for_task(task_id: str) -> list[Run]:
+    runs: list[Run] = []
+    try:
+        rows = db.fetch_many("runs", "task_id = ?", (task_id,), limit=100)
+    except _PERSISTED_STORE_READ_ERRORS as exc:
+        log_best_effort_failure(logger, "pause_runs_for_task.fetch", exc, task_id=task_id)
+        return runs
+    for row in rows:
+        try:
+            run = Run.model_validate(row)
+        except _PERSISTED_RUN_ROW_ERRORS as exc:
+            row_id = row.get("id") if isinstance(row, dict) else ""
+            log_best_effort_failure(logger, "pause_runs_for_task.validate_row", exc, run_id=row_id, task_id=task_id)
+            continue
+        if run.phase in TERMINAL_PHASES:
+            runs.append(run)
+            continue
+        try:
+            runs.append(pause_run(run.id, update_task_status=False))
+        except KeyError:
+            continue
+    return runs
 
 
 def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
         return run
+    if run.task_id:
+        task = get_task(run.task_id)
+        if task.status in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}:
+            # A stale Run must never revive work belonging to a terminal task.
+            record(
+                "run.resume_terminal_task_ignored",
+                "RunService",
+                {"task_status": task.status.value},
+                task_id=task.id,
+                run_id=run.id,
+            )
+            return run
     if _run_active(run.id):
         return run
     return _schedule_resume(run)
@@ -585,7 +624,7 @@ def cancel_run(run_id: str, *, update_task_status: bool = True, active_grace_sec
             _schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: cancellation still records run state below.
             log_best_effort_failure(logger, "cancel_run.schedule_engine_cancellation", exc, run_id=run.id)
-    if run.task_id:
+    if run.task_id and update_task_status:
         expired = _expire_pending_approvals(run.task_id, "cancel_requested")
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
     _update_run(run, phase=RunPhase.CANCELLED)

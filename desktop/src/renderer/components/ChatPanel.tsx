@@ -1,10 +1,12 @@
-import { AlertTriangle, Bot, Brain, CheckCircle2, CircleDashed, Pencil, Play, Send, Sparkles, XCircle } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Pencil, Play, Send, Sparkles, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../shared/catalogTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
+import { sanitizeTechnicalText } from "../lib/technicalDetails";
 import { zhUserFacingError } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
+import { TechnicalDetails } from "./TechnicalDetails";
 import { VoiceInputButton } from "./VoiceInputButton";
 
 interface ChatPanelProps {
@@ -234,6 +236,7 @@ function MessagePartView({ part }: { part: ChatMessagePart }) {
   if (part.type === "tool_call") {
     const tone = part.status === "success" ? "success" : part.status === "error" ? "danger" : "info";
     const Icon = part.status === "success" ? CheckCircle2 : part.status === "error" ? XCircle : CircleDashed;
+    const hasTechnicalPayload = Boolean(part.input || part.output || part.error);
 
     return (
       <section className={`message-part message-part--tool message-part--tool-${part.status}`}>
@@ -242,35 +245,103 @@ function MessagePartView({ part }: { part: ChatMessagePart }) {
           <strong>{part.title || part.toolName}</strong>
           <Badge tone={tone}>{toolStatusLabel(part.status)}</Badge>
         </div>
-        {part.input ? <pre>{part.input}</pre> : null}
-        {part.output ? <p>{part.status === "error" ? friendlyMessageText(part.output) : part.output}</p> : null}
-        {part.error ? <p className="message-part__error">{friendlyMessageText(part.error)}</p> : null}
+        <p className="message-part__summary">{toolStatusSummary(part.status)}</p>
+        {part.status === "error" ? (
+          <p className="message-part__next-step">可以重试这一步，或缩小任务范围后再发送。</p>
+        ) : null}
+        {hasTechnicalPayload ? (
+          <TechnicalDetails
+            title="技术详情"
+            description="查看调用参数、输出和脱敏诊断"
+            className="technical-details--message"
+            resetKey={`${part.toolName}:${part.status}`}
+          >
+            <div className="message-part__technical-grid">
+              {part.input ? <TechnicalMessageDatum label="调用参数" value={part.input} /> : null}
+              {part.output ? <TechnicalMessageDatum label="工具输出" value={part.output} /> : null}
+              {part.error ? <TechnicalMessageDatum label="失败阶段与诊断" value={part.error} tone="error" /> : null}
+            </div>
+          </TechnicalDetails>
+        ) : null}
       </section>
     );
   }
-
-  const Icon = part.type === "reasoning"
-    ? Brain
-    : part.type === "subagent"
-      ? Bot
-      : part.type === "error"
-        ? AlertTriangle
-        : part.type === "cancelled"
-          ? XCircle
-          : null;
 
   if (part.type === "text") {
     return <p className="message-part message-part--text">{part.text}</p>;
   }
 
+  if (part.type === "reasoning") {
+    return (
+      <section className="message-part message-part--reasoning">
+        <div className="message-part__head">
+          <CheckCircle2 size={14} aria-hidden="true" />
+          <strong>{part.title || "任务分析"}</strong>
+        </div>
+        <p>已完成任务分析。界面不会展示模型内部推理过程。</p>
+      </section>
+    );
+  }
+
+  if (part.type === "subagent") {
+    return (
+      <section className="message-part message-part--subagent">
+        <div className="message-part__head">
+          <Bot size={14} aria-hidden="true" />
+          <strong>{part.title || part.agent || "协作助手"}</strong>
+        </div>
+        <p className="message-part__summary">协作助手已返回一条执行记录。</p>
+        <TechnicalDetails
+          title="协作记录"
+          description="查看经过脱敏的执行消息"
+          className="technical-details--message"
+          resetKey={part.agent || part.title || "subagent"}
+        >
+          <TechnicalMessageDatum label="执行记录" value={part.text} />
+        </TechnicalDetails>
+      </section>
+    );
+  }
+
+  const isError = part.type === "error";
+  const Icon = isError ? AlertTriangle : XCircle;
   return (
     <section className={`message-part message-part--${part.type}`}>
       <div className="message-part__head">
-        {Icon ? <Icon size={14} aria-hidden="true" /> : null}
-        <strong>{part.title || part.agent || messagePartLabel(part.type)}</strong>
+        <Icon size={14} aria-hidden="true" />
+        <strong>{part.title || messagePartLabel(part.type)}</strong>
       </div>
-      <p>{part.type === "error" ? friendlyMessageText(part.text) : part.text}</p>
+      <p>{isError ? "发生了什么：这一步没有完成，系统已停止以避免产生不确定结果。" : "这项操作已取消，没有继续执行。"}</p>
+      {isError ? <p className="message-part__next-step">可以怎么做：重试任务，或调整目标后重新发送。</p> : null}
+      {part.text ? (
+        <TechnicalDetails
+          title="技术详情"
+          description="查看经过脱敏的底层原因"
+          className="technical-details--message"
+          resetKey={part.type}
+        >
+          <TechnicalMessageDatum label="原始诊断" value={part.text} tone={isError ? "error" : undefined} />
+        </TechnicalDetails>
+      ) : null}
     </section>
+  );
+}
+
+function TechnicalMessageDatum({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: string;
+  tone?: "error";
+}) {
+  const redacted = sanitizeTechnicalText(value);
+  return (
+    <div className={tone === "error" ? "technical-datum technical-datum--error" : "technical-datum"}>
+      <strong>{label}</strong>
+      <pre>{redacted || "暂无内容"}</pre>
+    </div>
   );
 }
 
@@ -289,19 +360,20 @@ function normalizeMessageParts(message: ChatMessage): ChatMessagePart[] {
   return [{ type: "text", text }];
 }
 
-function friendlyMessageText(text: string): string {
-  const friendly = zhUserFacingError(text);
-  return friendly === text ? text : friendly;
-}
-
 function toolStatusLabel(status: "running" | "success" | "error"): string {
   if (status === "running") return "运行中";
   if (status === "success") return "成功";
   return "失败";
 }
 
+function toolStatusSummary(status: "running" | "success" | "error"): string {
+  if (status === "running") return "正在完成这一步，结束后会自动继续。";
+  if (status === "success") return "这一步已完成，结果已交回任务流程。";
+  return "这一步未能完成，任务已停在安全位置。";
+}
+
 function messagePartLabel(type: ChatMessagePart["type"]): string {
-  if (type === "reasoning") return "推理";
+  if (type === "reasoning") return "任务分析";
   if (type === "subagent") return "协作助手";
   if (type === "error") return "错误";
   if (type === "cancelled") return "已取消";

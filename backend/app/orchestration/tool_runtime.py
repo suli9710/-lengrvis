@@ -5,12 +5,23 @@ from typing import Any
 
 from app.core import db
 from app.core.audit import record
+from app.core.content_provenance import (
+    ContentRevalidationRequired,
+    assert_content_revalidated,
+    collect_content_envelopes,
+    content_binding_payload,
+    content_envelope_for_tool_output,
+)
 from app.core.schemas import (
     PlanStep,
     StepStatus,
     Task,
     TaskStatus,
     ToolResult,
+)
+from app.orchestration.automation_runtime_guard import (
+    AutomationExecutionDenied,
+    authorize_automation_execution,
 )
 from app.orchestration.result_budget import apply_result_budget
 from app.orchestration.runtime_context import TaskRuntimeContext
@@ -197,7 +208,83 @@ class ToolRuntime(
         approval_id: str | None = None,
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
-        args = approved_args or step.args
+        args = approved_args if approved_args is not None else step.args
+        if _tool_requires_content_revalidation(tool, args):
+            try:
+                envelopes = collect_content_envelopes(args, runtime.extra_context, step.model_action)
+                if envelopes:
+                    assert_content_revalidated(
+                        envelopes,
+                        task_scopes={task.id, str(runtime.extra_context.get("automation_run_id") or "")},
+                        boundary=f"{tool.name} execution",
+                        content=content_binding_payload(args),
+                    )
+            except ContentRevalidationRequired as exc:
+                runtime.abort_requested = True
+                set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+                orchestrator._set_status(
+                    task,
+                    TaskStatus.DENIED,
+                    final_summary=f"Tool execution was denied: {exc}",
+                )
+                orchestrator.bus.publish_text(
+                    task.id,
+                    orchestrator.name,
+                    f"Denied tool execution: {exc}",
+                    step_id=step.id,
+                )
+                result = ToolResult(
+                    tool_call_id=f"{step.id}_content_revalidation_guard",
+                    ok=False,
+                    error=str(exc),
+                    observation=f"{step.tool_name} was blocked by the content revalidation guard.",
+                )
+                db.upsert_model("tool_results", result)
+                return RuntimeExecutionResult("fatal_denied", result)
+        try:
+            authorization = authorize_automation_execution(
+                task=task,
+                step=step,
+                tool=tool,
+                runtime=runtime,
+                args=args,
+                threaded_tools=threaded_tools,
+            )
+        except AutomationExecutionDenied as exc:
+            runtime.abort_requested = exc.hard_stop
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator._set_status(
+                task,
+                TaskStatus.DENIED if exc.hard_stop else TaskStatus.PAUSED,
+                final_summary=(
+                    f"Automated execution was denied: {exc.reason}"
+                    if exc.hard_stop
+                    else f"Automated execution was paused for user review: {exc.reason}"
+                ),
+            )
+            orchestrator.bus.publish_text(
+                task.id,
+                orchestrator.name,
+                (
+                    f"Denied automated tool execution: {exc.reason}"
+                    if exc.hard_stop
+                    else f"Paused automated tool execution: {exc.reason}"
+                ),
+                step_id=step.id,
+            )
+            result = ToolResult(
+                tool_call_id=f"{step.id}_automation_guard",
+                ok=False,
+                error=exc.reason,
+                observation=f"{step.tool_name} was blocked by the automation execution guard.",
+            )
+            db.upsert_model("tool_results", result)
+            return RuntimeExecutionResult("fatal_denied", result)
+        if authorization is not None:
+            runtime.extra_context["automation_action_fingerprint"] = authorization.action_fingerprint
+            runtime.extra_context["automation_intent_capsule_id"] = authorization.capsule_id
+            runtime.extra_context["automation_budget_version"] = authorization.budget_version
+            runtime.extra_context["automation_budget_soft_exceeded"] = authorization.soft_exceeded
         call = self._publish_tool_call_proposal(task, step, tool, args, approval_id=approval_id)
         stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
@@ -225,6 +312,16 @@ class ToolRuntime(
             tool_name=step.tool_name,
             max_result_size=tool.max_result_size,
             runtime=runtime,
+        )
+        result.content_envelope = content_envelope_for_tool_output(
+            step.tool_name,
+            result.output,
+            tool_call_id=result.tool_call_id,
+            task_scope=task.id,
+            trust_tier=tool.trust_tier,
+            external_network=tool.external_network,
+            resource_kinds=tool.resource_kinds,
+            upstream=[result.content_envelope],
         )
         db.upsert_model("tool_results", result)
         post_tool_review = self._review_tool_result(task, step, tool, result)
@@ -331,3 +428,39 @@ class ToolRuntime(
 
     def _ensure_authorized_paths(self, tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> None:
         ensure_authorized_paths(tool, args, context)
+
+
+def _tool_requires_content_revalidation(tool: ToolDefinition, args: dict[str, Any]) -> bool:
+    if args.get("dry_run") is True:
+        return False
+    name = tool.name.casefold()
+    effects = {str(item).strip().casefold() for item in tool.effects if str(item).strip()}
+    capabilities = {str(item).strip().casefold() for item in tool.capabilities if str(item).strip()}
+    sensitive_keys = {str(item).strip().casefold() for item in tool.sensitive_arg_keys if str(item).strip()}
+    side_effect_markers = {
+        "browser_write",
+        "click",
+        "control",
+        "create",
+        "delete",
+        "external_post",
+        "input",
+        "modify",
+        "move",
+        "send",
+        "submit",
+        "type",
+        "upload",
+        "write",
+    }
+    credential_markers = {"credential", "credentials", "password", "secret", "token"}
+    return bool(
+        tool.destructive
+        or not tool.is_read_only()
+        or tool.external_network
+        or effects.intersection(side_effect_markers)
+        or capabilities.intersection({"mcp", "credential", "credentials"})
+        or sensitive_keys.intersection(credential_markers)
+        or name.startswith("mcp.")
+        or "credential" in name
+    )

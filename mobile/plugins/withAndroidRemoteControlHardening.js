@@ -2,13 +2,22 @@ const { AndroidConfig, withAndroidManifest, withDangerousMod, withMainActivity }
 const fs = require("fs");
 const path = require("path");
 
-// Loopback cleartext is exempted because the API client deliberately allows
-// http://127.0.0.1 / http://localhost (emulator and adb-reverse pairing flows);
-// without this domain-config the release build would block that path at the
-// network layer while the client UI still offers it.
+// Production must never inherit loopback cleartext exceptions. The app can
+// still pair with a local desktop over HTTPS; insecure development transports
+// live only in the debug source sets below.
 // User-installed CA trust is intentionally omitted; only system trust anchors
 // are accepted to reduce MITM risk.
-const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
+const PRODUCTION_NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system" />
+    </trust-anchors>
+  </base-config>
+</network-security-config>
+`;
+
+const DEVELOPMENT_NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
   <base-config cleartextTrafficPermitted="false">
     <trust-anchors>
@@ -16,6 +25,7 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
     </trust-anchors>
   </base-config>
   <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">10.0.2.2</domain>
     <domain includeSubdomains="false">127.0.0.1</domain>
     <domain includeSubdomains="false">localhost</domain>
   </domain-config>
@@ -44,12 +54,26 @@ function withAndroidNetworkSecurityConfig(config) {
   return withDangerousMod(config, [
     "android",
     async (modConfig) => {
-      const xmlDir = path.join(modConfig.modRequest.platformProjectRoot, "app", "src", "main", "res", "xml");
-      await fs.promises.mkdir(xmlDir, { recursive: true });
-      await fs.promises.writeFile(path.join(xmlDir, "network_security_config.xml"), NETWORK_SECURITY_CONFIG, "utf8");
+      await writeNetworkSecurityConfigs(modConfig.modRequest.platformProjectRoot);
       return modConfig;
     },
   ]);
+}
+
+async function writeNetworkSecurityConfigs(platformProjectRoot) {
+  const sourceSetConfigs = [
+    ["main", PRODUCTION_NETWORK_SECURITY_CONFIG],
+    ["debug", DEVELOPMENT_NETWORK_SECURITY_CONFIG],
+    ["debugOptimized", DEVELOPMENT_NETWORK_SECURITY_CONFIG],
+  ];
+
+  await Promise.all(
+    sourceSetConfigs.map(async ([sourceSet, content]) => {
+      const xmlDir = path.join(platformProjectRoot, "app", "src", sourceSet, "res", "xml");
+      await fs.promises.mkdir(xmlDir, { recursive: true });
+      await fs.promises.writeFile(path.join(xmlDir, "network_security_config.xml"), content, "utf8");
+    }),
+  );
 }
 
 function addFlagSecure(source, language) {
@@ -106,3 +130,4 @@ function withAndroidRemoteControlHardening(config) {
 
 module.exports = withAndroidRemoteControlHardening;
 module.exports.addFlagSecure = addFlagSecure;
+module.exports.writeNetworkSecurityConfigs = writeNetworkSecurityConfigs;

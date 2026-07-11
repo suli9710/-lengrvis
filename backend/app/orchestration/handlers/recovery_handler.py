@@ -139,7 +139,11 @@ class RecoveryHandler:
             )
             return await self.rollback_and_fail(task, plan, step, result, reason="duplicate_recovery")
         plan.steps.append(recovery_step)
-        orchestrator._persist_plan_update(plan, f"Added recovery step for failed step {step.id}.")
+        orchestrator._persist_plan_update(
+            plan,
+            f"Added recovery step for failed step {step.id}.",
+            revision_change=True,
+        )
         orchestrator.bus.publish_text(
             task.id,
             orchestrator.name,

@@ -1048,6 +1048,7 @@ async function returnToSearchTab(page) {
 
       let windowOpenHandler;
       let willNavigateHandler;
+      let willDownloadHandler;
       let beforeRequestHandler;
       const hardenedWebContents = {
         setWindowOpenHandler: (handler) => {
@@ -1059,6 +1060,11 @@ async function returnToSearchTab(page) {
           }
         },
         session: {
+          on: (name, handler) => {
+            if (name === "will-download") {
+              willDownloadHandler = handler;
+            }
+          },
           webRequest: {
             onBeforeRequest: (handler) => {
               beforeRequestHandler = handler;
@@ -1072,6 +1078,7 @@ async function returnToSearchTab(page) {
       hardenEmbeddedWebContents(hardenedWebContents);
       assert.ok(windowOpenHandler, "embedded BrowserHost webContents should install a window.open handler");
       assert.ok(willNavigateHandler, "embedded BrowserHost webContents should install a will-navigate guard");
+      assert.ok(willDownloadHandler, "embedded BrowserHost session should install a download guard");
       assert.ok(beforeRequestHandler, "embedded BrowserHost webContents should install a request guard");
       assert.deepEqual(
         windowOpenHandler({ url: "https://example.test" }),
@@ -1079,6 +1086,17 @@ async function returnToSearchTab(page) {
         "embedded BrowserHost window.open should be denied by default"
       );
       assert.equal(openedExternalUrls, 0, "embedded BrowserHost window.open must not shell.openExternal automatically");
+      let downloadPrevented = false;
+      let downloadCanceled = false;
+      willDownloadHandler(
+        { preventDefault: () => { downloadPrevented = true; } },
+        {
+          cancel: () => { downloadCanceled = true; },
+          getURL: () => "https://example.test/report.csv"
+        }
+      );
+      assert.equal(downloadPrevented, true, "BrowserHost downloads must be prevented before a broker exists");
+      assert.equal(downloadCanceled, true, "BrowserHost downloads must be canceled before a broker exists");
       let privatePrevented = false;
       willNavigateHandler({ preventDefault: () => { privatePrevented = true; } }, "http://127.0.0.1:8000/admin");
       assert.equal(privatePrevented, true, "BrowserHost must block loopback navigation by default");

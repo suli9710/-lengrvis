@@ -40,10 +40,14 @@ def test_default_stages_order_and_membership():
     assert names[0] == "qa-gate"
     assert names[1] == "golden-gate"
     assert names[2] == "maintainability-gate"
+    assert names[3] == "review-scorecard"
+    assert names[4] == "agentic-threat-model"
     assert "signed-artifacts" in names
     assert names.index("release-safety") < names.index("signed-artifacts")
     assert names.index("signed-artifacts") < names.index("market-readiness")
     assert names.index("maintainability-gate") < names.index("supply-chain")
+    assert names.index("review-scorecard") < names.index("supply-chain")
+    assert names.index("agentic-threat-model") < names.index("supply-chain")
     assert names.index("supply-chain") < names.index("dependency-audit")
     assert names.index("dependency-audit") < names.index("secret-scan")
     assert names.index("secret-scan") < names.index("security-extensions")
@@ -58,6 +62,20 @@ def test_default_stages_order_and_membership():
     signed = next(s for s in stages if s.name == "signed-artifacts")
     assert signed.required is True
     assert "verify:windows-release-signatures" in signed.command
+    release_safety = next(s for s in stages if s.name == "release-safety")
+    assert release_safety.required is True
+    assert "execution-isolation" in release_safety.description
+
+
+def test_delivery_pipeline_docs_track_review_scorecard_gate():
+    delivery_doc = (REPO_ROOT / "docs" / "release" / "delivery-pipeline.md").read_text(encoding="utf-8")
+    release_gate = (REPO_ROOT / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
+
+    assert "`npm run review:scorecard` verifies the full-review scorecard before any" in delivery_doc
+    assert "CI should run `delivery:plan`, `npm run review:scorecard`" in delivery_doc
+    assert "maintainability gate, `review:scorecard`, real-LLM eval" in release_gate
+    assert "agentic-threat-model" in delivery_doc
+    assert "security:threat-model" in release_gate
 
 
 def test_strict_makes_release_evidence_required():
@@ -96,6 +114,38 @@ def test_strict_always_includes_signed_artifacts_even_when_skip_requested():
     assert "signed-artifacts" in names
 
 
+def test_candidate_build_requires_automated_and_signed_gates_but_not_reviewed_evidence():
+    stages = mod.default_stages(strict=True, candidate_build=True)
+    names = [stage.name for stage in stages]
+
+    assert names == [
+        "qa-gate",
+        "golden-gate",
+        "maintainability-gate",
+        "review-scorecard",
+        "agentic-threat-model",
+        "real-llm-eval",
+        "supply-chain",
+        "dependency-audit",
+        "secret-scan",
+        "security-extensions",
+        "release-safety",
+        "candidate-binding-context",
+        "packaging-verify",
+        "signed-artifacts",
+    ]
+    assert not any(name.endswith("-evidence") for name in names)
+
+
+def test_candidate_build_plan_cli_reports_candidate_mode():
+    result = _run_plan_cli("--candidate-build")
+    payload = json.loads(result.stdout)
+
+    assert payload["candidate_build"] is True
+    assert payload["effective_strict"] is True
+    assert payload["plan"][-1]["name"] == "signed-artifacts"
+
+
 def test_build_signature_verify_warnings():
     effective, warnings = mod.build_signature_verify_warnings(
         strict=False,
@@ -127,12 +177,15 @@ def test_strict_adds_strict_flag_to_readiness():
         "qa-gate",
         "golden-gate",
         "maintainability-gate",
+        "review-scorecard",
+        "agentic-threat-model",
         "real-llm-eval",
         "supply-chain",
         "dependency-audit",
         "secret-scan",
         "security-extensions",
         "release-safety",
+        "candidate-binding-context",
         "packaging-verify",
         "signed-artifacts",
         "distribution-evidence",
@@ -164,6 +217,28 @@ def test_strict_adds_strict_flag_to_readiness():
     android = next(s for s in mod.default_stages(strict=True) if s.name == "android-strict-gate")
     assert "LENGRVIS_ANDROID_APK_PATH" in android.command[-1]
     assert "LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH" in android.command[-1]
+    assert "LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256" in android.command[-1]
+    assert "-RequireCandidateBinding" in android.command[-1]
+    diagnostics = next(s for s in mod.default_stages(strict=True) if s.name == "diagnostics-evidence")
+    for stage_name, verifier in (
+        ("distribution-evidence", "verify_distribution_release_evidence.py"),
+        ("clean-machine-evidence", "verify_clean_machine_evidence.py"),
+        ("result-quality-evidence", "verify_result_quality_reviewed_evidence.py"),
+        ("diagnostics-evidence", "verify_diagnostics_external_reviewed_evidence.py"),
+    ):
+        stage = next(s for s in mod.default_stages(strict=True) if s.name == stage_name)
+        assert stage.command == [
+            sys.executable,
+            f"scripts/{verifier}",
+            "--require-candidate-binding",
+        ]
+    binding_context = next(s for s in mod.default_stages(strict=True) if s.name == "candidate-binding-context")
+    assert binding_context.command == [
+        sys.executable,
+        "scripts/verify_release_candidate_binding.py",
+        "--require-checkout-match",
+    ]
+    assert "actual package content review" in diagnostics.description
 
 
 def test_paid_launch_adds_commercial_evidence_and_paid_market_gate():
@@ -177,6 +252,13 @@ def test_paid_launch_adds_commercial_evidence_and_paid_market_gate():
     assert names.index("support-privacy-evidence") < names.index("claims-launch-evidence")
     assert names.index("claims-launch-evidence") < names.index("commercial-operations-evidence")
     assert names.index("commercial-operations-evidence") < names.index("market-readiness")
+    for stage_name in (
+        "commercial-loop",
+        "support-privacy-evidence",
+        "claims-launch-evidence",
+        "commercial-operations-evidence",
+    ):
+        assert "--require-candidate-binding" in next(stage for stage in stages if stage.name == stage_name).command
     market = next(s for s in stages if s.name == "market-readiness")
     assert "--paid-launch" in market.command
     assert "--strict" not in market.command

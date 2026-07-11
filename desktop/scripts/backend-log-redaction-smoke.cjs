@@ -7,6 +7,8 @@ const path = require("node:path");
 const originalLoad = Module._load;
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lengrvis-backend-log-redaction-"));
 const fakeSecret = (...parts) => parts.join("");
+const MAX_EXPECTED_LOG_FILE_BYTES = 512 * 1024;
+const MAX_EXPECTED_LOG_ENTRY_BYTES = 64 * 1024;
 
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
@@ -59,6 +61,27 @@ function assertNoRawSecrets(text, label) {
     const logText = fs.readFileSync(path.join(tmpRoot, "backend-process.log"), "utf8");
     assertNoRawSecrets(logText, "backend-process.log");
     assert.match(logText, /\[redacted\]|%5Bredacted%5D/);
+
+    await writeBackendLog(`oversized-entry ${"x".repeat(MAX_EXPECTED_LOG_ENTRY_BYTES * 2)}`);
+    const truncatedLog = fs.readFileSync(path.join(tmpRoot, "backend-process.log"), "utf8");
+    assert.ok(
+      Buffer.byteLength(truncatedLog, "utf8") <= MAX_EXPECTED_LOG_ENTRY_BYTES + 1024,
+      "an oversized backend log entry must be truncated"
+    );
+    assert.match(truncatedLog, /\[truncated\]/, "truncated backend log entries must be marked");
+
+    for (let index = 0; index < 16; index += 1) {
+      await writeBackendLog(`rotation-marker-${index} ${"x".repeat(MAX_EXPECTED_LOG_ENTRY_BYTES)}`);
+    }
+    const activeLogPath = path.join(tmpRoot, "backend-process.log");
+    const activeLog = fs.readFileSync(activeLogPath, "utf8");
+    assert.ok(
+      Buffer.byteLength(activeLog, "utf8") <= MAX_EXPECTED_LOG_FILE_BYTES + 1024,
+      "the active backend log must remain bounded after rotation"
+    );
+    assert.equal(activeLog.includes("rotation-marker-0"), false, "rotation must retire the oldest active log entries");
+    assert.equal(activeLog.includes("rotation-marker-15"), true, "rotation must retain the latest log entry");
+    assert.equal(fs.existsSync(`${activeLogPath}.1`), true, "rotation must keep one previous log file");
 
     console.log("backend process log redaction smoke passed");
   } finally {

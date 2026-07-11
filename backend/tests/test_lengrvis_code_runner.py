@@ -388,6 +388,47 @@ def test_lengrvis_code_public_failure_payload_redacts_diagnostics() -> None:
     assert payload["invalid_lines"] == ["not-json from [REDACTED_LOCAL_PATH] token=[REDACTED]"]
 
 
+def test_lengrvis_code_public_payload_redacts_system_events_and_runtime_health() -> None:
+    raw_path = "C:/Users/Suli/private/project"
+    raw_script = f"{raw_path}/fake_lengrvis.py"
+    plain_secret = "plain-runtime-secret"
+    summary = LengrvisCodeStreamSummary(
+        events=[{"type": "system", "subtype": "init", "cwd": raw_path, "api_key": plain_secret}],
+        system_events=[
+            {
+                "type": "system",
+                "subtype": "init",
+                "cwd": raw_path,
+                "api_key": plain_secret,
+                "tools": [f"Bash(python {raw_script}:*)"],
+            }
+        ],
+        result={"type": "result", "subtype": "success", "is_error": False, "result": "done"},
+        runtime_health={
+            "ok": True,
+            "source_root": raw_path,
+            "command": ["python", raw_script],
+            "api_key": plain_secret,
+        },
+    )
+    state = RunState(run_id="devrun_private_system", engine="developer", phase=RunPhase.RUNNING, goal="redact")
+
+    result = lengrvis_code_summary_to_turn_result(state, summary)
+    payload = result.outputs["lengrvis_code"]
+    serialized = json.dumps(
+        {"payload": payload, "observation_payload": result.state.observations[0].payload},
+        sort_keys=True,
+    )
+
+    assert payload["system_events"][0]["cwd"] == "[REDACTED_LOCAL_PATH]"
+    assert payload["system_events"][0]["api_key"] == "***"
+    assert payload["runtime_health"]["source_root"] == "[REDACTED_LOCAL_PATH]"
+    assert payload["runtime_health"]["api_key"] == "***"
+    assert raw_path not in serialized
+    assert raw_script not in serialized
+    assert plain_secret not in serialized
+
+
 def test_lengrvis_code_public_payload_redacts_semantic_tool_input_fields() -> None:
     secret_text = "plain confidential notes"
     raw_file = "C:/Users/Suli/private/project/notes.txt"

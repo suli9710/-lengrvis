@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from app.core.content_provenance import propagate_content_envelope
 from app.core.schemas import PlanStep, SafetyReview, ToolResult
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_value
@@ -80,6 +81,11 @@ def _withheld_result_stub(
         output["post_tool_review_id"] = review_id
     if review_verdict:
         output["post_tool_review_verdict"] = review_verdict
+    content_envelope = (
+        propagate_content_envelope(result.content_envelope, output, sanitizer="safety_review_withhold")
+        if result.content_envelope is not None
+        else None
+    )
     return ToolResult(
         id=result.id,
         tool_call_id=result.tool_call_id,
@@ -87,6 +93,7 @@ def _withheld_result_stub(
         output=output,
         error=reason,
         observation="Tool result was withheld by SafetyReviewAgent.",
+        content_envelope=content_envelope,
     )
 
 

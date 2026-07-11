@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,31 @@ def _pending_check(label: str = "") -> dict[str, str]:
     return {"status": "pending", "evidence_label": label}
 
 
-def build_support_privacy_template(*, candidate_commit: str, build_identifier: str) -> dict[str, Any]:
+def _candidate_binding(
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, str]:
+    return {
+        "commit": candidate_commit,
+        "build_identifier": build_identifier,
+        "repository": candidate_repository,
+        "ci_run_id": candidate_run_id,
+        "ci_run_attempt": candidate_run_attempt,
+    }
+
+
+def build_support_privacy_template(
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, Any]:
     checks = {
         key: _pending_check()
         for key in (
@@ -37,10 +62,13 @@ def build_support_privacy_template(*, candidate_commit: str, build_identifier: s
     return {
         "artifact_type": SUPPORT_TEMPLATE_TYPE,
         "template_mode": "not_reviewed_evidence",
-        "candidate": {
-            "commit": candidate_commit,
-            "build_identifier": build_identifier,
-        },
+        "candidate": _candidate_binding(
+            candidate_commit=candidate_commit,
+            build_identifier=build_identifier,
+            candidate_repository=candidate_repository,
+            candidate_run_id=candidate_run_id,
+            candidate_run_attempt=candidate_run_attempt,
+        ),
         "ownership": {
             "status": "pending",
             "primary_support_owner_label": "",
@@ -84,14 +112,24 @@ def build_support_privacy_template(*, candidate_commit: str, build_identifier: s
     }
 
 
-def build_claims_launch_template(*, candidate_commit: str, build_identifier: str) -> dict[str, Any]:
+def build_claims_launch_template(
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, Any]:
     return {
         "artifact_type": CLAIMS_TEMPLATE_TYPE,
         "template_mode": "not_reviewed_evidence",
-        "candidate": {
-            "commit": candidate_commit,
-            "build_identifier": build_identifier,
-        },
+        "candidate": _candidate_binding(
+            candidate_commit=candidate_commit,
+            build_identifier=build_identifier,
+            candidate_repository=candidate_repository,
+            candidate_run_id=candidate_run_id,
+            candidate_run_attempt=candidate_run_attempt,
+        ),
         "pricing": {
             "status": "pending",
             "approved_pricing_page_label": "",
@@ -137,14 +175,24 @@ def build_claims_launch_template(*, candidate_commit: str, build_identifier: str
     }
 
 
-def build_commercial_operations_template(*, candidate_commit: str, build_identifier: str) -> dict[str, Any]:
+def build_commercial_operations_template(
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, Any]:
     return {
         "artifact_type": OPERATIONS_TEMPLATE_TYPE,
         "template_mode": "not_reviewed_evidence",
-        "candidate": {
-            "commit": candidate_commit,
-            "build_identifier": build_identifier,
-        },
+        "candidate": _candidate_binding(
+            candidate_commit=candidate_commit,
+            build_identifier=build_identifier,
+            candidate_repository=candidate_repository,
+            candidate_run_id=candidate_run_id,
+            candidate_run_attempt=candidate_run_attempt,
+        ),
         "operations": {"scope": "paid_public_launch"},
         "contracting": {
             "status": "pending",
@@ -263,19 +311,36 @@ def build_commercial_operations_template(*, candidate_commit: str, build_identif
     }
 
 
-def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier: str) -> dict[str, str]:
+def write_templates(
+    output_dir: Path,
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     support = build_support_privacy_template(
         candidate_commit=candidate_commit,
         build_identifier=build_identifier,
+        candidate_repository=candidate_repository,
+        candidate_run_id=candidate_run_id,
+        candidate_run_attempt=candidate_run_attempt,
     )
     claims = build_claims_launch_template(
         candidate_commit=candidate_commit,
         build_identifier=build_identifier,
+        candidate_repository=candidate_repository,
+        candidate_run_id=candidate_run_id,
+        candidate_run_attempt=candidate_run_attempt,
     )
     operations = build_commercial_operations_template(
         candidate_commit=candidate_commit,
         build_identifier=build_identifier,
+        candidate_repository=candidate_repository,
+        candidate_run_id=candidate_run_id,
+        candidate_run_attempt=candidate_run_attempt,
     )
     support_path = output_dir / "support-privacy-operations-evidence.template.json"
     claims_path = output_dir / "claims-launch-evidence.template.json"
@@ -316,14 +381,35 @@ def write_templates(output_dir: Path, *, candidate_commit: str, build_identifier
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default=".tmp/paid-launch-evidence-templates")
-    parser.add_argument("--candidate-commit", default="uncollected")
-    parser.add_argument("--build-identifier", default="uncollected")
+    parser.add_argument(
+        "--candidate-commit",
+        default=os.getenv("LENGRVIS_RELEASE_CANDIDATE_COMMIT", "uncollected"),
+    )
+    parser.add_argument(
+        "--build-identifier",
+        default=os.getenv("LENGRVIS_RELEASE_BUILD_IDENTIFIER", "uncollected"),
+    )
+    parser.add_argument(
+        "--candidate-repository",
+        default=os.getenv("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", "uncollected"),
+    )
+    parser.add_argument(
+        "--candidate-run-id",
+        default=os.getenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "uncollected"),
+    )
+    parser.add_argument(
+        "--candidate-run-attempt",
+        default=os.getenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", "uncollected"),
+    )
     args = parser.parse_args()
 
     paths = write_templates(
         Path(args.output_dir),
         candidate_commit=args.candidate_commit,
         build_identifier=args.build_identifier,
+        candidate_repository=args.candidate_repository,
+        candidate_run_id=args.candidate_run_id,
+        candidate_run_attempt=args.candidate_run_attempt,
     )
     payload = {
         "ok": True,

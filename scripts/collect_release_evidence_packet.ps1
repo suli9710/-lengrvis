@@ -56,6 +56,28 @@ New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 $jsonPath = Join-Path $runRoot "release-evidence-packet.redacted.json"
 $markdownPath = Join-Path $runRoot "release-evidence-packet.redacted.md"
 
+function Get-ReleasePackageVersion {
+    $packagePath = Join-Path $resolvedRoot "package.json"
+    if (-not (Test-Path -LiteralPath $packagePath)) {
+        return "unknown"
+    }
+
+    try {
+        $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$package.version)) {
+            $version = ([string]$package.version).Trim()
+            if ($version.StartsWith("v")) {
+                return $version
+            }
+            return "v$version"
+        }
+    }
+    catch {
+    }
+
+    return "unknown"
+}
+
 $contractFailures = New-Object System.Collections.Generic.List[string]
 
 $sourceContracts = Get-ReleaseEvidenceSourceContracts -contractFailures $contractFailures
@@ -87,11 +109,20 @@ $settingsContract = $settingsSummary.settingsContract
 $settingsArtifactNames = @($settingsSummary.settingsArtifactNames)
 $settingsArtifacts = @($settingsSummary.settingsArtifacts)
 $settingsArtifactsPresent = $settingsSummary.settingsArtifactsPresent
-$releaseReadinessBlockers = New-ReleaseReadinessBlockers -androidReleaseGateLatestSummary $androidReleaseGateLatestSummary
+$releaseReadinessBlockers = New-ReleaseReadinessBlockers -androidReleaseGateLatestSummary $androidReleaseGateLatestSummary -diagnosticsReviewLatestSummary $diagnosticsReviewLatestSummary
+$currentReleaseEvidencePath = Join-Path $resolvedRoot "docs\release\current-release-evidence.md"
 $packet = [ordered]@{
     schema_version = 1
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
     generated_by = "scripts/collect_release_evidence_packet.ps1"
+    candidate_context = [ordered]@{
+        release_version = Get-ReleasePackageVersion
+        current_release_evidence = (Get-DisplayPath $currentReleaseEvidencePath).Replace("\", "/")
+        current_release_evidence_present = Test-Path -LiteralPath $currentReleaseEvidencePath
+        candidate_commit_source = "docs/release/current-release-evidence.md Commit SHA"
+        build_identifier_source = "docs/release/current-release-evidence.md Build identifier or manual RC handoff build id"
+        strict_readiness_cross_check = "dashboard Candidate commit and current-release evidence Commit SHA must match checked-out HEAD"
+    }
     outputs = [ordered]@{
         redacted_json = Get-DisplayPath $jsonPath
         redacted_markdown = Get-DisplayPath $markdownPath
@@ -129,6 +160,8 @@ $packet = [ordered]@{
         agent_task_completion_signoff = $false
         result_quality_signoff = $false
         diagnostics_public_safe = $false
+        diagnostics_external_share_machine_chain_ready = [bool]$diagnosticsReviewLatestSummary.manual_content_review_only_remaining
+        diagnostics_external_share_manual_content_review_pending = $true
         release_ready = $false
         claimable_release_signoff = $false
         release_readiness_blocker_count = $releaseReadinessBlockers.Count
@@ -261,6 +294,11 @@ $packet = [ordered]@{
             expected_actual_package_content_review_completed = $false
             expected_external_sharing_blocked = $true
             expected_separate_human_content_review_required = $true
+            machine_chain_status = $diagnosticsReviewLatestSummary.machine_chain_status
+            manual_content_review_only_remaining = [bool]$diagnosticsReviewLatestSummary.manual_content_review_only_remaining
+            reviewed_evidence_validator = "scripts/verify_diagnostics_external_reviewed_evidence.py"
+            reviewed_evidence_artifact_type = "diagnostics-external-review-evidence-reviewed"
+            strict_pipeline_stage = "diagnostics-evidence"
             verify_command = "python -m pytest backend/tests/test_system_diagnostics.py -q"
             not_signoff = @(
                 "not external public-safety approval",

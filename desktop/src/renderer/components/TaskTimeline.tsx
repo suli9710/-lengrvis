@@ -31,6 +31,13 @@ import {
 import { LengrvisApiClient } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import {
+  buildTaskTechnicalEntries,
+  groupTechnicalDetails,
+  sanitizeTechnicalText,
+  type TechnicalDetailCategory,
+  type TechnicalDetailEntry
+} from "../lib/technicalDetails";
+import {
   zhAgentName,
   zhBackendTaskStatus,
   zhRelativeTime,
@@ -40,6 +47,7 @@ import {
   zhToolName
 } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
+import { TechnicalDetails } from "./TechnicalDetails";
 
 interface TaskTimelineProps {
   tasks: TaskEvent[];
@@ -183,14 +191,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                     <Badge tone={toneForState(task.state)}>{zhTaskState(task.state)}</Badge>
                   </div>
                   <p>{task.description}</p>
-                  <div className="timeline-trust-manifest" aria-label="任务信任清单">
-                    {trustManifest.map((item) => (
-                      <span key={item.label} className={`timeline-trust-manifest__item timeline-trust-manifest__item--${item.tone}`}>
-                        <strong>{item.label}</strong>
-                        <em>{item.value}</em>
-                      </span>
-                    ))}
-                  </div>
+                  <TimelineUserStatus task={task} />
                   <TimelineResultWorkbench
                     summary={resultTimeline}
                     task={task}
@@ -200,62 +201,12 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                     onPreview={openPreview}
                     onTaskPilotAction={onTaskPilotAction}
                   />
-                  <div className="timeline-workspace" aria-label="Task Workspace">
-                    <div className="timeline-workspace__head">
-                      <strong>Task Workspace</strong>
-                      <span>授权、工具、审批与接管状态</span>
-                    </div>
-                    <div className="timeline-workspace__grid">
-                      {workspaceItems.map((item) => (
-                        <span key={item.label} className={`timeline-workspace__item timeline-workspace__item--${item.tone}`}>
-                          <b>{item.label}</b>
-                          <em>{item.value}</em>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                {task.recordings?.length ? (
-                  <div className="timeline-recordings">
-                    {task.recordings.map((recording) => (
-                      <div className="timeline-recording" key={recording.stepId}>
-                        <div className="timeline-recording__head">
-                          <span className="timeline-recording__title">
-                            <Images size={14} aria-hidden="true" />
-                            <span>{recording.toolName}</span>
-                          </span>
-                          <button
-                            type="button"
-                            className="icon-button icon-button--tiny"
-                            onClick={() => openRecordingPlayer(task.title, recording)}
-                            disabled={!recording.frames.some((frame) => frame.url)}
-                            title="播放录屏"
-                            aria-label="播放录屏"
-                          >
-                            <Play size={13} aria-hidden="true" />
-                          </button>
-                        </div>
-                        <div className="timeline-recording__frames">
-                          {recording.frames.map((frame, frameIndex) => (
-                            <button
-                              type="button"
-                              className="timeline-frame"
-                              key={`${recording.stepId}-${frame.phase}-${frame.capturedAt}`}
-                              onClick={() => frame.url && openRecordingPlayer(task.title, recording, frameIndex)}
-                              disabled={!frame.url}
-                              title={frame.error || frame.phase}
-                            >
-                              {frame.url ? <img src={frame.url} alt={`${recording.toolName} ${phaseLabel(frame.phase)}`} /> : null}
-                              <span>{phaseLabel(frame.phase)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
-                {task.boundaryEvents?.length ? <TimelineBoundaryEvents events={task.boundaryEvents} /> : null}
-                <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
+                  <TimelineTechnicalDetails
+                    task={task}
+                    trustManifest={trustManifest}
+                    workspaceItems={workspaceItems}
+                    onOpenRecording={openRecordingPlayer}
+                  />
                 </div>
               </li>
             );
@@ -279,7 +230,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
               <ol className="rollback-preview-list">
                 {previewSteps.map((entry, index) => (
                   <li key={index}>
-                    <code>{JSON.stringify(entry)}</code>
+                    <code>{sanitizeTechnicalText(entry)}</code>
                   </li>
                 ))}
               </ol>
@@ -424,6 +375,172 @@ function taskMatchesFocus(task: TaskEvent, focusedTaskId?: string | null): boole
   return task.id === focusedTaskId || task.sourceTaskId === focusedTaskId;
 }
 
+function TimelineUserStatus({ task }: { task: TaskEvent }) {
+  const copy = timelineUserStatusCopy(task);
+  const role = task.state === "failed" || task.state === "blocked" ? "alert" : "status";
+  return (
+    <div className={`timeline-user-status timeline-user-status--${copy.tone}`} role={role}>
+      <span>
+        <b>{copy.stageLabel}</b>
+        <em>{copy.stage}</em>
+      </span>
+      <span>
+        <b>下一步</b>
+        <em>{copy.nextStep}</em>
+      </span>
+    </div>
+  );
+}
+
+function timelineUserStatusCopy(task: TaskEvent): {
+  stageLabel: string;
+  stage: string;
+  nextStep: string;
+  tone: "neutral" | "active" | "success" | "warning" | "danger";
+} {
+  if (task.state === "running") {
+    return { stageLabel: "当前阶段", stage: "正在执行任务", nextStep: "完成后核对结果与证据", tone: "active" };
+  }
+  if (task.state === "blocked") {
+    return { stageLabel: "当前阶段", stage: "等待你的确认", nextStep: "查看审批内容，再决定是否继续", tone: "warning" };
+  }
+  if (task.state === "completed") {
+    return { stageLabel: "结果", stage: "任务已完成", nextStep: "核对结果，必要时查看证据或回滚预案", tone: "success" };
+  }
+  if (task.state === "failed") {
+    return { stageLabel: "发生了什么", stage: "任务未完成，并已安全停止", nextStep: "重试任务，或打开技术详情查看脱敏原因", tone: "danger" };
+  }
+  if (task.state === "paused") {
+    return { stageLabel: "当前阶段", stage: "任务已暂停", nextStep: "恢复任务或调整目标", tone: "neutral" };
+  }
+  return { stageLabel: "当前阶段", stage: "等待开始", nextStep: "系统会在执行前检查范围和权限", tone: "neutral" };
+}
+
+function TimelineTechnicalDetails({
+  task,
+  trustManifest,
+  workspaceItems,
+  onOpenRecording
+}: {
+  task: TaskEvent;
+  trustManifest: Array<{ label: string; value: string; tone: "ready" | "warning" | "blocked" }>;
+  workspaceItems: Array<{ label: string; value: string; tone: "ready" | "warning" | "blocked" }>;
+  onOpenRecording: (taskTitle: string, recording: TaskStepRecording, frameIndex?: number) => void;
+}) {
+  const groups = groupTechnicalDetails(buildTaskTechnicalEntries(task));
+  const itemsFor = (category: TechnicalDetailCategory) =>
+    groups.find((group) => group.category === category)?.items ?? [];
+
+  return (
+    <TechnicalDetails
+      title="技术详情"
+      description="执行链路、权限边界、证据、恢复与脱敏诊断"
+      className="technical-details--timeline"
+      resetKey={task.id}
+      testId={`task-technical-details-${task.id}`}
+    >
+      <div className="technical-detail-groups">
+        <section className="technical-detail-section" aria-labelledby={`task-execution-${task.id}`}>
+          <h3 id={`task-execution-${task.id}`}>执行链路</h3>
+          <TechnicalEntryGrid entries={itemsFor("execution")} />
+          <div className="timeline-workspace" aria-label="Task Workspace">
+            <div className="timeline-workspace__head">
+              <strong>技术工作台</strong>
+              <span>工具、审批与接管状态</span>
+            </div>
+            <div className="timeline-workspace__grid">
+              {workspaceItems.map((item) => (
+                <span key={item.label} className={`timeline-workspace__item timeline-workspace__item--${item.tone}`}>
+                  <b>{item.label}</b>
+                  <em>{item.value}</em>
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="technical-detail-section" aria-labelledby={`task-permissions-${task.id}`}>
+          <h3 id={`task-permissions-${task.id}`}>权限与边界</h3>
+          <TechnicalEntryGrid entries={itemsFor("permissions")} />
+          <div className="timeline-trust-manifest" aria-label="任务信任清单">
+            {trustManifest.map((item) => (
+              <span key={item.label} className={`timeline-trust-manifest__item timeline-trust-manifest__item--${item.tone}`}>
+                <strong>{item.label}</strong>
+                <em>{item.value}</em>
+              </span>
+            ))}
+          </div>
+          {task.boundaryEvents?.length ? <TimelineBoundaryEvents events={task.boundaryEvents} /> : null}
+        </section>
+
+        <section className="technical-detail-section" aria-labelledby={`task-evidence-${task.id}`}>
+          <h3 id={`task-evidence-${task.id}`}>证据与恢复</h3>
+          <TechnicalEntryGrid entries={itemsFor("evidence")} />
+          {task.recordings?.length ? (
+            <div className="timeline-recordings">
+              {task.recordings.map((recording) => (
+                <div className="timeline-recording" key={recording.stepId}>
+                  <div className="timeline-recording__head">
+                    <span className="timeline-recording__title">
+                      <Images size={14} aria-hidden="true" />
+                      <span>{recording.toolName}</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-button icon-button--tiny"
+                      onClick={() => onOpenRecording(task.title, recording)}
+                      disabled={!recording.frames.some((frame) => frame.url)}
+                      title="播放录屏"
+                      aria-label="播放录屏"
+                    >
+                      <Play size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="timeline-recording__frames">
+                    {recording.frames.map((frame, frameIndex) => (
+                      <button
+                        type="button"
+                        className="timeline-frame"
+                        key={`${recording.stepId}-${frame.phase}-${frame.capturedAt}`}
+                        onClick={() => frame.url && onOpenRecording(task.title, recording, frameIndex)}
+                        disabled={!frame.url}
+                        title={sanitizeTechnicalText(frame.error || frame.phase)}
+                      >
+                        {frame.url ? <img src={frame.url} alt={`${recording.toolName} ${phaseLabel(frame.phase)}`} /> : null}
+                        <span>{phaseLabel(frame.phase)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <p className="technical-details__empty">暂无步骤录屏。</p>}
+          {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
+        </section>
+
+        <section className="technical-detail-section" aria-labelledby={`task-diagnostics-${task.id}`}>
+          <h3 id={`task-diagnostics-${task.id}`}>诊断信息</h3>
+          <TechnicalEntryGrid entries={itemsFor("diagnostics")} />
+          <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
+        </section>
+      </div>
+    </TechnicalDetails>
+  );
+}
+
+function TechnicalEntryGrid({ entries }: { entries: TechnicalDetailEntry[] }) {
+  return entries.length ? (
+    <dl className="technical-entry-grid">
+      {entries.map((entry) => (
+        <div key={`${entry.category}-${entry.label}`}>
+          <dt>{entry.label}</dt>
+          <dd>{entry.value}</dd>
+        </div>
+      ))}
+    </dl>
+  ) : <p className="technical-details__empty">暂无可用数据。</p>;
+}
+
 function TimelineResultWorkbench({
   summary,
   task,
@@ -563,7 +680,7 @@ function TimelineBoundaryEvents({ events }: { events: TaskBoundaryEvent[] }) {
             <strong>{event.title}</strong>
             <Badge tone={toneForBoundary(event.severity)}>{boundaryKindLabel(event.kind)}</Badge>
           </div>
-          <p>{event.detail}</p>
+          <p>{sanitizeTechnicalText(event.detail)}</p>
           <span className="muted">
             {event.stepId ? `step ${event.stepId} · ` : ""}
             {zhRelativeTime(event.createdAt)}
@@ -628,7 +745,7 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
           <div className="explain-summary">
             <div>
               <span className="muted">目标</span>
-              <strong>{explain.userGoal}</strong>
+              <strong>{sanitizeTechnicalText(explain.userGoal)}</strong>
             </div>
             <div>
               <span className="muted">状态</span>
@@ -653,7 +770,7 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
                 {resultQuality.canTreatAsDone ? "可作为完成结果" : resultQualityLabel(resultQuality.state)}
               </Badge>
             </div>
-            <p>{resultQuality.summary || completionEvidence.summary}</p>
+            <p>{sanitizeTechnicalText(resultQuality.summary || completionEvidence.summary)}</p>
             {resultQuality.missingChecks.length ? (
               <ul>
                 {resultQuality.missingChecks.slice(0, 4).map((missing) => (
@@ -674,7 +791,7 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
                     <strong>{stageTitle(item.stage, item.title)}</strong>
                     <span className="muted">{item.evidence.length} 条证据</span>
                   </div>
-                  <p>{item.summary}</p>
+                  <p>{explainStageSummary(item.stage, item.summary)}</p>
                   {item.evidence.length ? <EvidenceList evidence={item.evidence.slice(0, 3)} /> : null}
                 </div>
               </article>
@@ -690,15 +807,15 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
                     <span>{step.order}. {zhToolName(step.toolName)}</span>
                     <Badge tone={step.requiresApproval ? "warning" : "neutral"}>{zhRiskLevel(step.riskLevel)}</Badge>
                   </div>
-                  <p>{step.plannerReason || step.description}</p>
+                  <p>{sanitizeTechnicalText(step.description)}</p>
                   {step.subagentSuggestions.map((message) => (
                     <p className="muted" key={message.id}>
-                      {zhAgentName(message.fromAgent)}：{message.action?.rationale || message.content}
+                      {zhAgentName(message.fromAgent)}：{sanitizeTechnicalText(message.content)}
                     </p>
                   ))}
                   {step.safetyReviews.map((review) => (
                     <p className="muted" key={review.id}>
-                      安全审查 {zhSafetyVerdict(review.verdict)}：{review.reasons.join(" ")}
+                      安全审查 {zhSafetyVerdict(review.verdict)}：{sanitizeTechnicalText(review.reasons.join(" "))}
                     </p>
                   ))}
                 </article>
@@ -724,18 +841,25 @@ function EvidenceList({ evidence }: { evidence: TaskExplainEvidence[] }) {
       {evidence.map((item) => (
         <li key={`${item.source}-${item.id}`}>
           <span>{item.source}</span>
-          <p>{item.actor ? `${zhAgentName(item.actor)}：` : ""}{item.summary}</p>
+          <p>{item.actor ? `${zhAgentName(item.actor)}：` : ""}{sanitizeTechnicalText(item.summary)}</p>
         </li>
       ))}
     </ul>
   );
 }
 
+function explainStageSummary(stage: string, summary: string): string {
+  if (stage === "planner_reasoning") {
+    return "已记录计划选择；为保护隐私与可读性，不展示模型内部推理过程。";
+  }
+  return sanitizeTechnicalText(summary);
+}
+
 function stageTitle(stage: string, fallback: string) {
   const labels: Record<string, string> = {
     user_goal: "用户目标",
     supervisor_judgment: "主管判断",
-    planner_reasoning: "规划理由",
+    planner_reasoning: "计划依据",
     step_safety_reviews: "每步安全审查",
     subagent_suggestions: "子 Agent 建议",
     final_result: "最终结果"

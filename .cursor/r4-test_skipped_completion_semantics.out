@@ -1,7 +1,0 @@
-F                                                                        [100%]
-================================== FAILURES ===================================
-E   sqlite3.OperationalError: database is locked
-C:\Users\Suli\Desktop\mavris\backend\app\core\db.py:1168: sqlite3.OperationalError: database is locked
-=========================== short test summary info ===========================
-FAILED backend\tests\test_skipped_completion_semantics.py::test_finalize_marks_failed_when_success_coexists_with_blocked_skips
-1 failed in 5.99s

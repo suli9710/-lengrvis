@@ -22,6 +22,10 @@ import type {
   DesktopScheduleCreateRequest,
   DesktopScheduleEnableRequest,
   DesktopSettingsPatch,
+  CredentialFillRequest,
+  CredentialRefRequest,
+  CredentialSessionRequest,
+  CredentialUseTicketRequest,
   MobilePairingRemoteInputGrantRequest,
   MobilePairingRevokeRemoteInputGrantRequest,
   NotificationPayload
@@ -213,6 +217,18 @@ const bridge: LengrvisDesktopBridge = {
       };
     }
   },
+  credentials: {
+    listForSession: (request: CredentialSessionRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.credentialsListForSession, request),
+    captureFromPage: (request: CredentialSessionRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.credentialsCaptureFromPage, request),
+    issueUseTicket: (request: CredentialUseTicketRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.credentialsIssueUseTicket, request),
+    fill: (request: CredentialFillRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.credentialsFill, request),
+    delete: (request: CredentialRefRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.credentialsDelete, request)
+  },
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
     getFileIcon: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.getFileIcon, path),
@@ -235,7 +251,7 @@ const bridge: LengrvisDesktopBridge = {
   },
   platform: preloadProcess?.platform ?? "win32",
   versions: {
-    app: env.npm_package_version ?? "0.1.1",
+    app: env.npm_package_version ?? "0.1.2",
     electron: version("electron"),
     chrome: version("chrome"),
     node: version("node")

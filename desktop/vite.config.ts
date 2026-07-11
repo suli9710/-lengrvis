@@ -8,7 +8,18 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: "./",
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: "lengrvis-dev-style-csp",
+        apply: "serve",
+        // Vite injects renderer CSS through <style> tags during dev:web. Keep
+        // production CSP strict while allowing only the local dev server path.
+        transformIndexHtml(html) {
+          return html.replace("style-src-elem 'self'", "style-src-elem 'self' 'unsafe-inline'");
+        }
+      }
+    ],
     resolve: {
       alias: {
         "@renderer": resolve(__dirname, "src/renderer"),

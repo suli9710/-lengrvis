@@ -53,6 +53,11 @@ def get_approval_event_bus() -> ApprovalEventBus:
 
 def publish_approval_created(approval: Approval) -> None:
     _bus.publish({"type": "approval_created", "approval": _safe_approval(approval)})
+    # Keep the event stream fast and redacted; the push worker receives the
+    # approval only to derive its separately minimized routing payload.
+    from app.services.mobile_push_service import enqueue_approval_push
+
+    enqueue_approval_push(approval)
 
 
 def publish_approval_decided(approval: Approval) -> None:

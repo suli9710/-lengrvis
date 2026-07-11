@@ -222,11 +222,10 @@ function assertApprovalDetailBeginnerSafety() {
     resource_kinds: ["file"],
     dry_run_summary: "将把 1 个文件移入回收站。",
   });
-  assert.equal(destructiveWithPreview.approveBlockedReason, undefined);
-  assert.equal(destructiveWithPreview.tone, "warning");
-  assert.match(destructiveWithPreview.title, /批准前先核对范围/);
-  assert.match(destructiveWithPreview.detail, /批准后电脑端才会继续执行/);
-  assert.match(destructiveWithPreview.nextStep, /不确定就拒绝/);
+  assert.match(destructiveWithPreview.approveBlockedReason, /硬件绑定生物识别/);
+  assert.equal(destructiveWithPreview.tone, "danger");
+  assert.match(destructiveWithPreview.title, /生物识别再次确认/);
+  assert.match(destructiveWithPreview.nextStep, /电脑端|拒绝/);
 
   const destructiveWithoutPreview = approvalSafety.approvalDecisionGuard({
     approval_type: "cleanup_execute",
@@ -234,7 +233,7 @@ function assertApprovalDetailBeginnerSafety() {
     tool_effects: ["delete"],
   });
   assert.equal(destructiveWithoutPreview.tone, "danger");
-  assert.match(destructiveWithoutPreview.detail, /默认更安全的下一步是拒绝/);
+  assert.match(destructiveWithoutPreview.approveBlockedReason, /硬件绑定生物识别/);
 
   const dangerousPermission = approvalSafety.approvalDecisionGuard({
     approval_type: "tool_call",
@@ -255,6 +254,19 @@ function assertApprovalDetailBeginnerSafety() {
     }).approveBlockedReason,
     "此审批会扩大电脑端执行权限，不能在手机上批准；请回电脑端核对后手动处理或拒绝。",
   );
+
+  const missingBiometricStepUp = approvalSafety.approvalDecisionGuard({
+    approval_type: "tool_call",
+    tool_name: "browser.submit_form",
+    tool_effects: ["submit", "external_post"],
+    resource_kinds: ["browser"],
+    dry_run_summary: "将提交已核对的认证表单。",
+    mobile_step_up_required: true,
+    mobile_step_up_satisfied: false,
+  });
+  assert.equal(missingBiometricStepUp.tone, "danger");
+  assert.match(missingBiometricStepUp.approveBlockedReason, /生物识别在场证明/);
+  assert.match(missingBiometricStepUp.title, /生物识别再次确认/);
 
   const remoteInputAllowedDeviceMismatch = {
     approval_type: "remote_input",
@@ -336,11 +348,11 @@ function assertApprovalListBeginnerSafety() {
     tool_effects: ["delete"],
     message: 'args={"path":"C:\\Users\\Suli\\Desktop\\secret.txt","mobile_token":"abc"}',
   });
-  assert.equal(highRiskNoBoundary.label, "缺少安全边界");
+  assert.equal(highRiskNoBoundary.label, "需要生物识别");
   assert.equal(highRiskNoBoundary.tone, "danger");
   assert.equal(
     highRiskNoBoundary.detail,
-    "手机端不可批准；回电脑端核对试运行和影响范围。",
+    "当前手机会话不能批准高影响操作；请回电脑端处理。",
     "Approval list must not imply approval is available when a high-risk request lacks dry-run or scope",
   );
   assert.doesNotMatch(highRiskNoBoundary.detail, /args|path|token|C:\\|secret/i);
@@ -440,8 +452,8 @@ function assertApprovalListBeginnerSafety() {
     resource_kinds: ["file"],
     dry_run_summary: "将把 1 个文件移入回收站。",
   });
-  assert.equal(highRiskWithBoundary.label, "批准前核对");
-  assert.equal(highRiskWithBoundary.tone, "warning");
+  assert.equal(highRiskWithBoundary.label, "需要生物识别");
+  assert.equal(highRiskWithBoundary.tone, "danger");
 
   const safeDisplay = loadTsModule(mobilePath("src/safeDisplay.ts"));
   const redacted = safeDisplay.safeDisplayText(

@@ -1,9 +1,19 @@
 function New-ReleaseReadinessBlockers {
     param(
-        [Parameter(Mandatory = $true)]$androidReleaseGateLatestSummary
+        [Parameter(Mandatory = $true)]$androidReleaseGateLatestSummary,
+        [Parameter(Mandatory = $true)]$diagnosticsReviewLatestSummary
     )
 
 $releaseReadinessBlockers = @(
+    [ordered]@{
+        id = "agentic_threat_model"
+        status = "candidate_bound_review_required"
+        claim_allowed = $false
+        support_evidence = "versioned threat model, OWASP ASI01-ASI10 control map, validator, and release-pipeline wiring only"
+        required_evidence = "passing npm run security:threat-model output bound to the candidate plus security/release-owner review of controls, evidence owners, and residual risk"
+        beginner_next_step = "Run npm run security:threat-model for the candidate, review open residual risks, and record owner acceptance before public Beta or RC sign-off."
+        must_not_claim = "public Beta threat-model gate passed"
+    }
     [ordered]@{
         id = "clean_machine_local_model"
         status = "missing_manual_evidence"
@@ -42,11 +52,15 @@ $releaseReadinessBlockers = @(
     }
     [ordered]@{
         id = "diagnostics_external_public_safety"
-        status = "manual_content_review_required"
+        status = if ($diagnosticsReviewLatestSummary.manual_content_review_only_remaining) { "manual_content_review_only_remaining" } else { "manual_content_review_required" }
         claim_allowed = $false
-        support_evidence = "diagnostics export contract tests and external-review packet template only"
+        support_evidence = if ($diagnosticsReviewLatestSummary.manual_content_review_only_remaining) {
+            "diagnostics export contract tests, external-review template, reviewed-evidence verifier, release packet summary, and strict diagnostics-evidence pipeline stage"
+        } else {
+            "diagnostics export contract tests and external-review packet template only"
+        }
         required_evidence = "human review of the actual exported diagnostics package contents before any external sharing"
-        beginner_next_step = "Export a disposable diagnostics package, review the actual contents, and keep public_safe=false unless a separate policy changes."
+        beginner_next_step = "Create the signed diagnostics-external-review-evidence-reviewed JSON from the actual package content review, then run npm run evidence:diagnostics-verify."
         must_not_claim = "public-safe diagnostics approval"
     }
     [ordered]@{

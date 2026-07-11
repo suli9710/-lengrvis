@@ -8,11 +8,6 @@ import type {
   DesktopWebSocketSubscribeRequest
 } from "../../../shared/types";
 import {
-  API_REQUEST_DENIED_EXACT_PATHS,
-  API_REQUEST_DENIED_METHOD_PATHS,
-  API_REQUEST_DENIED_PATH_PREFIXES
-} from "../../../shared/ipc";
-import {
   zhApprovalType,
   zhBackendTaskStatus,
   zhBackendText,

@@ -69,7 +69,12 @@ from app.commerce.device_identity import (
 from app.commerce.device_identity import (
     local_activation_device_id as _local_activation_device_id,
 )
-from app.commerce.entitlements import Plan, normalize_plan
+from app.commerce.entitlements import (
+    PLAN_CATALOG_CURRENT,
+    PLAN_CATALOG_LEGACY,
+    Plan,
+    normalize_plan_claim,
+)
 from app.commerce.licensing import (
     License,
     LicenseError,
@@ -790,7 +795,8 @@ def _sign_activation_license(
     password = private_key_password if private_key_password is not None else _read_activation_private_key_password()
     issuer_value = _safe_label(issuer or os.getenv(ACTIVATION_ISSUER_ENV_VAR, "Lengrvis Activation"), max_length=128)
     payload: dict[str, Any] = {
-        "schema": 1,
+        "schema": 2,
+        "plan_catalog": PLAN_CATALOG_CURRENT,
         "license_id": license_id,
         "issuer": issuer_value,
         "subject": record.subject,
@@ -824,7 +830,10 @@ def _load_subscription_record(conn: sqlite3.Connection, key_hash: str) -> Subscr
         return None
     return SubscriptionRecord(
         key_hash=key_hash,
-        plan=normalize_plan(row["plan"]),
+        plan=normalize_plan_claim(
+            row["plan"],
+            catalog=str(_row_value(row, "plan_catalog") or PLAN_CATALOG_LEGACY),
+        ),
         subscription_id=str(row["subscription_id"] or ""),
         status=_normalize_subscription_status(row["status"]),
         subject=str(row["subject"] or ""),

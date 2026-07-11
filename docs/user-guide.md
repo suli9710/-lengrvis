@@ -46,7 +46,7 @@
 不会。所有操作按 R0-R4 分级：R3/R4 高危操作默认拒绝或要求审批；删除/写入类操作执行前展示预览并等待你确认；文件删除走回收站（send2trash）。
 
 **Q：如何删除我的全部本地数据？**
-当前通过 API：`POST /api/system/privacy/erase-local-data`（body 传 `{"confirm": "erase-local-data"}`）。会删除任务、对话、录屏、配对、索引和已导出诊断包，保留防篡改审计链并记录删除事件。设置页按钮入口在路线图上。
+当前通过 API：`POST /api/system/privacy/erase-local-data`（body 传 `{"confirm": "erase-local-data"}`）。会删除任务、对话、录屏、配对、索引和已导出诊断包，保留可检测篡改的 HMAC 审计链并记录删除事件。设置页按钮入口在路线图上。
 
 **Q：任务录屏是默认开启的吗？**
 否。默认完全不采集；只有显式设置 `LENGRVIS_TASK_RECORDING_ENABLED=true` 才会在本机记录，且公开接口只返回脱敏摘要，不返回原始截图。

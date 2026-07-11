@@ -5,9 +5,9 @@ can be used from settings resolution, API routes, and tests alike.
 
 Tiers
 -----
-- ``Plan.FREE``  : 本机只读 + 基础任务
-- ``Plan.PRO``   : 云端额度 + 文档AI + 调度 + 手机远控(高风险)
-- ``Plan.MAX``   : 审计导出 + 策略管控 + 私有部署
+- ``Plan.FREE`` : 有限官方额度的手动任务
+- ``Plan.PLUS`` : 正式自动化与跨网能力
+- ``Plan.PRO``  : 与 Plus 相同的安全控制，并增加更强模型与更高额度
 
 Entitlement gates *access* to a capability. It never replaces the per-action
 strong-approval flow: high-risk features (e.g. remote control) still require an
@@ -24,16 +24,20 @@ from app.core.errors import AppError
 
 # Environment variable that selects the active deployment/licensing plan.
 PLAN_ENV_VAR = "LENGRVIS_PLAN"
+PLAN_CATALOG_CURRENT = "free-plus-pro-v1"
+PLAN_CATALOG_LEGACY = "free-pro-max-v1"
 
 
 class Plan(StrEnum):
-    """Commercialization tiers, ordered FREE < PRO < MAX."""
+    """Commercialization tiers, ordered FREE < PLUS < PRO."""
 
     FREE = "free"
+    PLUS = "plus"
     PRO = "pro"
-    MAX = "max"
-    # Legacy alias: old licenses/configs used "team"; public APIs now emit "max".
-    TEAM = "max"
+    # Source compatibility only. Public APIs and newly issued licenses never emit
+    # these names; old ``max``/``team`` inputs normalize to the new Pro tier.
+    MAX = "pro"
+    TEAM = "pro"
 
 
 class Feature(StrEnum):
@@ -42,19 +46,21 @@ class Feature(StrEnum):
     # Free tier
     LOCAL_READ_ONLY = "local_read_only"
     BASIC_TASKS = "basic_tasks"
-    # Pro tier
+    # Paid tiers. Plus and Pro share the same safety and product controls.
     CLOUD_QUOTA = "cloud_quota"
     DOCUMENT_AI = "document_ai"
     SCHEDULING = "scheduling"
     REMOTE_VIEW = "remote_view"
     REMOTE_CONTROL = "remote_control"
-    # Max tier
     AUDIT_EXPORT = "audit_export"
     POLICY_MANAGEMENT = "policy_management"
     PRIVATE_DEPLOYMENT = "private_deployment"
+    # Pro adds model quality and quota only; it does not weaken safety controls.
+    ADVANCED_MODELS = "advanced_models"
 
 
-_PLAN_RANK: dict[Plan, int] = {Plan.FREE: 0, Plan.PRO: 1, Plan.MAX: 2}
+_PLAN_RANK: dict[Plan, int] = {Plan.FREE: 0, Plan.PLUS: 1, Plan.PRO: 2}
+_PLAN_MONTHLY_PRICE_CNY: dict[Plan, int] = {Plan.FREE: 0, Plan.PLUS: 49, Plan.PRO: 129}
 
 # Tolerant aliases so deployment configs / license strings normalize cleanly.
 _PLAN_ALIASES: dict[str, Plan] = {
@@ -63,32 +69,54 @@ _PLAN_ALIASES: dict[str, Plan] = {
     "basic": Plan.FREE,
     "starter": Plan.FREE,
     "community": Plan.FREE,
+    "plus": Plan.PLUS,
+    "premium": Plan.PLUS,
     "pro": Plan.PRO,
     "professional": Plan.PRO,
-    "plus": Plan.PRO,
-    "premium": Plan.PRO,
-    "max": Plan.MAX,
-    "maximum": Plan.MAX,
-    "team": Plan.MAX,
-    "team_self_hosted": Plan.MAX,
-    "team-self-hosted": Plan.MAX,
-    "self_hosted": Plan.MAX,
-    "self-hosted": Plan.MAX,
-    "enterprise": Plan.MAX,
+    "max": Plan.PRO,
+    "maximum": Plan.PRO,
+    "team": Plan.PRO,
+    "team_self_hosted": Plan.PRO,
+    "team-self-hosted": Plan.PRO,
+    "self_hosted": Plan.PRO,
+    "self-hosted": Plan.PRO,
+    "enterprise": Plan.PRO,
+}
+
+_LEGACY_PLAN_ALIASES: dict[str, Plan] = {
+    "": Plan.FREE,
+    "free": Plan.FREE,
+    "basic": Plan.FREE,
+    "starter": Plan.FREE,
+    "community": Plan.FREE,
+    # In the former Free/Pro/Max catalog, Pro was the lower paid tier.
+    "pro": Plan.PLUS,
+    "professional": Plan.PLUS,
+    "plus": Plan.PLUS,
+    "premium": Plan.PLUS,
+    "max": Plan.PRO,
+    "maximum": Plan.PRO,
+    "team": Plan.PRO,
+    "team_self_hosted": Plan.PRO,
+    "team-self-hosted": Plan.PRO,
+    "self_hosted": Plan.PRO,
+    "self-hosted": Plan.PRO,
+    "enterprise": Plan.PRO,
 }
 
 # Minimum plan required to use each feature.
 _FEATURE_MIN_PLAN: dict[Feature, Plan] = {
     Feature.LOCAL_READ_ONLY: Plan.FREE,
     Feature.BASIC_TASKS: Plan.FREE,
-    Feature.CLOUD_QUOTA: Plan.PRO,
-    Feature.DOCUMENT_AI: Plan.PRO,
-    Feature.SCHEDULING: Plan.PRO,
-    Feature.REMOTE_VIEW: Plan.PRO,
-    Feature.REMOTE_CONTROL: Plan.PRO,
-    Feature.AUDIT_EXPORT: Plan.MAX,
-    Feature.POLICY_MANAGEMENT: Plan.MAX,
-    Feature.PRIVATE_DEPLOYMENT: Plan.MAX,
+    Feature.CLOUD_QUOTA: Plan.PLUS,
+    Feature.DOCUMENT_AI: Plan.PLUS,
+    Feature.SCHEDULING: Plan.PLUS,
+    Feature.REMOTE_VIEW: Plan.PLUS,
+    Feature.REMOTE_CONTROL: Plan.PLUS,
+    Feature.AUDIT_EXPORT: Plan.PLUS,
+    Feature.POLICY_MANAGEMENT: Plan.PLUS,
+    Feature.PRIVATE_DEPLOYMENT: Plan.PLUS,
+    Feature.ADVANCED_MODELS: Plan.PRO,
 }
 
 # High-risk features always require an explicit per-action user approval, even
@@ -103,6 +131,29 @@ def normalize_plan(value: Any) -> Plan:
         return value
     candidate = str(value or "").strip().lower()
     return _PLAN_ALIASES.get(candidate, Plan.FREE)
+
+
+def normalize_plan_claim(
+    value: Any,
+    *,
+    catalog: str | None = None,
+    schema: int | None = None,
+) -> Plan:
+    """Normalize a persisted license/subscription claim without silent upgrades.
+
+    Claims from the former Free/Pro/Max catalog map old ``pro`` to Plus and old
+    ``max`` to Pro. New claims are explicitly marked with
+    :data:`PLAN_CATALOG_CURRENT` (or schema 2+) and use Free/Plus/Pro directly.
+    Unknown catalog identifiers fail closed to Free.
+    """
+
+    normalized_catalog = str(catalog or "").strip().lower()
+    if normalized_catalog == PLAN_CATALOG_CURRENT or (not normalized_catalog and (schema or 0) >= 2):
+        return normalize_plan(value)
+    if normalized_catalog in {"", PLAN_CATALOG_LEGACY}:
+        candidate = str(value or "").strip().lower()
+        return _LEGACY_PLAN_ALIASES.get(candidate, Plan.FREE)
+    return Plan.FREE
 
 
 def active_plan(settings: Any | None = None) -> Plan:
@@ -120,7 +171,19 @@ def active_plan(settings: Any | None = None) -> Plan:
 
 def required_plan(feature: Feature) -> Plan:
     """Return the minimum plan that unlocks ``feature``."""
-    return _FEATURE_MIN_PLAN.get(feature, Plan.MAX)
+    return _FEATURE_MIN_PLAN.get(feature, Plan.PRO)
+
+
+def monthly_price_cny(plan: Any) -> int:
+    """Return the client-approved monthly list price for the canonical plan."""
+
+    return _PLAN_MONTHLY_PRICE_CNY[normalize_plan(plan)]
+
+
+def model_tier(plan: Any) -> str:
+    """Return the model quality tier without changing any safety control."""
+
+    return "advanced" if has_feature(plan, Feature.ADVANCED_MODELS) else "standard"
 
 
 def has_feature(plan: Any, feature: Feature) -> bool:

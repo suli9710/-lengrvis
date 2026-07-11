@@ -220,7 +220,7 @@
 
 这些不在本轮产品化清单中展开，但不能忘：
 
-- [x] PIPL/GDPR 本机数据删除入口（市场化清单 #14）：`POST /api/system/privacy/erase-local-data`（显式确认词 fail-closed），删除任务/对话/运行/录屏/审批/配对/记忆/索引/LLM 用量/感知数据与已导出诊断包，DB 执行 VACUUM；默认保留 settings 与防篡改审计链并追加 `privacy.local_data_erased` 审计事件。证据：`backend/tests/test_privacy_erase.py`（2026-06-10 本地 3 passed，覆盖确认词拒绝、内容删除+审计链保留+响应无路径/正文泄漏、include_settings 路径）。合规自查清单见 `docs/compliance/pipl-gdpr-checklist.md`。剩余缺口：桌面 UI 删除按钮、日志目录自动清理、完整用户数据导出/导入、隐私政策法务定稿与安装时同意——这些未完成前不得对外宣称 PIPL/GDPR 合规。
+- [x] PIPL/GDPR 本机数据删除入口（市场化清单 #14）：`POST /api/system/privacy/erase-local-data`（显式确认词 fail-closed），删除任务/对话/运行/录屏/审批/配对/记忆/索引/LLM 用量/感知数据与已导出诊断包，DB 执行 VACUUM；默认保留 settings 与可检测篡改的 HMAC 审计链并追加 `privacy.local_data_erased` 审计事件。证据：`backend/tests/test_privacy_erase.py`（2026-06-10 本地 3 passed，覆盖确认词拒绝、内容删除+审计链保留+响应无路径/正文泄漏、include_settings 路径）。合规自查清单见 `docs/compliance/pipl-gdpr-checklist.md`。剩余缺口：桌面 UI 删除按钮、日志目录自动清理、完整用户数据导出/导入、隐私政策法务定稿与安装时同意——这些未完成前不得对外宣称 PIPL/GDPR 合规。
 
 - [x] 移动端 LAN 明文 token 与 `ws://` 传输已默认阻断：非 loopback HTTP LAN 即使传入 `allowInsecureLan` 也不能配对、恢复旧 session、调用 token-bearing mobile API，或构造 approvals/remote screen/remote input WebSocket；本地 loopback HTTP 仅保留给开发/行为 smoke。证据：2026-06-08 `npm --prefix mobile run smoke:token` 覆盖旧持久化 session 清理、stale metadata 防绕过和 API/WS 拒绝。剩余风险是系统级证书信任链和真机 HTTPS/WSS 信任路径仍需人工证据。
 - [x] 桌面 preload 通用 API 代理扩大 renderer XSS 影响面已收窄：`api.request` 会递归 clone/sanitize plain JSON data，拒绝 function、symbol、accessor、非枚举字段、危险键名、class instance、File/Blob/ArrayBuffer、稀疏数组和数组额外字段。证据：2026-06-08 `npm --prefix desktop run smoke:preload-api` 通过；主进程仍保留 endpoint/method/query/body 二次校验。
@@ -230,7 +230,7 @@
 - [x] Electron/electron-builder/tar/tmp 安全升级：desktop 已升级到 `electron@42.3.3`、`electron-builder@26.15.2`；`npm --prefix desktop audit --audit-level=high` 通过并报告 `found 0 vulnerabilities`。
 - [x] BrowserHost 远程 action 桌面侧二次 grant/approval 校验。
   - 证据：`desktop/src/main/browserHost.ts` 对 renderer/BrowserHost WS 的 takeover、click、fill、submit 等写入动作在无桌面可验证 approval grant 时拒绝，且 `desktop/scripts/ipc-security-smoke.cjs` 覆盖 forged `approved/approval_id` 不可绕过、observe/screenshot 只读动作仍可用。
-- [x] 审计链 HMAC secret 存储强度与宣传口径对齐：未配置 `LENGRVIS_AUDIT_HMAC_SECRET` 时会在本地数据目录生成并复用 `audit_hmac.secret`，写入失败时抛出 `RuntimeError`，不再静默回落到空 key。证据：2026-06-08 `python -m pytest backend/tests/test_audit_chain.py -q` 结果 `8 passed`。剩余边界：这是本地审计链防篡改证据，不是外部不可抵赖、硬件-backed key storage 或集中审计系统。
+- [x] 审计链 HMAC secret 存储强度与宣传口径对齐：未配置 `LENGRVIS_AUDIT_HMAC_SECRET` 时会在本地数据目录生成并复用 `audit_hmac.secret`，写入失败时抛出 `RuntimeError`，不再静默回落到空 key。证据：2026-06-08 `python -m pytest backend/tests/test_audit_chain.py -q` 结果 `8 passed`。剩余边界：这是本地审计链可检测普通篡改的证据，不是绝对不可篡改、外部不可抵赖、hardware-backed key storage 或集中审计系统。
 
 ## 90 天 Beta 路线
 

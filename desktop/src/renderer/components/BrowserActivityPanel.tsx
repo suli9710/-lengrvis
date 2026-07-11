@@ -67,6 +67,9 @@ export function BrowserActivityPanel({
     ? mergedEvents.filter((event) => event.session_id === activeSession.id).slice(0, 80)
     : mergedEvents.slice(0, 80);
   const hostControlDisabled = !activeSessionHasHost || isWorking;
+  // The main process intentionally rejects renderer takeover until a backend
+  // approval can be cryptographically bound to this action.
+  const takeoverUnavailable = true;
   const sensitiveState = Boolean(
     activeSession?.paused ||
     activeSession?.status === "awaiting_approval" ||
@@ -337,6 +340,11 @@ export function BrowserActivityPanel({
                   </button>
                 ) : null}
                 {!activeSession.takeover ? <div className="browser-stage__shield">仅查看</div> : null}
+                {activeSessionHasHost ? (
+                  <p className="browser-stage__notice muted" role="status">
+                    接管功能需要已兑现的后端审批；当前版本尚未启用。
+                  </p>
+                ) : null}
               </>
             ) : (
               <div className="browser-stage__empty">
@@ -368,7 +376,8 @@ export function BrowserActivityPanel({
             <button
               className="button button--primary"
               onClick={() => void runSessionCommand("Take over", api.takeoverBrowserHost.bind(api), api.takeoverBrowserSession.bind(api))}
-              disabled={hostControlDisabled}
+              disabled={hostControlDisabled || takeoverUnavailable}
+              title="接管功能需要已兑现的后端审批；当前版本尚未启用。"
               type="button"
             >
               <Hand size={14} aria-hidden="true" />

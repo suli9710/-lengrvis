@@ -12,7 +12,7 @@ import pytest
 from app.commerce.entitlements import EntitlementError, Feature
 from app.config import AppSettings
 from app.llm.mock_provider import MockProvider
-from app.services import document_service
+from app.services import document_intelligence_service, document_service
 from app.tools import document_tools
 
 
@@ -272,6 +272,51 @@ def test_tool_respects_document_llm_budget(monkeypatch, tmp_path: Path):
 
     assert result["note"] == "llm_summary"
     assert len(stub.calls[0][-1]["content"]) <= 1200
+
+
+def test_extract_text_rejects_file_over_shared_parse_limit(monkeypatch, tmp_path: Path, context):
+    path = tmp_path / "oversized.txt"
+    path.write_bytes(b"x" * 17)
+    monkeypatch.setenv("LENGRVIS_DOCUMENT_MAX_PARSE_BYTES", "16")
+
+    with pytest.raises(document_intelligence_service.DocumentTooLargeError, match="parse size limit"):
+        document_tools.extract_text({"path": str(path)}, context)
+
+
+def test_analyze_csv_rejects_file_over_shared_parse_limit(monkeypatch, tmp_path: Path, context):
+    path = tmp_path / "oversized.csv"
+    path.write_bytes(b"name\n" + (b"value\n" * 3))
+    monkeypatch.setenv("LENGRVIS_DOCUMENT_MAX_PARSE_BYTES", "16")
+
+    with pytest.raises(document_intelligence_service.DocumentTooLargeError, match="parse size limit"):
+        document_tools.analyze_csv({"path": str(path)}, context)
+
+
+def test_analyze_csv_returns_row_count_and_columns(tmp_path: Path, context):
+    path = tmp_path / "people.csv"
+    path.write_text("name,role\nAda,admin\nBob,user\n", encoding="utf-8")
+
+    result = document_tools.analyze_csv({"path": str(path)}, context)
+
+    assert result == {"path": str(path.resolve()), "rows": 2, "columns": ["name", "role"]}
+
+
+def test_analyze_csv_without_rows_keeps_columns_empty(tmp_path: Path, context):
+    path = tmp_path / "header-only.csv"
+    path.write_text("name,role\n", encoding="utf-8")
+
+    result = document_tools.analyze_csv({"path": str(path)}, context)
+
+    assert result == {"path": str(path.resolve()), "rows": 0, "columns": []}
+
+
+def test_analyze_csv_rejects_rows_over_configured_limit(monkeypatch, tmp_path: Path, context):
+    path = tmp_path / "many-rows.csv"
+    path.write_text("name\nAda\nBob\n", encoding="utf-8")
+    monkeypatch.setenv("LENGRVIS_DOCUMENT_MAX_CSV_ROWS", "1")
+
+    with pytest.raises(document_intelligence_service.DocumentTooLargeError, match="row limit"):
+        document_tools.analyze_csv({"path": str(path)}, context)
 
 
 def test_document_tools_register_validate_input_for_error_prone_tools():

@@ -12,7 +12,7 @@
 | 文件索引/文档分块与向量（indexed_files、document_chunks、document_chunk_embeddings） | 本机 SQLite | 本地文件搜索、文档问答 | 否 |
 | 移动配对/设备/远控授权（mobile_pairings、mobile_devices、grants） | 本机 SQLite | 手机伴侣配对与短期远控授权 | 否（LAN 内传输，非 loopback 要求 WSS） |
 | 审批/安全审查记录（approvals、safety_reviews） | 本机 SQLite | 危险操作审批与审计 | 否 |
-| 审计链（audit_events，HMAC 防篡改） | 本机 SQLite | 安全审计、可追责 | 否 |
+| 审计链（audit_events，HMAC 哈希链，可检测篡改） | 本机 SQLite | 安全审计、可追责 | 否 |
 | 诊断包 | `<data_dir>/diagnostic-packages/*.json` | 用户主动导出排障；导出时执行脱敏（路径标签化、敏感字段移除），`public_safe=false` | 仅当用户手动外发 |
 | 日志 | `logs/`、`<data_dir>/logs/` | 本机排障；写入前经脱敏中间件 | 否 |
 | 云端遥测 | 无 | 当前无任何云端 telemetry/账户系统 | 不适用 |

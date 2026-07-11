@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bell,
   BookOpenText,
   Brain,
@@ -18,18 +19,21 @@ import {
   Sparkles,
   TerminalSquare,
   TriangleAlert,
+  X,
   type LucideIcon
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
 import type { ChatMessage } from "../../../shared/catalogTypes";
 import type { TaskEvent } from "../../../shared/executionTypes";
 import type { SystemInfo } from "../../../shared/systemTypes";
-import xiaomaErrorGif from "../../assets/xiaoma-agent/sleeping.gif";
-import xiaomaCompletedGif from "../../assets/xiaoma-agent/salute.gif";
+import xiaomaErrorStill from "../../assets/xiaoma-agent/sleeping_still.png?no-inline";
+import xiaomaCompletedStill from "../../assets/xiaoma-agent/salute_still.png?no-inline";
 import xiaomaRunningGif from "../../assets/xiaoma-agent/working.gif";
-import xiaomaStandbyGif from "../../assets/xiaoma-agent/standby.gif";
+import xiaomaRunningStill from "../../assets/xiaoma-agent/working_still.png?no-inline";
+import xiaomaStandbyStill from "../../assets/xiaoma-agent/standby_still.png?no-inline";
 import { libraryFamilyForView } from "../../views/localLibrarySections";
+import { useUiPreferences, type EffectiveMotion } from "../../lib/uiPreferences";
 import type { ConnectionState, ViewKey } from "../../store";
 
 export interface NavItem {
@@ -142,6 +146,92 @@ export function ShellFrame({
   const workbench = getWorkbenchState({ isLoading, messages, tasks, connectionState });
   const health = getComputerHealthSummary(systemInfo);
   const recentReadableMessages = getRecentReadableMessages(messages);
+  const activityCenterLabel = stateLabel(workbench.state, connection.state);
+  const { effectiveMotion } = useUiPreferences();
+  const [isActivityCenterMounted, setIsActivityCenterMounted] = useState(false);
+  const [isActivityCenterOpen, setIsActivityCenterOpen] = useState(false);
+  const activityCenterTriggerRef = useRef<HTMLButtonElement>(null);
+  const activityCenterPanelRef = useRef<HTMLElement>(null);
+  const activityCenterCloseTimerRef = useRef<number | undefined>(undefined);
+
+  const openActivityCenter = useCallback(() => {
+    if (activityCenterCloseTimerRef.current !== undefined) {
+      window.clearTimeout(activityCenterCloseTimerRef.current);
+      activityCenterCloseTimerRef.current = undefined;
+    }
+    setIsActivityCenterMounted(true);
+    setIsActivityCenterOpen(true);
+  }, []);
+
+  const closeActivityCenter = useCallback(() => {
+    if (!isActivityCenterMounted) return;
+    setIsActivityCenterOpen(false);
+    if (activityCenterCloseTimerRef.current !== undefined) {
+      window.clearTimeout(activityCenterCloseTimerRef.current);
+    }
+    const closeDelay = effectiveMotion === "reduced" ? 0 : 280;
+    activityCenterCloseTimerRef.current = window.setTimeout(() => {
+      activityCenterCloseTimerRef.current = undefined;
+      setIsActivityCenterMounted(false);
+      window.requestAnimationFrame(() => activityCenterTriggerRef.current?.focus());
+    }, closeDelay);
+  }, [effectiveMotion, isActivityCenterMounted]);
+
+  useEffect(() => {
+    if (isActivityCenterMounted) closeActivityCenter();
+    // Closing on navigation intentionally follows the same exit/focus path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
+  useEffect(() => () => {
+    if (activityCenterCloseTimerRef.current !== undefined) {
+      window.clearTimeout(activityCenterCloseTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isActivityCenterMounted) return undefined;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+
+    const handleActivityCenterKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeActivityCenter();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const panel = activityCenterPanelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleActivityCenterKeys);
+    return () => {
+      window.removeEventListener("keydown", handleActivityCenterKeys);
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overflow = previousBodyOverflow;
+    };
+  }, [closeActivityCenter, isActivityCenterMounted, isActivityCenterOpen]);
 
   return (
     <div className="lengrvis-shell">
@@ -157,20 +247,42 @@ export function ShellFrame({
             onRefresh={onRefresh}
             onOpenApprovals={onOpenApprovals}
             hasPendingApproval={hasPendingApproval}
+            activityCenterState={workbench.state}
+            activityCenterLabel={activityCenterLabel}
+            isActivityCenterOpen={isActivityCenterOpen}
+            activityCenterTriggerRef={activityCenterTriggerRef}
+            onToggleActivityCenter={() => {
+              if (isActivityCenterOpen) closeActivityCenter();
+              else openActivityCenter();
+            }}
           />
           {children}
         </main>
-
-        <WorkbenchPanel
-          state={workbench.state}
-          title={workbench.title}
-          detail={workbench.detail}
-          connection={connection}
-          health={health}
-          activeTask={workbench.activeTask}
-          recentMessages={recentReadableMessages}
-        />
       </div>
+
+      {isActivityCenterMounted ? (
+        <>
+          <button
+            className={isActivityCenterOpen ? "workbench-scrim" : "workbench-scrim workbench-scrim--closing"}
+            type="button"
+            tabIndex={-1}
+            aria-label="关闭活动中心"
+            onClick={closeActivityCenter}
+          />
+          <WorkbenchPanel
+            panelRef={activityCenterPanelRef}
+            state={workbench.state}
+            title={workbench.title}
+            detail={workbench.detail}
+            connection={connection}
+            health={health}
+            activeTask={workbench.activeTask}
+            recentMessages={recentReadableMessages}
+            isClosing={!isActivityCenterOpen}
+            onClose={closeActivityCenter}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -184,14 +296,18 @@ interface StatusSummary {
 }
 
 function WorkbenchPanel({
+  panelRef,
   state,
   title,
   detail,
   connection,
   health,
   activeTask,
-  recentMessages
+  recentMessages,
+  isClosing,
+  onClose
 }: {
+  panelRef: RefObject<HTMLElement>;
   state: WorkbenchAgentState;
   title: string;
   detail: string;
@@ -199,11 +315,33 @@ function WorkbenchPanel({
   health: StatusSummary;
   activeTask?: TaskEvent;
   recentMessages: ChatMessage[];
+  isClosing: boolean;
+  onClose: () => void;
 }) {
-  const image = workbenchGifForState(state);
+  const { effectiveMotion } = useUiPreferences();
+  const image = workbenchImageForState(state, effectiveMotion);
 
   return (
-    <aside className={`workbench-panel workbench-panel--${state}`} aria-label="Lengrvis 当前状态">
+    <aside
+      ref={panelRef}
+      id="lengrvis-activity-center"
+      className={`workbench-panel workbench-panel--${state}${isClosing ? " workbench-panel--closing" : ""}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="lengrvis-activity-center-title"
+      tabIndex={-1}
+    >
+      <div className="workbench-panel__header">
+        <div>
+          <span>工作台状态</span>
+          <strong id="lengrvis-activity-center-title">活动中心</strong>
+          <p>任务进展、连接状态与最近回复</p>
+        </div>
+        <button className="icon-button" type="button" aria-label="关闭活动中心" onClick={onClose} autoFocus>
+          <X size={16} aria-hidden="true" />
+        </button>
+      </div>
+
       <section className="workbench-card workbench-card--agent">
         <div className="workbench-card__head">
           <span>
@@ -213,7 +351,12 @@ function WorkbenchPanel({
           <strong>{stateLabel(state, connection.state)}</strong>
         </div>
         <div className="workbench-agent-stage">
-          <img className="workbench-agent-gif" src={image} alt="" draggable={false} />
+          <img
+            className={effectiveMotion === "full" && state === "running" ? "workbench-agent-image workbench-agent-gif" : "workbench-agent-image workbench-agent-still"}
+            src={image}
+            alt=""
+            draggable={false}
+          />
         </div>
         <div className="workbench-status-stack">
           <StatusLine title="Lengrvis 连接" summary={connection} />
@@ -409,11 +552,11 @@ function getComputerHealthSummary(info?: SystemInfo): StatusSummary {
   };
 }
 
-function workbenchGifForState(state: WorkbenchAgentState): string {
-  if (state === "running") return xiaomaRunningGif;
-  if (state === "completed") return xiaomaCompletedGif;
-  if (state === "error") return xiaomaErrorGif;
-  return xiaomaStandbyGif;
+function workbenchImageForState(state: WorkbenchAgentState, motion: EffectiveMotion): string {
+  if (state === "running") return motion === "full" ? xiaomaRunningGif : xiaomaRunningStill;
+  if (state === "completed") return xiaomaCompletedStill;
+  if (state === "error") return xiaomaErrorStill;
+  return xiaomaStandbyStill;
 }
 
 function stateLabel(state: WorkbenchAgentState, connectionState?: WorkbenchAgentState): string {
@@ -520,7 +663,7 @@ function Sidebar({
 function XiaoMaAvatar({ className }: { className: string }) {
   return (
     <span className={className} aria-hidden="true">
-      <img className="xiaoma-avatar-gif" src={xiaomaStandbyGif} alt="" draggable={false} />
+      <img className="xiaoma-avatar-gif xiaoma-avatar-still" src={xiaomaStandbyStill} alt="" draggable={false} />
     </span>
   );
 }
@@ -532,7 +675,12 @@ function WindowBar({
   isLoading,
   onRefresh,
   onOpenApprovals,
-  hasPendingApproval
+  hasPendingApproval,
+  activityCenterState,
+  activityCenterLabel,
+  isActivityCenterOpen,
+  activityCenterTriggerRef,
+  onToggleActivityCenter
 }: {
   activeView: ViewKey;
   viewMeta: ViewTitle;
@@ -541,6 +689,11 @@ function WindowBar({
   onRefresh: () => void;
   onOpenApprovals: () => void;
   hasPendingApproval: boolean;
+  activityCenterState: WorkbenchAgentState;
+  activityCenterLabel: string;
+  isActivityCenterOpen: boolean;
+  activityCenterTriggerRef: RefObject<HTMLButtonElement>;
+  onToggleActivityCenter: () => void;
 }) {
   const showConnectionPill = connectionState !== "online" && !(activeView === "home" && connectionState === "checking");
 
@@ -559,6 +712,22 @@ function WindowBar({
             {connectionState === "checking" ? "正在连接 Lengrvis" : "助手暂时连不上"}
           </span>
         ) : null}
+        <button
+          ref={activityCenterTriggerRef}
+          className={`activity-center-trigger activity-center-trigger--${activityCenterState}`}
+          type="button"
+          aria-controls="lengrvis-activity-center"
+          aria-expanded={isActivityCenterOpen}
+          aria-label={`${isActivityCenterOpen ? "关闭" : "打开"}活动中心，当前${activityCenterLabel}`}
+          onClick={onToggleActivityCenter}
+        >
+          <span className="activity-center-trigger__icon" aria-hidden="true">
+            <Activity size={15} />
+          </span>
+          <span>活动中心</span>
+          <strong>{activityCenterLabel}</strong>
+          {hasPendingApproval ? <i aria-hidden="true" /> : null}
+        </button>
         <button className="icon-button" aria-label="刷新" onClick={onRefresh} disabled={isLoading} type="button">
           {isLoading ? (
             <Loader2 className="spin-icon" size={15} aria-hidden="true" />

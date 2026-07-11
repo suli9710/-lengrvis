@@ -10,6 +10,13 @@ from app.config import AppSettings
 from app.core.audit import record
 from app.mcp.client import MCPClient, MCPServerConfig
 from app.policy.risk import RiskLevel
+from app.security.capability_manifest import (
+    CapabilityManifestError,
+    assert_capability_allowed,
+    canonical_content_hash,
+    mcp_server_capability_payload,
+    observe_capability,
+)
 from app.tools.schemas import ToolDefinition
 
 DEFAULT_MCP_EXECUTOR_TIMEOUT_SECONDS = 30.0
@@ -44,8 +51,33 @@ class MCPRegistry:
             )
             if not config.url and not config.command:
                 continue
+            capability = observe_capability(
+                "mcp_server",
+                config.name,
+                mcp_server_capability_payload(config),
+                version="1",
+                origin="runtime_config",
+            )
+            try:
+                assert_capability_allowed(
+                    capability.kind,
+                    capability.capability_id,
+                    content_hash=capability.content_hash,
+                )
+            except CapabilityManifestError:
+                continue
             self.clients[config.name] = MCPClient(config)
-        record("mcp.registry_loaded", "MCPRegistry", {"servers": list(self.clients.keys())})
+        record(
+            "mcp.registry_loaded",
+            "MCPRegistry",
+            {
+                "server_count": len(self.clients),
+                "server_config_hashes": [
+                    canonical_content_hash(mcp_server_capability_payload(client.config))
+                    for client in self.clients.values()
+                ],
+            },
+        )
 
     def list_servers(self) -> list[dict[str, Any]]:
         return [client.status() for client in self.clients.values()]
@@ -56,7 +88,16 @@ class MCPRegistry:
             try:
                 discovered = await client.list_tools()
             except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-                record("mcp.list_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
+                record(
+                    "mcp.list_failed",
+                    "MCPRegistry",
+                    {
+                        "server_config_hash": canonical_content_hash(
+                            mcp_server_capability_payload(client.config)
+                        ),
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 continue
             for tool in discovered:
                 tools.append({"server": server_name, "transport": client.config.transport, **tool})
@@ -68,7 +109,16 @@ class MCPRegistry:
             try:
                 discovered = await client.list_resources()
             except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-                record("mcp.resources_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
+                record(
+                    "mcp.resources_failed",
+                    "MCPRegistry",
+                    {
+                        "server_config_hash": canonical_content_hash(
+                            mcp_server_capability_payload(client.config)
+                        ),
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 continue
             for resource in discovered:
                 resources.append({"server": server_name, "transport": client.config.transport, **resource})
@@ -86,10 +136,24 @@ class MCPRegistry:
                 record(
                     "mcp.tool_not_approved",
                     "MCPRegistry",
-                    {"server": server, "tool": tool["name"], "policy_id": client.config.policy_id},
+                    {
+                        "server_config_hash": canonical_content_hash(
+                            mcp_server_capability_payload(client.config)
+                        ),
+                        "tool_id_hash": canonical_content_hash({"id": tool["name"]}),
+                        "policy_id_hash": canonical_content_hash({"id": client.config.policy_id}),
+                    },
                 )
                 continue
             name = f"mcp.{server}.{tool['name']}"
+            tool_version = canonical_content_hash(
+                {
+                    "server": mcp_server_capability_payload(client.config),
+                    "name": tool.get("name"),
+                    "description": tool.get("description"),
+                    "input_schema": tool.get("input_schema") or {},
+                }
+            )
             adapted.append(
                 ToolDefinition(
                     name=name,
@@ -109,6 +173,8 @@ class MCPRegistry:
                     trust_tier="third_party",
                     sensitive_arg_keys=["authorization", "cookie", "password", "secret", "token"],
                     external_network=True,
+                    origin=f"mcp:{server}",
+                    tool_version=tool_version,
                 )
             )
         return adapted
@@ -142,6 +208,14 @@ def _build_executor(registry: MCPRegistry, server: str, tool_name: str):
         client = registry.clients.get(server)
         if client is None:
             return {"ok": False, "error": f"MCP server '{server}' not registered"}
+        try:
+            assert_capability_allowed(
+                "mcp_server",
+                server,
+                payload=mcp_server_capability_payload(client.config),
+            )
+        except CapabilityManifestError as exc:
+            return {"ok": False, "error": exc.message, "server": server}
         return _run_mcp_call(client, tool_name, args)
 
     return execute

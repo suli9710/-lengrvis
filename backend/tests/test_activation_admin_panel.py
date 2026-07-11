@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
@@ -132,6 +133,18 @@ def test_admin_requires_login_and_csrf(monkeypatch, tmp_path: Path) -> None:
         == 403
     )
     assert csrf
+
+
+@pytest.mark.parametrize("token", ["x.a", "a.a!", "aaaa.a"])
+def test_admin_session_treats_malformed_cookie_as_unauthenticated(monkeypatch, tmp_path: Path, token: str) -> None:
+    _configure(monkeypatch, tmp_path)
+    client = TestClient(_app())
+    client.cookies.set("lengrvis_admin_session", token)
+
+    response = client.get("/api/admin/session")
+
+    assert response.status_code == 200
+    assert response.json() == {"configured": True, "authenticated": False}
 
 
 def test_admin_login_rate_limits_failed_attempts(monkeypatch, tmp_path: Path) -> None:
@@ -332,13 +345,13 @@ def test_admin_create_generates_subscription_id_when_blank(monkeypatch, tmp_path
     created = _create_key(
         client,
         csrf,
-        plan="max",
+        plan="pro",
         subscription_id="",
         expires_at=_future(),
     )
 
     subscription_id = created["record"]["subscription_id"]
-    assert subscription_id.startswith("sub_max_")
+    assert subscription_id.startswith("sub_pro_")
     assert len(subscription_id.split("_")) == 4
 
     listed = client.get("/api/admin/subscriptions").json()["items"]
@@ -346,12 +359,12 @@ def test_admin_create_generates_subscription_id_when_blank(monkeypatch, tmp_path
     assert created["activation_key"] not in str(listed)
 
 
-def test_admin_can_issue_free_pro_max_keys(monkeypatch, tmp_path: Path) -> None:
+def test_admin_can_issue_free_plus_pro_keys(monkeypatch, tmp_path: Path) -> None:
     db_path = _configure(monkeypatch, tmp_path)
     client = TestClient(_app())
     csrf = _login(client)
 
-    for plan in ("free", "pro", "max"):
+    for plan in ("free", "plus", "pro"):
         created = _create_key(
             client,
             csrf,
@@ -382,7 +395,8 @@ def test_admin_page_uses_expiry_presets_and_renew_panel() -> None:
     assert 'id="planSegment"' in html
     assert "Free" in html
     assert "Pro" in html
-    assert "Max" in html
+    assert "Plus" in html
+    assert "Pro" in html
     assert 'id="expiresPreset"' in html
     assert "7 天试用" in html
     assert "30 天月付" in html

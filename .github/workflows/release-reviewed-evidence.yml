@@ -1,0 +1,216 @@
+name: Seal Reviewed Release Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: "Immutable release-candidate run ID"
+        required: true
+        type: string
+      candidate_run_attempt:
+        description: "Immutable release-candidate run attempt"
+        required: true
+        type: string
+      review_bundle_tag:
+        description: "Draft GitHub Release containing the human-reviewed input bundle"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  seal-reviewed-evidence:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: windows-latest
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
+      LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ inputs.candidate_run_attempt }}
+      LENGRVIS_REVIEW_BUNDLE_TAG: ${{ inputs.review_bundle_tag }}
+      LENGRVIS_ANDROID_APK_PATH: build/android/lengrvis-production.apk
+      LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH: build/android-real-device-evidence-reviewed.json
+      LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256: ${{ vars.LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 }}
+      LENGRVIS_ANDROID_BUILD_TOOLS_VERSION: ${{ vars.LENGRVIS_ANDROID_BUILD_TOOLS_VERSION }}
+      LENGRVIS_ANDROID_APKSIGNER_SHA256: ${{ vars.LENGRVIS_ANDROID_APKSIGNER_SHA256 }}
+      LENGRVIS_ANDROID_APKSIGNER_JAR_SHA256: ${{ vars.LENGRVIS_ANDROID_APKSIGNER_JAR_SHA256 }}
+      LENGRVIS_ANDROID_AAPT_SHA256: ${{ vars.LENGRVIS_ANDROID_AAPT_SHA256 }}
+    steps:
+      - name: Validate candidate and reviewed-input provenance
+        id: candidate_identity
+        shell: pwsh
+        run: |
+          $candidateRunId = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID
+          $candidateRunAttempt = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
+          $reviewBundleTag = [string]$env:LENGRVIS_REVIEW_BUNDLE_TAG
+          if ($candidateRunId -notmatch '^[1-9][0-9]*$' -or $candidateRunAttempt -notmatch '^[1-9][0-9]*$') {
+            throw "candidate_run_id and candidate_run_attempt must be positive integers."
+          }
+          if ($reviewBundleTag -notmatch '^review-inputs-v[0-9]+(?:\.[0-9]+){2}-rc-[1-9][0-9]*-[1-9][0-9]*$') {
+            throw "review_bundle_tag must use review-inputs-v<version>-rc-<run-id>-<attempt>."
+          }
+          $expectedReviewBundleSuffix = "-rc-$candidateRunId-$candidateRunAttempt"
+          if (-not $reviewBundleTag.EndsWith($expectedReviewBundleSuffix, [StringComparison]::Ordinal)) {
+            throw "review_bundle_tag must identify the requested candidate run and attempt."
+          }
+
+          $repository = gh api "repos/$env:GITHUB_REPOSITORY" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or [string]$repository.full_name -ne $env:GITHUB_REPOSITORY) {
+            throw "Unable to validate the current repository identity."
+          }
+          if ([string]$env:GITHUB_REF_NAME -ne [string]$repository.default_branch) {
+            throw "Reviewed evidence must be sealed from the repository default branch."
+          }
+
+          $candidateWorkflow = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-candidate.yml" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or [string]$candidateWorkflow.state -ne "active") {
+            throw "The release-candidate workflow is unavailable or inactive."
+          }
+          $candidateRun = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candidateRunId" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the requested candidate run." }
+          if ([string]$candidateRun.repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              [string]$candidateRun.workflow_id -ne [string]$candidateWorkflow.id -or
+              [string]$candidateRun.run_attempt -ne $candidateRunAttempt -or
+              [string]$candidateRun.status -ne "completed" -or
+              [string]$candidateRun.conclusion -ne "success" -or
+              [string]$candidateRun.event -ne "workflow_dispatch" -or
+              [string]$candidateRun.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              [string]$candidateRun.head_branch -ne [string]$repository.default_branch) {
+            throw "Candidate run provenance does not match the protected release-candidate contract."
+          }
+          $commit = ([string]$candidateRun.head_sha).Trim().ToLowerInvariant()
+          if ($commit -notmatch '^[0-9a-f]{40}$' -or $commit -ne ([string]$env:GITHUB_SHA).ToLowerInvariant()) {
+            throw "Candidate run head_sha must equal this reviewed-evidence workflow commit."
+          }
+
+          $reviewRelease = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$reviewBundleTag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the draft reviewed-input release." }
+          if (-not [bool]$reviewRelease.draft -or -not [bool]$reviewRelease.prerelease -or
+              ([string]$reviewRelease.target_commitish).Trim().ToLowerInvariant() -ne $commit) {
+            throw "Reviewed inputs must come from a draft prerelease targeted at the exact candidate commit."
+          }
+
+          $buildIdentifier = "rc-$candidateRunId-$candidateRunAttempt-$commit"
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "review_bundle_tag=$reviewBundleTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "LENGRVIS_RELEASE_CANDIDATE_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LENGRVIS_RELEASE_BUILD_IDENTIFIER=$buildIdentifier" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Checkout verified candidate commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.candidate_identity.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Bind reviewed-input bundle to candidate release version
+        shell: pwsh
+        run: |
+          $packageVersion = [string](Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          if ($packageVersion -notmatch '^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "package.json must provide a semantic candidate version."
+          }
+          $expectedReviewBundleTag = "review-inputs-v$packageVersion-rc-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT"
+          if ([string]$env:LENGRVIS_REVIEW_BUNDLE_TAG -cne $expectedReviewBundleTag) {
+            throw "review_bundle_tag must match the candidate package version, run ID, and run attempt."
+          }
+
+      - name: Download immutable candidate artifacts
+        shell: pwsh
+        run: |
+          $destination = "build/review-staging/candidate"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name "release-candidate-artifacts" --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts." }
+
+      - name: Download exact reviewed-input assets
+        shell: pwsh
+        run: |
+          $destination = "build/review-staging/evidence"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          $requiredAssets = @(
+            "distribution-release-evidence-reviewed.json",
+            "clean-machine-release-evidence-reviewed.json",
+            "result-quality-review-evidence-reviewed.json",
+            "diagnostics-external-review-evidence-reviewed.json",
+            "android-real-device-evidence-reviewed.json",
+            "lengrvis-production.apk"
+          )
+          foreach ($asset in $requiredAssets) {
+            gh release download "$env:LENGRVIS_REVIEW_BUNDLE_TAG" --dir $destination --pattern $asset
+            if ($LASTEXITCODE -ne 0) { throw "Unable to download reviewed input asset: $asset" }
+          }
+
+      - name: Materialize reviewed inputs for fail-closed verification
+        shell: pwsh
+        run: |
+          $candidateRoot = (Resolve-Path -LiteralPath "build/review-staging/candidate").Path
+          $evidenceRoot = (Resolve-Path -LiteralPath "build/review-staging/evidence").Path
+          foreach ($root in @($candidateRoot, $evidenceRoot)) {
+            $links = @(Get-ChildItem -LiteralPath $root -Force -Recurse | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+            if ($links.Count -gt 0) { throw "Reviewed inputs must not contain symbolic links or reparse points." }
+          }
+
+          $candidateDist = Join-Path $candidateRoot "dist"
+          if (-not (Test-Path -LiteralPath $candidateDist -PathType Container)) {
+            throw "Candidate artifact is missing dist/."
+          }
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          Get-ChildItem -LiteralPath $candidateDist -Force | Copy-Item -Destination "dist" -Recurse -Force
+
+          $evidenceTargets = @{
+            "distribution-release-evidence-reviewed.json" = "build/distribution-release-evidence-reviewed.json"
+            "clean-machine-release-evidence-reviewed.json" = "build/clean-machine-release-evidence-reviewed.json"
+            "result-quality-review-evidence-reviewed.json" = "build/result-quality-review-evidence-reviewed.json"
+            "diagnostics-external-review-evidence-reviewed.json" = "build/diagnostics-external-review-evidence-reviewed.json"
+            "android-real-device-evidence-reviewed.json" = "build/android-real-device-evidence-reviewed.json"
+            "lengrvis-production.apk" = "build/android/lengrvis-production.apk"
+          }
+          foreach ($entry in $evidenceTargets.GetEnumerator()) {
+            $source = Join-Path $evidenceRoot $entry.Key
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Reviewed input bundle is missing required asset: $($entry.Key)"
+            }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry.Value) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $entry.Value -Force
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify reviewed evidence against the immutable candidate
+        shell: pwsh
+        run: |
+          python scripts/verify_release_candidate_binding.py --require-checkout-match
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_distribution_release_evidence.py --require-candidate-binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_clean_machine_evidence.py --require-candidate-binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_result_quality_reviewed_evidence.py --require-candidate-binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_diagnostics_external_reviewed_evidence.py --require-candidate-binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_android_reviewed_evidence.py --require-candidate-binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/verify_android_release_gate.ps1 -ArtifactPath $env:LENGRVIS_ANDROID_APK_PATH -RealDeviceEvidencePath $env:LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH -ExpectedSignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 -RequireCandidateBinding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload immutable reviewed release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-reviewed-evidence
+          path: |
+            build/distribution-release-evidence-reviewed.json
+            build/clean-machine-release-evidence-reviewed.json
+            build/result-quality-review-evidence-reviewed.json
+            build/diagnostics-external-review-evidence-reviewed.json
+            build/android-real-device-evidence-reviewed.json
+            build/android/lengrvis-production.apk
+          if-no-files-found: error
+          retention-days: 30

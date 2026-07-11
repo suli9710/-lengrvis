@@ -135,6 +135,10 @@ def register_security_middleware(app: FastAPI) -> None:
             )
         if not (is_loopback_host(transport.client_host) or transport.scheme in {"https", "wss"}):
             return JSONResponse(status_code=403, content=unified_error_body(MOBILE_SECURE_TRANSPORT_ERROR))
+        if request.method.upper() == "POST" and request.url.path == "/api/mobile/session/refresh":
+            # The rotating refresh token in the JSON body is the credential for
+            # this one endpoint; expired access tokens must not block rotation.
+            return await call_next(request)
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:

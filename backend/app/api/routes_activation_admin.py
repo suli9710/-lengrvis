@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -41,7 +42,7 @@ ADMIN_CSRF_COOKIE = "lengrvis_admin_csrf"  # noqa: S105 - cookie name only.
 _PASSWORD_HASH_SCHEME = "pbkdf2_sha256"  # noqa: S105 - password hash algorithm label.
 _PASSWORD_HASH_ITERATIONS = 390_000
 _SESSION_TTL_SECONDS = 60 * 60 * 8
-_ADMIN_PLANS = {"free", "pro", "max"}
+_ADMIN_PLANS = {"free", "plus", "pro", "max", "team"}
 _ADMIN_STATUSES = {"active", "trialing", "past_due", "canceled", "expired", "revoked"}
 
 
@@ -50,7 +51,7 @@ class AdminLoginRequest(BaseModel):
 
 
 class AdminCreateSubscriptionRequest(BaseModel):
-    plan: str = Field(default="pro", max_length=16)
+    plan: str = Field(default="plus", max_length=16)
     subscription_id: str = Field(default="", max_length=128)
     status: str = Field(default="active", max_length=32)
     subject: str = Field(default="", max_length=256)
@@ -290,12 +291,15 @@ def _verify_session_token(token: str) -> dict[str, Any]:
     body, sep, signature = str(token or "").partition(".")
     if not body or sep != "." or not signature:
         raise AdminAuthError("管理员会话无效。")
-    expected = hmac.new(_session_secret().encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
-    if not hmac.compare_digest(_b64url_decode(signature), expected):
-        raise AdminAuthError("管理员会话无效。")
     try:
+        expected = hmac.new(_session_secret().encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+        supplied_signature = _b64url_decode(signature)
+        if not hmac.compare_digest(supplied_signature, expected):
+            raise AdminAuthError("管理员会话无效。")
         payload = json.loads(_b64url_decode(body).decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+    except (binascii.Error, json.JSONDecodeError, UnicodeError, ValueError) as exc:
+        if isinstance(exc, AdminAuthError):
+            raise
         raise AdminAuthError("管理员会话无效。") from exc
     if not isinstance(payload, dict):
         raise AdminAuthError("管理员会话无效。")
@@ -382,7 +386,7 @@ def _secure_cookie(request: Request) -> bool:
 def _normalize_admin_plan(value: str) -> str:
     plan = normalize_plan(value)
     if plan.value not in _ADMIN_PLANS:
-        raise ActivationError("套餐必须是免费版、专业版或旗舰版。", code="admin_plan_invalid", status_code=422)
+        raise ActivationError("套餐必须是 Free、Plus 或 Pro。", code="admin_plan_invalid", status_code=422)
     return plan.value
 
 
@@ -412,7 +416,8 @@ def _b64url_encode(raw: bytes) -> str:
 
 def _b64url_decode(text: str) -> bytes:
     padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(str(text or "") + padding)
+    raw = (str(text or "") + padding).encode("ascii")
+    return base64.b64decode(raw, altchars=b"-_", validate=True)
 
 
 _ADMIN_HTML = r"""<!doctype html>

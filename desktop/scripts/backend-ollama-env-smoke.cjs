@@ -17,6 +17,7 @@ const modelsDir = path.join(resources, "ollama-models");
 const manifestPath = path.join(resources, "ollama-bundle-manifest.json");
 const backendExe = path.join(backendDir, process.platform === "win32" ? "backend.exe" : "backend");
 let spawnCall = null;
+let spawnCount = 0;
 let runtimeModeRequest = null;
 
 fs.mkdirSync(backendDir, { recursive: true });
@@ -47,6 +48,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 childProcess.spawn = function patchedSpawn(command, args, options) {
+  spawnCount += 1;
   spawnCall = { command, args, options };
   return {
     killed: false,
@@ -123,6 +125,15 @@ global.fetch = async (url, options = {}) => {
 
     const reusedManager = new BackendProcessManager();
     assert.equal(reusedManager.getNativeConfirmationPublicKey(), nativeConfirmationPublicKey);
+
+    const concurrentManager = new BackendProcessManager();
+    const spawnCountBeforeConcurrentStart = spawnCount;
+    await Promise.all([concurrentManager.start(), concurrentManager.start()]);
+    assert.equal(
+      spawnCount - spawnCountBeforeConcurrentStart,
+      1,
+      "concurrent start requests must share one backend process launch"
+    );
 
     const foregroundStatus = await manager.enterForeground("smoke_foreground");
     assert.equal(foregroundStatus.state, "starting", "failed health should remain starting instead of reporting a ready backend");

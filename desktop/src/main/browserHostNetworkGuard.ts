@@ -6,6 +6,26 @@ const BROWSER_HOST_BLOCKED_ADDRESSES = createBrowserHostBlockedAddressList();
 
 export type BrowserHostDnsLookup = (hostname: string) => Promise<Array<{ address: string }>>;
 
+export async function resolveBrowserHostPinnedAddress(
+  hostname: string,
+  lookupHost: BrowserHostDnsLookup = defaultBrowserHostDnsLookup
+): Promise<string> {
+  const normalized = normalizeBrowserHostHostname(hostname);
+  if (!normalized || isBlockedBrowserHostHostname(normalized)) {
+    if (!browserHostPrivateNetworkAllowed()) {
+      throw new Error("BrowserHost blocks localhost, private network, link-local, and metadata URLs by default");
+    }
+  }
+  if (isIP(normalized)) {
+    return normalized;
+  }
+  const addresses = normalizeBrowserHostDnsAnswers(await lookupHost(normalized));
+  if (!browserHostPrivateNetworkAllowed() && addresses.some((address) => isBlockedBrowserHostHostname(address))) {
+    throw new Error("BrowserHost target resolved to a blocked network address");
+  }
+  return addresses[0];
+}
+
 export function isBlockedBrowserHostNavigation(value: string): boolean {
   try {
     if (value === "about:blank") return false;
@@ -66,7 +86,7 @@ export function isBlockedBrowserHostHostname(hostname: string): boolean {
   return isBlockedBrowserHostIpAddress(normalized);
 }
 
-function browserHostPrivateNetworkAllowed(): boolean {
+export function browserHostPrivateNetworkAllowed(): boolean {
   return process.env[BROWSER_HOST_ALLOW_PRIVATE_NETWORK_ENV] === "1";
 }
 
@@ -79,11 +99,22 @@ async function browserHostHostnameResolvesToBlockedAddress(
     return false;
   }
   try {
-    const addresses = await lookupHost(normalized);
-    return addresses.length === 0 || addresses.some((item) => isBlockedBrowserHostHostname(item.address));
+    const addresses = normalizeBrowserHostDnsAnswers(await lookupHost(normalized));
+    return addresses.some((address) => isBlockedBrowserHostHostname(address));
   } catch {
     return true;
   }
+}
+
+function normalizeBrowserHostDnsAnswers(addresses: Array<{ address: string }>): string[] {
+  if (addresses.length === 0) {
+    throw new Error("BrowserHost target did not resolve to an address");
+  }
+  const normalized = addresses.map((item) => normalizeBrowserHostHostname(item.address));
+  if (normalized.some((address) => isIP(address) === 0)) {
+    throw new Error("BrowserHost DNS resolver did not return a valid IP address");
+  }
+  return normalized;
 }
 
 async function defaultBrowserHostDnsLookup(hostname: string): Promise<Array<{ address: string }>> {
@@ -121,12 +152,21 @@ function createBrowserHostBlockedAddressList(): BlockList {
   blockList.addSubnet("127.0.0.0", 8, "ipv4");
   blockList.addSubnet("169.254.0.0", 16, "ipv4");
   blockList.addSubnet("172.16.0.0", 12, "ipv4");
+  blockList.addSubnet("192.0.0.0", 24, "ipv4");
+  blockList.addSubnet("192.0.2.0", 24, "ipv4");
   blockList.addSubnet("192.168.0.0", 16, "ipv4");
   blockList.addSubnet("198.18.0.0", 15, "ipv4");
+  blockList.addSubnet("198.51.100.0", 24, "ipv4");
+  blockList.addSubnet("203.0.113.0", 24, "ipv4");
+  blockList.addSubnet("224.0.0.0", 4, "ipv4");
+  blockList.addSubnet("240.0.0.0", 4, "ipv4");
   blockList.addAddress("::", "ipv6");
   blockList.addAddress("::1", "ipv6");
+  blockList.addSubnet("100::", 64, "ipv6");
+  blockList.addSubnet("2001:db8::", 32, "ipv6");
   blockList.addSubnet("fc00::", 7, "ipv6");
   blockList.addSubnet("fe80::", 10, "ipv6");
+  blockList.addSubnet("ff00::", 8, "ipv6");
   return blockList;
 }
 

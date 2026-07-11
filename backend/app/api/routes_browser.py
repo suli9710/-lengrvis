@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.agents.browser_activity_review_agent import BrowserActivityReviewAgent
 from app.agents.safety_review_agent import SafetyReviewAgent
@@ -14,6 +14,7 @@ from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.risk import SafetyVerdict
 from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.services.browser_host_bridge_service import BrowserHostBridgeUnavailable, browser_host_bridge_hub
 from app.tools import browser_tools
 from app.tools.registry import register_all_tools
 from app.tools.registry import registry as tool_registry
@@ -303,11 +304,42 @@ def extract_links(payload: dict):
     return browser_tools.extract_links(payload, _context())
 
 
+@router.get("/browser-host/bridge/snapshot")
+def browser_host_bridge_snapshot() -> dict:
+    return browser_host_bridge_hub.status()
+
+
+@router.post("/browser-host/bridge/action")
+async def browser_host_bridge_action(payload: dict) -> dict:
+    session_id = str(payload.get("session_id") or "").strip()
+    raw_action = payload.get("action")
+    action_kind = str(raw_action.get("kind") or "").strip().casefold() if isinstance(raw_action, dict) else ""
+    if not session_id:
+        raise HTTPException(status_code=422, detail="session_id is required.")
+    if len(session_id) > 256:
+        raise HTTPException(status_code=422, detail="session_id is too long.")
+    if action_kind not in {"observe", "screenshot"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Only read-only BrowserHost actions are allowed through this bridge.",
+        )
+    try:
+        return await browser_host_bridge_hub.request_read_only_action(
+            session_id=session_id,
+            action={"kind": action_kind},
+        )
+    except BrowserHostBridgeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+
+
 @ws_router.websocket("/ws/browser-host")
 async def browser_host_bridge(websocket: WebSocket):
     if await close_unauthorized_desktop_websocket(websocket):
         return
     await websocket.accept()
+    browser_host_bridge_hub.connect(websocket)
     try:
         await websocket.send_json({"type": "connected"})
         while True:
@@ -316,7 +348,13 @@ async def browser_host_bridge(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "message": "Browser host messages must be JSON objects."})
                 continue
             message_type = str(message.get("type") or "")
-            if message_type == "ping":
+            if message_type == "snapshot":
+                browser_host_bridge_hub.receive_snapshot(websocket, message.get("snapshot"))
+            elif message_type == "result":
+                browser_host_bridge_hub.receive_result(websocket, message)
+            elif message_type == "ping":
                 await websocket.send_json({"type": "pong", "request_id": message.get("request_id")})
     except WebSocketDisconnect:
         return
+    finally:
+        browser_host_bridge_hub.disconnect(websocket)

@@ -28,6 +28,7 @@ AsyncCleanup = Callable[[], Awaitable[None]]
 @asynccontextmanager
 async def full_backend_lifespan(app: FastAPI):
     db.init_db()
+    _enforce_local_data_protection()
     _prepare_run_runtime()
     settings = get_effective_settings()
     await _load_mcp_tools(settings)
@@ -40,6 +41,24 @@ async def full_backend_lifespan(app: FastAPI):
         stack.callback(session_store.save)
         _register_runtime_cleanups(stack)
         yield
+
+
+def _enforce_local_data_protection() -> None:
+    from app.services.local_retention_service import cleanup_expired_task_details
+    from app.services.task_recording_service import migrate_plaintext_recordings
+
+    cleanup_expired_task_details()
+    migration = migrate_plaintext_recordings()
+    if migration["migrated"]:
+        record(
+            "privacy.task_recordings_encrypted",
+            "lifespan",
+            {
+                "migrated": migration["migrated"],
+                "scanned": migration["scanned"],
+                "storage": "dpapi_wrapped_aes_256_gcm",
+            },
+        )
 
 
 @asynccontextmanager
@@ -115,7 +134,10 @@ async def _start_scheduler(stack: AsyncExitStack) -> None:
 
 
 async def _start_file_environment(stack: AsyncExitStack, settings: AppSettings) -> None:
+    from app.automation.file_trigger import AutomationFileTriggerService
+
     watcher = get_file_watcher()
+    automation_triggers = AutomationFileTriggerService(allowed_directories=settings.allowed_directories)
     environment_bus = AgentBus()
     environment_stream = get_environment_stream(
         dispatcher=EventDispatcher(environment_bus),
@@ -127,10 +149,23 @@ async def _start_file_environment(stack: AsyncExitStack, settings: AppSettings) 
     watcher.subscribe_changes(file_environment_sink)
     await environment_stream.start()
     await watcher.start(settings.allowed_directories)
-    stack.push_async_callback(_stop_file_environment, watcher, environment_stream, file_environment_sink)
+    await automation_triggers.start(watcher)
+    stack.push_async_callback(
+        _stop_file_environment,
+        watcher,
+        environment_stream,
+        file_environment_sink,
+        automation_triggers,
+    )
 
 
-async def _stop_file_environment(watcher: Any, environment_stream: Any, file_environment_sink: Any) -> None:
+async def _stop_file_environment(
+    watcher: Any,
+    environment_stream: Any,
+    file_environment_sink: Any,
+    automation_triggers: Any,
+) -> None:
+    await automation_triggers.stop()
     await watcher.stop()
     watcher.unsubscribe_changes(file_environment_sink)
     await environment_stream.stop()

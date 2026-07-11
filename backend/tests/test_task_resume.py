@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app.core import db
+from app.core.errors import AppError, StateTransitionError
 from app.core.schemas import Plan, PlanStep, Run, RunEngine, RunPhase, StepStatus, Task
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
@@ -55,7 +56,7 @@ def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytes
         def active_task(self, task_id: str) -> Task | None:
             return None
 
-        async def submit(self, submitted_task: Task, runner):  # noqa: ANN001
+        def submit_nowait(self, submitted_task: Task, runner):  # noqa: ANN001
             submitted.append({"task": submitted_task, "runner": runner})
             return None
 
@@ -63,7 +64,6 @@ def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytes
 
     async def run_resume() -> Task:
         resumed = task_service.resume_task(task.id)
-        await asyncio.sleep(0)
         return resumed
 
     resumed = asyncio.run(run_resume())
@@ -76,8 +76,8 @@ def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytes
     assert submitted[0]["runner"].__name__ == "_resume_task_through_orchestrator"
 
 
-def test_resume_task_without_running_loop_starts_background_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    started: list[dict[str, Any]] = []
+def test_resume_task_without_running_loop_fails_closed() -> None:
+    task_pool.reset_pool_for_tests(max_concurrent=1)
     task = Task(
         user_goal="resume from sync endpoint",
         mode="efficiency",
@@ -86,53 +86,129 @@ def test_resume_task_without_running_loop_starts_background_thread(monkeypatch: 
     )
     db.upsert_model("tasks", task)
 
-    class Thread:
-        def __init__(self, *, target, name: str, daemon: bool):  # noqa: ANN001
-            started.append({"target": target, "name": name, "daemon": daemon})
+    with pytest.raises(AppError) as excinfo:
+        task_service.resume_task(task.id)
 
-        def start(self) -> None:
-            started[-1]["started"] = True
-
-    monkeypatch.setattr(task_service.threading, "Thread", Thread)
-
-    resumed = task_service.resume_task(task.id)
-
-    assert resumed.id == task.id
-    assert resumed.execution_stage == ExecutionStage.STEP_RUNNING
-    assert len(started) == 1
-    assert started[0]["name"] == f"task-resume-{task.id}"
-    assert started[0]["daemon"] is True
-    assert started[0]["started"] is True
+    assert excinfo.value.code == "task_runtime_unavailable"
+    assert excinfo.value.status_code == 503
+    persisted = task_service.get_task(task.id)
+    assert persisted.status == TaskPhase.EXECUTION
+    assert persisted.execution_stage == ExecutionStage.PAUSED
 
 
-def test_duplicate_sync_resume_uses_existing_external_claim(monkeypatch: pytest.MonkeyPatch) -> None:
-    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
-    started: list[dict[str, Any]] = []
+def test_resume_task_rejects_completed_task_without_starting_work() -> None:
+    task_pool.reset_pool_for_tests(max_concurrent=1)
     task = Task(
-        user_goal="resume duplicate sync endpoint",
+        user_goal="do not resume a completed task",
+        mode="efficiency",
+        status=TaskPhase.COMPLETED,
+    )
+    db.upsert_model("tasks", task)
+
+    with pytest.raises(StateTransitionError):
+        task_service.resume_task(task.id)
+
+    assert task_pool.get_pool().active_task(task.id) is False
+    assert task_service.get_task(task.id).status == TaskPhase.COMPLETED
+
+
+def test_duplicate_resume_uses_pool_singleflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    started: list[str] = []
+    release = asyncio.Event()
+    task = Task(
+        user_goal="resume duplicate endpoint",
         mode="efficiency",
         status=TaskPhase.EXECUTION,
         execution_stage=ExecutionStage.PAUSED,
     )
     db.upsert_model("tasks", task)
 
-    class Thread:
-        def __init__(self, *, target, name: str, daemon: bool):  # noqa: ANN001
-            started.append({"target": target, "name": name, "daemon": daemon})
-
-        def start(self) -> None:
-            started[-1]["started"] = True
+    async def hold_resume(submitted: Task) -> None:
+        started.append(submitted.id)
+        await release.wait()
 
     monkeypatch.setattr(task_service, "get_pool", lambda: pool)
-    monkeypatch.setattr(task_service.threading, "Thread", Thread)
+    monkeypatch.setattr(task_service, "_run_existing_plan", hold_resume)
 
-    first = task_service.resume_task(task.id)
-    second = task_service.resume_task(task.id)
+    async def main() -> tuple[Task, Task]:
+        first = task_service.resume_task(task.id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        second = task_service.resume_task(task.id)
+        assert pool.active_task(task.id) is True
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return first, second
 
+    first, second = asyncio.run(main())
     assert first.id == task.id
     assert second.id == task.id
     assert len(started) == 1
-    assert pool.active_task(task.id) is True
+
+
+def test_pause_immediately_after_resume_cancels_the_registered_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    task = Task(
+        user_goal="pause before resumed work can execute",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.PAUSED,
+    )
+    db.upsert_model("tasks", task)
+    started = asyncio.Event()
+
+    async def should_not_run(_task: Task) -> None:
+        started.set()
+
+    monkeypatch.setattr(task_service, "get_pool", lambda: pool)
+    monkeypatch.setattr(task_service, "_run_existing_plan", should_not_run)
+
+    async def main() -> None:
+        resumed = task_service.resume_task(task.id)
+        assert resumed.execution_stage == ExecutionStage.STEP_RUNNING
+        paused = await task_service.pause_task(task.id)
+        assert paused.execution_stage == ExecutionStage.PAUSED
+        await asyncio.sleep(0)
+        assert not started.is_set()
+        assert pool.active_task(task.id) is False
+
+    asyncio.run(main())
+
+
+def test_pause_run_can_skip_redundant_task_status_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = Task(
+        user_goal="pause only the bound run",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+    run = Run(
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=RunEngine.OS,
+        engine=RunEngine.OS,
+        phase=RunPhase.RUNNING,
+        task_id=task.id,
+        state={},
+    )
+    db.upsert_model("runs", run)
+    status_writes: list[tuple[str, str]] = []
+
+    def status_spy(task_id: str, status, **_kwargs):  # noqa: ANN001
+        status_writes.append((task_id, str(status)))
+        return task_service.get_task(task_id)
+
+    monkeypatch.setattr(run_service, "set_task_status", status_spy)
+
+    paused = run_service.pause_run(run.id, update_task_status=False)
+
+    assert paused.phase == RunPhase.PAUSED
+    assert status_writes == []
 
 
 def test_schedule_resume_claims_active_slot_before_background_start(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,6 +343,104 @@ def test_cancel_task_cancels_pool_worker_and_bound_run(monkeypatch: pytest.Monke
     finally:
         run_service._untrack_active_run(run.id)
         task_pool.reset_pool_for_tests()
+
+
+def test_pause_task_stops_active_worker_and_preserves_paused_state() -> None:
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    task = Task(
+        user_goal="pause active task",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+    run = Run(
+        id="osrun_task_pause_bound",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=RunEngine.OS,
+        engine=RunEngine.OS,
+        phase=RunPhase.RUNNING,
+        task_id=task.id,
+        state={"run_id": "osrun_task_pause_bound", "engine": "os", "phase": "running", "task_id": task.id},
+    )
+    db.upsert_model("runs", run)
+    active_run = concurrent.futures.Future()
+    run_service._track_active_run(run.id, active_run)
+
+    async def main() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def runner(submitted: Task) -> Task:
+            started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return submitted
+
+        spawned = await pool.submit(task, runner)
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        paused = await task_service.pause_task(task.id)
+
+        assert paused.status == TaskPhase.EXECUTION
+        assert paused.execution_stage == ExecutionStage.PAUSED
+        assert cancelled.is_set()
+        assert spawned.cancelled()
+        persisted = task_service.get_task(task.id)
+        assert persisted.status == TaskPhase.EXECUTION
+        assert persisted.execution_stage == ExecutionStage.PAUSED
+        assert run_service.get_run(run.id).phase == RunPhase.PAUSED
+        assert active_run.cancelled()
+
+    try:
+        asyncio.run(main())
+    finally:
+        run_service._untrack_active_run(run.id)
+
+
+def test_stale_resume_worker_cannot_overwrite_paused_task() -> None:
+    task = Task(
+        user_goal="keep the pause requested while a worker unwinds",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model("plans", Plan(task_id=task.id, goal=task.user_goal, steps=[]))
+    stale_worker_task = task_service.get_task(task.id)
+    task_service.set_task_status(task.id, "paused", strict=True)
+
+    asyncio.run(task_service._run_existing_plan(stale_worker_task))
+
+    persisted = task_service.get_task(task.id)
+    assert persisted.status == TaskPhase.EXECUTION
+    assert persisted.execution_stage == ExecutionStage.PAUSED
+
+
+def test_stale_resume_failure_cannot_overwrite_cancelled_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = Task(
+        user_goal="keep cancellation after a late worker failure",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+    stale_worker_task = task_service.get_task(task.id)
+    task_service.set_task_status(task.id, TaskPhase.CANCELLED, strict=True)
+
+    async def fail_late(_task: Task) -> None:
+        raise RuntimeError("late worker failure")
+
+    monkeypatch.setattr(task_service, "_run_existing_plan", fail_late)
+
+    with pytest.raises(RuntimeError, match="late worker failure"):
+        asyncio.run(task_service._resume_task_through_orchestrator(stale_worker_task))
+
+    assert task_service.get_task(task.id).status == TaskPhase.CANCELLED
 
 
 def test_approval_resume_defers_when_active_run_row_is_still_running(monkeypatch: pytest.MonkeyPatch) -> None:

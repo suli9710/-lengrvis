@@ -72,6 +72,38 @@ describe("browserHostIpcHandlers", () => {
     expect(result).toMatchObject({ ok: true, snapshot: expect.any(Object) });
   });
 
+  it("shows a normalized target origin without URL secrets in the browser-open confirmation", async () => {
+    const confirmNativeDesktopAction = vi.fn<BrowserHostActionConfirmation>(async () => undefined);
+    const { invoke } = registerForTest({ confirmNativeDesktopAction });
+
+    await invoke(IPC_CHANNELS.browserHostOpen, {
+      sessionId: "session_1",
+      url: "HTTPS://Example.TEST/private?token=secret-token"
+    });
+
+    const confirmation = confirmNativeDesktopAction.mock.calls[0]?.[1];
+    expect(confirmation?.detail).toContain("https://example.test");
+    expect(confirmation?.detail).not.toContain("/private");
+    expect(confirmation?.detail).not.toContain("secret-token");
+  });
+
+  it("safely truncates an unusually long browser-open confirmation origin", async () => {
+    const confirmNativeDesktopAction = vi.fn<BrowserHostActionConfirmation>(async () => undefined);
+    const { invoke } = registerForTest({ confirmNativeDesktopAction });
+    const hostname = ["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61)].join(".");
+
+    await invoke(IPC_CHANNELS.browserHostOpen, {
+      sessionId: "session_1",
+      url: `https://${hostname}:65535/private?token=secret-token`
+    });
+
+    const targetLine = confirmNativeDesktopAction.mock.calls[0]?.[1].detail?.split("\n")[0] ?? "";
+    expect(targetLine).toMatch(/^Target: https:\/\//);
+    expect(targetLine.endsWith("...")).toBe(true);
+    expect(targetLine.length).toBeLessThanOrEqual(267);
+    expect(targetLine).not.toContain("secret-token");
+  });
+
   it("allows renderer read-only actions and denies input actions", async () => {
     const { host, invoke, sanitizeActionResult } = registerForTest();
     const observeAction = { kind: "observe" } satisfies BrowserAction;

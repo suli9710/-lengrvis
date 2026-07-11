@@ -20,6 +20,13 @@ from pydantic import ValidationError
 from app.config import AppSettings
 from app.core.audit import record
 from app.policy.risk import RISK_ORDER, RiskLevel
+from app.security.capability_manifest import (
+    CapabilityManifestError,
+    assert_capability_allowed,
+    observe_capability,
+    observe_tool,
+    skill_manifest_capability_payload,
+)
 from app.skills.sandbox import SkillSandbox, SkillSandboxError, is_allowed_loopback_http_url, is_loopback_http_url
 from app.skills.schemas import (
     LEGACY_PERMISSION,
@@ -60,6 +67,7 @@ class LoadedSkillPackage:
     signature_report: dict[str, Any]
     safety_report: SkillSafetyReport
     tool_definitions: list[ToolDefinition]
+    manifest_hash: str
 
 
 def skill_directories_from_settings(settings: AppSettings) -> list[Path]:
@@ -107,8 +115,8 @@ def load_skill_package(
     if not root.is_dir():
         raise SkillLoadError("Skill package root is not a directory", path=root)
     manifest = _manifest_for(root)
-    raw = _load_manifest(manifest)
-    raw = _hydrate_schema_paths(raw, root, manifest)
+    raw_manifest = _load_manifest(manifest)
+    raw = _hydrate_schema_paths(raw_manifest, root, manifest)
     try:
         definition = SkillDefinition.model_validate(raw)
     except ValidationError as exc:
@@ -128,11 +136,21 @@ def load_skill_package(
     if not safety_report.ok:
         raise SkillLoadError("Unsafe skill definition: " + "; ".join(safety_report.error_messages()), path=manifest)
 
+    manifest_entry = observe_capability(
+        "skill",
+        definition.name,
+        skill_manifest_capability_payload(raw_manifest),
+        version=definition.version,
+        origin="installed_skill",
+    )
     tool_definitions = adapt_skill_to_tool_definitions(
         definition,
         root,
         allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
+        skill_manifest_hash=manifest_entry.content_hash,
     )
+    for tool_definition in tool_definitions:
+        observe_tool(tool_definition)
     return LoadedSkillPackage(
         root=root,
         manifest_path=manifest,
@@ -140,6 +158,7 @@ def load_skill_package(
         signature_report=signature_report,
         safety_report=safety_report,
         tool_definitions=tool_definitions,
+        manifest_hash=manifest_entry.content_hash,
     )
 
 
@@ -165,21 +184,32 @@ def register_skills(
         ),
     )
     existing_names = {tool.name for tool in registry.list()}
+    registered_packages: list[LoadedSkillPackage] = []
     for package in packages:
+        try:
+            assert_capability_allowed(
+                "skill",
+                package.definition.name,
+                content_hash=package.manifest_hash,
+            )
+        except CapabilityManifestError:
+            continue
         for definition in package.tool_definitions:
             if definition.name in existing_names:
                 raise SkillLoadError(
                     f"Skill tool name collides with an existing tool: {definition.name}", path=package.manifest_path
                 )
             registry.register(definition)
-            existing_names.add(definition.name)
-    if packages:
+            if any(tool.name == definition.name for tool in registry.list()):
+                existing_names.add(definition.name)
+        registered_packages.append(package)
+    if registered_packages:
         record(
             "skills.loaded",
             "SkillLoader",
             {
-                "packages": [package.definition.name for package in packages],
-                "tools": [tool.name for package in packages for tool in package.tool_definitions],
+                "packages": [package.definition.name for package in registered_packages],
+                "tools": [tool.name for package in registered_packages for tool in package.tool_definitions],
             },
         )
     return packages
@@ -307,6 +337,7 @@ def adapt_skill_to_tool_definitions(
     root: str | Path,
     *,
     allow_unsafe_local_skill_execution: bool | None = None,
+    skill_manifest_hash: str = "",
 ) -> list[ToolDefinition]:
     skill_root = Path(root).resolve(strict=True)
     sandbox = SkillSandbox(
@@ -330,7 +361,12 @@ def adapt_skill_to_tool_definitions(
                 agent_owner=definition.effective_agent_owner(tool),
                 supports_dry_run=tool.supports_dry_run,
                 requires_authorized_path=tool.requires_authorized_path,
-                execute=_build_executor(sandbox, tool),
+                execute=_build_executor(
+                    sandbox,
+                    tool,
+                    skill_id=definition.name,
+                    manifest_hash=skill_manifest_hash,
+                ),
                 search_hint=_skill_search_hint(definition, tool),
                 read_only=read_only,
                 concurrency_safe=read_only and RISK_ORDER[risk] <= RISK_ORDER[RiskLevel.R1_OPEN_ONLY],
@@ -344,6 +380,8 @@ def adapt_skill_to_tool_definitions(
                 fast_path_eligible=False,
                 app_target=tool.app_target.model_dump(mode="json") if tool.app_target else None,
                 workflow=tool.workflow.model_dump(mode="json") if tool.workflow else None,
+                origin=f"skill:{definition.name}",
+                tool_version=definition.version,
             )
         )
     return tool_definitions
@@ -599,8 +637,15 @@ def _append_unique(values: list[str], value: str) -> None:
         values.append(value)
 
 
-def _build_executor(sandbox: SkillSandbox, tool: SkillToolSpec):
+def _build_executor(
+    sandbox: SkillSandbox,
+    tool: SkillToolSpec,
+    *,
+    skill_id: str,
+    manifest_hash: str,
+):
     def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        assert_capability_allowed("skill", skill_id, content_hash=manifest_hash)
         return sandbox.execute(tool.execution, args, context)
 
     return execute

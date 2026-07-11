@@ -15,6 +15,13 @@ from app.integrations.lengrvis_code import (
     allowed_tools_for_developer,
     validate_allowed_tools,
 )
+from app.integrations.lengrvis_code_events import _summary_payload
+from app.integrations.lengrvis_code_redaction import (
+    _public_lengrvis_code_final_text,
+    _public_lengrvis_code_result,
+    _public_lengrvis_code_tool_event,
+    _public_lengrvis_code_value,
+)
 from app.orchestration.developer_write_guard import run_write_verification
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
 from app.orchestration.execution_models import (
@@ -38,6 +45,7 @@ from app.orchestration.tool_runtime import ToolRuntime
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.security.execution_isolation import arbitrary_execution_denial, constrain_developer_allowed_tools
 from app.tools.schemas import ToolDefinition
 
 DEVELOPER_TOOL_NAME = "developer.lengrvis_code"
@@ -74,7 +82,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
         writes_enabled = bool(getattr(self.settings, "developer_writes_enabled", False))
         require_verification = bool(getattr(self.settings, "developer_writes_require_verification", True))
         tool_safety_error = ""
+        isolation_denial = arbitrary_execution_denial(f"{LENGRVIS_CODE_DISPLAY_NAME} Node subprocess execution")
         try:
+            if isolation_denial is not None:
+                raise ValueError(str(isolation_denial["error"]))
             allowed_tools = lengrvis_code_developer_tool_names(
                 self.lengrvis_code_config,
                 writes_enabled=writes_enabled,
@@ -205,6 +216,18 @@ class DeveloperExecutionEngine(ExecutionEngine):
 
     async def _run_lengrvis_code_turn(self, state: RunState) -> EngineTurnResult:
         db.init_db()
+        live_task = _task_for_developer_state(state)
+        terminal_phase = _developer_terminal_run_phase(live_task)
+        if terminal_phase is not None:
+            stopped = state.model_copy(
+                update={
+                    "phase": terminal_phase,
+                    "transition_reason": live_task.final_summary or f"Task is already {live_task.status.value}.",
+                    "current_plan": _mark_plan_steps_status(state.current_plan, terminal_phase.value),
+                },
+                deep=True,
+            )
+            return EngineTurnResult(state=self.store.put(stopped), finished=True, message=stopped.transition_reason)
         # Re-check live settings on every turn/resume; do not trust a stale plan snapshot.
         writes_enabled = bool(getattr(self.settings, "developer_writes_enabled", False))
         base_config = _config_for_settings(self.settings, self.lengrvis_code_config)
@@ -365,6 +388,9 @@ class DeveloperExecutionEngine(ExecutionEngine):
         if approval is not None and execution.result is not None and execution.result.ok:
             db.upsert_model("approvals", approval, status=approval.status)
         output = execution.result.output if execution.result is not None else {}
+        runtime_summary = runtime.extra_context.get("_developer_lengrvis_code_last_summary")
+        if isinstance(runtime_summary, LengrvisCodeStreamSummary):
+            return runtime_summary
         summary_payload = output.get("summary")
         if isinstance(summary_payload, LengrvisCodeStreamSummary):
             return summary_payload
@@ -396,6 +422,7 @@ def lengrvis_code_developer_tool_names(
         tools = tuple(str(tool) for tool in configured)
         if writes_enabled:
             tools = tools + tuple(tool for tool in WRITE_CAPABLE_ALLOWED_TOOLS if tool not in tools)
+        tools = constrain_developer_allowed_tools(tools, allow_write_tools=writes_enabled)
         return validate_allowed_tools(tools, allow_write_tools=writes_enabled)
     return allowed_tools_for_developer(writes_enabled=writes_enabled)
 
@@ -565,6 +592,17 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
             ],
         },
     )
+
+
+
+def _developer_terminal_run_phase(task: Task) -> RunPhase | None:
+    if task.status == TaskPhase.COMPLETED:
+        return RunPhase.COMPLETED
+    if task.status == TaskPhase.FAILED:
+        return RunPhase.FAILED
+    if task.status == TaskPhase.CANCELLED:
+        return RunPhase.CANCELLED
+    return None
 
 
 def _ensure_developer_task_execution(task: Task, adapter: _DeveloperRuntimeAdapter) -> Task:
@@ -768,6 +806,9 @@ def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -
         abort_event=abort_event if isinstance(abort_event, threading.Event) else None,
         allow_write_tools=allow_write_tools,
     )
+    runtime = context.get("runtime")
+    if isinstance(getattr(runtime, "extra_context", None), dict):
+        runtime.extra_context["_developer_lengrvis_code_last_summary"] = summary
     output = _developer_summary_output(summary)
     if summary.is_error:
         output["error"] = output.get("error") or summary.error_classification or "developer_runtime_failed"
@@ -888,17 +929,19 @@ def _developer_timeout_summary(timeout_seconds: float | None) -> LengrvisCodeStr
 
 def _developer_summary_output(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
     payload = {
-        "summary": summary,
+        "summary": _summary_payload(summary),
         "ok": not summary.is_error,
         "cancelled": summary.cancelled,
-        "assistant_text": summary.final_text,
-        "tool_events": list(summary.tool_events or []),
-        "system_events": list(summary.system_events or []),
-        "result": summary.result,
-        "permission_denials": summary.permission_denials,
+        "assistant_text": _public_lengrvis_code_final_text(summary.final_text)
+        if not summary.is_error
+        else _public_lengrvis_code_value(summary.final_text),
+        "tool_events": [_public_lengrvis_code_tool_event(event) for event in list(summary.tool_events or [])],
+        "system_events": _public_lengrvis_code_value(list(summary.system_events or [])),
+        "result": _public_lengrvis_code_result(summary.result),
+        "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
         "error_classification": summary.error_classification,
         "returncode": summary.returncode,
-        "runtime_health": summary.runtime_health,
+        "runtime_health": _public_lengrvis_code_value(summary.runtime_health),
     }
     if summary.cancelled:
         payload["error"] = "cancelled"
@@ -962,7 +1005,7 @@ def _await_write_approval(result: EngineTurnResult, summary: Any) -> EngineTurnR
             ),
             "current_plan": {
                 **result.state.current_plan,
-                "pending_write_approvals": summary.permission_denials,
+                "pending_write_approvals": _public_lengrvis_code_value(summary.permission_denials),
             },
         },
         deep=True,

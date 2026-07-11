@@ -7,6 +7,11 @@ from string import Template
 from typing import Any
 
 from app.config import AppSettings, get_base_settings, get_env
+from app.security.capability_manifest import (
+    assert_capability_allowed,
+    observe_capability,
+    prompt_capability_payload,
+)
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent
 PROMPT_DIR = _DEFAULT_PROMPTS_DIR
@@ -36,7 +41,7 @@ def load_prompt(
                 cached = _cache.get(cache_key)
             if cached:
                 content = cached[0]
-                return _render(content, variables) if variables else content
+                return _render_allowed_prompt(cache_key, content, variables)
             mtime = path.stat().st_mtime
     except OSError:
         if dev or force_reload:
@@ -49,7 +54,7 @@ def load_prompt(
         if cached and not force_reload:
             cached_content, cached_mtime = cached
             if not dev or mtime == cached_mtime:
-                return _render(cached_content, variables) if variables else cached_content
+                return _render_allowed_prompt(cache_key, cached_content, variables)
 
         try:
             content = path.read_text(encoding="utf-8")
@@ -57,7 +62,7 @@ def load_prompt(
             return ""
         _cache[cache_key] = (content, mtime)
 
-    return _render(content, variables) if variables else content
+    return _render_allowed_prompt(cache_key, content, variables)
 
 
 def render_prompt(file_name: str, variables: Mapping[str, Any]) -> str:
@@ -159,6 +164,27 @@ def _render(content: str, variables: Mapping[str, Any] | None) -> str:
         return content
     values = {key: _stringify(value) for key, value in variables.items()}
     return Template(content).safe_substitute(values).strip()
+
+
+def _render_allowed_prompt(
+    capability_id: str,
+    content: str,
+    variables: Mapping[str, Any] | None,
+) -> str:
+    payload = prompt_capability_payload(content)
+    entry = observe_capability(
+        "prompt",
+        capability_id,
+        payload,
+        version="1",
+        origin="builtin_prompt",
+    )
+    assert_capability_allowed(
+        entry.kind,
+        entry.capability_id,
+        content_hash=entry.content_hash,
+    )
+    return _render(content, variables) if variables else content
 
 
 def _stringify(value: Any) -> str:

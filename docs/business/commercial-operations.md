@@ -54,7 +54,7 @@ reviewed JSON 只能包含红acted 标签，不能包含原始客户数据、邮
 - `summary.commercial_operations_ready = true`
 - `summary.paid_public_launch_signoff = false`
 - `summary.release_signoff = false`
-- 使用 `LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET` 生成的有效 reviewed-evidence HMAC 签名
+- 使用受保护的 `LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET` 生成有效 reviewed-evidence HMAC 签名；密钥必须由密码学安全随机源生成，至少 32 字节，不能使用人工口令或开发/CI 占位值
 
 最后两个 summary sign-off 字段必须保持 false，因为此 artifact 是证据，不是发布授权。发布授权仍来自商业 owner 更新 `docs/business/market-readiness.md` 并运行：
 

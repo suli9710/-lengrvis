@@ -1,9 +1,9 @@
 
 /* ==========================================================================
-   响应式
+   首页在紧凑窗口中降为单列；全局活动中心保持覆盖式抽屉。
    ========================================================================== */
 
-@media (max-width: 1280px) {
+@media (max-width: 960px) {
   .lengrvis-home {
     overflow: auto;
   }
@@ -16,7 +16,7 @@
   }
 
   .office-stage {
-    min-height: 720px;
+    min-height: 620px;
   }
 
   .office-inspector {
@@ -26,21 +26,15 @@
     align-content: start;
     overflow: visible;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: none;
+  }
+
+  .home-status-strip,
+  .home-more {
+    grid-column: 1 / -1;
   }
 
   .task-list-card {
     height: auto;
-    min-height: 240px;
-  }
-
-  .office-quick-actions,
-  .home-trust-card,
-  .home-readiness-card,
-  .task-pilot-card,
-  .task-workspace-card,
-  .home-outcomes-card,
-  .task-list-card {
-    grid-column: 1 / -1;
+    min-height: 0;
   }
 }

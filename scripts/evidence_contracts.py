@@ -7,10 +7,11 @@ import json
 import hmac
 import os
 import re
+from dataclasses import dataclass
 from hashlib import sha256
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 PASS_VALUES = {"pass", "passed", "success", "succeeded", "verified", "reviewed_passed"}
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -42,10 +43,48 @@ UNSAFE_EVIDENCE_SIGNATURE_SECRETS = {
     "local-release-evidence-hmac-secret",
     "release-evidence-hmac-secret",
 }
+MIN_EVIDENCE_SIGNATURE_SECRET_BYTES = 32
+MIN_EVIDENCE_SIGNATURE_SECRET_DISTINCT_CHARS = 8
 SHA256_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 DEFAULT_ARTIFACT_CROSS_CHECK_BINDINGS: tuple[tuple[str, str], ...] = (
     ("candidate.artifact_path", "candidate.artifact_sha256"),
 )
+FULL_GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+POSITIVE_INTEGER_RE = re.compile(r"^[1-9][0-9]*$")
+CANDIDATE_BINDING_ENVIRONMENT: tuple[tuple[str, str], ...] = (
+    ("LENGRVIS_RELEASE_CANDIDATE_COMMIT", "commit"),
+    ("LENGRVIS_RELEASE_BUILD_IDENTIFIER", "build_identifier"),
+    ("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", "repository"),
+    ("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "ci_run_id"),
+    ("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", "ci_run_attempt"),
+)
+
+
+def validate_evidence_signature_secret(value: str) -> str:
+    secret = str(value or "").strip()
+    if not secret:
+        raise ValueError(f"{EVIDENCE_SIGNATURE_ENV} is required")
+    if secret in UNSAFE_EVIDENCE_SIGNATURE_SECRETS:
+        raise ValueError(f"{EVIDENCE_SIGNATURE_ENV} uses a known unsafe development/CI value")
+    if len(secret.encode("utf-8")) < MIN_EVIDENCE_SIGNATURE_SECRET_BYTES:
+        raise ValueError(
+            f"{EVIDENCE_SIGNATURE_ENV} must contain at least {MIN_EVIDENCE_SIGNATURE_SECRET_BYTES} UTF-8 bytes"
+        )
+    if len(set(secret)) < MIN_EVIDENCE_SIGNATURE_SECRET_DISTINCT_CHARS:
+        raise ValueError(f"{EVIDENCE_SIGNATURE_ENV} has insufficient character diversity")
+    return secret
+
+
+@dataclass(frozen=True)
+class CandidateBinding:
+    """Immutable CI identity a reviewed release-evidence artifact must match."""
+
+    commit: str
+    build_identifier: str
+    repository: str
+    ci_run_id: str
+    ci_run_attempt: str
 
 
 def load_json(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
@@ -67,6 +106,89 @@ def get_path(payload: dict[str, Any], dotted_path: str) -> Any:
             return None
         value = value[part]
     return value
+
+
+def candidate_binding_from_environment(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[CandidateBinding | None, list[str]]:
+    """Load the candidate identity explicitly supplied by a release workflow.
+
+    Strict release validation deliberately does not infer this identity from the
+    checkout or generic GitHub variables.  Evidence may be reviewed in a
+    separate candidate run, so the immutable candidate context must be carried
+    forward explicitly and compared exactly.
+    """
+
+    source = os.environ if environment is None else environment
+    values: dict[str, str] = {}
+    errors: list[str] = []
+    for environment_name, field_name in CANDIDATE_BINDING_ENVIRONMENT:
+        value = str(source.get(environment_name) or "").strip()
+        if not value:
+            errors.append(f"{environment_name} is required for strict candidate binding")
+        values[field_name] = value
+    if errors:
+        return None, errors
+
+    binding = CandidateBinding(**values)
+    errors.extend(_candidate_binding_definition_errors(binding, context="strict candidate context"))
+    return (binding if not errors else None), errors
+
+
+def validate_candidate_binding(
+    payload: dict[str, Any],
+    expected: CandidateBinding,
+    errors: list[str],
+) -> None:
+    """Fail closed unless signed reviewed evidence names this exact candidate."""
+
+    expected_errors = _candidate_binding_definition_errors(expected, context="strict candidate context")
+    if expected_errors:
+        errors.extend(expected_errors)
+        return
+
+    actual_values: dict[str, str] = {}
+    missing = False
+    for _, field_name in CANDIDATE_BINDING_ENVIRONMENT:
+        value = get_path(payload, f"candidate.{field_name}")
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"candidate.{field_name} is required for strict candidate binding")
+            missing = True
+            continue
+        actual_values[field_name] = value.strip()
+    if missing:
+        return
+
+    actual = CandidateBinding(**actual_values)
+    for field_name in (
+        "commit",
+        "build_identifier",
+        "repository",
+        "ci_run_id",
+        "ci_run_attempt",
+    ):
+        if getattr(actual, field_name) != getattr(expected, field_name):
+            errors.append(f"candidate_{field_name}_mismatch")
+
+
+def _candidate_binding_definition_errors(binding: CandidateBinding, *, context: str) -> list[str]:
+    errors: list[str] = []
+    if not FULL_GIT_COMMIT_RE.fullmatch(binding.commit):
+        errors.append(f"{context}.commit must be a lowercase 40-character Git SHA")
+    if not GITHUB_REPOSITORY_RE.fullmatch(binding.repository):
+        errors.append(f"{context}.repository must be an owner/repository identifier")
+    if not POSITIVE_INTEGER_RE.fullmatch(binding.ci_run_id):
+        errors.append(f"{context}.ci_run_id must be a positive integer")
+    if not POSITIVE_INTEGER_RE.fullmatch(binding.ci_run_attempt):
+        errors.append(f"{context}.ci_run_attempt must be a positive integer")
+    expected_identifier = (
+        f"rc-{binding.ci_run_id}-{binding.ci_run_attempt}-{binding.commit}"
+    )
+    if binding.build_identifier != expected_identifier:
+        errors.append(
+            f"{context}.build_identifier must equal {expected_identifier!r}"
+        )
+    return errors
 
 
 def require_artifact_type(payload: dict[str, Any], expected: str, errors: list[str]) -> None:
@@ -223,12 +345,10 @@ def validate_evidence_signature(payload: dict[str, Any], errors: list[str]) -> d
         errors.append("evidence.payload_sha256 does not match canonical reviewed evidence payload")
     if not fingerprint:
         errors.append("evidence.signing_key_fingerprint is required")
-    secret = str(os.getenv(EVIDENCE_SIGNATURE_ENV) or "").strip()
-    if not secret:
-        errors.append(f"{EVIDENCE_SIGNATURE_ENV} must be set to verify reviewed evidence signatures")
-        return {"valid_hash": valid_hash, "valid_signature": False}
-    if secret in UNSAFE_EVIDENCE_SIGNATURE_SECRETS:
-        errors.append(f"{EVIDENCE_SIGNATURE_ENV} uses a known unsafe development/CI value")
+    try:
+        secret = validate_evidence_signature_secret(str(os.getenv(EVIDENCE_SIGNATURE_ENV) or ""))
+    except ValueError as exc:
+        errors.append(str(exc))
         return {"valid_hash": valid_hash, "valid_signature": False}
     expected_signature = hmac.new(secret.encode("utf-8"), computed_hash.encode("utf-8"), sha256).hexdigest()
     valid_signature = bool(signature and hmac.compare_digest(signature, expected_signature))

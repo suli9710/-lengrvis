@@ -25,7 +25,6 @@ class TaskPool:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._queued: dict[str, asyncio.Task] = {}
         self._running: dict[str, asyncio.Task] = {}
-        self._external: dict[str, str] = {}
         self._completed: dict[str, str] = {}
         self._lock = threading.RLock()
 
@@ -40,22 +39,9 @@ class TaskPool:
 
     def active_task(self, task_id: str) -> bool:
         with self._lock:
-            return task_id in self._queued or task_id in self._running or task_id in self._external
+            return task_id in self._queued or task_id in self._running
 
-    def claim_external(self, task_id: str, owner: str) -> bool:
-        with self._lock:
-            if self.active_task(task_id):
-                return False
-            self._external[task_id] = owner
-            return True
-
-    def release_external(self, task_id: str, status: str) -> None:
-        with self._lock:
-            self._external.pop(task_id, None)
-            already_cancelled = self._completed.get(task_id) == "cancelled"
-        self._record_completed(task_id, status, keep_existing=already_cancelled or status == "cancelled")
-
-    async def submit(
+    def submit_nowait(
         self,
         task: Task,
         runner: Callable[[Task], Awaitable[Task]],
@@ -107,46 +93,52 @@ class TaskPool:
                     task_id=task.id,
                 )
                 return existing
-            if task.id in self._external:
-                record(
-                    "task_pool.duplicate_submit_ignored",
-                    "TaskPool",
-                    {"task_id": task.id, "state": "external"},
-                    task_id=task.id,
-                )
-                completed = asyncio.create_task(asyncio.sleep(0), name=f"task-{task.id}-external-duplicate")
-                return completed
-
             spawned = asyncio.create_task(_wrap(), name=f"task-{task.id}")
             self._queued[task.id] = spawned
         return spawned
+
+    async def submit(
+        self,
+        task: Task,
+        runner: Callable[[Task], Awaitable[Task]],
+    ) -> asyncio.Task:
+        """Compatibility coroutine for callers that await submission.
+
+        New execution boundaries should use :meth:`submit_nowait` so a worker
+        is claimed by the bounded pool before another request can pause or
+        cancel the task.
+        """
+        return self.submit_nowait(task, runner)
 
     def status(self) -> dict[str, dict]:
         with self._lock:
             return {
                 "max_concurrent": self.max_concurrent,
-                "running": list(self._running.keys()) + list(self._external.keys()),
-                "running_count": len(self._running) + len(self._external),
+                "running": list(self._running.keys()),
+                "running_count": len(self._running),
                 "queued": list(self._queued.keys()),
                 "queued_count": len(self._queued),
-                "available_slots": max(0, self.max_concurrent - len(self._running) - len(self._external)),
+                "available_slots": max(0, self.max_concurrent - len(self._running)),
                 "completed": dict(self._completed),
             }
 
     async def cancel(self, task_id: str) -> bool:
         with self._lock:
             target = self._running.get(task_id) or self._queued.get(task_id)
-            external = task_id in self._external
-            if target is None and external:
-                self._external.pop(task_id, None)
         if target is None:
-            if external:
-                self._record_completed(task_id, "cancelled", keep_existing=True)
-                return True
             return False
         target.cancel()
         with suppress(asyncio.CancelledError):
             await target
+        # A task cancelled before its coroutine gets its first event-loop turn
+        # never enters _wrap's finally block. Release the synchronous claim
+        # here as well so pause/cancel cannot leave a ghost active entry.
+        with self._lock:
+            if self._running.get(task_id) is target:
+                self._running.pop(task_id, None)
+            if self._queued.get(task_id) is target:
+                self._queued.pop(task_id, None)
+        self._record_completed(task_id, "cancelled", keep_existing=True)
         return True
 
     async def shutdown(self) -> None:
@@ -158,7 +150,6 @@ class TaskPool:
         with self._lock:
             self._running.clear()
             self._queued.clear()
-            self._external.clear()
 
 
 _pool: TaskPool | None = None

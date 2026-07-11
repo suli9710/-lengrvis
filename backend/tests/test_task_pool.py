@@ -90,21 +90,6 @@ def test_pool_cancel_running_task():
     asyncio.run(main())
 
 
-def test_pool_cancel_external_claim_keeps_cancelled_status():
-    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
-    task = _make_task(7)
-
-    async def main():
-        assert pool.claim_external(task.id, "resume_thread") is True
-        ok = await pool.cancel(task.id)
-        assert ok is True
-        assert pool.active_task(task.id) is False
-        pool.release_external(task.id, "completed")
-        assert pool.status()["completed"][task.id] == "cancelled"
-
-    asyncio.run(main())
-
-
 def test_pool_shutdown_drains_running_tasks():
     pool = task_pool.reset_pool_for_tests(max_concurrent=3)
 

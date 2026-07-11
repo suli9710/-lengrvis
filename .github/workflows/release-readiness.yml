@@ -29,6 +29,12 @@ jobs:
           python scripts/check_release_readiness_dashboard.py \
             --dashboard docs/release/release-readiness-dashboard.md
 
+      - name: Validate full review scorecard
+        run: npm run review:scorecard
+
+      - name: Validate Agentic threat model
+        run: npm run security:threat-model
+
       - name: Validate market readiness dashboard (non-strict)
         run: |
           python scripts/check_market_readiness.py \

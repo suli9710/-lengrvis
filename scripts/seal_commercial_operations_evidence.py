@@ -15,20 +15,16 @@ from typing import Any
 
 from evidence_contracts import (
     EVIDENCE_SIGNATURE_ENV,
-    UNSAFE_EVIDENCE_SIGNATURE_SECRETS,
     canonical_evidence_payload_hash,
     load_json,
     print_result,
+    validate_evidence_signature_secret,
 )
 from verify_commercial_operations_evidence import ARTIFACT_TYPE, validate_payload
 
 
 def seal_payload(payload: dict[str, Any], *, secret: str, signing_key_fingerprint: str = "") -> dict[str, Any]:
-    secret = secret.strip()
-    if not secret:
-        raise ValueError(f"{EVIDENCE_SIGNATURE_ENV} is required")
-    if secret in UNSAFE_EVIDENCE_SIGNATURE_SECRETS:
-        raise ValueError(f"{EVIDENCE_SIGNATURE_ENV} uses a known unsafe development/CI value")
+    secret = validate_evidence_signature_secret(secret)
     if payload.get("artifact_type") != ARTIFACT_TYPE:
         raise ValueError(f"artifact_type must be {ARTIFACT_TYPE!r}")
     if "template" in str(payload.get("artifact_type", "")).lower() or payload.get("template_mode"):

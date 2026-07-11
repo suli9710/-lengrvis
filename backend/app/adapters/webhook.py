@@ -13,6 +13,8 @@ class WebhookClient(Protocol):
         payload: dict[str, Any],
         headers: dict[str, str],
         timeout_seconds: float,
+        *,
+        extensions: dict[str, str],
     ) -> dict[str, Any]: ...
 
 
@@ -71,7 +73,13 @@ class WebhookAdapter(AdapterBase):
             return connected_error
         if self.client is None:
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook client is not configured."}
-        result = self.client.post(pinned.url, body, _merge_pinned_headers(pinned.headers, headers), timeout)
+        result = self.client.post(
+            pinned.url,
+            body,
+            _merge_pinned_headers(pinned.headers, headers),
+            timeout,
+            extensions=dict(pinned.extensions),
+        )
         return {"ok": bool(result.get("ok", True)), "adapter": self.config.service_name, **result}
 
     def health_check(self) -> AdapterResult:

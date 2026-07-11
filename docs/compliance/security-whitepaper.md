@@ -32,7 +32,7 @@ Lengrvis 是本机优先的 OS Agent，可读取文件、执行系统诊断、�
 
 ## 6. 可审计性
 
-- 审计链 `audit_events` 采用 HMAC 哈希链防篡改。
+- 审计链 `audit_events` 采用 HMAC 哈希链检测记录是否被修改。该机制是 tamper-evident：同一 Windows 用户权限下的攻击者仍可能取得本机密钥材料并重算记录，因此不构成绝对不可篡改或外部不可抵赖证明。
 - 隐私擦除等敏感动作追加留痕事件（如 `privacy.local_data_erased`）。
 
 ## 7. 脱敏

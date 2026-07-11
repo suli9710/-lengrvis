@@ -28,7 +28,19 @@ STRICT_ACCEPTED_MANUAL_SIGNOFF_STATUSES = {
     "release_signoff_recorded",
     "paid_launch_signoff_recorded",
 }
+REQUIRED_CURRENT_EVIDENCE_COMMANDS = ("npm run review:scorecard",)
 P0_PREFIX = "RR-P0-"
+REQUIRED_PUBLIC_BETA_P0_IDS = frozenset(
+    {
+        "RR-P0-001",
+        "RR-P0-002",
+        "RR-P0-003",
+        "RR-P0-004",
+        "RR-P0-005",
+        "RR-P0-006",
+        "RR-P0-007",
+    }
+)
 ROW_RE = re.compile(r"^\|\s*(RR-[^|]+?)\s*\|(?P<body>.*)\|\s*$")
 CI_ARTIFACT_PATH_PREFIXES = (
     ".tmp/qa-evidence/",
@@ -92,6 +104,29 @@ def parse_rows(markdown: str) -> list[ReadinessRow]:
             )
         )
     return rows
+
+
+def validate_public_beta_gate_set(rows: list[ReadinessRow]) -> list[str]:
+    row_ids = [row.row_id for row in rows]
+    found = set(row_ids)
+    errors: list[str] = []
+    missing = sorted(REQUIRED_PUBLIC_BETA_P0_IDS - found)
+    if missing:
+        errors.append(
+            "Release readiness dashboard is missing required public Beta P0 rows: "
+            + ", ".join(missing)
+        )
+    duplicates = sorted(
+        row_id
+        for row_id in REQUIRED_PUBLIC_BETA_P0_IDS
+        if row_ids.count(row_id) > 1
+    )
+    if duplicates:
+        errors.append(
+            "Release readiness dashboard has duplicate required public Beta P0 rows: "
+            + ", ".join(duplicates)
+        )
+    return errors
 
 
 def validate(
@@ -252,6 +287,12 @@ def validate(
             owner_signature = _current_evidence_summary_value(evidence_text, "Owner signature")
             if not owner_signature or owner_signature == "PENDING_RELEASE_OWNER_SIGNATURE":
                 errors.append("Current release evidence owner signature is pending or missing.")
+            for command in REQUIRED_CURRENT_EVIDENCE_COMMANDS:
+                if not _current_evidence_lists_command(evidence_text, command):
+                    errors.append(
+                        "Current release evidence must list the full-review scorecard gate command: "
+                        f"{command}."
+                    )
 
     return errors, warnings
 
@@ -342,6 +383,11 @@ def _current_evidence_summary_value(markdown: str, label: str) -> str:
     if not match:
         return ""
     return match.group(1).strip().strip("`")
+
+
+def _current_evidence_lists_command(markdown: str, command: str) -> bool:
+    escaped = re.escape(command)
+    return bool(re.search(rf"(?im)\|\s*[^|]+\s*\|\s*`?{escaped}`?\s*\|", markdown))
 
 
 def _sha_matches(candidate: str, current_sha: str) -> bool:
@@ -441,6 +487,7 @@ def main() -> int:
         artifact_root=artifact_root,
         dashboard_text=dashboard_text,
     )
+    errors.extend(validate_public_beta_gate_set(rows))
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     summary = {
         "ok": not errors,

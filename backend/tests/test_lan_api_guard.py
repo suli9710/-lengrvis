@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import httpx
@@ -51,6 +52,29 @@ def _enable_remote_desktop() -> None:
     if confirmation.get("required"):
         patch["confirmation_nonce"] = confirmation["nonce"]
     update_settings(patch)
+
+
+def test_public_lan_health_redacts_local_runtime_details(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    monkeypatch.setattr("app.main.get_effective_settings", lambda: SimpleNamespace(mode="hybrid"))
+    monkeypatch.setattr(
+        "app.main.health_snapshot",
+        lambda settings, timeout: {
+            "available": True,
+            "model_path": r"C:\Users\owner\private-model",
+            "execution_provider": "OpenVINOExecutionProvider",
+        },
+    )
+    loopback = TestClient(app, client=("127.0.0.1", 50100))
+    remote = TestClient(app, client=("192.168.1.22", 50100), base_url="https://testserver")
+
+    loopback_payload = loopback.get("/api/health").json()
+    public_payload = remote.get("/api/health").json()
+
+    assert loopback_payload == {"status": "ok"}
+    assert public_payload == {"status": "ok"}
 
 
 def test_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_path):

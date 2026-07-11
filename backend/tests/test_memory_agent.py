@@ -10,6 +10,8 @@ import pytest
 from app.agents import memory_agent as memory_agent_module
 from app.agents.memory_agent import MemoryAgent
 from app.core import db
+from app.core.content_provenance import create_content_envelope
+from app.core.schemas import MemoryState
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +27,10 @@ def test_remember_persists_with_embedding():
     assert memory.content
     assert memory.embedding_dim >= 1
     assert "preference" in memory.tags
+    assert memory.state == MemoryState.ACTIVE
+    assert memory.user_confirmed is True
+    assert memory.content_envelope is not None
+    assert memory.content_envelope.source_kind == "user_input"
 
     all_memories = agent.list_all()
     assert any(item.id == memory.id for item in all_memories)
@@ -71,3 +77,70 @@ def test_recall_without_memories_returns_empty(monkeypatch):
     results = asyncio.run(agent.recall("anything", k=5))
     assert results == []
     assert embed_calls == []
+
+
+def test_system_memory_is_quarantined_until_user_promotes_it() -> None:
+    agent = MemoryAgent()
+    memory = asyncio.run(
+        agent.remember(
+            "Automatically inferred filing rule",
+            source="OrchestratorAgent",
+            user_confirmed=False,
+        )
+    )
+
+    assert memory.state == MemoryState.QUARANTINED
+    assert memory.content_envelope is not None
+    assert "unreviewed_memory" in memory.content_envelope.taint_flags
+    assert asyncio.run(agent.recall("filing rule")) == []
+
+    promoted = agent.promote(memory.id)
+    assert promoted is not None
+    assert promoted.state == MemoryState.ACTIVE
+    assert promoted.user_confirmed is True
+    assert asyncio.run(agent.recall("filing rule"))[0].id == memory.id
+
+    revoked = agent.revoke(memory.id)
+    assert revoked is not None
+    assert revoked.state == MemoryState.REVOKED
+    assert asyncio.run(agent.recall("filing rule")) == []
+
+
+@pytest.mark.parametrize("tamper_kind", ["content", "hmac", "scope", "confirmation"])
+def test_recall_quarantines_memory_when_provenance_integrity_fails(tamper_kind: str) -> None:
+    agent = MemoryAgent()
+    memory = asyncio.run(agent.remember("Trusted filing preference", task_id="task-memory-integrity"))
+    row = db.get_memory(memory.id)
+    assert row is not None
+
+    if tamper_kind == "content":
+        row["content"] = "Tampered filing preference"
+    elif tamper_kind == "hmac":
+        row["content_envelope"]["integrity_hmac"] = "0" * 64
+    elif tamper_kind == "scope":
+        row["content_envelope"] = create_content_envelope(
+            row["content"],
+            source_kind="user_input",
+            source_id="other-task",
+            trust_level="user_confirmed",
+            task_scope="other-task",
+            user_confirmed=True,
+        ).model_dump(mode="json")
+    else:
+        row["content_envelope"] = create_content_envelope(
+            row["content"],
+            source_kind="user_input",
+            source_id=memory.task_id,
+            trust_level="unknown",
+            task_scope=memory.task_id,
+            user_confirmed=False,
+        ).model_dump(mode="json")
+    db.upsert_memory(row)
+
+    assert asyncio.run(agent.recall("filing preference")) == []
+    stored = db.get_memory(memory.id)
+    assert stored is not None
+    assert stored["state"] == MemoryState.QUARANTINED.value
+    assert stored["user_confirmed"] is False
+    events = db.fetch_many("audit_events", limit=20)
+    assert any(event["event_type"] == "memory.recall_integrity_failed" for event in events)

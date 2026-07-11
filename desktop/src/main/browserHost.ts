@@ -18,11 +18,31 @@ import type {
   BrowserHostSnapshot,
   BrowserSession
 } from "../shared/browserTypes";
+import type {
+  CredentialBrokerResult,
+  CredentialFillRequest,
+  CredentialRef,
+  CredentialRefRequest,
+  CredentialSessionRequest,
+  CredentialUseTicketRequest
+} from "../shared/credentialTypes";
 import {
   sanitizeEventForRenderer,
   sanitizeSessionForRenderer
 } from "../shared/browserHostRedaction";
 import { domClickScript, domFillScript, domScrollScript, domSubmitScript, observeScript } from "./browserHostDomActions";
+import {
+  capturePageCredentialScript,
+  credentialPageFingerprintScript,
+  fillPageCredentialScript,
+  parseCapturedPageCredential,
+  parseFilledPageCredentialResult,
+  parsePageCredentialFingerprint
+} from "./browserCredentialDom";
+import {
+  registerBrowserCredentialIpcHandlers,
+  type BrowserCredentialPreview
+} from "./browserCredentialIpcHandlers";
 import { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 import {
   browserHostErrorMessage,
@@ -34,9 +54,18 @@ import {
   requireBrowserActionUrl
 } from "./browserHostValidation";
 import { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
+import { BrowserHostPinnedProxy } from "./browserHostPinnedProxy";
+import { BrowserScreenshotStore } from "./browserScreenshotStore";
+import {
+  CredentialVault,
+  credentialDomainFromUrl,
+  normalizeCredentialIdentifier
+} from "./credentialVault";
+import { CredentialUseTicketBroker } from "./credentialUseTicketBroker";
 
 export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBackendUrl } from "./browserHostBridge";
 export { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
+export { registerBrowserCredentialIpcHandlers } from "./browserCredentialIpcHandlers";
 export { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
 
 type BrowserContainer =
@@ -53,6 +82,7 @@ interface HostedBrowserSession {
   container: BrowserContainer;
   session: BrowserSession;
   events: BrowserActivityEvent[];
+  proxyReady: Promise<void>;
   cssKey?: string;
 }
 
@@ -65,11 +95,21 @@ export class BrowserHost {
   private bounds: BrowserHostBounds | null = null;
   private visible = false;
   private snapshotListeners = new Set<(snapshot: BrowserHostSnapshot) => void>();
+  private pinnedProxyPromise: Promise<BrowserHostPinnedProxy> | null = null;
+  private readonly screenshotStore = new BrowserScreenshotStore();
 
-  constructor(private readonly getMainWindow: () => BrowserWindow | null) {}
+  constructor(
+    private readonly getMainWindow: () => BrowserWindow | null,
+    private readonly credentialVault = new CredentialVault(),
+    private readonly credentialTickets = new CredentialUseTicketBroker()
+  ) {}
 
   registerIpcHandlers(): void {
     registerBrowserHostIpcHandlers({
+      handle: (channel, listener) => ipcMain.handle(channel, listener),
+      host: this
+    });
+    registerBrowserCredentialIpcHandlers({
       handle: (channel, listener) => ipcMain.handle(channel, listener),
       host: this
     });
@@ -80,6 +120,35 @@ export class BrowserHost {
     for (const sessionId of [...this.sessions.keys()]) {
       void this.stop(sessionId);
     }
+    const proxy = this.pinnedProxyPromise;
+    this.pinnedProxyPromise = null;
+    if (proxy) void proxy.then((instance) => instance.close());
+    void this.screenshotStore.clear();
+    this.credentialTickets.clear();
+  }
+
+  async eraseLocalPrivateData(): Promise<void> {
+    const failures: unknown[] = [];
+    for (const entry of [...this.sessions.values()]) {
+      try {
+        await entry.container.view.webContents.session.clearStorageData();
+        await this.stop(entry.session.id);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await this.screenshotStore.clear();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      this.credentialTickets.clear();
+      this.credentialVault.clear();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length) throw new Error("Electron private browser data could not be fully erased");
   }
 
   onSnapshot(listener: (snapshot: BrowserHostSnapshot) => void): () => void {
@@ -117,6 +186,7 @@ export class BrowserHost {
       this.attachActiveView();
       this.applyBounds();
       this.setViewVisible(true);
+      await entry.proxyReady;
 
       if (targetUrl && targetUrl !== "about:blank") {
         await entry.container.view.webContents.loadURL(targetUrl);
@@ -231,6 +301,7 @@ export class BrowserHost {
     const event = this.addEvent(entry, { type: "session.stopped", ok: true });
     this.detachView(entry);
     this.sessions.delete(sessionId);
+    await this.screenshotStore.removeSession(sessionId);
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = this.sessions.keys().next().value ?? null;
       this.attachActiveView();
@@ -263,7 +334,7 @@ export class BrowserHost {
       const event = await this.executeAction(entry, action);
       this.updateSessionFromWebContents(entry);
       this.emitSnapshot();
-      return this.ok(entry, event);
+      return this.ok(entry, event, action.kind === "screenshot");
     } catch (error) { // broad-exception-boundary
       const event = this.addEvent(entry, {
         type: "action.failed",
@@ -278,6 +349,214 @@ export class BrowserHost {
     }
   }
 
+  listCredentialRefs(request: CredentialSessionRequest): CredentialRef[] {
+    const context = this.credentialContext(request.session_id, false);
+    return this.credentialVault.list(context.domain);
+  }
+
+  async previewCredentialCapture(request: CredentialSessionRequest): Promise<BrowserCredentialPreview> {
+    const context = this.credentialContext(request.session_id, true);
+    const page = await this.credentialPageContext(context);
+    return {
+      domain: context.domain,
+      session_id: request.session_id,
+      page_fingerprint: page.page_fingerprint,
+      task_id: context.taskId
+    };
+  }
+
+  async captureCredential(
+    request: CredentialSessionRequest,
+    preview: BrowserCredentialPreview
+  ): Promise<CredentialBrokerResult> {
+    try {
+      const context = this.credentialContext(request.session_id, true);
+      const captured = parseCapturedPageCredential(
+        await context.entry.container.view.webContents.executeJavaScript(
+          capturePageCredentialScript(preview.domain, preview.page_fingerprint),
+          true
+        )
+      );
+      this.assertCredentialPreview(preview, request.session_id, context, captured);
+      const credentialRef = this.credentialVault.store(context.domain, {
+        username: captured.username,
+        password: captured.password
+      });
+      this.addEvent(context.entry, {
+        type: "credential.saved",
+        ok: true,
+        url: context.entry.container.view.webContents.getURL()
+      });
+      this.emitSnapshot();
+      return { ok: true, credential_ref: credentialRef };
+    } catch (error) { // broad-exception-boundary
+      return { ok: false, error: safeCredentialErrorMessage(error) };
+    }
+  }
+
+  async previewCredentialUse(request: CredentialUseTicketRequest): Promise<BrowserCredentialPreview> {
+    const context = this.credentialContext(request.session_id, true);
+    if (request.task_id !== context.taskId) {
+      throw new Error("Credential task binding does not match the browser session");
+    }
+    const credentialRef = this.credentialVault.getRef(request.credential_ref_id);
+    if (!credentialRef || credentialRef.domain !== context.domain) {
+      throw new Error("Saved credential is unavailable for this domain");
+    }
+    const page = await this.credentialPageContext(context);
+    return {
+      domain: context.domain,
+      session_id: request.session_id,
+      page_fingerprint: page.page_fingerprint,
+      task_id: context.taskId,
+      credential_ref_id: credentialRef.id,
+      run_id: request.run_id,
+      purpose: request.purpose,
+      ttl_seconds: request.ttl_seconds ?? 60
+    };
+  }
+
+  async issueCredentialUseTicket(
+    request: CredentialUseTicketRequest,
+    preview: BrowserCredentialPreview
+  ): Promise<CredentialBrokerResult> {
+    try {
+      const current = await this.previewCredentialUse(request);
+      this.assertCredentialPreview(
+        preview,
+        request.session_id,
+        this.credentialContext(request.session_id, true),
+        { origin: current.domain, page_fingerprint: current.page_fingerprint ?? "" }
+      );
+      const ticket = this.credentialTickets.issue({
+        credential_ref_id: preview.credential_ref_id ?? request.credential_ref_id,
+        domain: preview.domain,
+        session_id: preview.session_id ?? request.session_id,
+        page_fingerprint: preview.page_fingerprint ?? "",
+        run_id: request.run_id,
+        task_id: preview.task_id,
+        purpose: request.purpose
+      }, request.ttl_seconds);
+      return { ok: true, ticket };
+    } catch (error) { // broad-exception-boundary
+      return { ok: false, error: safeCredentialErrorMessage(error) };
+    }
+  }
+
+  async fillCredential(request: CredentialFillRequest): Promise<CredentialBrokerResult> {
+    try {
+      const context = this.credentialContext(request.session_id, true);
+      const page = await this.credentialPageContext(context);
+      const ticket = this.credentialTickets.consume(request.ticket, {
+        credential_ref_id: request.ticket.credential_ref_id,
+        domain: context.domain,
+        session_id: request.session_id,
+        page_fingerprint: page.page_fingerprint,
+        run_id: request.ticket.run_id,
+        task_id: context.taskId,
+        purpose: request.ticket.purpose
+      });
+      const credential = this.credentialVault.resolve(ticket.credential_ref_id);
+      if (credential.ref.domain !== context.domain) {
+        throw new Error("Saved credential is unavailable for this domain");
+      }
+      const filled = parseFilledPageCredentialResult(
+        await context.entry.container.view.webContents.executeJavaScript(
+          fillPageCredentialScript(
+            context.domain,
+            ticket.page_fingerprint,
+            credential.secret.username,
+            credential.secret.password
+          ),
+          true
+        )
+      );
+      this.addEvent(context.entry, {
+        type: "credential.filled",
+        ok: true,
+        url: context.entry.container.view.webContents.getURL()
+      });
+      this.emitSnapshot();
+      return {
+        ok: true,
+        credential_ref: credential.ref,
+        filled_username: filled.filled_username,
+        filled_password: filled.filled_password
+      };
+    } catch (error) { // broad-exception-boundary
+      return { ok: false, error: safeCredentialErrorMessage(error) };
+    }
+  }
+
+  previewCredentialDelete(request: CredentialRefRequest): BrowserCredentialPreview {
+    const context = this.credentialContext(request.session_id, false);
+    const credentialRef = this.credentialVault.getRef(request.credential_ref_id);
+    if (!credentialRef || credentialRef.domain !== context.domain) {
+      throw new Error("Saved credential is unavailable for this domain");
+    }
+    return {
+      domain: context.domain,
+      task_id: context.taskId,
+      credential_ref_id: credentialRef.id
+    };
+  }
+
+  deleteCredential(request: CredentialRefRequest): CredentialBrokerResult {
+    try {
+      this.previewCredentialDelete(request);
+      if (!this.credentialVault.delete(request.credential_ref_id)) {
+        return { ok: false, error: "Saved credential is unavailable" };
+      }
+      this.credentialTickets.revokeCredential(request.credential_ref_id);
+      return { ok: true };
+    } catch (error) { // broad-exception-boundary
+      return { ok: false, error: safeCredentialErrorMessage(error) };
+    }
+  }
+
+  private credentialContext(sessionId: string, requireTask: boolean): {
+    entry: HostedBrowserSession;
+    domain: string;
+    taskId: string;
+  } {
+    const normalizedSessionId = normalizeCredentialIdentifier(sessionId, "session id");
+    const entry = this.sessions.get(normalizedSessionId);
+    if (!entry) throw new Error("Browser session is no longer available");
+    const currentUrl = entry.container.view.webContents.getURL() || entry.session.current_url;
+    const domain = credentialDomainFromUrl(currentUrl);
+    const rawTaskId = entry.session.task_id?.trim() ?? "";
+    if (requireTask && !rawTaskId) throw new Error("Credential use requires a task-bound browser session");
+    const taskId = rawTaskId ? normalizeCredentialIdentifier(rawTaskId, "task id") : "manual";
+    return { entry, domain, taskId };
+  }
+
+  private async credentialPageContext(
+    context: ReturnType<BrowserHost["credentialContext"]>
+  ): Promise<{ origin: string; page_fingerprint: string }> {
+    const page = parsePageCredentialFingerprint(
+      await context.entry.container.view.webContents.executeJavaScript(credentialPageFingerprintScript(), true)
+    );
+    if (page.origin !== context.domain) throw new Error("Browser page origin changed before credential review");
+    return page;
+  }
+
+  private assertCredentialPreview(
+    preview: BrowserCredentialPreview,
+    sessionId: string,
+    context: ReturnType<BrowserHost["credentialContext"]>,
+    current: { origin: string; page_fingerprint: string }
+  ): void {
+    if (
+      preview.session_id !== sessionId
+      || preview.domain !== context.domain
+      || preview.task_id !== context.taskId
+      || preview.page_fingerprint !== current.page_fingerprint
+      || current.origin !== context.domain
+    ) {
+      throw new Error("Browser page or credential fields changed after confirmation");
+    }
+  }
+
   private createHostedSession(sessionId: string, request: BrowserHostOpenRequest): HostedBrowserSession {
     const partition = `lengrvis-watch-${sessionId}-${Date.now()}`;
     const container = createBrowserContainer(partition);
@@ -285,6 +564,7 @@ export class BrowserHost {
     const now = browserHostTimestamp();
     const entry: HostedBrowserSession = {
       container,
+      proxyReady: this.configurePinnedProxy(webContents),
       session: {
         id: sessionId,
         task_id: request.taskId,
@@ -301,10 +581,33 @@ export class BrowserHost {
       events: []
     };
 
-    hardenEmbeddedWebContents(webContents);
+    hardenEmbeddedWebContents(webContents, {
+      onDownloadBlocked: ({ url }) => {
+        this.addEvent(entry, {
+          type: "download.blocked",
+          ok: false,
+          url: url || entry.session.current_url,
+          error: "BrowserHost downloads require an explicit desktop broker"
+        });
+        this.emitSnapshot();
+      }
+    });
     this.bindWebContentsEvents(entry);
     this.setInteractionBlocked(entry, true);
     return entry;
+  }
+
+  private configurePinnedProxy(webContents: WebContents): Promise<void> {
+    this.pinnedProxyPromise ??= BrowserHostPinnedProxy.start();
+    return this.pinnedProxyPromise.then(async (proxy) => {
+      await webContents.session.setProxy({
+        proxyRules: proxy.url,
+        // Chromium implicitly bypasses proxies for loopback names unless this
+        // subtraction rule is present; the proxy must see those requests so it
+        // can enforce the private-network policy at connect time.
+        proxyBypassRules: "<-loopback>"
+      });
+    });
   }
 
   private bindWebContentsEvents(entry: HostedBrowserSession): void {
@@ -424,7 +727,7 @@ export class BrowserHost {
       }
       case "screenshot": {
         const image = await webContents.capturePage();
-        const screenshot_url = image.toDataURL();
+        const screenshot_url = await this.screenshotStore.save(entry.session.id, image.toPNG());
         return this.addEvent(entry, { type: "action.screenshot", action, ok: true, screenshot_url });
       }
       case "observe":
@@ -488,11 +791,19 @@ export class BrowserHost {
     `);
   }
 
-  private ok(entry: HostedBrowserSession, event?: BrowserActivityEvent): BrowserHostActionResult {
+  private ok(
+    entry: HostedBrowserSession,
+    event?: BrowserActivityEvent,
+    preserveScreenshotArtifact = false
+  ): BrowserHostActionResult {
+    const sanitizedEvent = event ? sanitizeEventForRenderer(event) : undefined;
+    if (preserveScreenshotArtifact && sanitizedEvent && event?.screenshot_url) {
+      sanitizedEvent.screenshot_url = event.screenshot_url;
+    }
     return {
       ok: true,
       session: sanitizeSessionForRenderer(entry.session),
-      event: event ? sanitizeEventForRenderer(event) : undefined,
+      event: sanitizedEvent,
       snapshot: this.getSnapshot()
     };
   }
@@ -576,6 +887,32 @@ export class BrowserHost {
     if (!window || window.isDestroyed()) return;
     window.webContents.send(IPC_CHANNELS.browserHostSnapshotChanged, snapshot);
   }
+}
+
+function safeCredentialErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const safePrefixes = [
+    "Browser page domain changed",
+    "Browser page or credential fields changed",
+    "Browser session is no longer available",
+    "Credential purpose is not allowed",
+    "Credential task binding does not match",
+    "Credential use requires",
+    "Credential use ticket",
+    "Exactly one filled password field",
+    "Invalid credential ref id",
+    "Invalid run id",
+    "Invalid session id",
+    "Invalid task id",
+    "MFA, passcodes, and verification fields",
+    "Saved credential",
+    "Saved credentials",
+    "Secure OS credential storage",
+    "The page did not provide"
+  ];
+  return safePrefixes.some((prefix) => message.startsWith(prefix))
+    ? message
+    : "Credential operation failed";
 }
 
 function createBrowserContainer(partition: string): BrowserContainer {

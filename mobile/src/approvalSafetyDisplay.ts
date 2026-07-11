@@ -39,6 +39,8 @@ interface ApprovalSafetyInput {
   tool_name?: string;
   tool_trust_tier?: string;
   required_mobile_scopes?: string[];
+  mobile_step_up_required?: boolean;
+  mobile_step_up_satisfied?: boolean;
   remote_input_binding?: {
     device_bound?: boolean;
     grant_bound?: boolean;
@@ -55,6 +57,7 @@ const REMOTE_INPUT_BINDING_REASON = "远控输入审批必须绑定当前远控�
 const REMOTE_INPUT_ACTIVE_GRANT_REASON = "此审批没有匹配当前手机的远控授权，手机端不会批准；请回电脑端重新发起授权。";
 const REMOTE_INPUT_DESKTOP_APPROVAL_REASON = "远控输入审批不能在手机端批准；请回电脑端核对并处理，或直接拒绝。";
 const DANGEROUS_PERMISSION_REASON = "此审批会扩大电脑端执行权限，不能在手机上批准；请回电脑端核对后手动处理或拒绝。";
+const BIOMETRIC_STEP_UP_REASON = "此操作影响较高，当前版本没有可信的硬件绑定生物识别在场证明；请回电脑端处理或拒绝。";
 
 export function approvalApproveBlockedReason(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): string | null {
   if (isForbiddenOrHandoff(approval) || isDesktopOnlyApproval(approval)) {
@@ -71,6 +74,9 @@ export function approvalApproveBlockedReason(approval: ApprovalSafetyInput, acti
   }
   if (hasDangerousPermissionMode(approval)) {
     return DANGEROUS_PERMISSION_REASON;
+  }
+  if (requiresTrustedMobileStepUp(approval)) {
+    return BIOMETRIC_STEP_UP_REASON;
   }
   if (isHighRiskApproval(approval) && (!hasDryRunSummary(approval) || !hasDeclaredScope(approval))) {
     return UNVERIFIED_HIGH_RISK_REASON;
@@ -132,6 +138,15 @@ export function approvalDecisionGuard(approval: ApprovalSafetyInput, activeGrant
         title: "手机端不会扩大电脑权限",
         detail: "此请求涉及更高执行权限或绕过常规确认。手机屏幕不适合核对完整影响范围。",
         nextStep: "点拒绝，或回电脑端查看权限、对象和恢复方式后手动处理。",
+        tone: "danger",
+        approveBlockedReason,
+      };
+    }
+    if (approveBlockedReason === BIOMETRIC_STEP_UP_REASON) {
+      return {
+        title: "需要生物识别再次确认",
+        detail: "当前版本尚未向后端提供可验证的生物识别 step-up，因此不会在手机端批准高影响发送或提交。",
+        nextStep: "回电脑端核对并处理；不确定就直接拒绝。",
         tone: "danger",
         approveBlockedReason,
       };
@@ -204,6 +219,14 @@ export function approvalListSafety(approval: ApprovalSafetyInput, activeGrant?: 
         approveBlockedReason: guard.approveBlockedReason,
       };
     }
+    if (guard.approveBlockedReason === BIOMETRIC_STEP_UP_REASON) {
+      return {
+        label: "需要生物识别",
+        detail: "当前手机会话不能批准高影响操作；请回电脑端处理。",
+        tone: "danger",
+        approveBlockedReason: guard.approveBlockedReason,
+      };
+    }
     return {
       label: "手机不可批准",
       detail: "此类请求需要回电脑端处理，或直接拒绝。",
@@ -240,6 +263,18 @@ function isHighRiskApproval(approval: ApprovalSafetyInput): boolean {
   const effects = stringList(approval.tool_effects).join(" ").toLowerCase();
   const action = `${approval.approval_type || ""} ${approval.tool_name || ""}`.toLowerCase();
   return /delete|remove|clean|trash|permanent|write|modify|move|input|click|type|system|shell|execute|run|launch|install|uninstall|sudo|admin|privileged|registry|firewall|credential|keychain/.test(`${effects} ${action}`);
+}
+
+function requiresTrustedMobileStepUp(approval: ApprovalSafetyInput): boolean {
+  if (approval.mobile_step_up_required === true) return true;
+  const boundary = objectValue(approval.engineering_boundary);
+  const tool = objectValue(boundary.tool);
+  const risk = normalizedRiskText(approval);
+  if (/r3|destructive|system|critical/.test(risk) || booleanValue(tool.destructive)) return true;
+  if (hasDangerousPermissionMode(approval)) return true;
+  const effects = [...stringList(approval.tool_effects), ...stringList(tool.effects)].join(" ").toLowerCase();
+  const action = `${approval.approval_type || ""} ${approval.tool_name || ""}`.toLowerCase();
+  return /credential|delete|destructive|execute|external[_ -]?post|install|payment|permission|privileged|process|purchase|registry|send|submit|system[_ -]?write|trash|uninstall|upload/.test(`${effects} ${action}`);
 }
 
 function hasDryRunSummary(approval: ApprovalSafetyInput): boolean {

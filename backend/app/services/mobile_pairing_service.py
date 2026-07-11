@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 import time
@@ -17,6 +18,12 @@ from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.execution_stage import ExecutionStage
+from app.security.mobile_identity import (
+    create_mobile_session_locked,
+    revoke_device_credentials_locked,
+    revoke_device_token_families_locked,
+    rotate_mobile_refresh_token,
+)
 from app.security.mobile_jwt import (
     MOBILE_REMOTE_VIEW_TTL_SECONDS,
     MOBILE_TOKEN_TTL_SECONDS,
@@ -25,7 +32,6 @@ from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
     issue_mobile_token,
-    mobile_token_scopes,
     new_device_id,
 )
 from app.services import mobile_pairing_access as _access_helpers
@@ -206,26 +212,20 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
     if _remote_desktop_view_enabled(settings):
         token_scopes.append(REMOTE_VIEW_SCOPE)
         scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
-    token = issue_mobile_token(
-        device_id=device_id,
-        device_name=device_name,
-        expires_in_seconds=TOKEN_TTL_SECONDS,
-        scope=token_scopes,
-        scope_ttl=scope_ttl,
-    )
     used_at = now_iso()
+    session = None
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT data FROM mobile_pairings WHERE id = ?", (code,)).fetchone()
         if not row:
             return None
-        record = json.loads(row["data"])
-        if record.get("status") != "pending":
+        pairing_record = json.loads(row["data"])
+        if pairing_record.get("status") != "pending":
             return None
-        if not _pairing_claim_secret_matches(record, claim_secret):
+        if not _pairing_claim_secret_matches(pairing_record, claim_secret):
             return None
-        if _parse_iso(str(record.get("expires_at") or "")) <= now:
-            updated = dict(record)
+        if _parse_iso(str(pairing_record.get("expires_at") or "")) <= now:
+            updated = dict(pairing_record)
             updated["status"] = "expired"
             updated["updated_at"] = used_at
             conn.execute(
@@ -240,7 +240,7 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
                 (json.dumps(updated, ensure_ascii=False), "expired", used_at, code, "pending"),
             )
             return None
-        updated = dict(record)
+        updated = dict(pairing_record)
         updated.update(
             {
                 "status": "used",
@@ -265,12 +265,32 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
         if cursor.rowcount != 1:
             return None
         _upsert_mobile_device_locked(conn, device_id=device_id, device_name=device_name, timestamp=used_at)
+        session = create_mobile_session_locked(
+            conn,
+            device_id=device_id,
+            device_name=device_name,
+            token_epoch=0,
+            scopes=token_scopes,
+            scope_ttl=scope_ttl,
+        )
+    if session is None:
+        return None
+    record(
+        "mobile.session.created",
+        "MobilePairingService",
+        {
+            "device_id": device_id,
+            "family_id": session.token_family_id,
+            "credential_id": session.device_credential_id,
+        },
+    )
     return {
-        "token": token,
-        "token_type": "Bearer",
+        **session.model_dump(mode="json"),
         "device_id": device_id,
         "device_trust": mobile_device_trust_metadata(),
-        "expires_in": TOKEN_TTL_SECONDS,
+        "view_expires_in": (
+            min(MOBILE_REMOTE_VIEW_TTL_SECONDS, session.expires_in) if REMOTE_VIEW_SCOPE in token_scopes else 0
+        ),
         "server": _server_info(),
     }
 
@@ -526,6 +546,14 @@ def revoke_mobile_device(device_id: str) -> dict[str, Any]:
         updated["revoked_at"] = timestamp
         updated["updated_at"] = timestamp
         updated["remote_input_grants"] = _revoked_remote_input_grants(updated, timestamp)
+        updated.pop("push_subscription", None)
+        revoke_device_token_families_locked(
+            conn,
+            normalized_id,
+            timestamp=timestamp,
+            reason="device_revoked",
+        )
+        revoke_device_credentials_locked(conn, normalized_id, timestamp=timestamp)
         conn.execute(
             """
             UPDATE mobile_devices
@@ -569,7 +597,14 @@ def revoke_mobile_device_sessions(device_id: str) -> dict[str, Any]:
         updated = json.loads(row["data"])
         updated["token_epoch"] = int(updated.get("token_epoch") or 0) + 1
         updated["remote_input_grants"] = _revoked_remote_input_grants(updated, timestamp)
+        updated.pop("push_subscription", None)
         updated["updated_at"] = timestamp
+        revoke_device_token_families_locked(
+            conn,
+            normalized_id,
+            timestamp=timestamp,
+            reason="device_sessions_revoked",
+        )
         conn.execute(
             "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
             (json.dumps(updated, ensure_ascii=False), timestamp, normalized_id),
@@ -607,20 +642,8 @@ def reject_approval(approval_id: str, claims: dict[str, Any] | None = None) -> A
     return _decide_approval(approval_id, ApprovalStatus.REJECTED, claims=claims)
 
 
-def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
-    """Re-issue the paired mobile token, refreshing short-lived remote view scope."""
-    device_id = _text(claims.get("device_id"))
-    if not device_id:
-        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
-    if not is_mobile_device_active(device_id):
-        raise HTTPException(status_code=401, detail="Mobile device has been revoked")
-    if _text(claims.get("source")) == "remote_input_grant":
-        raise HTTPException(status_code=403, detail="Remote input grant token cannot refresh paired session")
-
-    scopes = mobile_token_scopes(claims)
-    if TOKEN_SCOPE not in scopes:
-        raise HTTPException(status_code=403, detail="Mobile token scope is not allowed")
-
+def refresh_mobile_session_token(refresh_token: str) -> dict[str, Any]:
+    """Rotate a refresh-token family and issue a short-lived paired access token."""
     token_scopes = [TOKEN_SCOPE]
     scope_ttl: dict[str, int] | None = None
     settings = get_effective_settings()
@@ -628,24 +651,105 @@ def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
         token_scopes.append(REMOTE_VIEW_SCOPE)
         scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
 
-    device = db.fetch_one("mobile_devices", device_id) or {}
-    token = issue_mobile_token(
-        device_id=device_id,
-        device_name=str(claims.get("device_name") or device.get("device_name") or "Android device"),
-        expires_in_seconds=TOKEN_TTL_SECONDS,
-        scope=token_scopes,
+    session, device = rotate_mobile_refresh_token(
+        refresh_token,
+        scopes=token_scopes,
         scope_ttl=scope_ttl,
-        token_epoch=int(device.get("token_epoch") or 0),
     )
     return {
-        "token": token,
-        "token_type": "Bearer",
-        "device_id": device_id,
+        **session.model_dump(mode="json"),
+        "device_id": str(device.get("device_id") or device.get("id") or ""),
         "device_trust": _safe_mobile_device_trust(device),
-        "expires_in": TOKEN_TTL_SECONDS,
-        "view_expires_in": MOBILE_REMOTE_VIEW_TTL_SECONDS if REMOTE_VIEW_SCOPE in token_scopes else 0,
+        "view_expires_in": (
+            min(MOBILE_REMOTE_VIEW_TTL_SECONDS, session.expires_in) if REMOTE_VIEW_SCOPE in token_scopes else 0
+        ),
         "server": _server_info(),
     }
+
+
+def register_mobile_push_subscription(
+    claims: dict[str, Any],
+    *,
+    provider: str,
+    push_token: str,
+) -> dict[str, str]:
+    device_id = _text(claims.get("device_id"))
+    if not device_id:
+        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
+    normalized_provider = _text(provider).lower()
+    normalized_token = _text(push_token)
+    if normalized_provider != "expo" or not _valid_expo_push_token(normalized_token):
+        raise HTTPException(status_code=422, detail="Invalid mobile push subscription")
+    timestamp = now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Mobile device is not paired")
+        device = json.loads(row["data"])
+        if str(device.get("status") or "active").lower() != "active":
+            raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+        device["push_subscription"] = {
+            "provider": normalized_provider,
+            "token": normalized_token,
+            "updated_at": timestamp,
+        }
+        device["updated_at"] = timestamp
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(device, ensure_ascii=False), timestamp, device_id),
+        )
+    record(
+        "mobile.push_subscription.registered",
+        "MobilePairingService",
+        {"device_id": device_id, "provider": normalized_provider},
+    )
+    return {"status": "registered", "provider": normalized_provider}
+
+
+def unregister_mobile_push_subscription(claims: dict[str, Any]) -> dict[str, str]:
+    device_id = _text(claims.get("device_id"))
+    if not device_id:
+        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
+    _remove_mobile_push_subscription(device_id)
+    return {"status": "unregistered"}
+
+
+def _remove_mobile_push_subscription(device_id: str, *, expected_token: str = "") -> bool:
+    normalized_id = _text(device_id)
+    if not normalized_id:
+        return False
+    timestamp = now_iso()
+    removed = False
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (normalized_id,)).fetchone()
+        if not row:
+            return False
+        device = json.loads(row["data"])
+        subscription = device.get("push_subscription")
+        if not isinstance(subscription, dict):
+            return False
+        if expected_token and _text(subscription.get("token")) != expected_token:
+            return False
+        device.pop("push_subscription", None)
+        device["updated_at"] = timestamp
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(device, ensure_ascii=False), timestamp, normalized_id),
+        )
+        removed = True
+    if removed:
+        record(
+            "mobile.push_subscription.removed",
+            "MobilePairingService",
+            {"device_id": normalized_id},
+        )
+    return removed
+
+
+def _valid_expo_push_token(value: str) -> bool:
+    return bool(re.fullmatch(r"(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{1,200}\]", value))
 
 
 def validate_mobile_token(token: str) -> dict[str, Any]:

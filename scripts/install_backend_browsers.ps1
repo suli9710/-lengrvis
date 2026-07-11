@@ -10,7 +10,7 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
     . ".venv\Scripts\Activate.ps1"
 }
 
-python -m pip install -r backend\requirements.txt
+python -m pip install --require-hashes -r requirements-dev-lock.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $InstallArgs = @("install", "chromium")

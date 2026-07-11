@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.audit import record
+from app.core.content_provenance import stable_content_hash
 from app.core.schemas import MessageType
 from app.orchestration.agent_bus import AgentBus
 
@@ -59,7 +60,12 @@ def notify(
     record(
         "notification.sent",
         "NotificationService",
-        {"title": title, "severity": severity, "task_id": effective_task_id},
+        {
+            "title_hash": stable_content_hash(title),
+            "body_length": len(body),
+            "severity": severity,
+            "task_id": effective_task_id,
+        },
         task_id=effective_task_id,
     )
     return {"queued": True, "title": title, "body": body, "task_id": effective_task_id, "severity": severity}

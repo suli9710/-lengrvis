@@ -1,0 +1,205 @@
+/* ==========================================================================
+   Motion foundation
+   - One vocabulary for navigation, feedback, panels and character emphasis.
+   - Loaded last so explicit user preferences can reliably override features.
+   ========================================================================== */
+
+:root {
+  --motion-micro: 0.14s;
+  --motion-ui: 0.22s;
+  --motion-panel: 0.28s;
+  --motion-emphasis: 0.52s;
+  --motion-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-emphasis: cubic-bezier(0.22, 1.25, 0.36, 1);
+
+  --dur-fast: var(--motion-micro);
+  --dur-base: var(--motion-ui);
+  --dur-slow: var(--motion-emphasis);
+  --ease-out: var(--motion-ease-standard);
+  --ease-spring: var(--motion-ease-emphasis);
+  --ease-snappy: var(--motion-ease-enter);
+}
+
+/* Idle chrome stays calm. Motion is reserved for work in progress or attention. */
+.lengrvis-shell::before,
+.lengrvis-shell::after,
+.connection-pill--online .connection-pill__dot,
+.workbench-panel--running .workbench-agent-gif {
+  animation: none;
+}
+
+.lengrvis-shell::before {
+  transform: translate3d(10px, 2px, 0) scale(1.02);
+}
+
+.lengrvis-shell::after {
+  transform: translate3d(-6px, -4px, 0) scale(1.01);
+}
+
+/* Current work is highlighted by stable color; the spinner remains for actual progress. */
+.task-pilot-step--current .task-pilot-step__icon {
+  animation: none;
+}
+
+/* One restrained entrance per primary surface rather than card-by-card choreography. */
+.lengrvis-main > section,
+.lengrvis-main > .conversation-view,
+.lengrvis-main > .detail-grid {
+  animation-duration: var(--motion-ui);
+  animation-timing-function: var(--motion-ease-enter);
+}
+
+:root[data-detail-mode="expert"] .technical-details {
+  --technical-density-gap: 8px;
+}
+
+:root[data-motion="reduced"] {
+  scroll-behavior: auto;
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: 0.001ms !important;
+  transition-delay: 0ms !important;
+  animation-duration: 0.001ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+:root[data-motion="reduced"] .office-agent--active .office-agent__halo,
+:root[data-motion="reduced"] .task-pilot-step--current .task-pilot-step__icon,
+:root[data-motion="reduced"] .lengrvis-shell::before,
+:root[data-motion="reduced"] .lengrvis-shell::after,
+:root[data-motion="reduced"] .activity-center-trigger__icon,
+:root[data-motion="reduced"] .icon-button--alert svg,
+:root[data-motion="reduced"] .icon-button--alert::after,
+:root[data-motion="reduced"] .route-loading::before,
+:root[data-motion="reduced"] .chat-typing span,
+:root[data-motion="reduced"] .composer__voice--recording,
+:root[data-motion="reduced"] .voice-input-button--recording,
+:root[data-motion="reduced"] .office-patrol-scan,
+:root[data-motion="reduced"] .task-row__dot,
+:root[data-motion="reduced"] .spinner {
+  animation: none !important;
+}
+
+/* No-JS/first-paint accessibility fallback until the provider applies data-motion. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion]) *,
+  :root:not([data-motion]) *::before,
+  :root:not([data-motion]) *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Semantic character feedback uses a dedicated WAAPI transform layer. */
+.office-agent--feedback-selected .office-agent__bubble,
+.office-agent--feedback-completed .office-agent__bubble,
+.office-agent--feedback-approval .office-agent__bubble,
+.office-agent--feedback-failed .office-agent__bubble,
+.office-agent--moving .office-agent__bubble,
+.office-agent--active .office-agent__bubble {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.office-agent--feedback-failed {
+  filter: drop-shadow(0 8px 14px rgba(216, 71, 92, 0.16));
+}
+
+.office-agent--feedback-failed .office-agent__halo {
+  opacity: 0.68;
+  transform: scale(1);
+  background: radial-gradient(circle, rgba(216, 71, 92, 0.2) 0%, transparent 70%);
+  animation: none;
+}
+
+.office-agent--feedback-failed .office-agent__bubble {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+  color: var(--red);
+}
+
+/* Approval is visible but calm; the safety role never uses an idle pulse. */
+.office-agent--feedback-approval .office-agent__halo,
+.office-agent--agent-safety.office-agent--active .office-agent__halo {
+  opacity: 0.78;
+  transform: scale(1.04);
+  animation: none;
+}
+
+/* Main surfaces enter once. Child cards remain stable. */
+.detail-grid,
+.conversation-view,
+.browser-view {
+  animation: view-enter var(--motion-ui) var(--motion-ease-enter) both;
+}
+
+.detail-grid > *,
+.conversation-view > *,
+.office-workspace > *,
+.workbench-card {
+  animation: none;
+  animation-delay: 0ms;
+}
+
+/* Message arrival uses only opacity and translation, never scale. */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-message {
+  animation-duration: var(--motion-ui);
+  animation-timing-function: var(--motion-ease-enter);
+}
+
+/* Persistent health and approval chrome is stable. */
+.home-status-pill--live svg,
+.icon-button--alert svg,
+.icon-button--alert::after,
+.office-patrol-scan,
+.office-patrol-scan--active {
+  animation: none;
+}
+
+@media (max-width: 720px) {
+  .office-agent--secondary {
+    display: none;
+  }
+
+  .office-agent--primary {
+    display: grid;
+  }
+
+  .office-map {
+    min-height: 260px;
+    border-radius: var(--r-xl);
+  }
+
+  .office-zone-label {
+    opacity: 0.72;
+  }
+}
+
+@media (max-width: 480px) {
+  .office-stage {
+    grid-template-rows: auto auto 244px;
+  }
+
+  .office-map {
+    min-height: 244px;
+  }
+
+  .office-zone-label--pantry,
+  .office-zone-label--gym,
+  .office-zone-label--lounge,
+  .office-zone-label--restroom {
+    display: none;
+  }
+}

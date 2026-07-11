@@ -4,7 +4,17 @@ param(
     [string]$ArtifactPath = "",
     [string]$RealDeviceEvidencePath = "",
     [string]$OutputRoot = "",
-    [switch]$PreflightOnly
+    [string]$ExpectedSignerCertificateSha256 = "",
+    [string]$ApkSignerPath = "",
+    [string]$AaptPath = "",
+    [string]$AndroidBuildToolsRoot = "",
+    [string]$ExpectedBuildToolsVersion = "",
+    [string]$ExpectedApkSignerSha256 = "",
+    [string]$ExpectedApkSignerJarSha256 = "",
+    [string]$ExpectedAaptSha256 = "",
+    [switch]$PreflightOnly,
+    [switch]$RequireCandidateBinding,
+    [switch]$TestOnlyAllowUntrustedSdkTools
 )
 
 $ErrorActionPreference = "Stop"
@@ -437,7 +447,17 @@ $strictEvidenceContract = [ordered]@{
     artifact_type = "android-real-device-remote-control-evidence"
     review_status = "reviewed_passed"
     reviewer_fields = @("review.reviewer_label", "review.reviewed_at_utc")
-    app_fields = @("app.artifact_sha256", "app.artifact_label_redacted", "app.build_profile", "app.eas_build_label_redacted")
+    app_fields = @(
+        "app.artifact_sha256",
+        "app.artifact_label_redacted",
+        "app.build_profile",
+        "app.eas_build_label_redacted",
+        "app.package_name",
+        "app.version_name",
+        "app.version_code",
+        "app.signer_certificate_sha256",
+        "app.provenance"
+    )
     device_fields = @("device.kind", "device.profile_label_redacted")
     transport_fields = @(
         "transport.https_origin_redacted",
@@ -447,6 +467,12 @@ $strictEvidenceContract = [ordered]@{
     )
     evidence_labels = "At least one reviewed redacted screenshot/video/log label in evidence_artifacts_redacted."
     sensitive_values = "No raw tokens, pairing codes, hosts/IPs, device ids, grant ids, or private paths in shareable labels."
+    reviewed_evidence_signature = "A sealed HMAC evidence block is required for all full Android release gates."
+    candidate_binding = "Strict RC runs require the sealed evidence candidate identity to match the explicit checked-out candidate."
+    apk_signature = "Android SDK apksigner verify --verbose --print-certs must pass with v2 and v3 schemes and one controlled signer certificate."
+    sdk_toolchain = "apksigner.bat, apksigner.jar, and aapt2.exe must come from one approved build-tools/<version> root and match protected SHA-256 values. PATH and individual tool overrides are not trusted."
+    merged_manifest = "The final binary AndroidManifest.xml must disable debuggable, testOnly, backup, and cleartext traffic and must not expose unprotected non-launcher components."
+    artifact_provenance = "The signed reviewed evidence must bind candidate source, builder invocation, APK digest, package/version, and signer certificate digest."
 }
 
 $appJsonPath = Join-Path $mobileRoot "app.json"
@@ -465,18 +491,24 @@ foreach ($networkConfigPath in $androidNetworkConfigPaths) {
 }
 $androidMainApplicationSource = Read-TextFile (Join-Path $mobileRoot "android\app\src\main\java\com\lengrvis\approval\MainApplication.kt") "android_main_application" $sourceIssues
 $androidLanTrustSource = Read-TextFile (Join-Path $mobileRoot "android\app\src\main\java\com\lengrvis\approval\LengrvisLanTrust.kt") "android_lan_trust" $sourceIssues
+$androidLanTrustInstrumentationSource = Read-TextFile (Join-Path $mobileRoot "android\app\src\androidTest\java\com\lengrvis\approval\LengrvisLanTrustInstrumentedTest.kt") "android_lan_trust_instrumentation" $sourceIssues
 
 $appJson = Read-JsonFile $appJsonPath "mobile_app_json" $sourceIssues
 $easJson = Read-JsonFile $easJsonPath "mobile_eas_json" $sourceIssues
 $mobilePackage = Read-JsonFile $mobilePackagePath "mobile_package_json" $sourceIssues
 $androidGradleSource = Read-TextFile $androidGradlePath "android_app_build_gradle" $sourceIssues
 $rootPackage = Read-JsonFile $rootPackagePath "root_package_json" $sourceIssues
+$expectedAndroidPackageName = ""
+$expectedAndroidVersionName = ""
+$expectedAndroidVersionCode = 0
 
 foreach ($fragment in @(
     "releaseSigningConfigured",
     "releaseTaskRequested",
     "throw new GradleException",
-    "signingConfig signingConfigs.release"
+    "signingConfig signingConfigs.release",
+    "enableV2Signing true",
+    "enableV3Signing true"
 )) {
     if ($androidGradleSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
         Add-Issue $sourceIssues "android_release_signing_not_fail_closed" "mobile/android/app/build.gradle must include '$fragment' in its fail-closed release signing path."
@@ -491,6 +523,12 @@ if ($null -ne $appJson) {
     $android = Get-PropertyValue $expo "android"
     $plugins = Get-PropertyValue $expo "plugins"
     $easProjectId = Get-PropertyValue (Get-PropertyValue (Get-PropertyValue $expo "extra") "eas") "projectId"
+    $expectedAndroidPackageName = [string](Get-PropertyValue $android "package")
+    $expectedAndroidVersionName = [string](Get-PropertyValue $expo "version")
+    $configuredVersionCode = Get-PropertyValue $android "versionCode"
+    if ($configuredVersionCode -is [int] -or $configuredVersionCode -is [long]) {
+        $expectedAndroidVersionCode = [int]$configuredVersionCode
+    }
 
     if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $expo "name"))) {
         Add-Issue $sourceIssues "missing_app_name" "mobile/app.json must define expo.name for an installable Android artifact."
@@ -500,6 +538,15 @@ if ($null -ne $appJson) {
     }
     if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $expo "version"))) {
         Add-Issue $sourceIssues "missing_app_version" "mobile/app.json must define expo.version."
+    }
+    else {
+        $nativeVersionNameMatch = [regex]::Match($androidGradleSource, '(?m)^\s*versionName\s+["''](?<version>[^"'']+)["'']\s*$')
+        if (-not $nativeVersionNameMatch.Success) {
+            Add-Issue $sourceIssues "missing_android_native_version_name" "mobile/android/app/build.gradle must declare a literal Android versionName that matches expo.version."
+        }
+        elseif ($nativeVersionNameMatch.Groups["version"].Value -ne (Get-PropertyValue $expo "version")) {
+            Add-Issue $sourceIssues "android_native_version_name_mismatch" "mobile/android/app/build.gradle versionName must match expo.version."
+        }
     }
     if ((Get-PropertyValue $expo "orientation") -ne "default") {
         Add-Issue $sourceIssues "android_landscape_not_enabled" "Remote desktop viewing requires expo.orientation=default so Android can use landscape."
@@ -517,6 +564,15 @@ if ($null -ne $appJson) {
     }
     elseif ($versionCode -lt 1) {
         Add-Issue $sourceIssues "invalid_android_version_code" "expo.android.versionCode must be greater than zero."
+    }
+    else {
+        $nativeVersionCodeMatch = [regex]::Match($androidGradleSource, '(?m)^\s*versionCode\s+(?<version>\d+)\s*$')
+        if (-not $nativeVersionCodeMatch.Success) {
+            Add-Issue $sourceIssues "missing_android_native_version_code" "mobile/android/app/build.gradle must declare a literal Android versionCode that matches expo.android.versionCode."
+        }
+        elseif ([int]$nativeVersionCodeMatch.Groups["version"].Value -ne [int]$versionCode) {
+            Add-Issue $sourceIssues "android_native_version_code_mismatch" "mobile/android/app/build.gradle versionCode must match expo.android.versionCode."
+        }
     }
 
     if (-not (Test-BooleanFalse (Get-PropertyValue $android "usesCleartextTraffic"))) {
@@ -599,11 +655,573 @@ if ($null -ne $appJson) {
             Add-Issue $sourceIssues "android_lan_tls_install_missing" "Android application startup must include '$fragment' so React Native HTTPS and WSS use the pinned client."
         }
     }
-    foreach ($fragment in @("OkHttpClientProvider.setOkHttpClientFactory", ".sslSocketFactory", "AndroidCAStore", 'alias.startsWith("system:")', "hasAnyFingerprint", "hostHasFingerprint")) {
+    foreach ($fragment in @("OkHttpClientProvider.setOkHttpClientFactory", ".sslSocketFactory", "AndroidCAStore", 'alias.startsWith("system:")', "hasAnyFingerprint", "hostHasFingerprint", "hostHasAnyFingerprintForHost")) {
         if ($androidLanTrustSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
             Add-Issue $sourceIssues "android_lan_tls_pin_contract_mismatch" "Android LAN TLS trust implementation must include '$fragment' for per-host certificate pinning."
         }
     }
+    foreach ($fragment in @("assertTlsHandshakeFails", "wrongFingerprint(fingerprintSha256)", "LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)", "OkHttpClientProvider.createClient(context)", "/api/health", "/api/pair/confirm", "/ws/mobile/approvals", 'connected.contains("\"type\":\"connected\"")')) {
+        if ($androidLanTrustInstrumentationSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
+            Add-Issue $sourceIssues "android_lan_tls_instrumentation_contract_mismatch" "Android LAN TLS instrumentation must include '$fragment' so release evidence covers wrong-pin failure, pinned HTTPS pairing, and approval WSS."
+        }
+    }
+}
+
+function ConvertTo-Sha256Hex {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+    $text = ([string]$Value).Trim()
+    if ($text -notmatch "^[0-9A-Fa-f:\s-]+$") {
+        return ""
+    }
+    $normalized = $text -replace "[:\s-]", ""
+    if ($normalized.Length -ne 64) {
+        return ""
+    }
+    return $normalized.ToLowerInvariant()
+}
+
+function Get-ConfiguredValue {
+    param(
+        [string]$ExplicitValue,
+        [string]$EnvironmentName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitValue)) {
+        return $ExplicitValue.Trim()
+    }
+    return ([string][Environment]::GetEnvironmentVariable($EnvironmentName)).Trim()
+}
+
+function Test-FileHasPrefix {
+    param(
+        [string]$Path,
+        [byte[]]$ExpectedPrefix
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        if ($stream.Length -lt $ExpectedPrefix.Length) {
+            return $false
+        }
+        foreach ($expected in $ExpectedPrefix) {
+            if ($stream.ReadByte() -ne $expected) {
+                return $false
+            }
+        }
+        return $true
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Test-ZipContainsEntry {
+    param(
+        [string]$Path,
+        [string]$EntryName
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        try {
+            return $null -ne $archive.GetEntry($EntryName)
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-PathHasReparsePoint {
+    param([string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        return (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    }
+    catch {
+        return $true
+    }
+}
+
+function Resolve-TrustedAndroidBuildTools {
+    param(
+        [System.Collections.Generic.List[object]]$Issues
+    )
+
+    $startIssueCount = $Issues.Count
+    $result = [ordered]@{
+        evaluated = $true
+        test_only = [bool]$TestOnlyAllowUntrustedSdkTools
+        trusted_root_label = ""
+        expected_version = ""
+        source_properties_version = ""
+        source_properties_path = ""
+        apksigner_path = ""
+        apksigner_sha256 = ""
+        apksigner_jar_path = ""
+        apksigner_jar_sha256 = ""
+        aapt_path = ""
+        aapt_sha256 = ""
+        provenance_verified = $false
+    }
+
+    if ($TestOnlyAllowUntrustedSdkTools) {
+        Add-Issue $Issues "test_only_android_sdk_tools" "Test-only Android SDK tool shims can exercise output parsing but can never satisfy strict release readiness."
+        if (Test-Path -LiteralPath $ApkSignerPath -PathType Leaf) {
+            $result.apksigner_path = (Resolve-Path -LiteralPath $ApkSignerPath).Path
+        }
+        if (Test-Path -LiteralPath $AaptPath -PathType Leaf) {
+            $result.aapt_path = (Resolve-Path -LiteralPath $AaptPath).Path
+        }
+        return [pscustomobject]$result
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ApkSignerPath) -or -not [string]::IsNullOrWhiteSpace($AaptPath)) {
+        Add-Issue $Issues "android_explicit_sdk_tool_path_forbidden" "Strict Android release validation does not accept individual apksigner/aapt paths; configure one approved build-tools root instead."
+    }
+
+    $expectedVersion = Get-ConfiguredValue $ExpectedBuildToolsVersion "LENGRVIS_ANDROID_BUILD_TOOLS_VERSION"
+    $trustedRootInput = Get-ConfiguredValue $AndroidBuildToolsRoot "LENGRVIS_ANDROID_BUILD_TOOLS_ROOT"
+    if ([string]::IsNullOrWhiteSpace($trustedRootInput) -and -not [string]::IsNullOrWhiteSpace($expectedVersion)) {
+        $sdkRoot = [string][Environment]::GetEnvironmentVariable("ANDROID_SDK_ROOT")
+        if ([string]::IsNullOrWhiteSpace($sdkRoot)) {
+            $sdkRoot = [string][Environment]::GetEnvironmentVariable("ANDROID_HOME")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($sdkRoot)) {
+            $trustedRootInput = Join-Path (Join-Path $sdkRoot "build-tools") $expectedVersion
+        }
+    }
+    $result.expected_version = $expectedVersion
+
+    if ([string]::IsNullOrWhiteSpace($expectedVersion)) {
+        Add-Issue $Issues "android_build_tools_version_missing" "Strict Android release validation requires -ExpectedBuildToolsVersion or LENGRVIS_ANDROID_BUILD_TOOLS_VERSION."
+    }
+    elseif ($expectedVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?$') {
+        Add-Issue $Issues "android_build_tools_version_invalid" "The expected Android build-tools version must be a concrete semantic version."
+    }
+    if ([string]::IsNullOrWhiteSpace($trustedRootInput)) {
+        Add-Issue $Issues "android_build_tools_root_missing" "Strict Android release validation requires an approved build-tools root, not PATH discovery."
+        return [pscustomobject]$result
+    }
+    if (-not (Test-Path -LiteralPath $trustedRootInput -PathType Container)) {
+        Add-Issue $Issues "android_build_tools_root_not_found" "The configured Android build-tools root does not exist: $(Get-DisplayPath $trustedRootInput)"
+        return [pscustomobject]$result
+    }
+
+    $trustedRoot = (Resolve-Path -LiteralPath $trustedRootInput).Path
+    $result.trusted_root_label = Get-DisplayPath $trustedRoot
+    if (Test-PathHasReparsePoint $trustedRoot) {
+        Add-Issue $Issues "android_build_tools_root_reparse_point" "The approved Android build-tools root must not be a symlink or reparse point."
+    }
+    if ((Split-Path -Leaf (Split-Path -Parent $trustedRoot)) -ne "build-tools") {
+        Add-Issue $Issues "android_build_tools_root_shape_invalid" "The approved tool root must be an exact Android SDK build-tools/<version> directory."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($expectedVersion) -and (Split-Path -Leaf $trustedRoot) -ne $expectedVersion) {
+        Add-Issue $Issues "android_build_tools_root_version_mismatch" "The approved build-tools directory name must equal the expected build-tools version."
+    }
+
+    $sourcePropertiesPath = Join-Path $trustedRoot "source.properties"
+    $result.source_properties_path = Get-DisplayPath $sourcePropertiesPath
+    if (-not (Test-Path -LiteralPath $sourcePropertiesPath -PathType Leaf)) {
+        Add-Issue $Issues "android_build_tools_source_properties_missing" "The approved build-tools root must contain Android SDK source.properties provenance."
+    }
+    else {
+        $sourceProperties = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourcePropertiesPath
+        $revisionMatch = [regex]::Match($sourceProperties, '(?im)^\s*Pkg\.Revision\s*=\s*(?<version>[^\r\n]+)\s*$')
+        if ($revisionMatch.Success) {
+            $result.source_properties_version = $revisionMatch.Groups["version"].Value.Trim()
+        }
+        if (-not $revisionMatch.Success -or $result.source_properties_version -ne $expectedVersion) {
+            Add-Issue $Issues "android_build_tools_revision_mismatch" "source.properties Pkg.Revision must equal the expected build-tools version."
+        }
+    }
+
+    $apksignerPath = Join-Path $trustedRoot "apksigner.bat"
+    $apksignerJarPath = Join-Path (Join-Path $trustedRoot "lib") "apksigner.jar"
+    $aaptPath = Join-Path $trustedRoot "aapt2.exe"
+    foreach ($tool in @(
+        [pscustomobject]@{ path = $apksignerPath; code = "android_apksigner_not_found"; label = "apksigner.bat" },
+        [pscustomobject]@{ path = $apksignerJarPath; code = "android_apksigner_jar_not_found"; label = "lib/apksigner.jar" },
+        [pscustomobject]@{ path = $aaptPath; code = "android_aapt_not_found"; label = "aapt2.exe" }
+    )) {
+        if (-not (Test-Path -LiteralPath $tool.path -PathType Leaf)) {
+            Add-Issue $Issues $tool.code "The approved build-tools root is missing $($tool.label)."
+        }
+        elseif (Test-PathHasReparsePoint $tool.path) {
+            Add-Issue $Issues "android_sdk_tool_reparse_point" "Approved Android SDK tools must not be symlinks or reparse points."
+        }
+    }
+    if (Test-Path -LiteralPath $apksignerPath -PathType Leaf) {
+        $result.apksigner_path = (Resolve-Path -LiteralPath $apksignerPath).Path
+        $result.apksigner_sha256 = Get-Sha256Hex $result.apksigner_path
+        $launcher = Get-Content -Raw -Encoding UTF8 -LiteralPath $result.apksigner_path
+        if ($launcher -notmatch '(?i)apksigner\.jar' -or $launcher -notmatch '(?i)\bjava(?:\.exe)?\b') {
+            Add-Issue $Issues "android_apksigner_launcher_invalid" "apksigner.bat does not match the canonical Android SDK Java launcher shape."
+        }
+    }
+    if (Test-Path -LiteralPath $apksignerJarPath -PathType Leaf) {
+        $result.apksigner_jar_path = (Resolve-Path -LiteralPath $apksignerJarPath).Path
+        $result.apksigner_jar_sha256 = Get-Sha256Hex $result.apksigner_jar_path
+        if (-not (Test-ZipContainsEntry $result.apksigner_jar_path "com/android/apksigner/ApkSignerTool.class")) {
+            Add-Issue $Issues "android_apksigner_jar_invalid" "apksigner.jar does not contain the expected Android SDK signer entrypoint."
+        }
+    }
+    if (Test-Path -LiteralPath $aaptPath -PathType Leaf) {
+        $result.aapt_path = (Resolve-Path -LiteralPath $aaptPath).Path
+        $result.aapt_sha256 = Get-Sha256Hex $result.aapt_path
+        if (-not (Test-FileHasPrefix $result.aapt_path ([byte[]]@(0x4d, 0x5a)))) {
+            Add-Issue $Issues "android_aapt_binary_invalid" "aapt2.exe must be a Windows PE binary from the approved Android SDK package."
+        }
+    }
+
+    foreach ($digestSpec in @(
+        [pscustomobject]@{ supplied = (Get-ConfiguredValue $ExpectedApkSignerSha256 "LENGRVIS_ANDROID_APKSIGNER_SHA256"); actual = $result.apksigner_sha256; missing = "android_apksigner_expected_sha256_missing"; mismatch = "android_apksigner_sha256_mismatch"; label = "apksigner.bat" },
+        [pscustomobject]@{ supplied = (Get-ConfiguredValue $ExpectedApkSignerJarSha256 "LENGRVIS_ANDROID_APKSIGNER_JAR_SHA256"); actual = $result.apksigner_jar_sha256; missing = "android_apksigner_jar_expected_sha256_missing"; mismatch = "android_apksigner_jar_sha256_mismatch"; label = "apksigner.jar" },
+        [pscustomobject]@{ supplied = (Get-ConfiguredValue $ExpectedAaptSha256 "LENGRVIS_ANDROID_AAPT_SHA256"); actual = $result.aapt_sha256; missing = "android_aapt_expected_sha256_missing"; mismatch = "android_aapt_sha256_mismatch"; label = "aapt2.exe" }
+    )) {
+        $expectedDigest = ConvertTo-Sha256Hex $digestSpec.supplied
+        if ([string]::IsNullOrWhiteSpace($digestSpec.supplied)) {
+            Add-Issue $Issues $digestSpec.missing "Strict Android release validation requires a protected expected SHA-256 for $($digestSpec.label)."
+        }
+        elseif ([string]::IsNullOrWhiteSpace($expectedDigest)) {
+            Add-Issue $Issues "android_sdk_tool_expected_sha256_invalid" "Expected Android SDK tool SHA-256 values must contain exactly 64 hexadecimal characters."
+        }
+        elseif ([string]::IsNullOrWhiteSpace($digestSpec.actual) -or $digestSpec.actual -ne $expectedDigest) {
+            Add-Issue $Issues $digestSpec.mismatch "The approved $($digestSpec.label) digest does not match protected release configuration."
+        }
+    }
+
+    $result.provenance_verified = $Issues.Count -eq $startIssueCount
+    if (-not $result.provenance_verified) {
+        $result.apksigner_path = ""
+        $result.aapt_path = ""
+    }
+    return [pscustomobject]$result
+}
+
+function Invoke-ApkSignerVerification {
+    param(
+        [string]$ToolPath,
+        [string]$ApkPath
+    )
+
+    $result = [ordered]@{
+        evaluated = $false
+        tool_label = Get-SafeArtifactLabel $ToolPath
+        command = "apksigner verify --verbose --print-certs"
+        verification_succeeded = $false
+        v2_verified = $false
+        v3_verified = $false
+        signer_count = 0
+        signer_certificate_sha256 = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($ToolPath)) {
+        return [pscustomobject]$result
+    }
+
+    $result.evaluated = $true
+    try {
+        $global:LASTEXITCODE = 0
+        $output = & $ToolPath verify --verbose --print-certs $ApkPath 2>&1 | ForEach-Object { [string]$_ }
+        $exitCode = $LASTEXITCODE
+        $outputText = $output -join "`n"
+        $result.verification_succeeded = $exitCode -eq 0
+        $result.v2_verified = [regex]::IsMatch($outputText, '(?im)^\s*Verified using v2 scheme(?:\s*\([^\r\n]*\))?:\s*true\s*$')
+        $result.v3_verified = [regex]::IsMatch($outputText, '(?im)^\s*Verified using v3 scheme(?:\s*\([^\r\n]*\))?:\s*true\s*$')
+
+        $signerCountMatch = [regex]::Match($outputText, '(?im)^\s*Number of signers:\s*(?<count>\d+)\s*$')
+        if ($signerCountMatch.Success) {
+            $result.signer_count = [int]$signerCountMatch.Groups["count"].Value
+        }
+        $certificateMatches = [regex]::Matches($outputText, '(?im)^\s*Signer #\d+ certificate SHA-256 digest:\s*(?<digest>[0-9A-Fa-f: ]+)\s*$')
+        $certificateDigests = @($certificateMatches | ForEach-Object { ConvertTo-Sha256Hex $_.Groups["digest"].Value } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($certificateDigests.Count -eq 1) {
+            $result.signer_certificate_sha256 = $certificateDigests[0]
+        }
+    }
+    catch {
+        $result.verification_succeeded = $false
+    }
+    return [pscustomobject]$result
+}
+
+function Get-AaptAttributeText {
+    param([string]$Line)
+
+    $rawMatch = [regex]::Match($Line, '\(Raw:\s*"(?<value>[^"]*)"\)')
+    if ($rawMatch.Success) {
+        return $rawMatch.Groups["value"].Value
+    }
+    $quotedMatch = [regex]::Match($Line, '=\s*"(?<value>[^"]*)"')
+    if ($quotedMatch.Success) {
+        return $quotedMatch.Groups["value"].Value
+    }
+    return ""
+}
+
+function Get-AaptAttributeName {
+    param([string]$RawName)
+
+    $name = [string]$RawName
+    $androidNamespaceMarker = "/apk/res/android:"
+    $markerIndex = $name.LastIndexOf($androidNamespaceMarker, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($markerIndex -ge 0) {
+        return "android:" + $name.Substring($markerIndex + $androidNamespaceMarker.Length)
+    }
+    return $name
+}
+
+function Get-AaptBooleanText {
+    param([string]$Line)
+
+    if ($Line -match '(?i)(?:Raw:\s*")?true"?' -or $Line -match '(?i)\(type\s+0x12\)0xffffffff\b') {
+        return "true"
+    }
+    if ($Line -match '(?i)(?:Raw:\s*")?false"?' -or $Line -match '(?i)\(type\s+0x12\)0x0+\b') {
+        return "false"
+    }
+    return "unknown"
+}
+
+function Inspect-AaptXmlTreeHardening {
+    param([string[]]$Lines)
+
+    $result = [ordered]@{
+        inspection_succeeded = $false
+        debuggable_declared = $false
+        debuggable = $false
+        test_only_declared = $false
+        test_only = $false
+        allow_backup_declared = $false
+        allow_backup = $true
+        cleartext_traffic_declared = $false
+        uses_cleartext_traffic = $true
+        unsafe_exported_components = @()
+        component_count = 0
+    }
+    $componentTags = @("activity", "activity-alias", "service", "receiver", "provider")
+    $components = New-Object System.Collections.Generic.List[object]
+    $sawManifest = $false
+    $insideApplication = $false
+    $applicationIndent = -1
+    $currentComponent = $null
+    $currentElementTag = ""
+
+    foreach ($rawLine in $Lines) {
+        $line = [string]$rawLine
+        $indent = [regex]::Match($line, '^\s*').Value.Length
+        $elementMatch = [regex]::Match($line, '^\s*E:\s+(?<tag>[^\s(]+)')
+        if ($elementMatch.Success) {
+            $tag = $elementMatch.Groups["tag"].Value
+            if ($tag -eq "manifest") {
+                $sawManifest = $true
+            }
+            if ($null -ne $currentComponent -and $indent -le [int]$currentComponent.indent) {
+                $currentComponent = $null
+            }
+            if ($insideApplication -and $indent -le $applicationIndent -and $tag -ne "application") {
+                $insideApplication = $false
+            }
+            if ($tag -eq "application") {
+                $insideApplication = $true
+                $applicationIndent = $indent
+            }
+            elseif ($insideApplication -and $componentTags -contains $tag) {
+                $currentComponent = [pscustomobject][ordered]@{
+                    kind = $tag
+                    indent = $indent
+                    name = ""
+                    exported = "unknown"
+                    permission = ""
+                    has_intent_filter = $false
+                    actions = New-Object System.Collections.Generic.List[string]
+                    categories = New-Object System.Collections.Generic.List[string]
+                }
+                $components.Add($currentComponent)
+            }
+            elseif ($insideApplication -and $null -ne $currentComponent -and $tag -eq "intent-filter") {
+                $currentComponent.has_intent_filter = $true
+            }
+            $currentElementTag = $tag
+            continue
+        }
+
+        $attributeMatch = [regex]::Match($line, '^\s*A:\s+(?<name>[^=\s(]+)(?:\([^)]*\))?=')
+        if (-not $attributeMatch.Success -or -not $insideApplication) {
+            continue
+        }
+        $attributeName = Get-AaptAttributeName $attributeMatch.Groups["name"].Value
+        if ($null -eq $currentComponent -and $currentElementTag -eq "application") {
+            $booleanText = Get-AaptBooleanText $line
+            switch ($attributeName) {
+                "android:debuggable" {
+                    $result.debuggable_declared = $true
+                    $result.debuggable = $booleanText -ne "false"
+                }
+                "android:testOnly" {
+                    $result.test_only_declared = $true
+                    $result.test_only = $booleanText -ne "false"
+                }
+                "android:allowBackup" {
+                    $result.allow_backup_declared = $true
+                    $result.allow_backup = $booleanText -ne "false"
+                }
+                "android:usesCleartextTraffic" {
+                    $result.cleartext_traffic_declared = $true
+                    $result.uses_cleartext_traffic = $booleanText -ne "false"
+                }
+            }
+            continue
+        }
+        if ($null -eq $currentComponent -or $indent -le [int]$currentComponent.indent) {
+            continue
+        }
+        $attributeText = Get-AaptAttributeText $line
+        if ($currentElementTag -eq [string]$currentComponent.kind) {
+            switch ($attributeName) {
+                "android:name" { $currentComponent.name = $attributeText }
+                "android:exported" { $currentComponent.exported = Get-AaptBooleanText $line }
+                "android:permission" { $currentComponent.permission = $attributeText }
+            }
+        }
+        elseif ($currentElementTag -eq "action" -and $attributeName -eq "android:name" -and -not [string]::IsNullOrWhiteSpace($attributeText)) {
+            $currentComponent.actions.Add($attributeText)
+        }
+        elseif ($currentElementTag -eq "category" -and $attributeName -eq "android:name" -and -not [string]::IsNullOrWhiteSpace($attributeText)) {
+            $currentComponent.categories.Add($attributeText)
+        }
+    }
+
+    $unsafe = New-Object System.Collections.Generic.List[string]
+    foreach ($component in $components) {
+        $launcher = (
+            @($component.actions) -contains "android.intent.action.MAIN" -and
+            @($component.categories) -contains "android.intent.category.LAUNCHER"
+        )
+        $permissionProtected = -not [string]::IsNullOrWhiteSpace([string]$component.permission)
+        $unsafeExport = (
+            $component.exported -eq "true" -and
+            -not $launcher -and
+            -not $permissionProtected
+        )
+        $missingExported = $component.has_intent_filter -and $component.exported -eq "unknown"
+        if ($unsafeExport -or $missingExported) {
+            $label = if ([string]::IsNullOrWhiteSpace([string]$component.name)) { "<unnamed>" } else { [string]$component.name }
+            $unsafe.Add("$($component.kind):$label")
+        }
+    }
+    $result.component_count = $components.Count
+    $result.unsafe_exported_components = @($unsafe.ToArray())
+    $result.inspection_succeeded = $sawManifest -and $applicationIndent -ge 0
+    return [pscustomobject]$result
+}
+
+function Invoke-ApkManifestInspection {
+    param(
+        [string]$ToolPath,
+        [string]$ApkPath
+    )
+
+    $result = [ordered]@{
+        evaluated = $false
+        tool_label = Get-SafeArtifactLabel $ToolPath
+        command = "aapt dump badging + dump xmltree AndroidManifest.xml"
+        inspection_succeeded = $false
+        xmltree_inspection_succeeded = $false
+        package_name = ""
+        version_name = ""
+        version_code = 0
+        debuggable_declared = $false
+        debuggable = $false
+        test_only_declared = $false
+        test_only = $false
+        allow_backup_declared = $false
+        allow_backup = $true
+        cleartext_traffic_declared = $false
+        uses_cleartext_traffic = $true
+        unsafe_exported_components = @()
+        component_count = 0
+        hardening_verified = $false
+    }
+    if ([string]::IsNullOrWhiteSpace($ToolPath)) {
+        return [pscustomobject]$result
+    }
+
+    $result.evaluated = $true
+    try {
+        $global:LASTEXITCODE = 0
+        $badgingOutput = & $ToolPath dump badging $ApkPath 2>&1 | ForEach-Object { [string]$_ }
+        $badgingExitCode = $LASTEXITCODE
+        $badgingText = $badgingOutput -join "`n"
+        $packageMatch = [regex]::Match($badgingText, "(?im)^package:\s+name='(?<package>[^']+)'\s+versionCode='(?<code>\d+)'\s+versionName='(?<name>[^']*)'")
+        if ($badgingExitCode -eq 0 -and $packageMatch.Success) {
+            $result.inspection_succeeded = $true
+            $result.package_name = $packageMatch.Groups["package"].Value
+            $result.version_code = [int]$packageMatch.Groups["code"].Value
+            $result.version_name = $packageMatch.Groups["name"].Value
+        }
+        $global:LASTEXITCODE = 0
+        if ((Split-Path -Leaf $ToolPath) -ieq "aapt2.exe") {
+            $xmlOutput = & $ToolPath dump xmltree --file AndroidManifest.xml $ApkPath 2>&1 | ForEach-Object { [string]$_ }
+        }
+        else {
+            $xmlOutput = & $ToolPath dump xmltree $ApkPath AndroidManifest.xml 2>&1 | ForEach-Object { [string]$_ }
+        }
+        $xmlExitCode = $LASTEXITCODE
+        $hardening = Inspect-AaptXmlTreeHardening $xmlOutput
+        $result.xmltree_inspection_succeeded = $xmlExitCode -eq 0 -and $hardening.inspection_succeeded
+        foreach ($field in @(
+            "debuggable_declared",
+            "debuggable",
+            "test_only_declared",
+            "test_only",
+            "allow_backup_declared",
+            "allow_backup",
+            "cleartext_traffic_declared",
+            "uses_cleartext_traffic",
+            "unsafe_exported_components",
+            "component_count"
+        )) {
+            $result[$field] = Get-PropertyValue $hardening $field
+        }
+        if ($badgingText -match '(?im)^application-debuggable\b') {
+            $result.debuggable_declared = $true
+            $result.debuggable = $true
+        }
+        if ($badgingText -match '(?im)^application-testOnly\b') {
+            $result.test_only_declared = $true
+            $result.test_only = $true
+        }
+        $result.hardening_verified = (
+            $result.xmltree_inspection_succeeded -and
+            -not $result.debuggable -and
+            -not $result.test_only -and
+            $result.allow_backup_declared -and
+            -not $result.allow_backup -and
+            $result.cleartext_traffic_declared -and
+            -not $result.uses_cleartext_traffic -and
+            @($result.unsafe_exported_components).Count -eq 0
+        )
+    }
+    catch {
+        $result.inspection_succeeded = $false
+    }
+    return [pscustomobject]$result
 }
 
 if ($null -ne $easJson) {
@@ -648,7 +1266,7 @@ if ($null -ne $easJson) {
 if ($null -ne $mobilePackage) {
     $scripts = Get-PropertyValue $mobilePackage "scripts"
     $devDependencies = Get-PropertyValue $mobilePackage "devDependencies"
-    foreach ($scriptName in @("typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
+    foreach ($scriptName in @("typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "smoke:android-prebuild-network-security", "smoke:android-manifest-resources", "smoke:android-lan-tls", "gate:android-instrumentation-compile", "gate:android-connected-lan-tls", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
         if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $scripts $scriptName))) {
             Add-Issue $sourceIssues "missing_mobile_script" "mobile/package.json must define script '$scriptName'."
         }
@@ -669,6 +1287,11 @@ if ($null -ne $mobilePackage) {
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:preview" @("preflight:android-release", "eas build", "--platform android", "--profile preview", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:production" @("preflight:android-release", "eas build", "--platform android", "--profile production", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-release" @("verify_android_release_gate.ps1")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-prebuild-network-security" @("android-prebuild-network-security-smoke.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-manifest-resources" @("android-manifest-resources-smoke.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-lan-tls" @("android-lan-tls-smoke.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-instrumentation-compile" @("android-lan-tls-smoke.cjs", "--compile-instrumentation")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-connected-lan-tls" @("android-lan-tls-smoke.cjs", "--connected")
 }
 
 if ($null -ne $rootPackage) {
@@ -687,6 +1310,59 @@ $artifactSummary = [ordered]@{
     installable_apk = $false
     apk_zip_header_valid = $false
     apk_structure_valid = $false
+    sdk_toolchain = [ordered]@{
+        evaluated = $false
+        test_only = $false
+        trusted_root_label = ""
+        expected_version = ""
+        source_properties_version = ""
+        source_properties_path = ""
+        apksigner_sha256 = ""
+        apksigner_jar_sha256 = ""
+        aapt_sha256 = ""
+        provenance_verified = $false
+    }
+    apk_signing = [ordered]@{
+        evaluated = $false
+        tool_label = ""
+        command = "apksigner verify --verbose --print-certs"
+        verification_succeeded = $false
+        v2_verified = $false
+        v3_verified = $false
+        signer_count = 0
+        signer_certificate_sha256 = ""
+        expected_signer_certificate_sha256 = ""
+        signer_identity_verified = $false
+    }
+    manifest_identity = [ordered]@{
+        evaluated = $false
+        tool_label = ""
+        command = "aapt dump badging + dump xmltree AndroidManifest.xml"
+        inspection_succeeded = $false
+        xmltree_inspection_succeeded = $false
+        package_name = ""
+        version_name = ""
+        version_code = 0
+        matches_source_config = $false
+        debuggable_declared = $false
+        debuggable = $false
+        test_only_declared = $false
+        test_only = $false
+        allow_backup_declared = $false
+        allow_backup = $true
+        cleartext_traffic_declared = $false
+        uses_cleartext_traffic = $true
+        unsafe_exported_components = @()
+        component_count = 0
+        hardening_verified = $false
+    }
+    provenance = [ordered]@{
+        evaluated = $false
+        evidence_bound = $false
+        candidate_bound = $false
+        identity_matches_apk = $false
+        verified = $false
+    }
 }
 $realDeviceEvidence = $null
 $realDeviceEvidenceReview = $null
@@ -700,6 +1376,14 @@ $realDeviceEvidenceApp = $null
 $realDeviceEvidenceLabels = @()
 $realDeviceEvidenceDeviceKind = ""
 $realDeviceEvidenceSha = ""
+$reviewedEvidenceContract = [ordered]@{
+    evaluated = $false
+    valid_hash = $false
+    valid_signature = $false
+    candidate_binding_valid = $false
+    artifact_identity_valid = $false
+    artifact_provenance_valid = $false
+}
 
 if ($PreflightOnly) {
     Add-Issue $warnings "preflight_only" "Preflight mode checks source configuration only. It is not APK, install, WSS, or remote-control evidence." "warning"
@@ -711,6 +1395,9 @@ if ($PreflightOnly) {
     }
 }
 else {
+    if (-not $RequireCandidateBinding) {
+        Add-Issue $artifactIssues "strict_candidate_binding_not_requested" "Strict Android release validation requires -RequireCandidateBinding so reviewed provenance cannot be replayed across candidates."
+    }
     if ([string]::IsNullOrWhiteSpace($ArtifactPath)) {
         Add-Issue $artifactIssues "missing_android_artifact" "Strict Android release gate requires -ArtifactPath pointing to the QA APK under test."
     }
@@ -740,6 +1427,134 @@ else {
         if ($artifactItem.Length -lt 1048576) {
             Add-Issue $artifactIssues "artifact_too_small" "The Android APK is smaller than 1 MiB; this looks like a placeholder, not an installable app artifact."
         }
+
+        $controlledSignerInput = $ExpectedSignerCertificateSha256
+        if ([string]::IsNullOrWhiteSpace($controlledSignerInput)) {
+            $controlledSignerInput = [Environment]::GetEnvironmentVariable("LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256")
+        }
+        $controlledSignerSha256 = ConvertTo-Sha256Hex $controlledSignerInput
+        $artifactSummary.apk_signing.expected_signer_certificate_sha256 = $controlledSignerSha256
+        if ([string]::IsNullOrWhiteSpace($controlledSignerInput)) {
+            Add-Issue $artifactIssues "missing_android_release_certificate_sha256" "Strict Android release validation requires -ExpectedSignerCertificateSha256 or LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 from the protected release identity."
+        }
+        elseif ([string]::IsNullOrWhiteSpace($controlledSignerSha256)) {
+            Add-Issue $artifactIssues "invalid_android_release_certificate_sha256" "The controlled Android release certificate SHA-256 must be exactly 64 hexadecimal characters, with optional separators."
+        }
+
+        $androidBuildTools = Resolve-TrustedAndroidBuildTools $artifactIssues
+        $artifactSummary.sdk_toolchain = [ordered]@{
+            evaluated = $androidBuildTools.evaluated
+            test_only = $androidBuildTools.test_only
+            trusted_root_label = $androidBuildTools.trusted_root_label
+            expected_version = $androidBuildTools.expected_version
+            source_properties_version = $androidBuildTools.source_properties_version
+            source_properties_path = $androidBuildTools.source_properties_path
+            apksigner_sha256 = $androidBuildTools.apksigner_sha256
+            apksigner_jar_sha256 = $androidBuildTools.apksigner_jar_sha256
+            aapt_sha256 = $androidBuildTools.aapt_sha256
+            provenance_verified = $androidBuildTools.provenance_verified
+        }
+        $resolvedApkSignerPath = [string]$androidBuildTools.apksigner_path
+        if ([string]::IsNullOrWhiteSpace($resolvedApkSignerPath)) {
+            Add-Issue $artifactIssues "android_apksigner_not_found" "Approved Android SDK apksigner.bat is required for strict APK signature verification."
+        }
+        else {
+            $signatureResult = Invoke-ApkSignerVerification $resolvedApkSignerPath $resolvedArtifact
+            $signerMatches = (
+                -not [string]::IsNullOrWhiteSpace($controlledSignerSha256) -and
+                $signatureResult.signer_certificate_sha256 -eq $controlledSignerSha256
+            )
+            $artifactSummary.apk_signing = [ordered]@{
+                evaluated = $signatureResult.evaluated
+                tool_label = $signatureResult.tool_label
+                command = $signatureResult.command
+                verification_succeeded = $signatureResult.verification_succeeded
+                v2_verified = $signatureResult.v2_verified
+                v3_verified = $signatureResult.v3_verified
+                signer_count = $signatureResult.signer_count
+                signer_certificate_sha256 = $signatureResult.signer_certificate_sha256
+                expected_signer_certificate_sha256 = $controlledSignerSha256
+                signer_identity_verified = $signerMatches
+            }
+            if (-not $signatureResult.verification_succeeded) {
+                Add-Issue $artifactIssues "android_apk_signature_invalid" "Android SDK apksigner verify --verbose --print-certs did not validate the supplied APK."
+            }
+            if (-not $signatureResult.v2_verified) {
+                Add-Issue $artifactIssues "android_apk_v2_signature_missing" "The supplied APK must verify with APK Signature Scheme v2."
+            }
+            if (-not $signatureResult.v3_verified) {
+                Add-Issue $artifactIssues "android_apk_v3_signature_missing" "The supplied APK must verify with APK Signature Scheme v3."
+            }
+            if ($signatureResult.signer_count -ne 1) {
+                Add-Issue $artifactIssues "android_apk_signer_count_invalid" "The supplied APK must have exactly one reviewed signer."
+            }
+            if ([string]::IsNullOrWhiteSpace($signatureResult.signer_certificate_sha256)) {
+                Add-Issue $artifactIssues "android_apk_signer_digest_missing" "apksigner output must include one signer certificate SHA-256 digest."
+            }
+            elseif (-not $signerMatches) {
+                Add-Issue $artifactIssues "android_apk_signer_certificate_mismatch" "The APK signer certificate SHA-256 does not match the protected Android release identity."
+            }
+        }
+
+        $resolvedAaptPath = [string]$androidBuildTools.aapt_path
+        if ([string]::IsNullOrWhiteSpace($resolvedAaptPath)) {
+            Add-Issue $artifactIssues "android_aapt_not_found" "Approved Android SDK aapt2.exe is required to inspect the final APK manifest."
+        }
+        else {
+            $manifestResult = Invoke-ApkManifestInspection $resolvedAaptPath $resolvedArtifact
+            $manifestMatchesSource = (
+                $manifestResult.inspection_succeeded -and
+                $manifestResult.package_name -eq $expectedAndroidPackageName -and
+                $manifestResult.version_name -eq $expectedAndroidVersionName -and
+                $manifestResult.version_code -eq $expectedAndroidVersionCode
+            )
+            $artifactSummary.manifest_identity = [ordered]@{
+                evaluated = $manifestResult.evaluated
+                tool_label = $manifestResult.tool_label
+                command = $manifestResult.command
+                inspection_succeeded = $manifestResult.inspection_succeeded
+                xmltree_inspection_succeeded = $manifestResult.xmltree_inspection_succeeded
+                package_name = $manifestResult.package_name
+                version_name = $manifestResult.version_name
+                version_code = $manifestResult.version_code
+                matches_source_config = $manifestMatchesSource
+                debuggable_declared = $manifestResult.debuggable_declared
+                debuggable = $manifestResult.debuggable
+                test_only_declared = $manifestResult.test_only_declared
+                test_only = $manifestResult.test_only
+                allow_backup_declared = $manifestResult.allow_backup_declared
+                allow_backup = $manifestResult.allow_backup
+                cleartext_traffic_declared = $manifestResult.cleartext_traffic_declared
+                uses_cleartext_traffic = $manifestResult.uses_cleartext_traffic
+                unsafe_exported_components = @($manifestResult.unsafe_exported_components)
+                component_count = $manifestResult.component_count
+                hardening_verified = $manifestResult.hardening_verified
+            }
+            if (-not $manifestResult.inspection_succeeded) {
+                Add-Issue $artifactIssues "android_apk_manifest_inspection_failed" "Android SDK aapt dump badging could not extract package/version identity from the supplied APK."
+            }
+            elseif (-not $manifestMatchesSource) {
+                Add-Issue $artifactIssues "android_apk_manifest_identity_mismatch" "The APK package name, version name, and version code must match mobile/app.json."
+            }
+            if (-not $manifestResult.xmltree_inspection_succeeded) {
+                Add-Issue $artifactIssues "android_apk_manifest_xmltree_failed" "Android SDK aapt must inspect the final binary AndroidManifest.xml, not only source configuration or badging."
+            }
+            if ($manifestResult.debuggable) {
+                Add-Issue $artifactIssues "android_apk_debuggable" "The final APK manifest must not set android:debuggable=true."
+            }
+            if ($manifestResult.test_only) {
+                Add-Issue $artifactIssues "android_apk_test_only" "The final APK manifest must not set android:testOnly=true."
+            }
+            if (-not $manifestResult.allow_backup_declared -or $manifestResult.allow_backup) {
+                Add-Issue $artifactIssues "android_apk_allow_backup_not_disabled" "The final APK manifest must explicitly set android:allowBackup=false."
+            }
+            if (-not $manifestResult.cleartext_traffic_declared -or $manifestResult.uses_cleartext_traffic) {
+                Add-Issue $artifactIssues "android_apk_cleartext_traffic_not_disabled" "The final APK manifest must explicitly set android:usesCleartextTraffic=false."
+            }
+            if (@($manifestResult.unsafe_exported_components).Count -gt 0) {
+                Add-Issue $artifactIssues "android_apk_unsafe_exported_component" "The final APK contains exported components that are neither the launcher nor protected by an Android permission."
+            }
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($RealDeviceEvidencePath)) {
@@ -751,6 +1566,49 @@ else {
     else {
         $realDevice = Read-JsonFile $RealDeviceEvidencePath "android_real_device_evidence" $deviceIssues
         if ($null -ne $realDevice) {
+            $reviewedEvidenceContract.evaluated = $true
+            $python = Get-Command python -ErrorAction SilentlyContinue
+            if ($null -eq $python) {
+                Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Python is required to verify the sealed Android reviewed-evidence contract."
+            }
+            else {
+                $pythonArgs = @(
+                    (Join-Path $PSScriptRoot "verify_android_reviewed_evidence.py"),
+                    "--evidence",
+                    $RealDeviceEvidencePath
+                )
+                if ($RequireCandidateBinding) {
+                    $pythonArgs += "--require-candidate-binding"
+                }
+                $verifierOutput = & $python.Source @pythonArgs 2>&1 | Out-String
+                $verifierExitCode = $LASTEXITCODE
+                $verifierResult = $null
+                try {
+                    $verifierResult = $verifierOutput | ConvertFrom-Json
+                }
+                catch {
+                }
+                if ($null -ne $verifierResult) {
+                    $contract = Get-PropertyValue $verifierResult "contract"
+                    $reviewedEvidenceContract.valid_hash = Test-BooleanTrue (Get-PropertyValue $contract "valid_hash")
+                    $reviewedEvidenceContract.valid_signature = Test-BooleanTrue (Get-PropertyValue $contract "valid_signature")
+                    $reviewedEvidenceContract.candidate_binding_valid = Test-BooleanTrue (Get-PropertyValue $contract "candidate_binding_valid")
+                    $reviewedEvidenceContract.artifact_identity_valid = Test-BooleanTrue (Get-PropertyValue $contract "artifact_identity_valid")
+                    $reviewedEvidenceContract.artifact_provenance_valid = Test-BooleanTrue (Get-PropertyValue $contract "artifact_provenance_valid")
+                }
+                if ($verifierExitCode -ne 0 -or $null -eq $verifierResult -or -not (Test-BooleanTrue (Get-PropertyValue $verifierResult "ok"))) {
+                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must be sealed with a valid release-evidence HMAC contract."
+                }
+                elseif ($RequireCandidateBinding -and -not $reviewedEvidenceContract.candidate_binding_valid) {
+                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must match the strict release candidate identity."
+                }
+                if (-not $reviewedEvidenceContract.artifact_identity_valid) {
+                    Add-Issue $artifactIssues "android_reviewed_artifact_identity_invalid" "Signed Android reviewed evidence must contain a valid APK digest, package/version identity, and signer certificate digest."
+                }
+                if (-not $reviewedEvidenceContract.artifact_provenance_valid) {
+                    Add-Issue $artifactIssues "android_artifact_provenance_invalid" "Signed Android reviewed evidence must contain a candidate-bound reviewed build provenance record."
+                }
+            }
             if ((Get-PropertyValue $realDevice "artifact_type") -ne "android-real-device-remote-control-evidence") {
                 Add-Issue $deviceIssues "invalid_real_device_artifact_type" "Real-device evidence JSON must use artifact_type=android-real-device-remote-control-evidence."
             }
@@ -879,8 +1737,43 @@ else {
             if (-not [string]::IsNullOrWhiteSpace($artifactSummary.sha256) -and $evidenceSha.ToLowerInvariant() -ne $artifactSummary.sha256) {
                 Add-Issue $deviceIssues "artifact_hash_mismatch" "Real-device evidence app.artifact_sha256 must match the APK supplied to this gate."
             }
+            $evidencePackageName = [string](Get-PropertyValue $evidenceApp "package_name")
+            $evidenceVersionName = [string](Get-PropertyValue $evidenceApp "version_name")
+            $evidenceVersionCode = Get-PropertyValue $evidenceApp "version_code"
+            $evidenceSignerSha256 = ConvertTo-Sha256Hex (Get-PropertyValue $evidenceApp "signer_certificate_sha256")
+            $artifactIdentityMatchesApk = (
+                $evidenceSha -match "^[a-fA-F0-9]{64}$" -and
+                $evidenceSha.ToLowerInvariant() -eq $artifactSummary.sha256 -and
+                $evidencePackageName -eq $artifactSummary.manifest_identity.package_name -and
+                $evidenceVersionName -eq $artifactSummary.manifest_identity.version_name -and
+                ($evidenceVersionCode -is [int] -or $evidenceVersionCode -is [long]) -and
+                [int]$evidenceVersionCode -eq [int]$artifactSummary.manifest_identity.version_code -and
+                -not [string]::IsNullOrWhiteSpace($evidenceSignerSha256) -and
+                $evidenceSignerSha256 -eq $artifactSummary.apk_signing.signer_certificate_sha256
+            )
+            if (-not $artifactIdentityMatchesApk) {
+                Add-Issue $artifactIssues "android_reviewed_identity_mismatch" "Signed Android reviewed evidence package/version, APK digest, and signer certificate must match Android SDK inspection of the supplied APK."
+            }
+            $artifactSummary.provenance = [ordered]@{
+                evaluated = $true
+                evidence_bound = ($reviewedEvidenceContract.valid_hash -and $reviewedEvidenceContract.valid_signature)
+                candidate_bound = $reviewedEvidenceContract.candidate_binding_valid
+                identity_matches_apk = $artifactIdentityMatchesApk
+                verified = (
+                    $reviewedEvidenceContract.valid_hash -and
+                    $reviewedEvidenceContract.valid_signature -and
+                    $reviewedEvidenceContract.candidate_binding_valid -and
+                    $reviewedEvidenceContract.artifact_identity_valid -and
+                    $reviewedEvidenceContract.artifact_provenance_valid -and
+                    $artifactIdentityMatchesApk
+                )
+            }
         }
     }
+}
+
+if (-not $PreflightOnly -and -not $artifactSummary.provenance.verified) {
+    Add-Issue $artifactIssues "android_artifact_provenance_not_verified" "Strict Android release validation requires signed, candidate-bound artifact provenance matching the inspected APK."
 }
 
 $sourcePassed = $sourceIssues.Count -eq 0
@@ -902,6 +1795,11 @@ $recommendedCommands = @(
         claim_scope = "Same source/config readiness check from the mobile package."
     },
     [ordered]@{
+        purpose = "prebuild_network_security_smoke"
+        command = "npm --prefix mobile run smoke:android-prebuild-network-security"
+        claim_scope = "Confirms Expo prebuild keeps the main Android network-security config fail-closed while loopback exceptions remain debug-only."
+    },
+    [ordered]@{
         purpose = "qa_apk_build"
         command = "npm --prefix mobile run build:android:preview"
         claim_scope = "Runs preflight first, then requests an EAS internal APK build. The build log is still required."
@@ -917,9 +1815,14 @@ $recommendedCommands = @(
         claim_scope = "Fail-closed evidence starting point only; not a pass."
     },
     [ordered]@{
+        purpose = "connected_lan_tls_gate"
+        command = "npm --prefix mobile run gate:android-connected-lan-tls"
+        claim_scope = "Release/evidence-only connected Android HTTPS/WSS regression; useful support evidence, not a substitute for reviewed screenshots/logs and strict gate JSON."
+    },
+    [ordered]@{
         purpose = "strict_gate"
-        command = "npm run android:release-gate -- -ArtifactPath ""<qa apk path>"" -RealDeviceEvidencePath ""<reviewed android evidence json>"""
-        claim_scope = "Strict APK plus reviewed Android/emulator evidence gate; still not Play Store publication evidence."
+        command = "npm run android:release-gate -- -ArtifactPath ""<qa apk path>"" -RealDeviceEvidencePath ""<sealed android evidence json>"" -ExpectedSignerCertificateSha256 ""<controlled release certificate sha256>"" -AndroidBuildToolsRoot ""<approved build-tools/version root>"" -ExpectedBuildToolsVersion ""<version>"" -ExpectedApkSignerSha256 ""<sha256>"" -ExpectedApkSignerJarSha256 ""<sha256>"" -ExpectedAaptSha256 ""<sha256>"" -RequireCandidateBinding"
+        claim_scope = "Strict approved Android SDK provenance, signature, final merged-manifest, package/version, sealed candidate provenance, and Android/emulator evidence gate; still not Play Store publication evidence."
     }
 )
 $mustNotClaim = @()
@@ -945,9 +1848,11 @@ if (-not $releaseReady) {
     $failureClosure = @(
         "Keep the status as blocked or preflight_ready_not_release in the RC handoff.",
         "Capture the EAS build URL/log, redacted project/build label, APK file label, and APK SHA-256.",
+        "Record the controlled Android release certificate SHA-256 and reviewed builder invocation in the sealed evidence; never infer signer identity from the APK alone.",
         "Install the exact APK on the target Android phone/emulator and collect reviewed camera QR, HTTPS/WSS, certificate trust, remote screen/input, revoke/expiry, and redaction artifacts.",
+        "When a configured Android device/emulator and LAN TLS backend are available, run npm --prefix mobile run gate:android-connected-lan-tls and attach its redacted command/log note as supporting trust-path evidence.",
         "Fill the Android real-device evidence JSON only after manual review marks every required check passed.",
-        "Rerun the strict gate with both -ArtifactPath and -RealDeviceEvidencePath; only an exit 0 from that strict run can close the Android APK/real-device gate.",
+        "Rerun the strict gate with the APK/evidence, controlled signer digest, approved build-tools root/version/tool digests, and -RequireCandidateBinding; only an exit 0 can close the Android APK/real-device gate.",
         "Use a separate EAS submit/Play Console record and release-owner approval before any submitted or published claim."
     )
 }
@@ -986,6 +1891,7 @@ $summary = [ordered]@{
         evidence_label = Get-SafeArtifactLabel $RealDeviceEvidencePath
         issues = @($deviceIssues.ToArray())
     }
+    reviewed_evidence_contract = $reviewedEvidenceContract
     warnings = @($warnings.ToArray())
     claim_controls = [ordered]@{
         installable_android_app_claim_allowed = $releaseReady
@@ -1017,6 +1923,14 @@ $markdown.Add("- Published to store: False")
 $markdown.Add("- Preflight only: $([bool]$PreflightOnly)")
 $markdown.Add("- Mode scope: $($summary.mode_scope)")
 $markdown.Add("- APK label: $($artifactSummary.label)")
+$markdown.Add("- APK SHA-256: $($artifactSummary.sha256)")
+$markdown.Add("- APK signer certificate SHA-256: $($artifactSummary.apk_signing.signer_certificate_sha256)")
+$markdown.Add("- APK Signature Scheme v2 verified: $($artifactSummary.apk_signing.v2_verified)")
+$markdown.Add("- APK Signature Scheme v3 verified: $($artifactSummary.apk_signing.v3_verified)")
+$markdown.Add("- Android SDK build-tools provenance verified: $($artifactSummary.sdk_toolchain.provenance_verified)")
+$markdown.Add("- APK package/version: $($artifactSummary.manifest_identity.package_name) $($artifactSummary.manifest_identity.version_name) ($($artifactSummary.manifest_identity.version_code))")
+$markdown.Add("- Final APK manifest hardening verified: $($artifactSummary.manifest_identity.hardening_verified)")
+$markdown.Add("- Candidate-bound artifact provenance verified: $($artifactSummary.provenance.verified)")
 $markdown.Add("- Real-device evidence label: $(Get-SafeArtifactLabel $RealDeviceEvidencePath)")
 $markdown.Add("")
 $markdown.Add("## Source Config")
@@ -1060,6 +1974,10 @@ $markdown.Add("- artifact_type: $($strictEvidenceContract.artifact_type)")
 $markdown.Add("- review.status or review_status: $($strictEvidenceContract.review_status)")
 $markdown.Add("- reviewer fields: $($strictEvidenceContract.reviewer_fields -join ', ')")
 $markdown.Add("- app fields: $($strictEvidenceContract.app_fields -join ', ')")
+$markdown.Add("- APK signature: $($strictEvidenceContract.apk_signature)")
+$markdown.Add("- Android SDK toolchain: $($strictEvidenceContract.sdk_toolchain)")
+$markdown.Add("- Merged manifest: $($strictEvidenceContract.merged_manifest)")
+$markdown.Add("- Artifact provenance: $($strictEvidenceContract.artifact_provenance)")
 $markdown.Add("- device fields: $($strictEvidenceContract.device_fields -join ', ')")
 $markdown.Add("- transport fields: $($strictEvidenceContract.transport_fields -join ', ')")
 $markdown.Add("- evidence labels: $($strictEvidenceContract.evidence_labels)")
@@ -1105,4 +2023,4 @@ if (-not $releaseReady) {
     exit 1
 }
 
-Write-Host "[passed] Android APK and real-device remote-control evidence are present."
+Write-Host "[passed] Android APK signature, package/version, controlled signer, candidate-bound provenance, and real-device evidence are verified."

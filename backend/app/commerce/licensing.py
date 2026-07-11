@@ -1,6 +1,6 @@
 """Offline license verification for the commercialization layer.
 
-Self-hosted Team deployments ship a signed license token that unlocks paid
+Managed deployments ship a signed license token that unlocks paid
 entitlements without phoning home. Tokens are ``<body>.<signature>`` strings
 where ``body`` is base64url(JSON) and ``signature`` is an Ed25519 signature
 over the body. Runtime deployments only need ``LENGRVIS_LICENSE_PUBLIC_KEY``;
@@ -37,7 +37,14 @@ from app.commerce.device_identity import (
     DeviceIdentityError,
     collect_activation_device_identity,
 )
-from app.commerce.entitlements import PLAN_ENV_VAR, Plan, normalize_plan
+from app.commerce.entitlements import (
+    PLAN_CATALOG_CURRENT,
+    PLAN_CATALOG_LEGACY,
+    PLAN_ENV_VAR,
+    Plan,
+    normalize_plan,
+    normalize_plan_claim,
+)
 from app.core.errors import AppError
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,7 @@ class LicenseError(AppError):
 @dataclass(frozen=True)
 class License:
     plan: Plan
+    plan_catalog: str = PLAN_CATALOG_LEGACY
     license_id: str = ""
     subject: str = ""
     issuer: str = ""
@@ -280,8 +288,24 @@ def parse_license(token: str, public_key: str) -> License:
         seats = max(0, int(seats_raw))
     except (TypeError, ValueError):
         seats = 0
+    schema_raw = payload.get("schema", 1)
+    try:
+        schema = int(schema_raw)
+    except (TypeError, ValueError) as exc:
+        raise LicenseError("许可证版本无效。", code="license_schema_invalid") from exc
+    plan_catalog = str(payload.get("plan_catalog") or "").strip().lower()
+    if plan_catalog and plan_catalog not in {PLAN_CATALOG_CURRENT, PLAN_CATALOG_LEGACY}:
+        raise LicenseError("许可证套餐目录版本不受支持。", code="license_plan_catalog_invalid")
+    if schema >= 2 and plan_catalog != PLAN_CATALOG_CURRENT:
+        raise LicenseError("新版许可证缺少受支持的套餐目录。", code="license_plan_catalog_invalid")
+    resolved_catalog = plan_catalog or (PLAN_CATALOG_CURRENT if schema >= 2 else PLAN_CATALOG_LEGACY)
+    plan = normalize_plan_claim(payload.get("plan"), catalog=resolved_catalog, schema=schema)
+    raw_plan = str(payload.get("plan") or "").strip().lower()
+    if plan is Plan.FREE and raw_plan not in {"", "free", "basic", "starter", "community"}:
+        raise LicenseError("许可证套餐无效。", code="license_plan_invalid")
     return License(
-        plan=normalize_plan(payload.get("plan")),
+        plan=plan,
+        plan_catalog=resolved_catalog,
         license_id=str(payload.get("license_id") or payload.get("jti") or "").strip(),
         subject=str(payload.get("subject") or payload.get("sub") or ""),
         issuer=str(payload.get("issuer") or payload.get("iss") or ""),

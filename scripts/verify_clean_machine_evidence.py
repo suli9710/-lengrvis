@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
+    CandidateBinding,
+    candidate_binding_from_environment,
     get_path,
     load_json,
     print_result,
@@ -22,6 +24,7 @@ from evidence_contracts import (
     require_true,
     result_payload,
     reviewed_evidence_contract_status,
+    validate_candidate_binding,
     validate_dist_artifact_sha256_cross_check,
     validate_redacted_payload,
 )
@@ -36,11 +39,13 @@ def validate_payload(
     *,
     require_local_model: bool = False,
     repo_root: Path | None = None,
+    expected_candidate_binding: CandidateBinding | None = None,
 ) -> list[str]:
     return validate_payload_with_contract(
         payload,
         require_local_model=require_local_model,
         repo_root=repo_root,
+        expected_candidate_binding=expected_candidate_binding,
     )[0]
 
 
@@ -49,11 +54,14 @@ def validate_payload_with_contract(
     *,
     require_local_model: bool = False,
     repo_root: Path | None = None,
+    expected_candidate_binding: CandidateBinding | None = None,
 ) -> tuple[list[str], dict[str, bool]]:
     errors: list[str] = []
     require_artifact_type(payload, ARTIFACT_TYPE, errors)
     require_nonempty(payload, "candidate.commit", errors)
     require_nonempty(payload, "candidate.build_identifier", errors)
+    if expected_candidate_binding is not None:
+        validate_candidate_binding(payload, expected_candidate_binding, errors)
     require_nonempty(payload, "candidate.artifact_label", errors)
     require_nonempty(payload, "candidate.artifact_sha256", errors)
     require_nonempty(payload, "machine.profile_label_redacted", errors)
@@ -129,16 +137,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", default=os.getenv(ENV_VAR, DEFAULT_EVIDENCE))
     parser.add_argument("--require-local-model", action="store_true")
+    parser.add_argument("--require-candidate-binding", action="store_true")
     args = parser.parse_args()
 
     evidence_path = Path(args.evidence)
     payload, errors = load_json(evidence_path)
+    expected_candidate_binding: CandidateBinding | None = None
+    if args.require_candidate_binding:
+        expected_candidate_binding, binding_errors = candidate_binding_from_environment()
+        errors.extend(binding_errors)
     contract: dict[str, bool] | None = None
     if payload is not None:
         payload_errors, contract = validate_payload_with_contract(
             payload,
             require_local_model=args.require_local_model,
             repo_root=Path(__file__).resolve().parent.parent,
+            expected_candidate_binding=expected_candidate_binding,
         )
         errors.extend(payload_errors)
     print_result(

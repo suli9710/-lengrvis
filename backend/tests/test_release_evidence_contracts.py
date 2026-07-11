@@ -3,10 +3,13 @@ from __future__ import annotations
 import hmac
 import importlib.util
 import json
+import subprocess
 import sys
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -33,7 +36,27 @@ commercial_operations = _load_script("verify_commercial_operations_evidence.py")
 commercial_operations_seal = _load_script("seal_commercial_operations_evidence.py")
 paid_launch_templates = _load_script("collect_paid_launch_evidence_templates.py")
 evidence_contracts = _load_script("evidence_contracts.py")
-TEST_EVIDENCE_SECRET = "test-release-evidence-secret"  # noqa: S105 - deterministic test signing key.
+candidate_binding_check = _load_script("verify_release_candidate_binding.py")
+TEST_EVIDENCE_SECRET = "fedcba9876543210" * 4  # noqa: S105 - deterministic test signing key.
+STRICT_CANDIDATE_BINDING = {
+    "commit": "a" * 40,
+    "build_identifier": f"rc-12345-2-{'a' * 40}",
+    "repository": "lengrvis/mavris",
+    "ci_run_id": "12345",
+    "ci_run_attempt": "2",
+}
+
+
+@pytest.mark.parametrize(
+    ("secret", "message"),
+    [
+        ("tiny", "at least 32"),
+        ("z" * 64, "insufficient character diversity"),
+    ],
+)
+def test_reviewed_evidence_hmac_secret_policy_rejects_weak_values(secret: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        evidence_contracts.validate_evidence_signature_secret(secret)
 
 
 def _distribution_sample() -> dict:
@@ -125,7 +148,8 @@ def _commercial_sample() -> dict:
     return _signed(
         {
             "artifact_type": "commercial-loop-evidence-reviewed",
-            "pilot": {"scope": "subscription_activation_free_pro_max"},
+            "candidate": {"commit": "abc123", "build_identifier": "ci-123"},
+            "pilot": {"scope": "subscription_activation_free_plus_pro"},
             "contracting": {
                 "status": "passed",
                 "entity_label": "contracting-entity-redacted",
@@ -512,6 +536,16 @@ def _resign(payload: dict) -> dict:
     return body
 
 
+def _with_strict_candidate_binding(payload: dict) -> dict:
+    body = deepcopy(payload)
+    body["candidate"].update(STRICT_CANDIDATE_BINDING)
+    return _resign(body)
+
+
+def _strict_candidate_binding():
+    return evidence_contracts.CandidateBinding(**STRICT_CANDIDATE_BINDING)
+
+
 def _with_dist_artifact(
     payload: dict,
     tmp_path: Path,
@@ -760,6 +794,194 @@ def test_commercial_operations_reviewed_sample_passes() -> None:
     }
 
 
+def test_strict_candidate_binding_accepts_the_same_immutable_candidate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    binding = _strict_candidate_binding()
+    clean_payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_clean_machine_sample()),
+        tmp_path,
+        rel_path="dist/Lengrvis-win-portable.zip",
+        contents=b"strict-candidate-clean-machine-artifact",
+    )
+    result_payload = _with_strict_candidate_binding(_result_quality_sample())
+    diagnostics_payload = _with_strict_candidate_binding(_diagnostics_reviewed_sample())
+
+    assert clean_machine.validate_payload(
+        clean_payload,
+        require_local_model=True,
+        repo_root=tmp_path,
+        expected_candidate_binding=binding,
+    ) == []
+    assert result_quality.validate_payload(
+        result_payload,
+        expected_candidate_binding=binding,
+    ) == []
+    assert diagnostics_reviewed.validate_payload(
+        diagnostics_payload,
+        expected_candidate_binding=binding,
+    ) == []
+
+
+def test_distribution_evidence_rejects_replay_from_another_candidate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/installer.exe",
+        contents=b"candidate-bound-distribution-artifact",
+    )
+    payload["candidate"]["commit"] = "b" * 40
+    payload = _resign(payload)
+
+    errors = distribution.validate_payload(
+        payload,
+        repo_root=tmp_path,
+        expected_candidate_binding=_strict_candidate_binding(),
+    )
+
+    assert "candidate_commit_mismatch" in errors
+
+
+@pytest.mark.parametrize(
+    ("verifier", "sample_factory"),
+    [
+        (commercial, _commercial_sample),
+        (support_privacy, _support_privacy_sample),
+        (claims_launch, _claims_launch_sample),
+        (commercial_operations, _commercial_operations_sample),
+    ],
+)
+def test_paid_launch_evidence_rejects_replay_from_another_candidate(verifier, sample_factory, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    sample = sample_factory()
+    sample.setdefault("candidate", {})
+    payload = _with_strict_candidate_binding(sample)
+    payload["candidate"]["commit"] = "b" * 40
+    payload = _resign(payload)
+
+    errors = verifier.validate_payload(
+        payload,
+        expected_candidate_binding=_strict_candidate_binding(),
+    )
+
+    assert "candidate_commit_mismatch" in errors
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "error_code"),
+    [
+        ("commit", "b" * 40, "candidate_commit_mismatch"),
+        ("build_identifier", f"rc-12345-2-{'b' * 40}", "candidate_build_identifier_mismatch"),
+        ("repository", "other/repository", "candidate_repository_mismatch"),
+        ("ci_run_id", "54321", "candidate_ci_run_id_mismatch"),
+        ("ci_run_attempt", "3", "candidate_ci_run_attempt_mismatch"),
+    ],
+)
+def test_strict_candidate_binding_rejects_replayed_reviewed_evidence(
+    monkeypatch,
+    field: str,
+    replacement: str,
+    error_code: str,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    payload = _with_strict_candidate_binding(_result_quality_sample())
+    payload["candidate"][field] = replacement
+    payload = _resign(payload)
+
+    errors = result_quality.validate_payload(
+        payload,
+        expected_candidate_binding=_strict_candidate_binding(),
+    )
+
+    assert error_code in errors
+
+
+def test_strict_candidate_binding_is_covered_by_the_evidence_signature(monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    payload = _with_strict_candidate_binding(_diagnostics_reviewed_sample())
+    payload["candidate"]["commit"] = "b" * 40
+
+    errors = diagnostics_reviewed.validate_payload(
+        payload,
+        expected_candidate_binding=_strict_candidate_binding(),
+    )
+
+    assert any("payload_sha256" in error or "signature" in error for error in errors)
+
+
+def test_strict_candidate_binding_environment_fails_closed_when_context_is_missing(monkeypatch) -> None:
+    for variable in (
+        "LENGRVIS_RELEASE_CANDIDATE_COMMIT",
+        "LENGRVIS_RELEASE_BUILD_IDENTIFIER",
+        "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY",
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ID",
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+    binding, errors = evidence_contracts.candidate_binding_from_environment()
+
+    assert binding is None
+    assert "LENGRVIS_RELEASE_CANDIDATE_COMMIT is required for strict candidate binding" in errors
+
+
+@pytest.mark.parametrize(
+    ("environment_key", "replacement", "expected_fragment"),
+    [
+        ("LENGRVIS_RELEASE_CANDIDATE_COMMIT", "abc123", "commit must be a lowercase 40-character Git SHA"),
+        ("LENGRVIS_RELEASE_BUILD_IDENTIFIER", "local/manual", "build_identifier must equal"),
+        ("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", "not-a-repository", "repository must be an owner/repository"),
+        ("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "0", "ci_run_id must be a positive integer"),
+        ("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", "zero", "ci_run_attempt must be a positive integer"),
+    ],
+)
+def test_strict_candidate_binding_environment_rejects_non_immutable_context(
+    environment_key: str,
+    replacement: str,
+    expected_fragment: str,
+) -> None:
+    environment = {
+        "LENGRVIS_RELEASE_CANDIDATE_COMMIT": STRICT_CANDIDATE_BINDING["commit"],
+        "LENGRVIS_RELEASE_BUILD_IDENTIFIER": STRICT_CANDIDATE_BINDING["build_identifier"],
+        "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY": STRICT_CANDIDATE_BINDING["repository"],
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ID": STRICT_CANDIDATE_BINDING["ci_run_id"],
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT": STRICT_CANDIDATE_BINDING["ci_run_attempt"],
+    }
+    environment[environment_key] = replacement
+
+    binding, errors = evidence_contracts.candidate_binding_from_environment(environment)
+
+    assert binding is None
+    assert any(expected_fragment in error for error in errors)
+
+
+def test_strict_candidate_binding_rejects_a_checkout_for_a_different_commit() -> None:
+    checkout_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    matching = evidence_contracts.CandidateBinding(
+        commit=checkout_commit,
+        build_identifier=f"rc-7-1-{checkout_commit}",
+        repository="lengrvis/mavris",
+        ci_run_id="7",
+        ci_run_attempt="1",
+    )
+    mismatched = evidence_contracts.CandidateBinding(
+        commit="a" * 40 if checkout_commit != "a" * 40 else "b" * 40,
+        build_identifier=f"rc-7-1-{'a' * 40 if checkout_commit != 'a' * 40 else 'b' * 40}",
+        repository="lengrvis/mavris",
+        ci_run_id="7",
+        ci_run_attempt="1",
+    )
+
+    assert candidate_binding_check.validate_checkout_commit(matching, repo_root=REPO_ROOT) == []
+    assert candidate_binding_check.validate_checkout_commit(mismatched, repo_root=REPO_ROOT) == [
+        "checkout_commit_mismatch"
+    ]
+
+
 def test_commercial_operations_rejects_missing_tax_refund_and_release_signoff() -> None:
     import os
 
@@ -827,12 +1049,18 @@ def test_commercial_operations_seal_rejects_templates_and_unsafe_secret(monkeypa
 def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path) -> None:
     paths = paid_launch_templates.write_templates(
         tmp_path,
-        candidate_commit="abc123",
-        build_identifier="ci-123",
+        candidate_commit=STRICT_CANDIDATE_BINDING["commit"],
+        build_identifier=STRICT_CANDIDATE_BINDING["build_identifier"],
+        candidate_repository=STRICT_CANDIDATE_BINDING["repository"],
+        candidate_run_id=STRICT_CANDIDATE_BINDING["ci_run_id"],
+        candidate_run_attempt=STRICT_CANDIDATE_BINDING["ci_run_attempt"],
     )
     support_payload = json.loads(Path(paths["support_privacy_template"]).read_text(encoding="utf-8"))
     claims_payload = json.loads(Path(paths["claims_launch_template"]).read_text(encoding="utf-8"))
     operations_payload = json.loads(Path(paths["commercial_operations_template"]).read_text(encoding="utf-8"))
+
+    for payload in (support_payload, claims_payload, operations_payload):
+        assert payload["candidate"] == STRICT_CANDIDATE_BINDING
 
     assert support_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert claims_payload["claim_controls"]["paid_launch_claim_allowed"] is False
@@ -881,6 +1109,9 @@ def test_diagnostics_reviewed_sample_passes() -> None:
         "valid_signature": True,
         "reviewed_pass": True,
         "release_signoff": False,
+        "actual_package_content_review_completed": True,
+        "public_safe": False,
+        "external_sharing_allowed": False,
     }
 
 

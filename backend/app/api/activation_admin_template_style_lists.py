@@ -137,8 +137,8 @@ ADMIN_STYLE_CREATION_AND_LISTS = r"""    .step {
       white-space: nowrap;
     }
     .badge.free { color: #415062; background: #edf1f5; border-color: #d6dde5; }
-    .badge.pro { color: #0b4c41; background: var(--accent-soft); border-color: #bbdcd2; }
-    .badge.max { color: #1f4a83; background: #e8f1ff; border-color: #c8dbf6; }
+    .badge.plus { color: #0b4c41; background: var(--accent-soft); border-color: #bbdcd2; }
+    .badge.pro { color: #1f4a83; background: #e8f1ff; border-color: #c8dbf6; }
     .badge.active, .badge.trialing { color: var(--ok); background: var(--ok-soft); border-color: #bde5d2; }
     .badge.revoked, .badge.expired, .badge.canceled {
       color: var(--danger);

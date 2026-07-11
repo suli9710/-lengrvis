@@ -18,6 +18,7 @@ from app.services.browser_activity_runtime import (
     BrowserActivityRuntime,
     LocalBrowserActivityAdapter,
     _guard_playwright_route,
+    _new_guarded_playwright_page,
     _PlaywrightRouteGuard,
     _raise_if_playwright_route_guard_blocked,
     _read_limited_http_response,
@@ -153,6 +154,18 @@ class _GuardedFakeBrowser:
 
     def close(self) -> None:
         return None
+
+
+def test_guarded_playwright_context_routes_network_through_pinned_proxy() -> None:
+    browser = _GuardedFakeBrowser(blocked_on="")
+
+    _page, guard = _new_guarded_playwright_page(browser)
+    try:
+        proxy = browser.context_options["proxy"]
+        assert proxy["server"].startswith("http://127.0.0.1:")
+        assert proxy["bypass"] == "<-loopback>"
+    finally:
+        guard.close()
 
 
 class _GuardedFakeSyncPlaywright:

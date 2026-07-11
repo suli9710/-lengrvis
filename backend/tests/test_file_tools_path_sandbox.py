@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.errors import SecurityError
-from app.tools import file_tools
+from app.tools import file_tools, filesystem_safety
 from app.tools.tool_abort import ToolAbortedError
 
 
@@ -138,6 +138,112 @@ def test_write_text_rechecks_parent_after_authorization(
             file_tools.write_text({"path": str(target), "text": "owned", "dry_run": False}, _context(workspace))
 
         assert not (outside / "escaped.txt").exists()
+    finally:
+        _remove_escape_link(parent)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative mutation contract")
+def test_windows_write_never_truncates_outside_file_during_parent_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    parent = workspace / "swap"
+    workspace.mkdir()
+    outside.mkdir()
+    parent.mkdir()
+    outside_victim = outside / "victim.txt"
+    outside_victim.write_text("must survive", encoding="utf-8")
+    target = parent / "victim.txt"
+    original_relative_open = filesystem_safety._open_windows_file_relative
+    swapped = False
+
+    def swap_after_parent_is_authorized(
+        parent_handle: int,
+        name: str,
+        *,
+        access: int,
+        creation: int,
+    ) -> int:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            parent.rmdir()
+            _create_directory_escape_link(parent, outside)
+        return original_relative_open(parent_handle, name, access=access, creation=creation)
+
+    monkeypatch.setattr(
+        filesystem_safety,
+        "_open_windows_file_relative",
+        swap_after_parent_is_authorized,
+    )
+
+    try:
+        with pytest.raises((OSError, SecurityError)):
+            filesystem_safety.write_text_with_windows_handle(
+                target,
+                "owned",
+                [str(workspace)],
+            )
+
+        assert swapped is True
+        assert outside_victim.read_text(encoding="utf-8") == "must survive"
+    finally:
+        _remove_escape_link(parent)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative mutation contract")
+def test_windows_copy_never_truncates_outside_file_during_parent_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    parent = workspace / "swap"
+    workspace.mkdir()
+    outside.mkdir()
+    parent.mkdir()
+    source = workspace / "source.txt"
+    source.write_text("copy payload", encoding="utf-8")
+    outside_victim = outside / "victim.txt"
+    outside_victim.write_text("must survive", encoding="utf-8")
+    target = parent / "victim.txt"
+    original_relative_open = filesystem_safety._open_windows_file_relative
+    swapped = False
+
+    def swap_destination_after_parent_is_authorized(
+        parent_handle: int,
+        name: str,
+        *,
+        access: int,
+        creation: int,
+    ) -> int:
+        nonlocal swapped
+        final_path = Path(filesystem_safety._windows_final_path(parent_handle)).resolve(strict=False)
+        if not swapped and final_path == parent.resolve(strict=False):
+            swapped = True
+            parent.rmdir()
+            _create_directory_escape_link(parent, outside)
+        return original_relative_open(parent_handle, name, access=access, creation=creation)
+
+    monkeypatch.setattr(
+        filesystem_safety,
+        "_open_windows_file_relative",
+        swap_destination_after_parent_is_authorized,
+    )
+
+    try:
+        with pytest.raises((OSError, SecurityError)):
+            filesystem_safety.copy_file_with_windows_handles(
+                source,
+                target,
+                [str(workspace)],
+                [str(workspace)],
+            )
+
+        assert swapped is True
+        assert outside_victim.read_text(encoding="utf-8") == "must survive"
     finally:
         _remove_escape_link(parent)
 

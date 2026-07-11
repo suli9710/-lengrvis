@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
+    CandidateBinding,
+    candidate_binding_from_environment,
     get_path,
+    is_passed,
     load_json,
     print_result,
     require_artifact_type,
@@ -21,6 +24,7 @@ from evidence_contracts import (
     require_true,
     result_payload,
     reviewed_evidence_contract_status,
+    validate_candidate_binding,
     validate_redacted_payload,
 )
 
@@ -41,15 +45,28 @@ REQUIRED_CHECKS = (
 )
 
 
-def validate_payload(payload: dict[str, Any]) -> list[str]:
-    return validate_payload_with_contract(payload)[0]
+def validate_payload(
+    payload: dict[str, Any],
+    *,
+    expected_candidate_binding: CandidateBinding | None = None,
+) -> list[str]:
+    return validate_payload_with_contract(
+        payload,
+        expected_candidate_binding=expected_candidate_binding,
+    )[0]
 
 
-def validate_payload_with_contract(payload: dict[str, Any]) -> tuple[list[str], dict[str, bool]]:
+def validate_payload_with_contract(
+    payload: dict[str, Any],
+    *,
+    expected_candidate_binding: CandidateBinding | None = None,
+) -> tuple[list[str], dict[str, bool]]:
     errors: list[str] = []
     require_artifact_type(payload, ARTIFACT_TYPE, errors)
     _require_nonempty_string(payload, "candidate.commit", errors)
     _require_nonempty_string(payload, "candidate.build_identifier", errors)
+    if expected_candidate_binding is not None:
+        validate_candidate_binding(payload, expected_candidate_binding, errors)
     _require_nonempty_string(payload, "candidate.diagnostics_package_label", errors)
     _validate_package_label(payload, errors)
     require_passed(payload, "review.status", errors)
@@ -69,6 +86,11 @@ def validate_payload_with_contract(payload: dict[str, Any]) -> tuple[list[str], 
         release_signoff_path="summary.release_signoff",
         errors=errors,
     )
+    contract["actual_package_content_review_completed"] = all(
+        is_passed(get_path(payload, check)) for check in REQUIRED_CHECKS
+    )
+    contract["public_safe"] = get_path(payload, "summary.public_safe") is True
+    contract["external_sharing_allowed"] = get_path(payload, "summary.external_sharing_allowed") is True
     errors.extend(validate_redacted_payload(payload))
     return errors, contract
 
@@ -125,13 +147,21 @@ def _validate_sharing_flags(payload: dict[str, Any], errors: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", default=os.getenv(ENV_VAR, DEFAULT_EVIDENCE))
+    parser.add_argument("--require-candidate-binding", action="store_true")
     args = parser.parse_args()
 
     evidence_path = Path(args.evidence)
     payload, errors = load_json(evidence_path)
+    expected_candidate_binding: CandidateBinding | None = None
+    if args.require_candidate_binding:
+        expected_candidate_binding, binding_errors = candidate_binding_from_environment()
+        errors.extend(binding_errors)
     contract: dict[str, bool] | None = None
     if payload is not None:
-        payload_errors, contract = validate_payload_with_contract(payload)
+        payload_errors, contract = validate_payload_with_contract(
+            payload,
+            expected_candidate_binding=expected_candidate_binding,
+        )
         errors.extend(payload_errors)
     print_result(result_payload(evidence_path, ARTIFACT_TYPE, errors, contract=contract))
     return 1 if errors else 0

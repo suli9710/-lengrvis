@@ -10,7 +10,7 @@ from app.agents.supervisor_agent import SupervisorDecision
 from app.api import routes_approvals
 from app.core import db
 from app.core.errors import StateTransitionError
-from app.core.schemas import ChatResponse, Task, TaskStatus
+from app.core.schemas import ChatResponse, Task
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
@@ -28,7 +28,7 @@ from app.services import mobile_pairing_service
 from app.services.approval_event_service import get_approval_event_bus
 from app.services.task_explain_service import build_task_completion_evidence
 from app.services.task_service import _delegate_task as delegate_task
-from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
+from app.services.task_service import cancel_task, get_task, list_tasks, pause_task, resume_task
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -53,6 +53,19 @@ class MobileTaskCreateRequest(BaseModel):
 class MobileTaskFollowUpRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
     mode: str = Field(default="", pattern="^(|efficiency|privacy|hybrid)$")
+
+
+class MobilePushSubscriptionRequest(BaseModel):
+    provider: str = Field(pattern="^expo$")
+    token: str = Field(
+        min_length=20,
+        max_length=256,
+        pattern=r"^(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{1,200}\]$",
+    )
+
+
+class MobileSessionRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=40, max_length=512)
 
 
 MOBILE_TASK_TEMPLATES = {
@@ -134,8 +147,25 @@ MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.
 
 
 @router.post("/mobile/session/refresh")
-def refresh_mobile_session(token: dict = Depends(require_mobile_token)) -> dict:
-    return mobile_pairing_service.refresh_mobile_session_token(token)
+def refresh_mobile_session(request: MobileSessionRefreshRequest) -> dict:
+    return mobile_pairing_service.refresh_mobile_session_token(request.refresh_token)
+
+
+@router.put("/mobile/push-subscription")
+def register_mobile_push_subscription(
+    request: MobilePushSubscriptionRequest,
+    token: dict = Depends(require_mobile_token),
+) -> dict:
+    return mobile_pairing_service.register_mobile_push_subscription(
+        token,
+        provider=request.provider,
+        push_token=request.token,
+    )
+
+
+@router.delete("/mobile/push-subscription")
+def unregister_mobile_push_subscription(token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.unregister_mobile_push_subscription(token)
 
 
 @router.get("/mobile/approvals/pending")
@@ -247,12 +277,12 @@ async def create_mobile_task_follow_up(
 
 
 @router.post("/mobile/tasks/{task_id}/pause")
-def pause_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+async def pause_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
         task = get_task(task_id)
         _raise_if_mobile_task_disallowed(task, token)
         _ensure_mobile_task_pauseable(task)
-        return _mobile_task_payload(set_task_status(task_id, TaskStatus.PAUSED, strict=True))
+        return _mobile_task_payload(await pause_task(task_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     except StateTransitionError as exc:
@@ -260,7 +290,7 @@ def pause_mobile_task(task_id: str, token: dict = Depends(require_mobile_token))
 
 
 @router.post("/mobile/tasks/{task_id}/resume")
-def resume_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+async def resume_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
         _raise_if_mobile_task_disallowed(get_task(task_id), token)
         return _mobile_task_payload(resume_task(task_id, strict=True))
@@ -271,10 +301,10 @@ def resume_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)
 
 
 @router.post("/mobile/tasks/{task_id}/cancel")
-def cancel_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+async def cancel_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
         _raise_if_mobile_task_disallowed(get_task(task_id), token)
-        return _mobile_task_payload(set_task_status(task_id, TaskStatus.CANCELLED, strict=True))
+        return _mobile_task_payload(await cancel_task(task_id, strict=True))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     except StateTransitionError as exc:

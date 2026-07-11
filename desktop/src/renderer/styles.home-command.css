@@ -7,10 +7,8 @@
   padding: 15px 16px;
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.76)),
-    var(--surface);
-  box-shadow: 0 16px 40px rgba(44, 58, 92, 0.12);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   transition:
     border-color 0.2s ease,
     box-shadow 0.2s ease,
@@ -19,8 +17,8 @@
 
 .office-command-dock:focus-within {
   border-color: var(--brand);
-  box-shadow: 0 0 0 4px rgba(74, 108, 247, 0.1), 0 18px 44px rgba(44, 58, 92, 0.15);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px rgba(74, 108, 247, 0.1), var(--shadow-md);
+  transform: none;
 }
 
 .office-command-dock__hint {

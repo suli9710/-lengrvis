@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
+    CandidateBinding,
+    candidate_binding_from_environment,
     get_path,
     load_json,
     print_result,
@@ -21,6 +23,7 @@ from evidence_contracts import (
     require_true,
     result_payload,
     reviewed_evidence_contract_status,
+    validate_candidate_binding,
     validate_redacted_payload,
 )
 
@@ -29,17 +32,25 @@ DEFAULT_EVIDENCE = "build/commercial-operations-evidence-reviewed.json"
 ENV_VAR = "LENGRVIS_COMMERCIAL_OPERATIONS_EVIDENCE_PATH"
 
 
-def validate_payload(payload: dict[str, Any], *, repo_root: Path | None = None) -> list[str]:
-    return validate_payload_with_contract(payload, repo_root=repo_root)[0]
+def validate_payload(
+    payload: dict[str, Any], *, repo_root: Path | None = None, expected_candidate_binding: CandidateBinding | None = None
+) -> list[str]:
+    return validate_payload_with_contract(
+        payload,
+        repo_root=repo_root,
+        expected_candidate_binding=expected_candidate_binding,
+    )[0]
 
 
 def validate_payload_with_contract(
-    payload: dict[str, Any], *, repo_root: Path | None = None
+    payload: dict[str, Any], *, repo_root: Path | None = None, expected_candidate_binding: CandidateBinding | None = None
 ) -> tuple[list[str], dict[str, bool]]:
     errors: list[str] = []
     require_artifact_type(payload, ARTIFACT_TYPE, errors)
     require_nonempty(payload, "candidate.commit", errors)
     require_nonempty(payload, "candidate.build_identifier", errors)
+    if expected_candidate_binding is not None:
+        validate_candidate_binding(payload, expected_candidate_binding, errors)
     require_nonempty(payload, "operations.scope", errors)
     if get_path(payload, "operations.scope") != "paid_public_launch":
         errors.append("operations.scope must be 'paid_public_launch'")
@@ -321,15 +332,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", default=os.getenv(ENV_VAR, DEFAULT_EVIDENCE))
     parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--require-candidate-binding", action="store_true")
     args = parser.parse_args()
 
     evidence_path = Path(args.evidence)
     payload, errors = load_json(evidence_path)
+    expected_candidate_binding: CandidateBinding | None = None
+    if args.require_candidate_binding:
+        expected_candidate_binding, binding_errors = candidate_binding_from_environment()
+        errors.extend(binding_errors)
     contract: dict[str, bool] | None = None
     if payload is not None:
         payload_errors, contract = validate_payload_with_contract(
             payload,
             repo_root=Path(args.repo_root).resolve(),
+            expected_candidate_binding=expected_candidate_binding,
         )
         errors.extend(payload_errors)
     print_result(result_payload(evidence_path, ARTIFACT_TYPE, errors, contract=contract))

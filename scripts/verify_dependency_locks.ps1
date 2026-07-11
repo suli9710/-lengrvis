@@ -357,6 +357,117 @@ console.log(`${packageLockPath}: ${rootPackage.name}@${rootPackage.version} lock
     }
 }
 
+function Test-DevelopmentLockMatchesBackendRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [System.Collections.Generic.List[string]]$Issues
+    )
+
+    $backendLockPath = Join-Path $Root "backend\requirements-lock.txt"
+    $developmentLockPath = Join-Path $Root "requirements-dev-lock.txt"
+    if (-not (Test-Path -LiteralPath $backendLockPath) -or -not (Test-Path -LiteralPath $developmentLockPath)) {
+        return
+    }
+
+    $backendLock = Get-PinnedPythonLockEntries -LockPath $backendLockPath
+    $developmentLock = Get-PinnedPythonLockEntries -LockPath $developmentLockPath
+    foreach ($name in $backendLock.Entries.Keys) {
+        if (-not $developmentLock.Entries.ContainsKey($name)) {
+            $Issues.Add("requirements-dev-lock.txt is missing backend runtime pin '$name' from backend/requirements-lock.txt")
+            continue
+        }
+        if ($developmentLock.Entries[$name].Version -ne $backendLock.Entries[$name].Version) {
+            $Issues.Add("requirements-dev-lock.txt pin '$name==$($developmentLock.Entries[$name].Version)' does not match backend/requirements-lock.txt '$name==$($backendLock.Entries[$name].Version)'")
+        }
+    }
+
+    $developmentText = Get-Content -Raw -LiteralPath $developmentLockPath
+    if ($developmentText -notmatch "(?im)--python-version\s+3\.12") {
+        $Issues.Add("requirements-dev-lock.txt must be generated for Python 3.12.")
+    }
+    if ($developmentText -notmatch "(?im)--universal") {
+        $Issues.Add("requirements-dev-lock.txt must be universal across supported platforms.")
+    }
+    foreach ($line in Get-Content -LiteralPath $developmentLockPath) {
+        if ($line -match "^pywin32==" -and $line -notmatch ";\s*sys_platform\s*==") {
+            $Issues.Add("requirements-dev-lock.txt must not contain an unmarked Windows-only pywin32 pin.")
+            break
+        }
+    }
+
+    Write-Host "Verified development lock contains all $($backendLock.Entries.Count) backend runtime pins with matching versions."
+}
+
+function Test-BackendDevRequirementsAlias {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [System.Collections.Generic.List[string]]$Issues
+    )
+
+    $relativePath = "backend\requirements-dev.txt"
+    $requirementsPath = Join-Path $Root $relativePath
+    if (-not (Test-Path -LiteralPath $requirementsPath -PathType Leaf)) {
+        $Issues.Add("Missing backend development requirements entry point: $relativePath")
+        return
+    }
+
+    $directives = New-Object System.Collections.Generic.List[string]
+    foreach ($line in Get-Content -LiteralPath $requirementsPath) {
+        $cleanLine = Remove-RequirementComment -Line $line
+        if (-not [string]::IsNullOrWhiteSpace($cleanLine)) {
+            $directives.Add($cleanLine)
+        }
+    }
+
+    if ($directives.Count -ne 1 -or $directives[0] -ne "-r ../requirements-dev-lock.txt") {
+        $Issues.Add("$relativePath must delegate only to ../requirements-dev-lock.txt so backend development uses the audited hash lock.")
+        return
+    }
+
+    Write-Host "Verified backend development entry point delegates to requirements-dev-lock.txt."
+}
+
+function Test-GradleWrapperDistribution {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [System.Collections.Generic.List[string]]$Issues
+    )
+
+    $wrapperRelativePath = "mobile\android\gradle\wrapper\gradle-wrapper.properties"
+    $wrapperPath = Join-Path $Root $wrapperRelativePath
+    $expectedDistributionUrl = "https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+    $expectedSha256 = "b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+
+    if (-not (Test-Path -LiteralPath $wrapperPath)) {
+        $Issues.Add("Missing Gradle wrapper properties: $wrapperRelativePath")
+        return
+    }
+
+    $wrapperText = Get-Content -Raw -LiteralPath $wrapperPath
+    $urlMatch = [regex]::Match($wrapperText, "(?m)^distributionUrl=(?<value>[^\r\n]+)$")
+    $shaMatch = [regex]::Match($wrapperText, "(?m)^distributionSha256Sum=(?<value>[a-fA-F0-9]{64})$")
+
+    if (-not $urlMatch.Success) {
+        $Issues.Add("$wrapperRelativePath is missing distributionUrl.")
+        return
+    }
+    if ($urlMatch.Groups["value"].Value -ne $expectedDistributionUrl) {
+        $Issues.Add("$wrapperRelativePath distributionUrl must be $expectedDistributionUrl.")
+    }
+    if (-not $shaMatch.Success) {
+        $Issues.Add("$wrapperRelativePath is missing a 64-character distributionSha256Sum.")
+        return
+    }
+
+    $actualSha256 = $shaMatch.Groups["value"].Value.ToLowerInvariant()
+    if ($actualSha256 -ne $expectedSha256) {
+        $Issues.Add("$wrapperRelativePath distributionSha256Sum does not match the pinned Gradle 9.3.1 binary checksum.")
+        return
+    }
+
+    Write-Host "Verified Gradle wrapper distribution checksum for Gradle 9.3.1."
+}
+
 if ([string]::IsNullOrWhiteSpace($Root)) {
     $Root = Join-Path $PSScriptRoot ".."
 }
@@ -365,8 +476,12 @@ $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
 $issues = New-Object System.Collections.Generic.List[string]
 
 Test-BackendPythonLocks -Root $resolvedRoot -Issues $issues
+Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "requirements-dev.txt" -LockRelativePath "requirements-dev-lock.txt" -Label "development dependency" -Issues $issues
+Test-DevelopmentLockMatchesBackendRuntime -Root $resolvedRoot -Issues $issues
+Test-BackendDevRequirementsAlias -Root $resolvedRoot -Issues $issues
 Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "backend\requirements-build.txt" -LockRelativePath "backend\requirements-build-lock.txt" -Label "backend build dependency" -Issues $issues
 Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "scripts\acceleration-requirements.txt" -LockRelativePath "scripts\acceleration-requirements-lock.txt" -Label "acceleration dependency" -Issues $issues
+Test-GradleWrapperDistribution -Root $resolvedRoot -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "desktop" -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "mobile" -Issues $issues
 

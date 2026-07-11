@@ -1,7 +1,9 @@
-const { readFileSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
-const configPath = join(__dirname, "..", "electron-builder.signed.js");
+const desktopRoot = join(__dirname, "..");
+const configPath = join(desktopRoot, "electron-builder.signed.js");
+const macEntitlementsPath = join(desktopRoot, "build", "entitlements.mac.plist");
 const configText = readFileSync(configPath, "utf8");
 const args = process.argv.slice(2);
 const structureOnly = args.includes("--structure-only");
@@ -37,10 +39,25 @@ const requiredConfigMarkers = [
   "publisherName"
 ];
 
+const FORBIDDEN_MAC_ENTITLEMENTS = [
+  "com.apple.security.cs.disable-library-validation"
+];
+
 const issues = [];
 const placeholders = [...new Set(configText.match(/REPLACE_[A-Z0-9_]+/g) ?? [])];
 if (placeholders.length > 0) {
   issues.push(`Signed build config still contains placeholder values: ${placeholders.join(", ")}`);
+}
+
+if (!existsSync(macEntitlementsPath)) {
+  issues.push(`Missing macOS entitlements file: ${macEntitlementsPath}`);
+} else {
+  const macEntitlementsText = readFileSync(macEntitlementsPath, "utf8");
+  for (const entitlement of FORBIDDEN_MAC_ENTITLEMENTS) {
+    if (macEntitlementsText.includes(entitlement)) {
+      issues.push(`macOS entitlements must not enable ${entitlement}.`);
+    }
+  }
 }
 
 function configured(name) {

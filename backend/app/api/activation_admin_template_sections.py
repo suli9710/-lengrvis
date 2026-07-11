@@ -60,8 +60,8 @@ ADMIN_DOCUMENT_BODY = r"""  </style>
               <div class="step-head"><span class="step-index">1</span><h3>选择套餐</h3></div>
               <div id="planSegment" class="segment" role="group" aria-label="套餐选择">
                 <button data-plan="free" type="button"><strong>Free</strong><span>默认 1 台设备</span></button>
-                <button data-plan="pro" type="button" class="active"><strong>Pro</strong><span>默认 2 台设备</span></button>
-                <button data-plan="max" type="button"><strong>Max</strong><span>默认 5 台设备</span></button>
+                <button data-plan="plus" type="button" class="active"><strong>Plus</strong><span>¥49/月 · 默认 2 台设备</span></button>
+                <button data-plan="pro" type="button"><strong>Pro</strong><span>¥129/月 · 默认 5 台设备</span></button>
               </div>
               <p id="planPreview" class="field-note"></p>
               <div class="row">
@@ -139,8 +139,8 @@ ADMIN_DOCUMENT_BODY = r"""  </style>
               <select id="planFilter">
                 <option value="">全部套餐</option>
                 <option value="free">Free</option>
+                <option value="plus">Plus</option>
                 <option value="pro">Pro</option>
-                <option value="max">Max</option>
               </select>
             </label>
             <label>状态

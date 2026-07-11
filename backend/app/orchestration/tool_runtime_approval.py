@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.automation.intent_capsule import user_goal_digest
+from app.core.content_provenance import collect_content_envelopes
 from app.core.schemas import PlanStep
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
@@ -75,6 +77,7 @@ def approval_boundary_facts(
     safe_preview: dict[str, Any],
 ) -> dict[str, Any]:
     policy_mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
+    content_envelopes = collect_content_envelopes(step.args, runtime.extra_context, step.model_action)
     return {
         "policy_mode": policy_mode,
         "tool": {
@@ -89,6 +92,14 @@ def approval_boundary_facts(
             "tool_version": str(getattr(tool, "tool_version", "1") or "1"),
         },
         "model_action": dict(getattr(step, "model_action", {}) or {}),
+        "content_provenance": {
+            "upstream_envelopes": [item.model_dump(mode="json") for item in content_envelopes],
+        },
+        "intent": {
+            "task_id": runtime.task.id,
+            "user_goal_digest": user_goal_digest(runtime.task.user_goal),
+            "plan_revision": int(runtime.extra_context.get("plan_revision") or 0),
+        },
         "runtime_fields": runtime_control_fields(),
         "binding": {
             "args_bound": True,

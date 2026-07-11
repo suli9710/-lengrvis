@@ -1,12 +1,91 @@
 
+.workbench-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgba(27, 36, 58, 0.2);
+  backdrop-filter: blur(3px);
+  cursor: default;
+  animation: workbench-scrim-in 0.2s var(--ease-out) both;
+}
+
 .workbench-panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 80;
+  width: clamp(360px, 30vw, 420px);
   min-width: 0;
   height: 100vh;
+  height: 100dvh;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
   gap: 12px;
-  padding: 14px 0 10px;
-  overflow: hidden;
+  padding: 16px;
+  border-left: 1px solid rgba(214, 220, 233, 0.9);
+  border-radius: 24px 0 0 24px;
+  background:
+    radial-gradient(circle at 90% 4%, rgba(74, 108, 247, 0.13), transparent 28%),
+    linear-gradient(180deg, rgba(250, 252, 255, 0.98), rgba(241, 245, 251, 0.98));
+  box-shadow: -28px 0 70px rgba(31, 43, 75, 0.2);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: workbench-drawer-in 0.26s var(--ease-out) both;
+}
+
+.workbench-panel__header {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 2px 10px;
+  background: linear-gradient(180deg, rgba(250, 252, 255, 0.98) 70%, rgba(250, 252, 255, 0));
+}
+
+.workbench-panel__header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.workbench-panel__header span {
+  color: var(--brand);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.workbench-panel__header strong {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.35px;
+}
+
+.workbench-panel__header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@keyframes workbench-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes workbench-drawer-in {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .workbench-card {
@@ -15,8 +94,8 @@
   gap: 12px;
   padding: 14px;
   border: 1px solid rgba(223, 227, 237, 0.9);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.74);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.8);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(14px);
   animation: shell-rise 0.5s var(--ease-out) backwards;
@@ -28,9 +107,9 @@
   box-shadow: var(--shadow-md);
 }
 
-.workbench-panel > .workbench-card:nth-child(1) { animation-delay: 0.1s; }
-.workbench-panel > .workbench-card:nth-child(2) { animation-delay: 0.18s; }
-.workbench-panel > .workbench-card:nth-child(3) { animation-delay: 0.26s; }
+.workbench-panel > .workbench-card:nth-of-type(1) { animation-delay: 0.06s; }
+.workbench-panel > .workbench-card:nth-of-type(2) { animation-delay: 0.12s; }
+.workbench-panel > .workbench-card:nth-of-type(3) { animation-delay: 0.18s; }
 
 .workbench-card--agent {
   align-content: start;
@@ -75,13 +154,14 @@
 }
 
 .workbench-agent-stage {
-  min-height: 168px;
+  min-height: 144px;
   display: grid;
   place-items: center;
   border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(249, 251, 255, 0.92), rgba(239, 243, 250, 0.82));
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.92), transparent 36%),
+    linear-gradient(180deg, rgba(246, 249, 255, 0.96), rgba(232, 239, 250, 0.82));
   overflow: hidden;
 }
 
@@ -268,4 +348,46 @@
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+
+@media (max-width: 720px) {
+  .workbench-panel {
+    width: min(100%, 420px);
+    padding: 14px;
+    border-radius: 20px 0 0 20px;
+  }
+
+  .workbench-panel__header {
+    top: -14px;
+  }
+}
+
+@media (max-width: 460px) {
+  .workbench-panel {
+    width: 100%;
+    border-left: 0;
+    border-radius: 0;
+  }
+}
+
+/* Drawer exit mirrors its entrance; focus is restored after this completes. */
+.workbench-scrim--closing {
+  pointer-events: none;
+  animation: workbench-scrim-out var(--motion-panel) var(--motion-ease-standard) both;
+}
+
+.workbench-panel--closing {
+  pointer-events: none;
+  animation: workbench-drawer-out var(--motion-panel) var(--motion-ease-standard) both;
+}
+
+@keyframes workbench-scrim-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes workbench-drawer-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(100%); }
 }

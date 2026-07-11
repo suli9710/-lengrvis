@@ -14,7 +14,10 @@ import {
   sanitizeSnapshotForRenderer
 } from "../shared/browserHostRedaction";
 import { isReadOnlyBrowserHostAction } from "./browserHostBridge";
+import { normalizeBrowserHostUrl } from "./browserHostValidation";
 import type { NativeConfirmationDialogOptions } from "./ipcNativeConfirmation";
+
+const MAX_BROWSER_CONFIRMATION_ORIGIN_CHARS = 256;
 
 export type BrowserHostIpcListener = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
@@ -74,12 +77,9 @@ export function registerBrowserHostIpcHandlers({
 
   handle(IPC_CHANNELS.browserHostOpen, async (event, request) => {
     assertTrustedRenderer(event);
-    await confirmNativeDesktopAction(event, {
-      title: "Confirm browser session",
-      message: "Open a managed browser session?",
-      detail: "The session may navigate to external websites using the app's configured browser-network permissions."
-    });
-    return sanitizeActionResult(await host.open(request as BrowserHostOpenRequest));
+    const openRequest = request as BrowserHostOpenRequest;
+    await confirmNativeDesktopAction(event, browserHostOpenConfirmationOptions(openRequest));
+    return sanitizeActionResult(await host.open(openRequest));
   });
 
   handle(IPC_CHANNELS.browserHostShow, (event, sessionId) => {
@@ -140,6 +140,39 @@ export function registerBrowserHostIpcHandlers({
     }
     return sanitizeActionResult(await host.performAction(String(actionRequest?.sessionId ?? ""), action));
   });
+}
+
+function browserHostOpenConfirmationOptions(request: BrowserHostOpenRequest): NativeConfirmationDialogOptions {
+  const target = browserHostConfirmationTarget(request?.url);
+  return {
+    title: "Confirm browser session",
+    message: "Open a managed browser session?",
+    detail: [
+      `Target: ${target}`,
+      "The session may navigate to external websites using the app's configured browser-network permissions."
+    ].join("\n")
+  };
+}
+
+function browserHostConfirmationTarget(rawUrl: unknown): string {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) {
+    return "about:blank";
+  }
+  try {
+    const normalized = normalizeBrowserHostUrl(rawUrl);
+    if (!normalized || normalized === "about:blank") {
+      return "about:blank";
+    }
+    return truncateBrowserHostConfirmationOrigin(new URL(normalized).origin);
+  } catch {
+    return "unavailable (invalid or blocked URL)";
+  }
+}
+
+function truncateBrowserHostConfirmationOrigin(origin: string): string {
+  return origin.length > MAX_BROWSER_CONFIRMATION_ORIGIN_CHARS
+    ? `${origin.slice(0, MAX_BROWSER_CONFIRMATION_ORIGIN_CHARS)}...`
+    : origin;
 }
 
 export function assertBrowserHostRenderer(

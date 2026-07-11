@@ -6,6 +6,15 @@ param(
     [string]$ArtifactSha256 = "",
     [string]$DeviceLabel = "",
     [string]$BackendBuildLabel = "",
+    [string]$CandidateCommit = "",
+    [string]$CandidateBuildIdentifier = "",
+    [string]$CandidateRepository = "",
+    [string]$CandidateRunId = "",
+    [string]$CandidateRunAttempt = "",
+    [string]$SignerCertificateSha256 = "",
+    [string]$BuilderId = "",
+    [string]$BuildInvocationId = "",
+    [string]$BuiltAtUtc = "",
     [string]$BlockedReason = "uncollected"
 )
 
@@ -119,12 +128,37 @@ function Read-MobileEasCliVersion {
     }
 }
 
+function Read-MobileAppIdentity {
+    $appPath = Join-Path $resolvedRoot "mobile\app.json"
+    if (-not (Test-Path -LiteralPath $appPath)) {
+        return $null
+    }
+
+    try {
+        $appJson = Get-Content -Raw -Encoding UTF8 -LiteralPath $appPath | ConvertFrom-Json
+        return [ordered]@{
+            package_name = [string]$appJson.expo.android.package
+            version_name = [string]$appJson.expo.version
+            version_code = $appJson.expo.android.versionCode
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
 $runId = "run-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
 $runRoot = Join-Path $EvidenceRoot $runId
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 
 $blocked = Protect-Label $BlockedReason
 $easCliVersion = Read-MobileEasCliVersion
+$mobileAppIdentity = Read-MobileAppIdentity
+$artifactShaNormalized = if ($ArtifactSha256 -match "^[a-fA-F0-9]{64}$") { $ArtifactSha256.ToLowerInvariant() } else { "uncollected" }
+$signerShaNormalized = if ($SignerCertificateSha256 -match "^[a-fA-F0-9]{64}$") { $SignerCertificateSha256.ToLowerInvariant() } else { "uncollected" }
+$packageName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.package_name)) { [string]$mobileAppIdentity.package_name } else { "uncollected" }
+$versionName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.version_name)) { [string]$mobileAppIdentity.version_name } else { "uncollected" }
+$versionCode = if ($null -ne $mobileAppIdentity -and $mobileAppIdentity.version_code -is [int]) { [int]$mobileAppIdentity.version_code } else { "uncollected" }
 $localEasCliBinaryPresent = (
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas.cmd")) -or
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas"))
@@ -159,7 +193,16 @@ $packet = [ordered]@{
         required_review = "review.status=reviewed_passed with reviewer_label, reviewed_at_utc, evidence_artifacts_reviewed=true, redaction_reviewed=true"
         required_identity_policy = "Use binding_ref or redacted active-grant labels in shareable artifacts; keep raw deviceId/grantId local-only."
         required_transport = "Redacted HTTPS origin plus approval, remote screen, and remote input WSS URLs."
-        required_artifact_match = "app.artifact_sha256 must match the APK supplied to android:release-gate -ArtifactPath."
+        required_artifact_match = "APK SHA-256, package name, version code/name, and signer certificate SHA-256 must match Android SDK inspection of the APK supplied to android:release-gate -ArtifactPath."
+        required_artifact_provenance = "app.provenance must bind the reviewed builder invocation, source commit/repository, APK digest, package/version, signer digest, and build timestamp."
+        required_candidate_binding = "Fill candidate.commit, build_identifier, repository, ci_run_id, and ci_run_attempt from the immutable reviewed candidate; seal with evidence:android-real-device-seal before strict release validation."
+    }
+    candidate = [ordered]@{
+        commit = Protect-Label $CandidateCommit
+        build_identifier = Protect-Label $CandidateBuildIdentifier
+        repository = Protect-Label $CandidateRepository
+        ci_run_id = Protect-Label $CandidateRunId
+        ci_run_attempt = Protect-Label $CandidateRunAttempt
     }
     real_device_result = "uncollected"
     blocked_reason = $blocked
@@ -181,7 +224,27 @@ $packet = [ordered]@{
     app = [ordered]@{
         artifact_label = Protect-Label $ArtifactLabel
         artifact_label_redacted = Protect-Label $ArtifactLabel
-        artifact_sha256 = if ($ArtifactSha256 -match "^[a-fA-F0-9]{64}$") { $ArtifactSha256.ToLowerInvariant() } else { "uncollected" }
+        artifact_sha256 = $artifactShaNormalized
+        build_profile = "preview"
+        eas_build_label_redacted = Protect-Label $BuildInvocationId
+        package_name = $packageName
+        version_name = $versionName
+        version_code = $versionCode
+        signer_certificate_sha256 = $signerShaNormalized
+        provenance = [ordered]@{
+            type = "reviewed-build-record/v1"
+            builder_id = Protect-Label $BuilderId
+            build_invocation_id = Protect-Label $BuildInvocationId
+            source_repository = Protect-Label $CandidateRepository
+            source_commit = Protect-Label $CandidateCommit
+            build_profile = "preview"
+            built_at_utc = Protect-Label $BuiltAtUtc
+            artifact_sha256 = $artifactShaNormalized
+            package_name = $packageName
+            version_name = $versionName
+            version_code = $versionCode
+            signer_certificate_sha256 = $signerShaNormalized
+        }
     }
     device = [ordered]@{
         kind = "uncollected"
@@ -206,6 +269,11 @@ $packet = [ordered]@{
         reviewed_at_utc = "uncollected"
         evidence_artifacts_reviewed = $false
         redaction_reviewed = $false
+    }
+    evidence = [ordered]@{
+        payload_sha256 = ""
+        signature = ""
+        signing_key_fingerprint = ""
     }
     evidence_artifacts_redacted = @()
     claim_controls = [ordered]@{
@@ -308,7 +376,10 @@ $markdown = @(
     "",
     "- `real_device_result` must be `passed`.",
     "- `review.status` must be `reviewed_passed`, with reviewer, UTC timestamp, artifact review, and redaction review recorded.",
-    "- `app.artifact_sha256` must match the exact APK supplied to `android:release-gate -ArtifactPath`.",
+    "- `app.artifact_sha256`, package/version, and signer certificate SHA-256 must match Android SDK inspection of the exact APK supplied to `android:release-gate -ArtifactPath`.",
+    "- `app.provenance` must bind the reviewed builder invocation and timestamp to the candidate source plus the same APK digest, package/version, and signer digest.",
+    "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the protected release-evidence HMAC secret.",
+    "- A template has no valid signature and can never satisfy the strict gate.",
     "- `transport` must contain redacted HTTPS plus approval/screen/input WSS labels.",
     "- Shareable artifacts must use `binding_ref` or redacted active-grant labels; raw `deviceId` and `grantId` stay local-only.",
     "",

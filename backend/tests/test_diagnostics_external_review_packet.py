@@ -316,6 +316,9 @@ def test_release_gate_documents_diagnostics_review_claim_controls(project_root: 
     assert "`summary.review_fields_complete=false`" in release_gate
     assert "`summary.external_sharing_blocked=true`" in release_gate
     assert "`summary.separate_human_content_review_required=true`" in release_gate
+    assert "`manual_content_review_only_remaining`" in release_gate
+    assert "strict `diagnostics-evidence` stage" in release_gate
+    assert "signed `diagnostics-external-review-evidence-reviewed` JSON" in release_gate
     assert "actual exported package path label" in release_gate
     assert "logs/path labels/task traces/model traces/device identifiers" in release_gate
     assert "reviewer/timestamp" in release_gate

@@ -1,4 +1,4 @@
-export type CommercePlan = "free" | "pro" | "max";
+export type CommercePlan = "free" | "plus" | "pro";
 
 export type CommerceFeature =
   | "local_read_only"
@@ -10,10 +10,13 @@ export type CommerceFeature =
   | "remote_control"
   | "audit_export"
   | "policy_management"
-  | "private_deployment";
+  | "private_deployment"
+  | "advanced_models";
 
 export interface CommercePlanStatus {
   plan: CommercePlan;
+  monthlyPriceCny: number;
+  modelTier: "standard" | "advanced";
   remoteDesktopEnabled: boolean;
   features: Record<CommerceFeature, boolean>;
   highRiskFeatures: CommerceFeature[];

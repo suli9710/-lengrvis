@@ -5,7 +5,8 @@ import type {
   BrowserHostOpenRequest,
   BrowserHostSnapshot
 } from "../shared/browserTypes";
-import { sanitizeActionResultForRenderer } from "../shared/browserHostRedaction";
+import { sanitizeActionResultForRenderer, sanitizeSnapshotForRenderer } from "../shared/browserHostRedaction";
+import { isBrowserScreenshotArtifactUrl } from "./browserScreenshotStore";
 import { buildBackendWebSocketUrl, createDesktopWebSocket } from "./desktopWebSocket";
 
 type BrowserHostBridgeTarget = {
@@ -38,7 +39,11 @@ export class BrowserHostWebSocketBridge {
     if (!this.stopped) return;
     this.stopped = false;
     this.unsubscribeSnapshots = this.browserHost.onSnapshot((snapshot) => {
-      this.send({ type: "snapshot", snapshot });
+      // The BrowserHost implementation already returns a renderer-safe
+      // snapshot, but the bridge target is intentionally structural for
+      // testability. Redact here as the final boundary before any state leaves
+      // the Electron process.
+      this.send({ type: "snapshot", snapshot: sanitizeSnapshotForRenderer(snapshot) });
     });
     this.connect();
   }
@@ -61,7 +66,7 @@ export class BrowserHostWebSocketBridge {
       const desktopApiToken = this.getDesktopApiToken();
       this.socket = createDesktopWebSocket(buildBrowserHostWebSocketUrl(this.getBaseUrl()), desktopApiToken);
       this.socket.addEventListener("open", () => {
-        this.send({ type: "snapshot", snapshot: this.browserHost.getSnapshot() });
+        this.send({ type: "snapshot", snapshot: sanitizeSnapshotForRenderer(this.browserHost.getSnapshot()) });
       });
       this.socket.addEventListener("message", (event) => {
         void this.handleMessage(event.data);
@@ -128,7 +133,7 @@ export class BrowserHostWebSocketBridge {
         result = { ok: true, snapshot: this.browserHost.getSnapshot() };
         break;
     }
-    result = sanitizeActionResultForRenderer(result);
+    result = sanitizeActionResultForBrowserHostBridge(result);
 
     this.send({
       type: "result",
@@ -152,6 +157,23 @@ export class BrowserHostWebSocketBridge {
       snapshot: this.browserHost.getSnapshot()
     };
   }
+}
+
+export function sanitizeActionResultForBrowserHostBridge(
+  result: BrowserHostActionResult
+): BrowserHostActionResult {
+  const screenshotUrl = result.event?.screenshot_url;
+  const sanitized = sanitizeActionResultForRenderer(result);
+  if (!isBrowserScreenshotArtifactUrl(screenshotUrl) || !sanitized.event) {
+    return sanitized;
+  }
+  return {
+    ...sanitized,
+    event: {
+      ...sanitized.event,
+      screenshot_url: screenshotUrl
+    }
+  };
 }
 
 export function isReadOnlyBrowserHostAction(action: BrowserAction | undefined): action is BrowserAction {

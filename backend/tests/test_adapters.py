@@ -144,10 +144,18 @@ def test_webhook_execute_pins_outbound_url(monkeypatch):
 
     class RecordingClient:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, str]]] = []
+            self.calls: list[tuple[str, dict[str, str], dict[str, str]]] = []
 
-        def post(self, url: str, payload: dict, headers: dict[str, str], timeout_seconds: float) -> dict:
-            self.calls.append((url, headers))
+        def post(
+            self,
+            url: str,
+            payload: dict,
+            headers: dict[str, str],
+            timeout_seconds: float,
+            *,
+            extensions: dict[str, str],
+        ) -> dict:
+            self.calls.append((url, headers, extensions))
             return {"ok": True}
 
     client = RecordingClient()
@@ -164,7 +172,7 @@ def test_webhook_execute_pins_outbound_url(monkeypatch):
             {
                 "url": "https://203.0.113.10/hook",
                 "headers": {"Host": "hooks.example.test"},
-                "extensions": {},
+                "extensions": {"sni_hostname": "hooks.example.test"},
             },
         )(),
     )
@@ -179,4 +187,10 @@ def test_webhook_execute_pins_outbound_url(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert client.calls == [("https://203.0.113.10/hook", {"Host": "hooks.example.test", "X-Trace": "1"})]
+    assert client.calls == [
+        (
+            "https://203.0.113.10/hook",
+            {"Host": "hooks.example.test", "X-Trace": "1"},
+            {"sni_hostname": "hooks.example.test"},
+        )
+    ]

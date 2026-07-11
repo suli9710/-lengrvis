@@ -144,6 +144,7 @@ def _run_release_safety(
     env = os.environ.copy()
     for key in (
         "LENGRVIS_ALLOW_MOCK_FALLBACK",
+        "LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION",
         "LENGRVIS_CLOUD_QUOTA_ENFORCED",
         "LENGRVIS_CLOUD_QUOTA_MAX_CALLS",
         "LENGRVIS_CLOUD_QUOTA_MAX_COST_USD",
@@ -151,6 +152,9 @@ def _run_release_safety(
         "LENGRVIS_CLOUD_QUOTA_WINDOW_HOURS",
         "LENGRVIS_CONFIG_FILE",
         "LENGRVIS_COMMERCIAL_RELEASE",
+        "LENGRVIS_CODE_COMMAND",
+        "LENGRVIS_CODE_VENDOR_ROOT",
+        "LENGRVIS_DEVELOPER_WRITES_ENABLED",
         "LENGRVIS_ENV_FILE",
         "LENGRVIS_ACTIVATION_ALLOW_INSECURE_HTTP",
         "LENGRVIS_ACTIVATION_AUDIT_EVIDENCE",
@@ -170,6 +174,9 @@ def _run_release_safety(
         "LENGRVIS_LICENSE_REVOCATIONS",
         "LENGRVIS_LICENSE_SIGNING_KEY",
         "LENGRVIS_PLAN",
+        "LENGRVIS_PUBLIC_BETA",
+        "LENGRVIS_RELEASE_BUILD",
+        "LENGRVIS_RELEASE_CHANNEL",
         "LENGRVIS_STRICT_STATE_MACHINE",
     ):
         env.pop(key, None)
@@ -354,6 +361,22 @@ def _android_release_gate_summary(
             "bytes": artifact_bytes,
             "installable_apk": installable_apk,
             "apk_zip_header_valid": apk_zip_header_valid,
+            "apk_structure_valid": installable_apk,
+            "apk_signing": {
+                "verification_succeeded": status == "passed",
+                "v2_verified": status == "passed",
+                "v3_verified": status == "passed",
+                "signer_identity_verified": status == "passed",
+                "signer_certificate_sha256": "a" * 64 if status == "passed" else "",
+                "expected_signer_certificate_sha256": "a" * 64 if status == "passed" else "",
+            },
+            "manifest_identity": {
+                "package_name": "com.lengrvis.approval" if status == "passed" else "",
+                "version_name": "0.1.2" if status == "passed" else "",
+                "version_code": 2 if status == "passed" else 0,
+                "matches_source_config": status == "passed",
+            },
+            "provenance": {"verified": status == "passed"},
         },
         "artifact_gate": {
             "evaluated": artifact_gate_evaluated,
@@ -365,6 +388,14 @@ def _android_release_gate_summary(
             "passed": real_device_gate_passed,
             "evidence_label": real_device_evidence_label,
             "issues": [],
+        },
+        "reviewed_evidence_contract": {
+            "evaluated": not preflight_only,
+            "valid_hash": status == "passed",
+            "valid_signature": status == "passed",
+            "candidate_binding_valid": status == "passed",
+            "artifact_identity_valid": status == "passed",
+            "artifact_provenance_valid": status == "passed",
         },
         "warnings": [],
         "claim_controls": {
@@ -622,7 +653,8 @@ def test_setup_dev_owns_dependency_install(project_root: Path) -> None:
     text = _setup_dev_text(project_root)
 
     assert "& $python -m pip install -U pip" in text
-    assert "& $python -m pip install -r $requirementsPath" in text
+    assert "requirements-dev-lock.txt" in text
+    assert "& $python -m pip install --require-hashes -r $requirementsPath" in text
     assert "& $npm --prefix $DesktopDir ci" in text
     assert "& $npm --prefix $DesktopDir install" in text
 
@@ -1262,6 +1294,37 @@ def test_release_safety_passes_when_strict_enabled_and_mock_fallback_disabled(
 
     assert result.returncode == 0, output
     assert "Release safety verification passed: allow_mock_fallback=false and strict_state_machine=true." in output
+    assert "Arbitrary local/code execution is either disabled" in output
+
+
+@pytest.mark.parametrize(
+    ("flag_name", "expected_operation"),
+    [
+        ("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", "Local Python/PowerShell/Node/HTTP Skill execution"),
+        ("LENGRVIS_DEVELOPER_WRITES_ENABLED", "Developer generated-code/write execution"),
+        ("LENGRVIS_CODE_COMMAND", "Developer runtime command/vendor override"),
+    ],
+)
+def test_release_safety_blocks_arbitrary_execution_without_os_isolation_attestation(
+    project_root: Path,
+    tmp_path: Path,
+    flag_name: str,
+    expected_operation: str,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            flag_name: "true",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert expected_operation in output
+    assert "AppContainer, restricted-token, Job Object, and network-broker enforcement" in output
+    assert "Release safety verification passed" not in output
 
 
 def test_release_safety_blocks_mock_fallback_even_with_strict_state_machine(
@@ -1574,6 +1637,9 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     release_version_script = (project_root / "desktop" / "scripts" / "verify-release-version.cjs").read_text(
         encoding="utf-8"
     )
+    verified_publish_script = (project_root / "desktop" / "scripts" / "publish-verified-release.cjs").read_text(
+        encoding="utf-8"
+    )
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
     assert (
@@ -1584,13 +1650,16 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert scripts["verify:macos-release-signatures"] == "node scripts/verify-macos-release-signatures.cjs"
     assert scripts["verify:linux-release-integrity"] == "node scripts/verify-linux-release-integrity.cjs"
     assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:signed"]
-    assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:publish"]
-    assert "verify:release-version -- --require-tag" in scripts["dist:publish"]
     assert "verify:signed-build-config:mac" in scripts["dist:mac:signed"]
     assert "verify:macos-release-signatures" in scripts["dist:mac:signed"]
     assert "verify:linux-release-integrity -- --write" in scripts["dist:linux"]
     assert "electron-builder.signed.js" in scripts["dist:signed"]
-    assert "electron-builder.signed.js --publish always" in scripts["dist:publish"]
+    assert scripts["dist:publish"] == "node scripts/publish-verified-release.cjs"
+    assert "Direct release publishing is disabled" in verified_publish_script
+    assert '"release", "upload"' not in verified_publish_script
+    for name, command in scripts.items():
+        if name.startswith("dist:") and name != "dist:publish" and "electron-builder" in command:
+            assert "--publish never" in command
     assert "verify:signed-build-config" not in scripts["dist"]
     assert "electron-builder.yml" in scripts["dist"]
     assert not (project_root / "desktop" / "electron-builder.signed.yml").exists()
@@ -2239,6 +2308,8 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:result-quality-verify",
         "evidence:mobile-lan-wss",
         "evidence:android-real-device-template",
+        "evidence:android-real-device-verify",
+        "evidence:android-real-device-seal",
         "evidence:local-model-template",
         "evidence:diagnostics-review",
         "evidence:diagnostics-verify",
@@ -2581,10 +2652,14 @@ def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(proje
     assert packet["android_artifact"]["installable_apk"] is False
     assert packet["android_artifact"]["apk_zip_header_valid"] is False
     assert packet["artifact_gate"]["passed"] is False
-    assert packet["real_device_gate"]["passed"] is True
+    assert packet["real_device_gate"]["passed"] is False
     assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
     assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
     assert any(issue["code"] == "artifact_not_apk_zip" for issue in packet["artifact_gate"]["issues"])
+    assert any(
+        issue["code"] == "android_reviewed_evidence_contract_invalid"
+        for issue in packet["real_device_gate"]["issues"]
+    )
 
 
 def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root: Path, tmp_path: Path) -> None:
@@ -2693,12 +2768,20 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert packet["summary"]["real_device_signoff"] is False
     assert packet["summary"]["release_candidate_signoff"] is False
     assert packet["summary"]["diagnostics_public_safe"] is False
+    assert packet["summary"]["diagnostics_external_share_machine_chain_ready"] is False
+    assert packet["summary"]["diagnostics_external_share_manual_content_review_pending"] is True
     assert packet["summary"]["release_ready"] is False
     assert packet["summary"]["claimable_release_signoff"] is False
-    assert packet["summary"]["release_readiness_blocker_count"] == 6
+    assert packet["summary"]["release_readiness_blocker_count"] == 7
     assert packet["summary"]["packet_status"] == "redacted_partial_evidence_summary"
+    assert packet["candidate_context"]["release_version"] == "v0.1.2"
+    assert packet["candidate_context"]["current_release_evidence"] == "docs/release/current-release-evidence.md"
+    assert packet["candidate_context"]["current_release_evidence_present"] is True
+    assert "current-release-evidence.md" in packet["candidate_context"]["candidate_commit_source"]
+    assert "Commit SHA" in packet["candidate_context"]["candidate_commit_source"]
     assert "Packet role: evidence index only; packet_is_pass=false" in markdown_text
-    assert "Release readiness: release_ready=False; claimable_release_signoff=False; blocker_count=6" in markdown_text
+    assert "Candidate: release_version=v0.1.2" in markdown_text
+    assert "Release readiness: release_ready=False; claimable_release_signoff=False; blocker_count=7" in markdown_text
     rc_handoff = packet["rc_handoff_requirements"]
     assert rc_handoff["status"] == "manual_rc_handoff_required"
     assert rc_handoff["release_candidate_signoff"] is False
@@ -2725,6 +2808,7 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert "RC handoff template: found=False" in markdown_text
     blockers = {item["id"]: item for item in packet["release_readiness_blockers"]}
     assert set(blockers) == {
+        "agentic_threat_model",
         "clean_machine_local_model",
         "mobile_real_device_lan_wss",
         "android_installable_remote_control",
@@ -2738,6 +2822,10 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
         assert blocker["beginner_next_step"]
         assert blocker["must_not_claim"]
     assert blockers["mobile_real_device_lan_wss"]["status"] == "missing_real_device_artifacts"
+    assert blockers["agentic_threat_model"]["status"] == "candidate_bound_review_required"
+    assert blockers["agentic_threat_model"]["must_not_claim"] == (
+        "public Beta threat-model gate passed"
+    )
     assert blockers["android_installable_remote_control"]["status"] == "missing_apk_or_real_device_gate"
     assert blockers["android_installable_remote_control"]["claim_allowed"] is False
     assert blockers["android_installable_remote_control"]["must_not_claim"] == (
@@ -2870,8 +2958,32 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert (
         packet["evidence"]["diagnostics_external_review"]["expected_external_review_status"] == "manual_review_required"
     )
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["machine_chain_status"]
+        == "source_contract_ready_template_not_collected"
+    )
+    assert packet["evidence"]["diagnostics_external_review"]["manual_content_review_only_remaining"] is False
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["reviewed_evidence_validator"]
+        == "scripts/verify_diagnostics_external_reviewed_evidence.py"
+    )
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["reviewed_evidence_artifact_type"]
+        == "diagnostics-external-review-evidence-reviewed"
+    )
+    assert packet["evidence"]["diagnostics_external_review"]["strict_pipeline_stage"] == "diagnostics-evidence"
     assert packet["evidence"]["diagnostics_external_review"]["expected_public_safe"] is False
     assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["found"] is False
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["machine_chain_status"]
+        == "source_contract_ready_template_not_collected"
+    )
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"][
+            "manual_content_review_only_remaining"
+        ]
+        is False
+    )
     assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["public_safe"] is False
     assert (
         packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["external_sharing_allowed"]
@@ -2989,6 +3101,11 @@ def test_release_evidence_packet_indexes_strict_android_gate_without_release_sig
     assert latest["android_artifact"]["label"] == "Lengrvis-preview.apk"
     assert latest["android_artifact"]["installable_apk"] is True
     assert latest["android_artifact"]["apk_zip_header_valid"] is True
+    assert latest["android_artifact"]["apk_v2_signature_verified"] is True
+    assert latest["android_artifact"]["apk_v3_signature_verified"] is True
+    assert latest["android_artifact"]["signer_identity_verified"] is True
+    assert latest["android_artifact"]["manifest_identity_verified"] is True
+    assert latest["android_artifact"]["provenance_verified"] is True
     assert latest["artifact_gate_passed"] is True
     assert latest["real_device_gate_passed"] is True
     assert latest["claim_controls"]["installable_android_app_claim_allowed"] is True
@@ -3002,6 +3119,93 @@ def test_release_evidence_packet_indexes_strict_android_gate_without_release_sig
     assert "It does not create installable Android APK pass or real-device Android remote-control pass" in "\n".join(
         packet["not_clean_machine_or_signoff"]
     )
+
+
+def test_release_evidence_packet_rejects_unbound_passed_android_gate_summary(
+    project_root: Path, tmp_path: Path
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    unbound_summary = _android_release_gate_summary(
+        status="passed",
+        release_ready=True,
+        preflight_only=False,
+        installable_claim_allowed=True,
+        remote_claim_allowed=True,
+        artifact_provided=True,
+        artifact_label="Lengrvis-preview.apk",
+        artifact_bytes=2_000_000,
+        installable_apk=True,
+        apk_zip_header_valid=True,
+        artifact_gate_evaluated=True,
+        artifact_gate_passed=True,
+        real_device_gate_evaluated=True,
+        real_device_gate_passed=True,
+        real_device_evidence_label="android-real-device-evidence.redacted.json",
+        must_not_claim=[],
+    )
+    unbound_summary["reviewed_evidence_contract"]["candidate_binding_valid"] = False
+    _write_android_release_gate_summary(android_root, unbound_summary)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    )
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    assert latest["source_contract_status"] == "source_contract_mismatch"
+    assert "candidate binding" in "\n".join(latest["mismatch_reasons"])
+
+
+def test_release_evidence_packet_rejects_android_pass_without_v3_or_provenance(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    summary = _android_release_gate_summary(
+        status="passed",
+        release_ready=True,
+        preflight_only=False,
+        installable_claim_allowed=True,
+        remote_claim_allowed=True,
+        artifact_provided=True,
+        artifact_label="Lengrvis-preview.apk",
+        artifact_bytes=2_000_000,
+        installable_apk=True,
+        apk_zip_header_valid=True,
+        artifact_gate_evaluated=True,
+        artifact_gate_passed=True,
+        real_device_gate_evaluated=True,
+        real_device_gate_passed=True,
+        real_device_evidence_label="android-real-device-evidence.redacted.json",
+        must_not_claim=[],
+    )
+    summary["android_artifact"]["apk_signing"]["v3_verified"] = False
+    summary["android_artifact"]["provenance"]["verified"] = False
+    _write_android_release_gate_summary(android_root, summary)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    )
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    mismatch_reasons = "\n".join(latest["mismatch_reasons"])
+    assert "v2/v3 signature verification" in mismatch_reasons
+    assert "candidate-bound APK provenance" in mismatch_reasons
 
 
 def test_release_evidence_packet_rejects_forged_passed_android_gate_summary(project_root: Path, tmp_path: Path) -> None:
@@ -5234,6 +5438,8 @@ def test_release_evidence_packet_consumes_diagnostics_external_review_template(
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert review_summary["found"] is True
     assert review_summary["marker"] == "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
+    assert review_summary["machine_chain_status"] == "ready_pending_manual_content_review"
+    assert review_summary["manual_content_review_only_remaining"] is True
     assert review_summary["source_contract_status"] == "valid_not_signoff_template"
     assert review_summary["mismatch_reasons"] == []
     assert review_summary["review_status"] == "manual_external_review_template_ready"
@@ -5249,6 +5455,14 @@ def test_release_evidence_packet_consumes_diagnostics_external_review_template(
     assert review_summary["checklist_count"] >= 6
     assert packet["summary"]["source_contract_failures"] == 0
     assert packet["summary"]["diagnostics_public_safe"] is False
+    assert packet["summary"]["diagnostics_external_share_machine_chain_ready"] is True
+    assert packet["summary"]["diagnostics_external_share_manual_content_review_pending"] is True
+    diagnostics_entry = packet["evidence"]["diagnostics_external_review"]
+    assert diagnostics_entry["machine_chain_status"] == "ready_pending_manual_content_review"
+    assert diagnostics_entry["manual_content_review_only_remaining"] is True
+    blockers = {item["id"]: item for item in packet["release_readiness_blockers"]}
+    assert blockers["diagnostics_external_public_safety"]["status"] == "manual_content_review_only_remaining"
+    assert "reviewed-evidence verifier" in blockers["diagnostics_external_public_safety"]["support_evidence"]
 
 
 def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
@@ -5370,6 +5584,8 @@ def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
     assert packet["summary"]["source_contract_failures"] == 0
     assert packet["summary"]["diagnostics_public_safe"] is False
     assert review_summary["source_contract_status"] == "valid_fail_closed_template"
+    assert review_summary["machine_chain_status"] == "blocked_before_manual_content_review"
+    assert review_summary["manual_content_review_only_remaining"] is False
     assert review_summary["mismatch_reasons"] == []
     assert review_summary["review_status"] == "blocked_missing_diagnostics_package"
     assert review_summary["public_safe"] is False
@@ -5757,6 +5973,8 @@ def test_release_evidence_packet_fail_closes_malformed_diagnostics_review_artifa
     assert packet["summary"]["source_contract_failures"] == 1
     assert review_summary["source_contract_status"] == "source_contract_mismatch"
     assert review_summary["marker"] == "invalid_redacted"
+    assert review_summary["machine_chain_status"] == "source_contract_mismatch"
+    assert review_summary["manual_content_review_only_remaining"] is False
     assert review_summary["review_status"] == "invalid_redacted"
     assert review_summary["public_safe"] is False
     assert review_summary["external_sharing_allowed"] is False
@@ -5920,6 +6138,8 @@ def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artif
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert review_summary["source_contract_status"] == "source_contract_mismatch"
     assert review_summary["marker"] == "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
+    assert review_summary["machine_chain_status"] == "source_contract_mismatch"
+    assert review_summary["manual_content_review_only_remaining"] is False
     assert review_summary["review_status"] == "manual_external_review_template_ready"
     assert review_summary["public_safe"] is False
     mismatch_reasons = "\n".join(review_summary["mismatch_reasons"])

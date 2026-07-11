@@ -522,6 +522,7 @@
 }
 
 .timeline__content > strong,
+.timeline__content > .row--between > strong,
 .step-row strong,
 .agent-thread strong,
 .finding-row strong,

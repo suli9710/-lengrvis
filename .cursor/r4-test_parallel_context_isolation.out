@@ -1,7 +1,0 @@
-...F.                                                                    [100%]
-================================== FAILURES ===================================
-E   sqlite3.OperationalError: database is locked
-C:\Users\Suli\Desktop\mavris\backend\app\core\db.py:1168: sqlite3.OperationalError: database is locked
-=========================== short test summary info ===========================
-FAILED backend\tests\test_parallel_context_isolation.py::test_scheduler_fatal_outcome_cancels_parallel_siblings
-1 failed, 4 passed in 6.12s

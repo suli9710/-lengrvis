@@ -25,8 +25,10 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
-      - name: Install ruff (pinned to the pre-commit version)
-        run: python -m pip install "ruff==0.9.6"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install locked lint dependencies
+        run: python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Ruff full-tree debt budget
         run: python scripts/check_ruff_baseline.py backend --baseline ci/ruff-baseline.json
       - name: Collect changed backend Python files

@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
+from app.core.db_migrations import apply_schema_migrations
 from app.core.db_schema import ensure_document_chunks_fts, initialize_schema
 from app.core.db_tables import (
     _ENSURE_COLUMNS_TABLES,
@@ -251,6 +252,7 @@ def init_db(*, force: bool = False) -> None:
 def _init_db_schema() -> None:
     with connect() as conn:
         initialize_schema(conn, _ensure_columns)
+        apply_schema_migrations(conn)
         _ensure_sensitive_record_integrity_schema(conn)
 
 
@@ -800,6 +802,12 @@ def upsert_memory(payload: dict[str, Any]) -> None:
     from app.core.db_memory import upsert_memory as _upsert_memory
 
     return _upsert_memory(payload)
+
+
+def get_memory(memory_id: str) -> dict[str, Any] | None:
+    from app.core.db_memory import get_memory as _get_memory
+
+    return _get_memory(memory_id)
 
 
 def list_memories(*, tags: list[str] | None = None, limit: int = 200) -> list[dict[str, Any]]:

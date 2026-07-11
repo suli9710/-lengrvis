@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_key.add_argument("--db")
     create_key.add_argument("--activation-key")
     create_key.add_argument("--activation-key-out")
-    create_key.add_argument("--plan", choices=("free", "pro", "max", "team"), required=True)
+    create_key.add_argument("--plan", choices=("free", "plus", "pro", "max", "team"), required=True)
     create_key.add_argument("--subscription-id", required=True)
     create_key.add_argument(
         "--status",

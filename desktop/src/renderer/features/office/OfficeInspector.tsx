@@ -90,27 +90,24 @@ export function OfficeInspector({
                   <strong>{skill.title}</strong>
                   <em>{skill.summary || quickSkillHint(skill)}</em>
                 </span>
+                <span className="office-quick-card__details">
+                  <em>产出：{skill.wizard.output}</em>
+                  <em>边界：{skill.wizard.preflight}</em>
+                </span>
                 <span className="office-quick-card__meta">
                   <b>{skill.trust.estimate}</b>
                   <b>{skill.trust.approval}</b>
-                  <b>{skill.kind === "view" ? "选文件后继续" : "点发送开始"}</b>
-                </span>
-                <span className="office-quick-card__details">
-                  <span className="office-quick-card__wizard-line">
-                    <b>输入</b>{skill.wizard.input}
-                  </span>
-                  <span className="office-quick-card__wizard-line">
-                    <b>预检</b>{skill.wizard.preflight}
-                  </span>
-                  <span className="office-quick-card__wizard-line">
-                    <b>产出</b>{skill.wizard.output}
-                  </span>
                 </span>
                 <small className="office-quick-card__trust">
                   <b>{skill.trust.local}</b>
                   <b>{skill.trust.cloud}</b>
                   <b>{skill.trust.rollback}</b>
                 </small>
+              </span>
+              <span className="office-quick-card__action" aria-hidden="true">
+                {selectedQuickSkill?.id === skill.id
+                  ? skill.kind === "view" ? "已打开" : "已选择 · 点发送"
+                  : skill.kind === "view" ? "打开查看" : "点发送开始"}
               </span>
             </button>
           ))}
@@ -170,49 +167,13 @@ export function OfficeInspector({
         </div>
       </div>
 
-      <div className={`inspector-card result-timeline-card result-timeline-card--${resultTimeline.tone}`} data-testid="home-result-timeline-card">
-        <div className="inspector-card__head">
-          <strong>结果时间线</strong>
-          <span>{resultTimeline.statusLabel}</span>
-        </div>
-        <div className="result-timeline-card__summary">
-          <strong>{resultTimeline.title}</strong>
-          <p>{resultTimeline.detail}</p>
-          {resultTimeline.missingChecks.length ? (
-            <em>缺少：{resultTimeline.missingChecks.slice(0, 2).join("、")}；下一步：{resultTimeline.nextStep}</em>
-          ) : (
-            <em>{resultTimeline.canTreatAsDone ? "结果可以作为完成记录" : resultTimeline.privacyNote}</em>
-          )}
-        </div>
-        <div className="result-timeline-steps" aria-label="任务结果时间线">
-          {resultTimeline.steps.map((step) => {
-            const Icon = resultTimelineStepIcon(step.id);
-            return (
-              <span key={step.id} className={`result-timeline-step result-timeline-step--${step.state}`}>
-                <Icon size={13} aria-hidden="true" />
-                <b>{step.label}</b>
-                <em>{step.detail}</em>
-              </span>
-            );
-          })}
-        </div>
-        <button
-          className="task-pilot-action result-timeline-card__action"
-          type="button"
-          onClick={() => onTaskPilotAction?.(resultTimeline.task, resultTimeline.action)}
-        >
-          {resultTimeline.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : resultTimeline.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
-          {resultTimeline.actionLabel}
-        </button>
-      </div>
-
       <div className="inspector-card task-list-card">
         <div className="inspector-card__head">
           <strong>最近任务</strong>
         </div>
-        <div className="metric-row">
-          <div>
-            <strong>{currentTasks.length > 0 ? "处理中" : "空闲"}</strong>
+          <div className="metric-row">
+            <div>
+            <strong>{currentTasks.length > 0 ? "已开始处理任务" : "空闲"}</strong>
             <span>{activeTaskLabel}</span>
           </div>
           <div>
@@ -263,9 +224,45 @@ export function OfficeInspector({
       <details className="inspector-card home-more" data-testid="home-more">
         <summary className="home-more__summary">
           <span>更多状态与详情</span>
-          <em>隐私与权限、开箱检查、任务驾驶舱、工作区与成果</em>
+          <em>结果核验、隐私权限、任务驾驶舱与成果</em>
         </summary>
         <div className="home-more__cards">
+          <div className={`inspector-card result-timeline-card result-timeline-card--${resultTimeline.tone}`} data-testid="home-result-timeline-card">
+            <div className="inspector-card__head">
+              <strong>结果时间线</strong>
+              <span>{resultTimeline.statusLabel}</span>
+            </div>
+            <div className="result-timeline-card__summary">
+              <strong>{resultTimeline.title}</strong>
+              <p>{resultTimeline.detail}</p>
+              {resultTimeline.missingChecks.length ? (
+                <em>缺少：{resultTimeline.missingChecks.slice(0, 2).join("、")}；下一步：{resultTimeline.nextStep}</em>
+              ) : (
+                <em>{resultTimeline.canTreatAsDone ? "结果可以作为完成记录" : resultTimeline.privacyNote}</em>
+              )}
+            </div>
+            <div className="result-timeline-steps" aria-label="任务结果时间线">
+              {resultTimeline.steps.map((step) => {
+                const Icon = resultTimelineStepIcon(step.id);
+                return (
+                  <span key={step.id} className={`result-timeline-step result-timeline-step--${step.state}`}>
+                    <Icon size={13} aria-hidden="true" />
+                    <b>{step.label}</b>
+                    <em>{step.detail}</em>
+                  </span>
+                );
+              })}
+            </div>
+            <button
+              className="task-pilot-action result-timeline-card__action"
+              type="button"
+              onClick={() => onTaskPilotAction?.(resultTimeline.task, resultTimeline.action)}
+            >
+              {resultTimeline.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : resultTimeline.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+              {resultTimeline.actionLabel}
+            </button>
+          </div>
+
           <div className="inspector-card home-trust-card">
             <div className="inspector-card__head">
               <strong>隐私与权限</strong>

@@ -15,6 +15,11 @@ from app.core.schemas import now_iso
 from app.llm.registry import get_effective_settings
 from app.observability.best_effort import log_best_effort_failure
 from app.policy.redaction import redact_public_text, redact_value
+from app.security.sensitive_data_crypto import (
+    decrypt_sensitive_bytes,
+    encrypt_sensitive_bytes,
+    is_encrypted_payload,
+)
 
 RECORDING_KIND = "step_screenshot"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -107,7 +112,7 @@ def resolve_recording_path(task_id: str, file_name: str, *, settings: AppSetting
 
 
 def persist_recording_frame(frame: dict[str, Any], image: bytes) -> str:
-    """Persist a captured screenshot as a SQLite BLOB and return its id."""
+    """Persist a captured screenshot as an encrypted SQLite BLOB."""
     if not image:
         raise ValueError("Recording image must not be empty.")
 
@@ -134,7 +139,14 @@ def persist_recording_frame(frame: dict[str, Any], image: bytes) -> str:
         "width": int(frame.get("width") or 0),
         "height": int(frame.get("height") or 0),
         "error": str(frame.get("error") or ""),
+        "storage_encrypted": True,
     }
+    encrypted_image = _encrypt_recording_image(
+        image,
+        recording_id=recording_id,
+        task_id=task_id,
+        file_name=file_name,
+    )
 
     with db.connect() as conn:
         conn.execute(
@@ -152,7 +164,7 @@ def persist_recording_frame(frame: dict[str, Any], image: bytes) -> str:
                 metadata["mime_type"],
                 metadata["width"],
                 metadata["height"],
-                image,
+                encrypted_image,
                 json.dumps(metadata, ensure_ascii=False),
                 captured_at,
                 now_iso(),
@@ -191,7 +203,7 @@ def read_recording_image(task_id: str, file_name: str) -> tuple[bytes, str]:
     with db.connect() as conn:
         row = conn.execute(
             """
-            SELECT image, mime_type
+            SELECT id, image, mime_type, data
             FROM task_recordings
             WHERE task_id = ? AND file_name = ?
             ORDER BY captured_at DESC, id DESC
@@ -201,7 +213,117 @@ def read_recording_image(task_id: str, file_name: str) -> tuple[bytes, str]:
         ).fetchone()
     if row is None:
         raise FileNotFoundError(file_name)
-    return bytes(row["image"]), str(row["mime_type"] or _DEFAULT_MIME_TYPE)
+    recording_id = str(row["id"])
+    stored = bytes(row["image"])
+    if is_encrypted_payload(stored):
+        image = _decrypt_recording_image(
+            stored,
+            recording_id=recording_id,
+            task_id=task_id,
+            file_name=file_name,
+        )
+    else:
+        # One-way compatibility migration: legacy plaintext screenshots are
+        # encrypted before their bytes are returned to the caller.
+        image = stored
+        encrypted = _encrypt_recording_image(
+            image,
+            recording_id=recording_id,
+            task_id=task_id,
+            file_name=file_name,
+        )
+        metadata = _mark_recording_metadata_encrypted(str(row["data"] or ""))
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE task_recordings SET image = ?, data = ? WHERE id = ?",
+                (encrypted, metadata, recording_id),
+            )
+    return image, str(row["mime_type"] or _DEFAULT_MIME_TYPE)
+
+
+def migrate_plaintext_recordings(*, batch_size: int = 200) -> dict[str, int]:
+    """Encrypt legacy plaintext recording rows in place.
+
+    This is safe to run repeatedly and deliberately loads the encryption key
+    only when at least one plaintext row exists.
+    """
+    limit = max(1, min(1000, int(batch_size)))
+    scanned = 0
+    migrated = 0
+    last_id = ""
+    while True:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, file_name, image, data
+                FROM task_recordings
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (last_id, limit),
+            ).fetchall()
+        if not rows:
+            break
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                recording_id = str(row["id"])
+                last_id = recording_id
+                scanned += 1
+                stored = bytes(row["image"])
+                if is_encrypted_payload(stored):
+                    continue
+                encrypted = _encrypt_recording_image(
+                    stored,
+                    recording_id=recording_id,
+                    task_id=str(row["task_id"]),
+                    file_name=str(row["file_name"]),
+                )
+                metadata = _mark_recording_metadata_encrypted(str(row["data"] or ""))
+                conn.execute(
+                    "UPDATE task_recordings SET image = ?, data = ? WHERE id = ?",
+                    (encrypted, metadata, recording_id),
+                )
+                migrated += 1
+    return {"scanned": scanned, "migrated": migrated}
+
+
+def _encrypt_recording_image(image: bytes, *, recording_id: str, task_id: str, file_name: str) -> bytes:
+    return encrypt_sensitive_bytes(
+        image,
+        purpose="task_recording_image",
+        binding={
+            "recording_id": recording_id,
+            "task_id": task_id,
+            "file_name": file_name,
+        },
+        data_dir=db.db_path().parent,
+    )
+
+
+def _decrypt_recording_image(image: bytes, *, recording_id: str, task_id: str, file_name: str) -> bytes:
+    return decrypt_sensitive_bytes(
+        image,
+        purpose="task_recording_image",
+        binding={
+            "recording_id": recording_id,
+            "task_id": task_id,
+            "file_name": file_name,
+        },
+        data_dir=db.db_path().parent,
+    )
+
+
+def _mark_recording_metadata_encrypted(raw: str) -> str:
+    try:
+        metadata = json.loads(raw)
+    except (TypeError, ValueError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["storage_encrypted"] = True
+    return json.dumps(metadata, ensure_ascii=False)
 
 
 def _grab_screen():

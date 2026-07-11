@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_release_readiness_dashboard.py"
+READINESS_PATH = REPO_ROOT / "docs" / "release" / "release-readiness-dashboard.md"
 RELEASE_READINESS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-readiness.yml"
 
 
@@ -54,6 +55,13 @@ def test_release_readiness_workflow_hard_gate_uses_rc_release():
     assert "--strict" not in strict_section
 
 
+def test_release_readiness_workflow_runs_review_scorecard_before_strict_gate():
+    text = RELEASE_READINESS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "npm run review:scorecard" in text
+    assert text.index("npm run review:scorecard") < text.index("Strict release readiness")
+
+
 def test_parse_rows_reads_p0_and_p1():
     rows = mod.parse_rows(SAMPLE)
     ids = {row.row_id for row in rows}
@@ -62,6 +70,29 @@ def test_parse_rows_reads_p0_and_p1():
     assert by_id["RR-P0-002"].status == "passed"
     assert by_id["RR-P0-002"].owner == "alice"
     assert by_id["RR-P0-002"].artifact == "https://github.com/example/repo/actions/runs/123"
+
+
+def test_current_dashboard_exposes_all_public_beta_stop_ship_rows():
+    rows = mod.parse_rows(READINESS_PATH.read_text(encoding="utf-8"))
+
+    assert mod.validate_public_beta_gate_set(rows) == []
+    assert {
+        row.row_id for row in rows if row.row_id.startswith("RR-P0-")
+    } == mod.REQUIRED_PUBLIC_BETA_P0_IDS
+
+
+def test_public_beta_gate_set_rejects_missing_threat_model_row():
+    rows = [
+        row
+        for row in mod.parse_rows(READINESS_PATH.read_text(encoding="utf-8"))
+        if row.row_id != "RR-P0-007"
+    ]
+
+    errors = mod.validate_public_beta_gate_set(rows)
+
+    assert errors == [
+        "Release readiness dashboard is missing required public Beta P0 rows: RR-P0-007"
+    ]
 
 
 def test_non_strict_allows_blocked_p0_but_warns():
@@ -278,6 +309,12 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
                 "- Worktree status: clean",
                 "- Manual sign-off status: rc_signoff_recorded",
                 "- Owner signature: release-owner-accepted-rc",
+                "",
+                "## Execution Commands",
+                "",
+                "| CI job | Command |",
+                "| --- | --- |",
+                "| Repo hygiene + dependency locks + review scorecard | `npm run review:scorecard` |",
             ]
         ),
         encoding="utf-8",
@@ -301,6 +338,50 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
     )
 
     assert errors == []
+
+
+def test_strict_rejects_current_release_evidence_without_scorecard_gate(tmp_path):
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                "- Commit SHA: abcdef1234567890",
+                "- Run id: 123",
+                "- CI status: machine_gates_passed",
+                "- Worktree status: clean",
+                "- Manual sign-off status: rc_signoff_recorded",
+                "- Owner signature: release-owner-accepted-rc",
+                "",
+                "## Execution Commands",
+                "",
+                "| CI job | Command |",
+                "| --- | --- |",
+                "| Repo hygiene + dependency locks | `npm run hygiene` |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | RC handoff and release-owner sign-off | ev | passed | "
+        "docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha="abcdef1234567890",
+        expected_run_id="123",
+    )
+
+    assert any("full-review scorecard gate command" in e for e in errors)
 
 
 def test_strict_rejects_dirty_current_release_evidence(tmp_path):

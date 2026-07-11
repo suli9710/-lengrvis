@@ -6,6 +6,9 @@ function New-DiagnosticsExternalReviewEvidenceSummary {
 
 $diagnosticsNeedles = @(
     "support_package_redaction",
+    "reviewed_artifact_contract",
+    "diagnostics-external-review-evidence-reviewed",
+    "scripts/verify_diagnostics_external_reviewed_evidence.py",
     'external_review["status"] == "manual_review_required"',
     'external_review["required_before_external_sharing"] is True',
     'external_review["public_safe"] is False',
@@ -154,11 +157,22 @@ $diagnosticsReviewLatestSummary = if ($latestDiagnosticsReview.found -and $null 
     }
     $safeDiagnosticsReviewMarker = if ($diagnosticsReviewMarker -eq "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF") { $diagnosticsReviewMarker } else { "invalid_redacted" }
     $safeReviewStatus = if ($reviewStatus -in $allowedDiagnosticsReviewStatuses) { $reviewStatus } else { "invalid_redacted" }
+    $machineChainStatus = if ($diagnosticsReviewMismatches.Count -gt 0) {
+        "source_contract_mismatch"
+    }
+    elseif ($reviewStatus -eq "manual_external_review_template_ready") {
+        "ready_pending_manual_content_review"
+    }
+    else {
+        "blocked_before_manual_content_review"
+    }
     [ordered]@{
         found = $true
         path = $latestDiagnosticsReview.path
         last_write_utc = $latestDiagnosticsReview.last_write_utc
         marker = $safeDiagnosticsReviewMarker
+        machine_chain_status = $machineChainStatus
+        manual_content_review_only_remaining = ($machineChainStatus -eq "ready_pending_manual_content_review")
         source_contract_status = if ($diagnosticsReviewMismatches.Count -eq 0) {
             if ($reviewStatus -eq "manual_external_review_template_ready") { "valid_not_signoff_template" } else { "valid_fail_closed_template" }
         } else { "source_contract_mismatch" }
@@ -182,6 +196,8 @@ elseif ($latestDiagnosticsReview.found) {
         found = $true
         path = $latestDiagnosticsReview.path
         last_write_utc = $latestDiagnosticsReview.last_write_utc
+        machine_chain_status = "unreadable_template"
+        manual_content_review_only_remaining = $false
         parse_error = $latestDiagnosticsReview.error
     }
 }
@@ -189,6 +205,8 @@ else {
     [ordered]@{
         found = $false
         evidence_root = Get-DisplayPath $diagnosticsReviewEvidenceRootPath
+        machine_chain_status = "source_contract_ready_template_not_collected"
+        manual_content_review_only_remaining = $false
         review_status = "not_collected_by_this_packet"
         public_safe = $false
         external_sharing_allowed = $false

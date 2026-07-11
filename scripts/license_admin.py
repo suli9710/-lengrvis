@@ -40,7 +40,7 @@ from app.commerce.licensing import (  # noqa: E402
     sign_revocation_manifest,
     verify_license,
 )
-from app.commerce.entitlements import normalize_plan  # noqa: E402
+from app.commerce.entitlements import PLAN_CATALOG_CURRENT, normalize_plan  # noqa: E402
 
 LEDGER_SCHEMA = 1
 MANIFEST_SCHEMA = 1
@@ -305,11 +305,12 @@ def command_issue(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("expires-at must be in the future")
     plan = normalize_plan(args.plan)
     if plan.value == "free":
-        raise ValueError("Only Pro or Max licenses can be issued")
+        raise ValueError("Only Plus or Pro licenses can be issued")
     key, password = _load_private_key(args.private_key, args.private_key_passphrase_file)
     license_id = args.license_id or f"lic_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
-        "schema": 1,
+        "schema": 2,
+        "plan_catalog": PLAN_CATALOG_CURRENT,
         "license_id": license_id,
         "issuer": args.issuer,
         "subject": args.subject,
@@ -468,12 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
     keygen.add_argument("--force", action="store_true")
     keygen.set_defaults(handler=command_keygen)
 
-    issue = subparsers.add_parser("issue", help="Issue a signed Pro or Max license")
+    issue = subparsers.add_parser("issue", help="Issue a signed Plus or Pro license")
     issue.add_argument("--private-key", required=True)
     issue.add_argument("--private-key-passphrase-file")
     issue.add_argument("--issuer", required=True)
     issue.add_argument("--subject", required=True)
-    issue.add_argument("--plan", choices=("pro", "max", "team"), required=True)
+    issue.add_argument("--plan", choices=("plus", "pro", "max", "team"), required=True)
     issue.add_argument("--seats", type=int, default=1)
     expiry = issue.add_mutually_exclusive_group(required=True)
     expiry.add_argument("--expires-at")

@@ -17,7 +17,7 @@
   justify-content: flex-start;
   gap: 10px;
   min-width: 0;
-  min-height: 62px;
+  min-height: 68px;
   padding: 10px 11px;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
@@ -146,6 +146,7 @@
 }
 
 .office-quick-card__body {
+  flex: 1;
   gap: 5px !important;
 }
 
@@ -161,6 +162,20 @@
   min-width: 0;
 }
 
+.office-quick-card__details {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 3px 10px !important;
+  min-width: 0;
+}
+
+.office-quick-card__details em {
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
 .office-quick-card__meta b {
   min-height: 17px;
   padding: 1px 6px;
@@ -171,63 +186,28 @@
   font-weight: 850;
 }
 
-.office-quick-card__details {
-  display: grid !important;
-  gap: 5px !important;
-  max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition:
-    max-height 0.22s var(--ease-out),
-    opacity 0.18s var(--ease-out);
-}
-
-.office-quick-card:hover .office-quick-card__details,
-.office-quick-card:focus-visible .office-quick-card__details,
-.office-quick-card--active .office-quick-card__details {
-  max-height: 112px;
-  opacity: 1;
-}
-
-.office-quick-card__wizard-line {
-  display: flex !important;
-  align-items: flex-start;
-  gap: 6px !important;
-  min-width: 0;
-  color: var(--text-soft);
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1.28;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.office-quick-card__wizard-line b {
+.office-quick-card__action {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  min-height: 16px;
-  padding: 1px 5px;
-  border-radius: 5px;
+  min-width: 64px !important;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(237, 242, 247, 0.88);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: visible !important;
+  transition: background 0.18s var(--ease-out), color 0.18s var(--ease-out);
+}
+
+.office-quick-card:hover .office-quick-card__action,
+.office-quick-card--active .office-quick-card__action {
+  background: var(--brand-soft);
   color: var(--brand-deep);
-  background: rgba(231, 237, 255, 0.86);
-  font-size: 9px;
-  line-height: 1.35;
-}
-
-.office-quick-card__trust {
-  margin-top: 1px;
-  max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition:
-    max-height 0.22s var(--ease-out),
-    opacity 0.18s var(--ease-out);
-}
-
-.office-quick-card:hover .office-quick-card__trust,
-.office-quick-card:focus-visible .office-quick-card__trust,
-.office-quick-card--active .office-quick-card__trust {
-  max-height: 54px;
-  opacity: 1;
 }
 
 .home-skill-wizard {

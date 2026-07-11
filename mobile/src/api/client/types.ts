@@ -4,6 +4,11 @@ export interface PairResult {
   token: string;
   token_type: "Bearer";
   device_id: string;
+  refresh_token: string;
+  refresh_expires_in: number;
+  refresh_expires_at?: string;
+  token_family_id: string;
+  device_credential_id: string;
   device_trust?: MobileDeviceTrustMetadata;
   expires_in: number;
   expires_at?: string;
@@ -57,6 +62,8 @@ export interface BackendApproval {
   allowed_device_ids?: string[];
   required_mobile_scopes?: string[];
   remote_input_binding?: RemoteInputBinding;
+  mobile_step_up_required?: boolean;
+  mobile_step_up_satisfied?: boolean;
 }
 
 export interface RemoteInputBinding {
@@ -186,12 +193,21 @@ export type RemoteScreenEvent =
 export interface PairingSession {
   baseUrl: string;
   token: string;
+  refreshToken: string;
   deviceId: string;
+  tokenFamilyId: string;
+  deviceCredentialId: string;
   deviceTrust?: MobileDeviceTrustMetadata;
   expiresAt?: string;
+  refreshExpiresAt?: string;
   baseUrlSecurity: BaseUrlSecurity;
   server?: PairingServerInfo;
   security?: PairingSecurityMetadata;
+}
+
+export interface MobilePushSubscription {
+  provider: "expo";
+  token: string;
 }
 
 export interface MobileDeviceTrustMetadata {
@@ -269,6 +285,23 @@ export interface ServerTlsTrustInfo {
   validFrom?: string;
   validTo?: string;
   warning?: string;
+}
+
+export const TLS_PIN_RECORD_SCHEMA = "tls-pin-record-v1" as const;
+
+export type TlsPinStatus = "active" | "next" | "revoked";
+
+export interface TlsPinRecord {
+  schema_version: typeof TLS_PIN_RECORD_SCHEMA;
+  pin_id: string;
+  origin: string;
+  host: string;
+  fingerprint_sha256: string;
+  status: TlsPinStatus;
+  created_at: string;
+  expires_at: string;
+  source_device_id?: string;
+  revoked_at?: string;
 }
 
 export interface PairingSecurityMetadata {

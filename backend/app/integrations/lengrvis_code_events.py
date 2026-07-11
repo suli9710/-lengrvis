@@ -144,7 +144,7 @@ def _summary_payload(summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
         if summary.is_error
         else _public_lengrvis_code_final_text(summary.final_text),
         "tool_events": [_public_lengrvis_code_tool_event(event) for event in summary.tool_events],
-        "system_events": summary.system_events,
+        "system_events": _public_lengrvis_code_value(summary.system_events),
         "result": _public_lengrvis_code_result(summary.result),
         "usage": summary.usage,
         "permission_denials": _public_lengrvis_code_value(summary.permission_denials),
@@ -153,7 +153,7 @@ def _summary_payload(summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
         "adapter_events": adapter_events,
         "lengrvis_events": lengrvis_events,
         "command": _public_lengrvis_code_command(summary.command),
-        "runtime_health": summary.runtime_health,
+        "runtime_health": _public_lengrvis_code_value(summary.runtime_health),
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
     if summary.permission_denials:

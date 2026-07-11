@@ -5,7 +5,7 @@ Lengrvis 是一款面向 Windows 本地环境的 OS Agent 桌面助手。用户�
 Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检测、系统状态检查，以及通过 Android companion 进行移动审批和任务监督。产品原则是：优先在本机处理数据；执行有风险的操作前取得明确授权；关键行为具备审计、诊断和追溯能力。
 
 - 仓库：[github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
-- 当前版本：[v0.1.2](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.2)
+- 当前开发预览版本：[v0.1.2](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.2)
 - License：BUSL-1.1
 
 | 组件 | 技术栈 |
@@ -19,12 +19,14 @@ Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检�
 
 | 平台 | 状态 | 当前交付 | 待完善事项 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.2 产物尚未签名；clean-machine、升级/回滚和真实设备联动仍需候选版本证据。 |
+| Windows 桌面 | Development Preview | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.2 产物尚未签名，且未完成 clean-machine 候选版本验收；当前仅用于开发和内部验证，不是公开 Beta 或生产就绪版本。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、短期远程输入授权 | 当前面向内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发尚未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本和 DMG 脚本 | 仍需在 macOS 主机上完成打包、签名和 notarization 验证。 |
 | iOS Companion | Planned | 暂不交付 | 待 Android companion 稳定后再排期。 |
 
 ## 安装与快速开始
+
+> 当前 Releases 中的 v0.1.2 Windows 产物是未签名的开发预览，尚未完成 clean-machine、升级/回滚、真实设备和发布负责人签收。请仅在可处置的测试环境中评估，不应将其作为公开 Beta 或生产部署包。
 
 1. 打开 [Releases](https://github.com/suli9710/-lengrvis/releases)。
 2. 下载 `Lengrvis-0.1.2-win-portable.zip` 或 `Lengrvis-0.1.2-x64-self-extracting.exe`。
@@ -37,8 +39,8 @@ Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检�
 ## 配置、隐私与诊断
 
 - AI Provider、隐私模式、本地模型、硬件加速和手机配对优先通过桌面端“设置”完成配置。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
-- “设置 -> 套餐与授权”显示 Free / Pro / Max 能力、云端额度窗口、许可证主体和到期时间。默认 token 护栏为 Free 滚动 5 小时 500 万 + 7 天 2,000 万、Pro 滚动 24 小时 1,000 万、Max 滚动 24 小时 1 亿。离线许可证可以本机验签；在线购买、订阅、退款自动降级和吊销同步仍在建设中。
-- “设置 -> 本机数据与隐私”可以删除本机数据。删除前需要确认短语和系统确认；任务、对话、录屏、配对、索引和已导出诊断包会被删除，防篡改审计链会保留删除事件。日志目录仍需手动清理。
+- “设置 -> 套餐与授权”显示 Free / Plus / Pro 能力、云端额度窗口、许可证主体和到期时间。默认 token 护栏为 Free 滚动 5 小时 500 万 + 7 天 2,000 万、Plus 滚动 24 小时 1,000 万、Pro 滚动 24 小时 1 亿。Plus ¥49/月、Pro ¥129/月是产品定价基线；支付宝支付、订阅、退款自动降级和吊销同步仍受商业发布门禁阻断。
+- “设置 -> 本机数据与隐私”可以删除本机数据。删除前需要确认短语和系统确认；任务、对话、录屏、配对、索引和已导出诊断包会被删除，可检测篡改的 HMAC 审计链会保留删除事件。日志目录仍需手动清理。
 - “系统信息”显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明。
 - “导出诊断包”用于支持排查。诊断包写入本机数据目录下的 `diagnostic-packages`，会尽量脱敏路径、用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径。
 - 诊断包默认不作为公开材料使用。外发前应进行人工复核，确认其中不包含不应共享的路径、日志片段或组织信息。
@@ -160,7 +162,7 @@ npm run security:secrets
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev-lock.txt
 npm --prefix desktop ci
 ```
 
@@ -235,7 +237,7 @@ npm run qa:gate                  # 上述 + desktop 全量 smoke
 npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 ```
 
-主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
+主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract、Android back navigation、manifest/resource hardening 和 LAN TLS source/connected-test contract smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
 
 CI 在 push/PR 上运行 hygiene、deps:verify、SBOM、backend pytest、golden gate、real-LLM quality gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。缺少真实 LLM gate 凭据时，release evidence 会记录 skipped/incomplete，而不会标记为 machine gates passed。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不覆盖 portable GUI smoke、clean-machine 或真实设备人工验收。
 
@@ -277,6 +279,8 @@ npm run release:check # compatibility alias for npm run delivery:rc
 npm run release:paid-launch # paid/public launch gate; requires passed MR-P0 evidence
 ```
 
+发布 runner 应从 `config.release.example.yaml` 创建私有 `config.yaml` 覆盖；该模板显式开启严格状态机并关闭 Mock fallback，但不包含任何密钥。GitHub Release 只能通过手动 workflow 触发；仅创建 `v*` tag 不会发布产物。
+
 证据 helper 新手入口（只整理材料，不产生签收）。每一行都保留 no-overclaim 说明：
 
 ```powershell
@@ -290,6 +294,7 @@ npm run evidence:support-privacy-verify # reviewed paid support/privacy operatio
 npm run evidence:claims-launch-verify # reviewed paid-launch claims evidence only
 npm run evidence:mobile-lan-wss # prerequisite template only; not real-device pass
 npm run android:release-gate -- -PreflightOnly # source/config check only; not APK or real-device pass
+npm --prefix mobile run gate:android-connected-lan-tls # configured device/emulator support evidence only; not a full real-device pass
 npm run evidence:android-real-device-template # fail-closed template only; not real-device pass
 npm run evidence:local-model-template # handoff template; not clean-machine pass
 npm run evidence:diagnostics-review # template only; not public-safe/signoff; public_safe=false until reviewed
@@ -327,7 +332,7 @@ macOS 后端 binary 需要在 macOS 主机上构建，PyInstaller 不支持从 W
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -U pip
-python3 -m pip install -r requirements-dev.txt
+python3 -m pip install --require-hashes -r requirements-dev-lock.txt
 bash scripts/build_backend_mac.sh arm64
 ```
 
@@ -369,6 +374,8 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 - `dist:signed` / `dist:publish` 会先运行 `verify:signed-build-config`，再校验随包 `backend.exe` 已签名。
 - `dist:publish` 会运行 `verify:release-version`，要求发布 tag 与 `desktop/package.json` 的 version 匹配。
 - 自动更新通过 electron-updater + GitHub Releases。`npm --prefix desktop run dist:publish` 需要 `GH_TOKEN`。
+
+以上命令描述的是签名要求和发布门禁，不代表仓库当前发布产物已经签名或通过公开发布验收。只有实际候选产物完成签名验证、clean-machine 验收和发布负责人签收后，才能作为公开版本交付。
 
 macOS DMG：
 

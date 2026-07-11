@@ -30,6 +30,7 @@ import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
 import { openSafeExternalUrl } from "./externalUrl";
 import { registerIpcHandlers } from "./ipc";
 import { NotificationBridge } from "./notifications";
+import { advanceUpdateHealthWindow } from "./updateHealthGate";
 import { closeLaunch, confirmHealthy, getLastGoodVersion, reconcileOnStartup } from "./updateHealthStore";
 
 const devServerUrl = app.isPackaged ? "" : process.env.VITE_DEV_SERVER_URL;
@@ -37,6 +38,7 @@ const isDev = Boolean(devServerUrl);
 const BACKEND_STATUS_POLL_MS = 60_000;
 // 更新后保持稳定运行多久才判定为健康（并据此把待验证版本提升为 last-good）。
 const HEALTHY_AFTER_MS = 60_000;
+const HEALTH_CHECK_INTERVAL_MS = 5_000;
 const GLOBAL_TOGGLE_SHORTCUT = "CommandOrControl+Alt+L";
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAI/SURBVFhH1VcxTwIxGGV0dHTDxFZXR0d/ghtuaMvg6OiG8Q84urEwODrq5kLiaJgcSVg4rgTCQIhhqPlKr7RfW+7OHCa+5EWOe/R7fe199Wq1/wrSSs6OuDi3iTWVot4cHxCW3FAmXikXMkomPsj1+O6kOTrEY/wK9eZsn3JxT7lYesVyOXkC43jMwoBYKU9n/sCluKQsvcRj54Ky8dXvZh3lPa4RhS6OB6iCj7iWh3Xslc7cIWxkXNMANkwFa57HJW2NT3FtBYgo8APZ7ksHw7epp6EPCzm0RclCNrBGk/DJC66tZx+OHhsIDd54W+VqHOIUoHl4ImwgWelZrmT3wdZMZTdZfz9UfwsY4JMnxwB0MF8UM4CWwcT/LXtGm2dAjExx3e2wIGBgIbuBAib+/tzR5hjYLAMcLN7NiIFG51tfZMuQxS9lr7P5XMhA1iGPWXLh3YwZ4HPZ05dqGaz425aZIgbIdXq7TgBOuYAgbMC9blvx22kUMWDaM0QRuBk1QM0ybDZdrwPacgbgyVMGdPv1BFEDdiEFiL+8AThz9FOgmpAviBpAjUfFX94AbH79INZqhIsBFmwzYLfedfylDSzrzcGeMRA7B3ZF7zyApoBFuyQ8+o4BALjCwl2QMPGJayv8VQrB2WfYdipWQ3QKhkC4ePZ/WAGZ+HB2fgwgqtyEKj7bx7W2Qr+Q+IOVJrygFJh5CKpNs/TdHzSfhKdfWzdcGcBAelmC/zc6hPfHrM/vApCKflpgiQzh+7JR/wBFmasNoNL4MAAAAABJRU5ErkJggg==";
 const backend = new BackendProcessManager();
@@ -64,6 +66,8 @@ let tray: Tray | null = null;
 let latestBackendStatus: BackendStatus | null = null;
 let backendStatusTimer: NodeJS.Timeout | null = null;
 let healthConfirmTimer: NodeJS.Timeout | null = null;
+let updateHealthySince: number | null = null;
+let healthConfirmationGeneration = 0;
 let isQuitting = false;
 let backgroundTransition: Promise<void> | null = null;
 
@@ -301,18 +305,84 @@ function registerGlobalShortcut(): void {
 }
 
 /**
- * 更新后启动监控：保持稳定运行 HEALTHY_AFTER_MS 后，将当前运行版本判定为健康，
- * 并把待验证的更新版本提升为 last-good（回滚参照）。若期间崩溃/挂起，定时器不会触发，
- * 下次启动会被识别为一次失败启动。
+ * 更新后启动监控：只有后端健康检查和已渲染的 React 根节点持续通过
+ * HEALTHY_AFTER_MS，才把当前版本提升为 last-good。任一端不健康都会重置稳定窗口。
  */
 function scheduleHealthConfirmation(): void {
   if (healthConfirmTimer) {
     return;
   }
   healthConfirmTimer = setTimeout(() => {
-    healthConfirmTimer = null;
+    void evaluateHealthConfirmation();
+  }, 0);
+}
+
+async function evaluateHealthConfirmation(): Promise<void> {
+  const generation = healthConfirmationGeneration;
+  healthConfirmTimer = null;
+  const [backendResult, rendererResult] = await Promise.allSettled([
+    backend.getStatus(),
+    isRendererHealthy()
+  ]);
+  // A failed probe must never count as health evidence. allSettled also keeps
+  // a transient backend failure from abandoning the monitor loop entirely.
+  const backendStatus = backendResult.status === "fulfilled" ? backendResult.value : null;
+  if (backendResult.status === "fulfilled") {
+    latestBackendStatus = backendResult.value;
+  } else {
+    console.warn("Update health backend probe failed:", backendResult.reason);
+  }
+  const rendererHealthy = rendererResult.status === "fulfilled" && rendererResult.value === true;
+
+  // before-quit can run while a probe is in flight. Do not let that stale
+  // result promote the version after the health gate was stopped.
+  if (generation !== healthConfirmationGeneration || isQuitting) {
+    return;
+  }
+  const window = advanceUpdateHealthWindow(
+    updateHealthySince,
+    {
+      backendHealthy: backendStatus?.state === "running" && backendStatus.health?.ok === true,
+      rendererHealthy
+    },
+    Date.now(),
+    HEALTHY_AFTER_MS
+  );
+  updateHealthySince = window.healthySince;
+
+  if (window.ready) {
     confirmHealthy(app.getVersion());
-  }, HEALTHY_AFTER_MS);
+    return;
+  }
+  if (!isQuitting) {
+    healthConfirmTimer = setTimeout(() => {
+      void evaluateHealthConfirmation();
+    }, HEALTH_CHECK_INTERVAL_MS);
+  }
+}
+
+async function isRendererHealthy(): Promise<boolean> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isCrashed()) {
+    return false;
+  }
+  try {
+    return await window.webContents.executeJavaScript(
+      'document.readyState === "complete" && Boolean(document.getElementById("root")?.childElementCount)',
+      true
+    ) === true;
+  } catch {
+    return false;
+  }
+}
+
+function stopHealthConfirmation(): void {
+  healthConfirmationGeneration += 1;
+  if (healthConfirmTimer) {
+    clearTimeout(healthConfirmTimer);
+    healthConfirmTimer = null;
+  }
+  updateHealthySince = null;
 }
 
 function isOpenAtLoginEnabled(): boolean {
@@ -402,7 +472,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     hardenDefaultSessionPermissions();
-    registerIpcHandlers(backend);
+    registerIpcHandlers(backend, browserHost);
     registerDesktopWebSocketIpcHandlers(backend);
     registerConsentIpcHandlers();
     browserHost.registerIpcHandlers();
@@ -418,9 +488,6 @@ if (!gotSingleInstanceLock) {
     if (startupHealth.action === "quarantine") {
       // 更新版本连续启动失败：进入回滚保护并引导用户恢复稳定版本。
       void enterUpdateRollbackMode(startupHealth.quarantinedVersion, getLastGoodVersion());
-    } else if (startupHealth.action === "monitor") {
-      // 正在验证一次（可能是刚更新的）启动：稳定运行后再判定为健康。
-      scheduleHealthConfirmation();
     }
     notifications.startBackendListener();
 
@@ -433,6 +500,10 @@ if (!gotSingleInstanceLock) {
       await enterTrayBackground();
     } else {
       await enterForegroundAndShow();
+    }
+    if (startupHealth.action === "monitor") {
+      // 后端启动且渲染器开始加载后，再启动双端持续健康监控。
+      scheduleHealthConfirmation();
     }
     startTrayBackendStatusPolling();
 
@@ -471,6 +542,7 @@ if (!gotSingleInstanceLock) {
     event.preventDefault();
     backendCleanupInProgress = true;
     void (async () => {
+      stopHealthConfirmation();
       stopTrayBackendStatusPolling();
       notifications.stopBackendListener();
       browserHostBridge.stop();

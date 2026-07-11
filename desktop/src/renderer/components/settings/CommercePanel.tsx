@@ -15,9 +15,9 @@ import type { LengrvisApiClient } from "../../lib/apiClient";
 const MAX_LICENSE_FILE_BYTES = 64 * 1024;
 
 const PLAN_LABELS: Record<CommercePlan, string> = {
-  free: "免费版",
-  pro: "专业版",
-  max: "旗舰版"
+  free: "Free",
+  plus: "Plus",
+  pro: "Pro"
 };
 
 const COMMERCE_ERROR_MESSAGES: Record<string, string> = {
@@ -89,7 +89,8 @@ const FEATURE_LABELS: Record<CommerceFeature, string> = {
   remote_control: "远程输入",
   audit_export: "审计导出",
   policy_management: "策略管控",
-  private_deployment: "私有部署"
+  private_deployment: "私有部署",
+  advanced_models: "更强模型"
 };
 
 export function CommercePanel({ api }: { api: LengrvisApiClient }) {
@@ -199,7 +200,11 @@ export function CommercePanel({ api }: { api: LengrvisApiClient }) {
       <div className="commerce-settings__header">
         <div>
           <span className="commerce-settings__eyebrow">当前套餐</span>
-          <strong>{plan ? PLAN_LABELS[plan.plan] : "读取中"}</strong>
+          <strong>
+            {plan
+              ? `${PLAN_LABELS[plan.plan]}${plan.monthlyPriceCny > 0 ? ` · ¥${plan.monthlyPriceCny}/月` : ""}`
+              : "读取中"}
+          </strong>
           <small>{licenseSummary(license)}</small>
         </div>
         <div className="commerce-settings__actions">
@@ -248,7 +253,7 @@ export function CommercePanel({ api }: { api: LengrvisApiClient }) {
             onChange={(event) => setActivationKey(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            placeholder="输入免费版 / 专业版 / 旗舰版订阅授权码"
+            placeholder="输入 Plus / Pro 订阅授权码"
             disabled={!canActivate || activating || installing}
           />
         </label>

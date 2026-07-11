@@ -216,6 +216,10 @@ def test_chat_run_middleware_rejects_oversized_content_length(
         ("/api/schedules/job-1/enable", "schedules"),
         ("/api/approvals/appr-1/approve", "approvals"),
         ("/api/approvals/appr-1/reject", "approvals"),
+        ("/api/tasks/task-1/resume", "tasks"),
+        ("/api/tasks/task-1/pause", "tasks"),
+        ("/api/mobile/tasks", "tasks"),
+        ("/api/mobile/tasks/task-1/follow-up", "tasks"),
         ("/api/settings/onnx/test-generate", None),
         ("/api/documents", None),
         ("/api/mobile/approvals/appr-1/approve", None),
@@ -232,6 +236,8 @@ def test_guarded_api_endpoint_from_path(path: str, expected: str | None) -> None
         "/api/settings",
         "/api/schedules",
         "/api/approvals/appr-1/approve",
+        "/api/tasks/task-1/resume",
+        "/api/mobile/tasks",
     ],
 )
 def test_guarded_post_endpoints_require_content_length(
@@ -277,6 +283,8 @@ def test_get_requests_skip_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         ("/api/settings/permission-policy/confirm-relaxation", "settings"),
         ("/api/schedules/job-1/enable", "schedules"),
         ("/api/approvals/appr-1/reject", "approvals"),
+        ("/api/tasks/task-1/resume", "tasks"),
+        ("/api/mobile/tasks/task-1/follow-up", "tasks"),
     ],
 )
 def test_guarded_post_rate_limit_rejects_burst(
@@ -320,3 +328,29 @@ def test_guarded_post_rate_limits_use_distinct_scopes(
 
     enforce_chat_run_request_limit(documents, endpoint="documents")
     enforce_chat_run_request_limit(settings, endpoint="settings")
+
+
+def test_task_execution_admission_shares_the_global_inflight_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_CHAT_RUN_RATE_LIMIT_MAX", "0")
+    monkeypatch.setenv("LENGRVIS_CHAT_RUN_MAX_INFLIGHT", "1")
+    db.init_db()
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+    pending = concurrent.futures.Future()
+    pool._running["task_busy"] = pending  # noqa: SLF001 - test-only slot fill
+
+    resume = _StubRequest(path="/api/tasks/task-1/resume")
+    resume.headers = {"content-length": "32"}
+    with pytest.raises(Exception) as excinfo:
+        enforce_chat_run_request_guard(resume)
+    assert getattr(excinfo.value, "status_code", None) == 429
+
+    # Pressure-relieving controls must remain available while admissions are
+    # closed, otherwise a saturated service cannot be paused or cancelled.
+    pause = _StubRequest(path="/api/tasks/task-1/pause")
+    pause.headers = {"content-length": "32"}
+    enforce_chat_run_request_guard(pause)
+    pending.set_result(None)
+    task_pool.reset_pool_for_tests()

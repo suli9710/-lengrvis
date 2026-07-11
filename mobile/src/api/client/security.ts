@@ -122,6 +122,27 @@ export function assertSafePairingSession(session: PairingSession): PairingSessio
   };
 }
 
+export function assertSafeRefreshablePairingSession(session: PairingSession): PairingSession {
+  const baseUrlSecurity = describeSessionBaseUrlSecurity(session);
+  if (baseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(baseUrlSecurity)) {
+    throw new InsecureLanBaseUrlError(baseUrlSecurity);
+  }
+  if (!session.token?.trim()) {
+    throw new AuthExpiredError("Mobile access token is missing. Pair this phone again.");
+  }
+  if (!session.deviceId?.trim() || !session.tokenFamilyId?.trim() || !session.deviceCredentialId?.trim()) {
+    throw new AuthExpiredError("Mobile session device binding is missing. Pair this phone again.");
+  }
+  assertWebSocketSubprotocolToken(session.token);
+  assertUsableRefreshToken(session);
+  return {
+    ...session,
+    baseUrl: baseUrlSecurity.normalizedBaseUrl,
+    baseUrlSecurity,
+    ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
+  };
+}
+
 export function webSocketConnectionInfo(session: PairingSession, pathname: string, protocols: string[] = []): WebSocketConnectionInfo {
   const safeSession = assertSafePairingSession(session);
   const security = safeSession.baseUrlSecurity;
@@ -502,11 +523,22 @@ export function pairingSessionExpiresAt(payload: Pick<PairResult, "expires_in" |
   return new Date(Date.now() + payload.expires_in * 1000).toISOString();
 }
 
+export function pairingRefreshExpiresAt(
+  payload: Pick<PairResult, "refresh_expires_in" | "refresh_expires_at">,
+): string | undefined {
+  const explicit = typeof payload.refresh_expires_at === "string" ? payload.refresh_expires_at : "";
+  const explicitMs = Date.parse(explicit);
+  if (Number.isFinite(explicitMs)) return new Date(explicitMs).toISOString();
+  if (!Number.isFinite(payload.refresh_expires_in)) return undefined;
+  if (payload.refresh_expires_in <= 0) return new Date(0).toISOString();
+  return new Date(Date.now() + payload.refresh_expires_in * 1000).toISOString();
+}
+
 export function sessionHasUnsafeRemoteTransport(security: BaseUrlSecurity): boolean {
   return !security.isLoopback && (!security.backendTlsEnabled || security.webSocketProtocol !== "wss:");
 }
 
-export function validatePairResult(payload: unknown): { payload: PairResult; expiresAt: string } {
+export function validatePairResult(payload: unknown): { payload: PairResult; expiresAt: string; refreshExpiresAt: string } {
   const record = asRecord(payload);
   if (!record) {
     throw invalidPairingResponse("Pairing response must be a JSON object.");
@@ -515,8 +547,11 @@ export function validatePairResult(payload: unknown): { payload: PairResult; exp
   const token = typeof record.token === "string" ? record.token : "";
   const tokenType = typeof record.token_type === "string" ? record.token_type : "";
   const deviceId = typeof record.device_id === "string" ? record.device_id : "";
-  if (!token || tokenType !== "Bearer" || !deviceId) {
-    throw invalidPairingResponse("Pairing response is missing a bearer token or device id.");
+  const refreshToken = typeof record.refresh_token === "string" ? record.refresh_token : "";
+  const tokenFamilyId = typeof record.token_family_id === "string" ? record.token_family_id : "";
+  const deviceCredentialId = typeof record.device_credential_id === "string" ? record.device_credential_id : "";
+  if (!token || tokenType !== "Bearer" || !deviceId || !refreshToken || !tokenFamilyId || !deviceCredentialId) {
+    throw invalidPairingResponse("Pairing response is missing its access token, refresh family, or device binding.");
   }
   if (!isWebSocketSubprotocolToken(token)) {
     throw invalidPairingResponse("Pairing response token cannot be used as a WebSocket subprotocol.");
@@ -529,7 +564,17 @@ export function validatePairResult(payload: unknown): { payload: PairResult; exp
   if (isExpiredTimestamp(expiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
     throw new AuthExpiredError("Pairing token is already expired. Generate a new pairing code.");
   }
-  return { payload: payload as PairResult, expiresAt };
+  const refreshExpiresAt = pairingRefreshExpiresAt(
+    payload as Pick<PairResult, "refresh_expires_in" | "refresh_expires_at">,
+  );
+  if (!refreshExpiresAt) {
+    throw invalidPairingResponse("Pairing response is missing a usable refresh-token expiry.");
+  }
+  if (isExpiredTimestamp(refreshExpiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
+    throw new AuthExpiredError("Pairing refresh token is already expired. Generate a new pairing code.");
+  }
+  assertRefreshTokenFormat(refreshToken);
+  return { payload: payload as PairResult, expiresAt, refreshExpiresAt };
 }
 
 export function assertUsablePairingToken(session: PairingSession): void {
@@ -539,6 +584,19 @@ export function assertUsablePairingToken(session: PairingSession): void {
   assertWebSocketSubprotocolToken(session.token);
   if (isExpiredTimestamp(session.expiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
     throw new AuthExpiredError("Mobile session token has expired. Pair this phone again.");
+  }
+}
+
+export function assertUsableRefreshToken(session: PairingSession): void {
+  assertRefreshTokenFormat(session.refreshToken);
+  if (isExpiredTimestamp(session.refreshExpiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
+    throw new AuthExpiredError("Mobile refresh token has expired. Pair this phone again.");
+  }
+}
+
+function assertRefreshTokenFormat(refreshToken: string): void {
+  if (!/^lrt\.mrt_[a-f0-9]{32}\.[A-Za-z0-9_-]{32,}$/.test(refreshToken)) {
+    throw new AuthExpiredError("Mobile refresh token is missing or invalid. Pair this phone again.");
   }
 }
 
@@ -566,4 +624,3 @@ export function webSocketProtocolList(protocol: string): string[] {
   protocols.push(protocol);
   return protocols;
 }
-

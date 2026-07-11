@@ -11,9 +11,13 @@ export { buildRequestUrl } from "./ipcValidation";
 export { confirmNativeDesktopAction } from "./ipcNativeConfirmation";
 export { assertTrustedRenderer, isTrustedRendererUrl } from "./rendererTrust";
 
-export function registerIpcHandlers(backend: BackendProcessManager): void {
+export function registerIpcHandlers(
+  backend: BackendProcessManager,
+  localPrivacyEraser?: { eraseLocalPrivateData: () => Promise<void> }
+): void {
   const context = {
     backend,
+    localPrivacyEraser,
     documentPathGrants: new Set<string>(),
     revealPathGrants: new Set<string>()
   };

@@ -70,8 +70,10 @@ _PLAN_QUOTAS: dict[Plan, tuple[CloudQuota, ...]] = {
             key="7d",
         ),
     ),
-    Plan.PRO: (CloudQuota(max_total_tokens=10_000_000, max_calls=None, max_cost_usd=None, window_hours=24, key="24h"),),
-    Plan.MAX: (
+    Plan.PLUS: (
+        CloudQuota(max_total_tokens=10_000_000, max_calls=None, max_cost_usd=None, window_hours=24, key="24h"),
+    ),
+    Plan.PRO: (
         CloudQuota(max_total_tokens=100_000_000, max_calls=None, max_cost_usd=None, window_hours=24, key="24h"),
     ),
 }

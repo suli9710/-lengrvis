@@ -1,13 +1,58 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import HTTPException
 
 from app.core import db
 from app.core.schemas import Approval
-from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, mobile_token_scopes
+from app.security.mobile_jwt import (
+    REMOTE_INPUT_SCOPE,
+    TOKEN_SCOPE,
+    mobile_token_has_fresh_step_up,
+    mobile_token_scopes,
+)
 from app.services.mobile_pairing_common import _text, _text_list
+
+_HIGH_IMPACT_MOBILE_EFFECTS = {
+    "account_security",
+    "credential",
+    "delete",
+    "destructive",
+    "execute",
+    "execute_process",
+    "execute_subprocess",
+    "external_post",
+    "install",
+    "payment",
+    "permission_expansion",
+    "privileged",
+    "process",
+    "purchase",
+    "registry",
+    "send",
+    "subprocess",
+    "submit",
+    "system_write",
+    "trash",
+    "uninstall",
+    "upload",
+}
+_BROWSER_ACTION_TOOLS = {"browser.act", "browser.cua_run"}
+_BROWSER_HIGH_IMPACT_MARKERS = {
+    "account_security",
+    "change_password",
+    "checkout",
+    "order",
+    "payment",
+    "purchase",
+    "reset_password",
+    "send",
+    "submit",
+    "upload",
+}
+_BROWSER_SEMANTIC_KEYS = {"action", "action_type", "kind", "selector", "url"}
 
 
 def mobile_claims_can_access_approval(approval: Approval | dict[str, Any], claims: dict[str, Any]) -> bool:
@@ -70,7 +115,174 @@ def _mobile_approval_approve_denial_reason(approval: dict[str, Any], claims: dic
         return reason
     if _remote_input_grant_cannot_self_approve(approval, claims):
         return "Remote input grant token cannot approve its own input request."
+    if (
+        claims is not None
+        and _mobile_approval_requires_step_up(approval)
+        and not _mobile_claims_have_fresh_step_up(claims)
+    ):
+        return "High-impact mobile approval requires a fresh biometric step-up."
     return ""
+
+
+def _mobile_claims_have_fresh_step_up(claims: dict[str, Any] | None) -> bool:
+    if not mobile_token_has_fresh_step_up(claims, required_method="biometric"):
+        return False
+    payload = claims or {}
+    credential_id = _text(payload.get("credential_id"))
+    device_id = _text(payload.get("device_id"))
+    confirmation = payload.get("cnf")
+    proof_thumbprint = _text(confirmation.get("jkt")) if isinstance(confirmation, dict) else ""
+    if not credential_id or not device_id or not proof_thumbprint:
+        return False
+    credential = db.fetch_one("device_credentials", credential_id)
+    if not credential:
+        return False
+    return bool(
+        _text(credential.get("device_id")) == device_id
+        and _text(credential.get("status")).casefold() == "active"
+        and credential.get("hardware_backed") is True
+        and credential.get("attestation_verified") is True
+        and _text(credential.get("public_key_thumbprint")) == proof_thumbprint
+    )
+
+
+def _mobile_approval_requires_step_up(approval: dict[str, Any]) -> bool:
+    if approval.get("mobile_step_up_required") is True:
+        return True
+    boundary = approval.get("engineering_boundary")
+    if isinstance(boundary, dict) and boundary.get("mobile_step_up_required") is True:
+        return True
+    boundary_tool = boundary.get("tool") if isinstance(boundary, dict) else None
+    boundary_tool = boundary_tool if isinstance(boundary_tool, dict) else {}
+    risk_text = f"{_text(approval.get('risk_level'))} {_text(boundary_tool.get('risk_level'))}".casefold()
+    if any(marker in risk_text for marker in ("r3", "destructive", "system", "critical")):
+        return True
+    if boundary_tool.get("destructive") is True:
+        return True
+    effects = {
+        effect.lower()
+        for effect in [
+            *_text_list(approval.get("tool_effects")),
+            *_text_list(boundary_tool.get("effects")),
+        ]
+    }
+    if effects.intersection(_HIGH_IMPACT_MOBILE_EFFECTS):
+        return True
+    if any(
+        marker in effect
+        for effect in effects
+        for marker in (
+            "credential",
+            "delete",
+            "destructive",
+            "execute",
+            "external_send",
+            "external_post",
+            "install",
+            "payment",
+            "permission",
+            "privileged",
+            "process",
+            "purchase",
+            "registry",
+            "send",
+            "submit",
+            "system_write",
+            "trash",
+            "uninstall",
+            "upload",
+        )
+    ):
+        return True
+    permission_text = " ".join(
+        _text(value)
+        for value in (
+            approval.get("permission_mode"),
+            approval.get("policy_mode"),
+            boundary.get("permission_mode") if isinstance(boundary, dict) else "",
+            boundary.get("policy_mode") if isinstance(boundary, dict) else "",
+        )
+    ).casefold()
+    if re.search(r"full.?access|unrestricted|bypass|override|admin|root|privileged", permission_text):
+        return True
+    if _browser_action_parameters_require_step_up(approval):
+        return True
+    action = f"{_text(approval.get('approval_type'))} {_text(approval.get('tool_name'))}".lower()
+    return any(
+        marker in action
+        for marker in (
+            "account_security",
+            "browser.submit",
+            "credential",
+            "delete",
+            "execute",
+            "external_send",
+            "install",
+            "payment",
+            "permission",
+            "privileged",
+            "purchase",
+            "registry",
+            "send_message",
+            "subprocess",
+            "submit_form",
+            "system",
+            "trash",
+            "uninstall",
+            "upload",
+        )
+    )
+
+
+def _browser_action_parameters_require_step_up(approval: dict[str, Any]) -> bool:
+    tool_name = _text(approval.get("tool_name")).casefold()
+    if tool_name not in _BROWSER_ACTION_TOOLS:
+        return False
+    return any(
+        _contains_high_impact_browser_marker(value)
+        for value in _browser_semantic_values(
+            approval,
+            include_instructions=tool_name == "browser.cua_run",
+        )
+    )
+
+
+def _browser_semantic_values(value: Any, *, include_instructions: bool) -> list[str]:
+    values: list[str] = []
+
+    def visit(item: Any, *, key: str = "") -> None:
+        normalized_key = key.strip().replace("-", "_").casefold()
+        semantic_key = normalized_key in _BROWSER_SEMANTIC_KEYS or normalized_key.endswith(
+            ("_action", "_kind", "_selector", "_url")
+        )
+        if include_instructions and normalized_key in {"command", "instruction", "text"}:
+            semantic_key = True
+        if isinstance(item, dict):
+            for child_key, child in item.items():
+                visit(child, key=str(child_key))
+            return
+        if isinstance(item, list | tuple | set):
+            for child in item:
+                visit(child, key=key)
+            return
+        if semantic_key and item not in (None, ""):
+            values.append(str(item))
+
+    visit(value)
+    return values
+
+
+def _contains_high_impact_browser_marker(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in {"account_security", "change_password", "reset_password"}):
+        return True
+    tokens = {token for token in normalized.split("_") if token}
+    simple_markers = _BROWSER_HIGH_IMPACT_MARKERS.difference(
+        {"account_security", "change_password", "reset_password"}
+    )
+    return any(token == marker or token.startswith(marker) for token in tokens for marker in simple_markers)
 
 
 def _remote_input_grant_cannot_self_approve(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:

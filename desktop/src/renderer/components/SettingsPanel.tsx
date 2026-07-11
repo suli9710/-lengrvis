@@ -24,6 +24,7 @@ import {
   McpServersSection,
   RuntimeControlSection
 } from "./settings/AdvancedSettingsSections";
+import { AppearanceSettingsSection } from "./settings/AppearanceSettingsSection";
 import { BasicSettingsSection } from "./settings/BasicSettingsSection";
 import {
   buildPermissionRule,
@@ -477,6 +478,7 @@ export function SettingsPanel({
           realtimeStatusProblem={realtimeStatusProblem}
           onModeChange={changeMode}
         />
+        <AppearanceSettingsSection />
         <Suspense fallback={<div className="commerce-settings commerce-settings--loading settings-grid__full">正在读取套餐与授权...</div>}>
           <CommercePanel api={api} />
         </Suspense>

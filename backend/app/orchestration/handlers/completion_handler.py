@@ -35,6 +35,14 @@ class CompletionHandler:
 
     async def consolidate_memory(self, task: Task, plan: Plan) -> None:
         orchestrator = self.orchestrator
+        if not get_effective_settings().memory_auto_learning_enabled:
+            record(
+                "memory.auto_learning_skipped",
+                orchestrator.name,
+                {"task_id": task.id, "reason": "disabled_by_default"},
+                task_id=task.id,
+            )
+            return
         summary = task.final_summary or f"Completed task: {task.user_goal}"
         try:
             await orchestrator.memory.remember(

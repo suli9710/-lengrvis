@@ -13,6 +13,7 @@ from app.llm.registry import _is_local_base_url, get_effective_settings, get_pro
 from app.llm.usage import list_usage_events, usage_summary
 from app.observability.best_effort import log_best_effort_failure
 from app.policy.redaction import redact_text
+from app.security.execution_isolation import release_execution_configuration_issues
 from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
 
 SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
@@ -271,6 +272,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "context_micro_compact_enabled",
         "context_history_snip_enabled",
         "context_session_memory_enabled",
+        "memory_auto_learning_enabled",
         "developer_writes_enabled",
         "developer_writes_require_verification",
     }:
@@ -306,6 +308,13 @@ def _validate_settings_patch(patch: dict[str, Any]) -> None:
     if not patch:
         return
     candidate = get_effective_settings().merged(patch)
+    execution_issues = release_execution_configuration_issues(candidate)
+    if execution_issues:
+        raise AppError(
+            "execution_isolation_required",
+            " ".join(execution_issues),
+            status_code=409,
+        )
     provider_name = candidate.provider_name.lower()
     if provider_name in {"ollama", "lmstudio", "llamacpp", "llama.cpp", "vllm_local", "local"}:
         if candidate.base_url and not _is_local_base_url(candidate.base_url):

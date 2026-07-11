@@ -48,14 +48,66 @@ function assertSourceContract() {
   for (const fragment of [
     "OkHttpClientProvider.setOkHttpClientFactory",
     ".sslSocketFactory",
+    ".addInterceptor",
+    ".addNetworkInterceptor",
     "AndroidCAStore",
     'alias.startsWith("system:")',
     "hasAnyFingerprint",
     "hostHasFingerprint",
     "hostHasAnyFingerprintForHost",
+    'RECORD_SCHEMA = "tls-pin-record-v1"',
+    'STATUS_ACTIVE = "active"',
+    'STATUS_NEXT = "next"',
+    'STATUS_REVOKED = "revoked"',
+    "expiresAtEpochMs > nowEpochMs",
+    "originHasFingerprint",
+    "isSystemTrusted",
+    "verifyPinnedOriginBeforeRequest",
+    "stageServerCertificate",
+    "activateServerCertificate",
+    "revokeServerCertificate",
+    "assertServerCertificateTrusted",
+    "MAX_RECORDS_PER_ORIGIN",
+    "validateRecordSet",
+    "usable.size <= 2",
+    'CORRUPT_STATE_KEY = "tls_pin_store_corrupt_v1"',
+    'GOVERNED_STATE_KEY = "tls_pin_store_governed_v1"',
+    "assertRequestTrustStateHealthy",
+    "failCorruptStoreLocked",
   ]) {
     assert.ok(trust.includes(fragment), `LAN TLS trust implementation must include ${fragment}`);
   }
+  assert.doesNotMatch(
+    trust,
+    /pins\.put\(host,\s*values\)/,
+    "LAN TLS trust must not retain the legacy unbounded host-to-fingerprint array",
+  );
+  assert.match(
+    trust,
+    /expectedOrigin == null \|\| !LengrvisLanTrust\.originHasFingerprint\(context, expectedOrigin, fingerprint\)/,
+    "self-signed TLS fallback must require an active exact-origin pin during the handshake",
+  );
+  assert.doesNotMatch(
+    trust,
+    /catch\s*\([^)]*Exception[^)]*\)\s*\{\s*mutableListOf\(\)\s*\}/s,
+    "malformed TLS pin storage must never collapse into an empty trusted state",
+  );
+  const requestInterceptorStart = trust.indexOf(".addInterceptor");
+  const requestInterceptorEnd = trust.indexOf(".addNetworkInterceptor", requestInterceptorStart);
+  const requestInterceptor = trust.slice(requestInterceptorStart, requestInterceptorEnd);
+  const requestTrustCheck = requestInterceptor.indexOf("assertRequestTrustStateHealthy");
+  const guardedRequestProceed = requestInterceptor.indexOf("chain.proceed(request)", requestTrustCheck);
+  assert.ok(
+    requestTrustCheck >= 0 && guardedRequestProceed > requestTrustCheck,
+    "corrupt persisted pin state must be rejected before any HTTPS handshake or pooled request",
+  );
+  const trustManagerStart = trust.indexOf("override fun checkServerTrusted");
+  const trustManagerEnd = trust.indexOf("override fun getAcceptedIssuers", trustManagerStart);
+  const trustManager = trust.slice(trustManagerStart, trustManagerEnd);
+  assert.ok(
+    trustManager.indexOf("assertRequestTrustStateHealthy") < trustManager.indexOf("systemTrustManager.checkServerTrusted"),
+    "corrupt persisted pin state must be checked before system-trusted fallback",
+  );
 
   const verifierStart = trust.indexOf("private class LengrvisPinnedHostnameVerifier");
   const verifierEnd = trust.indexOf("private fun sha256", verifierStart);
@@ -86,6 +138,13 @@ function assertSourceContract() {
     "assertTlsHandshakeFails",
     "wrongFingerprint(fingerprintSha256)",
     "LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)",
+    "pinLifecycleSupportsOverlapPromotionExpiryAndTargetedRevocation",
+    "expiredPinFailsClosedWithoutAutomaticRenewal",
+    "malformedMultiPinStoreBlocksRequestsUntilExplicitRepair",
+    "legacyPinStoreBlocksRequestsUntilExplicitRepair",
+    'getString("tls_pin_store_corrupt_v1", null)',
+    "LengrvisLanTrust.revokeServerCertificate",
+    "LengrvisLanTrust.activateServerCertificate",
     "OkHttpClientProvider.createClient(context)",
     "/api/health",
     "/api/pair/confirm",

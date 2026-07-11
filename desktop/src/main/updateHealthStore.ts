@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -13,6 +13,7 @@ import {
   type LaunchAction,
   type UpdateHealthRecord,
 } from "../shared/updateHealth";
+import { writeJsonAtomically } from "./atomicJsonStore";
 
 /**
  * Main-process persistence + orchestration for the post-update health gate.
@@ -59,14 +60,10 @@ function getRecord(): UpdateHealthRecord {
 }
 
 function persist(next: UpdateHealthRecord): void {
-  cache = next;
   try {
     const filePath = getFilePath();
-    const dir = join(filePath, "..");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(filePath, JSON.stringify(next, null, 2), "utf-8");
+    writeJsonAtomically(filePath, next);
+    cache = next;
   } catch (error) { // broad-exception-boundary
     console.warn("Failed to persist update health record:", error);
   }

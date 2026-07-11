@@ -1,17 +1,43 @@
 name: Publish GitHub Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
         description: "Release tag to publish, for example v0.1.1"
         required: true
         type: string
+      release_owner_signature:
+        description: "Release-owner signature for the already-approved RC evidence"
+        required: true
+        type: string
+      manual_signoff_status:
+        description: "Current-release evidence manual sign-off status"
+        required: true
+        default: "release_signoff_recorded"
+        type: choice
+        options:
+          - rc_signoff_recorded
+          - release_signoff_recorded
+      candidate_run_id:
+        description: "Immutable CI run ID that produced the reviewed candidate artifacts"
+        required: true
+        type: string
+      candidate_run_attempt:
+        description: "Immutable CI run attempt that produced the reviewed candidate artifacts"
+        required: true
+        type: string
+      reviewed_evidence_run_id:
+        description: "CI run ID containing the separately reviewed and sealed evidence artifact"
+        required: true
+        type: string
+      reviewed_evidence_run_attempt:
+        description: "Immutable run attempt containing the reviewed evidence artifact"
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -21,21 +47,211 @@ concurrency:
 jobs:
   publish:
     name: Build signed artifacts + publish release
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: windows-latest
     timeout-minutes: 120
+    environment: production
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
       LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
       LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
+      LENGRVIS_STRICT_STATE_MACHINE: "true"
+      LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+      LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ inputs.candidate_run_attempt }}
+      LENGRVIS_REVIEWED_EVIDENCE_RUN_ID: ${{ inputs.reviewed_evidence_run_id }}
+      LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT: ${{ inputs.reviewed_evidence_run_attempt }}
+      LENGRVIS_ANDROID_APK_PATH: build/android/lengrvis-production.apk
+      LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH: build/android-real-device-evidence-reviewed.json
+      LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256: ${{ vars.LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 }}
+      LENGRVIS_ANDROID_BUILD_TOOLS_VERSION: ${{ vars.LENGRVIS_ANDROID_BUILD_TOOLS_VERSION }}
+      LENGRVIS_ANDROID_APKSIGNER_SHA256: ${{ vars.LENGRVIS_ANDROID_APKSIGNER_SHA256 }}
+      LENGRVIS_ANDROID_APKSIGNER_JAR_SHA256: ${{ vars.LENGRVIS_ANDROID_APKSIGNER_JAR_SHA256 }}
+      LENGRVIS_ANDROID_AAPT_SHA256: ${{ vars.LENGRVIS_ANDROID_AAPT_SHA256 }}
+      RELEASE_OWNER: ${{ github.actor }}
+      RELEASE_OWNER_SIGNATURE: ${{ inputs.release_owner_signature }}
+      RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS: ${{ inputs.manual_signoff_status }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Checkout release tag
+      - name: Validate immutable release candidate before checkout
+        id: candidate_identity
+        shell: pwsh
+        run: |
+          $releaseTag = [string]$env:RELEASE_TAG
+          if ($releaseTag -notmatch '^v[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "release_tag must be a v-prefixed semantic version without whitespace or ref syntax."
+          }
+
+          $candidateRunId = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID
+          $candidateRunAttempt = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
+          if ($candidateRunId -notmatch '^[1-9][0-9]*$' -or $candidateRunAttempt -notmatch '^[1-9][0-9]*$') {
+            throw "candidate_run_id and candidate_run_attempt must be positive integers."
+          }
+          $evidenceRunId = [string]$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID
+          $evidenceRunAttempt = [string]$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT
+          if ($evidenceRunId -notmatch '^[1-9][0-9]*$' -or $evidenceRunAttempt -notmatch '^[1-9][0-9]*$') {
+            throw "reviewed_evidence_run_id and reviewed_evidence_run_attempt must be positive integers."
+          }
+
+          $repositoryJson = gh api "repos/$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the current repository through the GitHub Actions API." }
+          $repository = $repositoryJson | ConvertFrom-Json
+          if ([string]$repository.full_name -ne $env:GITHUB_REPOSITORY -or [string]::IsNullOrWhiteSpace([string]$repository.default_branch)) {
+            throw "The GitHub API did not return the expected repository identity and default branch."
+          }
+          if ([string]$env:GITHUB_REF_NAME -ne [string]$repository.default_branch) {
+            throw "Release publishing must be dispatched from the repository default branch."
+          }
+
+          $candidateWorkflowJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-candidate.yml"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the release-candidate workflow through the GitHub Actions API." }
+          $candidateWorkflow = $candidateWorkflowJson | ConvertFrom-Json
+          if ([string]$candidateWorkflow.state -ne "active") {
+            throw "The release-candidate workflow must be active before a publish run can use its artifacts."
+          }
+
+          $candidateRunJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candidateRunId"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the requested candidate run through the GitHub Actions API." }
+          $candidateRun = $candidateRunJson | ConvertFrom-Json
+          if ([string]$candidateRun.repository.full_name -ne $env:GITHUB_REPOSITORY) {
+            throw "Candidate run repository does not match this repository."
+          }
+          if ([string]$candidateRun.workflow_id -ne [string]$candidateWorkflow.id) {
+            throw "Candidate run was not produced by .github/workflows/release-candidate.yml."
+          }
+          if ([string]$candidateRun.run_attempt -ne $candidateRunAttempt) {
+            throw "Candidate run attempt does not match the requested immutable run attempt."
+          }
+          if ([string]$candidateRun.status -ne "completed" -or [string]$candidateRun.conclusion -ne "success") {
+            throw "Candidate run must be completed successfully before release publishing."
+          }
+          if ([string]$candidateRun.event -ne "workflow_dispatch") {
+            throw "Candidate run must have been created by the release-candidate workflow_dispatch trigger."
+          }
+          if ([string]$candidateRun.head_repository.full_name -ne $env:GITHUB_REPOSITORY) {
+            throw "Candidate run head repository does not match this repository."
+          }
+          if ([string]$candidateRun.head_branch -ne [string]$repository.default_branch) {
+            throw "Candidate run must originate from the repository default branch."
+          }
+
+          $commit = ([string]$candidateRun.head_sha).Trim().ToLowerInvariant()
+          if ($commit -notmatch '^[0-9a-f]{40}$') {
+            throw "Candidate run did not provide a full immutable Git commit SHA."
+          }
+
+          $evidenceWorkflowJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-reviewed-evidence.yml"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the reviewed-evidence workflow through the GitHub Actions API." }
+          $evidenceWorkflow = $evidenceWorkflowJson | ConvertFrom-Json
+          if ([string]$evidenceWorkflow.state -ne "active") {
+            throw "The reviewed-evidence workflow must be active before release publishing."
+          }
+          $evidenceRunJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$evidenceRunId"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read the reviewed-evidence run." }
+          $evidenceRun = $evidenceRunJson | ConvertFrom-Json
+          if ([string]$evidenceRun.repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              [string]$evidenceRun.workflow_id -ne [string]$evidenceWorkflow.id -or
+              [string]$evidenceRun.run_attempt -ne $evidenceRunAttempt -or
+              [string]$evidenceRun.status -ne "completed" -or
+              [string]$evidenceRun.conclusion -ne "success" -or
+              [string]$evidenceRun.event -ne "workflow_dispatch" -or
+              [string]$evidenceRun.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              [string]$evidenceRun.head_branch -ne [string]$repository.default_branch -or
+              ([string]$evidenceRun.head_sha).Trim().ToLowerInvariant() -ne $commit) {
+            throw "Reviewed-evidence run provenance must match the protected workflow and exact candidate commit."
+          }
+          $buildIdentifier = "rc-$candidateRunId-$candidateRunAttempt-$commit"
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "LENGRVIS_RELEASE_CANDIDATE_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LENGRVIS_RELEASE_BUILD_IDENTIFIER=$buildIdentifier" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GITHUB_SHA=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Checkout verified release candidate commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ steps.candidate_identity.outputs.commit }}
           fetch-depth: 0
+
+      - name: Verify supplied release tag is bound to verified candidate
+        shell: pwsh
+        run: |
+          $tagRef = "refs/tags/$env:RELEASE_TAG"
+          git show-ref --verify --quiet $tagRef
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag $env:RELEASE_TAG does not exist in the checked-out repository."
+          }
+          $tagCommit = (git rev-list -n 1 $tagRef).Trim().ToLowerInvariant()
+          $checkoutCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($tagCommit -ne $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT) {
+            throw "Release tag $env:RELEASE_TAG does not resolve to the verified candidate commit."
+          }
+          if ($checkoutCommit -ne $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT) {
+            throw "Checked-out commit does not match the verified candidate commit."
+          }
+
+      - name: Download immutable candidate artifacts into isolated staging
+        shell: pwsh
+        run: |
+          $destination = "build/promotion-input/candidate"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name "release-candidate-artifacts" --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts." }
+
+      - name: Download reviewed release evidence into isolated staging
+        shell: pwsh
+        run: |
+          $destination = "build/promotion-input/evidence"
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          gh run download "$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID" --name "release-reviewed-evidence" --dir $destination
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download reviewed release evidence." }
+
+      - name: Materialize only allowed staged release inputs
+        shell: pwsh
+        run: |
+          $candidateRoot = (Resolve-Path -LiteralPath "build/promotion-input/candidate").Path
+          $evidenceRoot = (Resolve-Path -LiteralPath "build/promotion-input/evidence").Path
+          foreach ($root in @($candidateRoot, $evidenceRoot)) {
+            $links = @(Get-ChildItem -LiteralPath $root -Force -Recurse | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+            if ($links.Count -gt 0) { throw "Promotion artifacts must not contain symbolic links or reparse points." }
+          }
+          foreach ($pair in @(@("dist", "dist"), @("desktop/release", "desktop/release"))) {
+            $source = Join-Path $candidateRoot $pair[0]
+            if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Candidate artifact is missing required directory: $($pair[0])" }
+            New-Item -ItemType Directory -Force -Path $pair[1] | Out-Null
+            $children = @(Get-ChildItem -LiteralPath $source -Force)
+            if ($children.Count -eq 0) { throw "Candidate artifact directory is empty: $($pair[0])" }
+            Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $pair[1] -Recurse -Force
+          }
+
+          foreach ($relative in @("build/delivery-candidate-verdict.json")) {
+            $source = Join-Path $candidateRoot $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Candidate artifact is missing required file: $relative" }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $relative) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $relative -Force
+          }
+
+          # upload-artifact stores paths relative to their least common
+          # ancestor (build/), so the downloaded evidence artifact is rooted
+          # at the JSON files plus android/.  Map that archive layout back to
+          # the strict delivery paths explicitly.
+          $evidenceTargets = [ordered]@{
+            "distribution-release-evidence-reviewed.json" = "build/distribution-release-evidence-reviewed.json"
+            "clean-machine-release-evidence-reviewed.json" = "build/clean-machine-release-evidence-reviewed.json"
+            "result-quality-review-evidence-reviewed.json" = "build/result-quality-review-evidence-reviewed.json"
+            "diagnostics-external-review-evidence-reviewed.json" = "build/diagnostics-external-review-evidence-reviewed.json"
+            "android-real-device-evidence-reviewed.json" = "build/android-real-device-evidence-reviewed.json"
+            "android/lengrvis-production.apk" = "build/android/lengrvis-production.apk"
+          }
+          foreach ($entry in $evidenceTargets.GetEnumerator()) {
+            $source = Join-Path $evidenceRoot $entry.Key
+            $target = $entry.Value
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Reviewed evidence artifact is missing required file: $($entry.Key)" }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $target -Force
+          }
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -47,9 +263,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Verify checked-out candidate binding
+        run: python scripts/verify_release_candidate_binding.py --require-checkout-match
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -63,9 +280,7 @@ jobs:
           .venv\Scripts\python.exe -m pip install -U pip
 
       - name: Install backend dependencies
-        run: |
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
+        run: python -m pip install --require-hashes -r requirements-dev-lock.txt
 
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
@@ -83,97 +298,58 @@ jobs:
           $env:GITHUB_SHA = git rev-parse HEAD
           npm --prefix desktop run verify:release-version -- --require-tag
 
-      - name: Build release artifacts
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -SkipTests
+      - name: Validate full review scorecard
+        run: npm run review:scorecard
 
-      - name: Detect Azure Trusted Signing configuration
-        id: signing
+      - name: Validate Agentic threat model
+        run: npm run security:threat-model
+
+      - name: Verify release safety profile
+        run: npm run release:safety
+
+      - name: Run release hygiene and dependency preflight
+        id: hygiene
+        run: npm run deps:verify
+
+      - name: Run backend, desktop, and mobile quality preflight
+        id: qa_gate
+        run: npm run qa:gate
+
+      - name: Run real-provider quality preflight
+        id: real_llm_quality
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
+          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
+        run: python scripts/run_real_llm_eval.py --quality-gate
+
+      - name: Run supply-chain preflight
+        id: supply_chain
+        run: npm run supply-chain:verify && npm run audit:deps && npm run security:secrets
+
+      - name: Run extension security preflight
+        id: extension_security
+        run: npm run security:extensions
+
+      - name: Verify downloaded candidate signatures
+        env:
           AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
-        run: |
-          $required = @(
-            "AZURE_TENANT_ID",
-            "AZURE_CLIENT_ID",
-            "AZURE_CLIENT_SECRET",
-            "AZURE_TRUSTED_SIGNING_ENDPOINT",
-            "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
-            "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
-            "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT",
-            "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"
-          )
-          $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
-          $hasSigning = $missing.Count -eq 0
-          "has_azure_signing=$($hasSigning.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          if ($hasSigning) {
-            Write-Host "Azure Trusted Signing is configured; publishing signed installer."
-          } else {
-            Write-Warning "Azure Trusted Signing is not configured; publishing unsigned portable/backend assets only. Missing: $($missing -join ', ')"
-          }
+        run: npm --prefix desktop run verify:windows-release-signatures
 
-      - name: Verify signed Windows release configuration
-        if: steps.signing.outputs.has_azure_signing == 'true'
+      - name: Strict release delivery verdict
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
-        run: npm --prefix desktop run verify:signed-build-config
+          RELEASE_EVIDENCE_NEEDS_JSON: >-
+            {"hygiene":{"result":"${{ steps.hygiene.outcome }}"},"backend":{"result":"${{ steps.qa_gate.outcome }}"},"real-llm-quality":{"result":"${{ steps.real_llm_quality.outcome }}"},"desktop":{"result":"${{ steps.qa_gate.outcome }}"},"mobile":{"result":"${{ steps.qa_gate.outcome }}"},"supply-chain":{"result":"${{ steps.supply_chain.outcome }}"},"extension-security":{"result":"${{ steps.extension_security.outcome }}"}}
+        run: npm run delivery:rc
 
-      - name: Sign backend executable
-        if: steps.signing.outputs.has_azure_signing == 'true'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
-        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1
-
-      - name: Sign portable launcher
-        if: steps.signing.outputs.has_azure_signing == 'true'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
-        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_portable_artifacts.ps1 -LauncherOnly
-
-      - name: Refresh portable release bundle
-        if: steps.signing.outputs.has_azure_signing == 'true'
-        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/refresh_portable_release_bundle.ps1
-
-      - name: Sign self-extracting portable executable
-        if: steps.signing.outputs.has_azure_signing == 'true'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
-        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_portable_artifacts.ps1 -SelfExtractingOnly
-
-      - name: Prepare GitHub Release assets
+      - name: Prepare verified GitHub Release assets and checksums
         run: |
           $version = (Get-Content -LiteralPath desktop/package.json -Raw | ConvertFrom-Json).version
-          $assets = @(
+          $portableAssets = @(
             @{
               Source = "dist/Lengrvis-win-portable.zip"
               Target = "dist/Lengrvis-$version-win-portable.zip"
@@ -191,67 +367,68 @@ jobs:
               Target = "dist/Lengrvis-$version-backend-capabilities.json"
             }
           )
-          $checksumLines = @()
-          foreach ($asset in $assets) {
+          $uploadAssets = @()
+          foreach ($asset in $portableAssets) {
             if (-not (Test-Path -LiteralPath $asset.Source -PathType Leaf)) {
               throw "Missing release asset: $($asset.Source)"
             }
             if ($asset.Source -ne $asset.Target) {
               Copy-Item -LiteralPath $asset.Source -Destination $asset.Target -Force
             }
-            $hash = (Get-FileHash -LiteralPath $asset.Target -Algorithm SHA256).Hash.ToLowerInvariant()
-            $checksumLines += "$hash  $(Split-Path -Leaf $asset.Target)"
+            $uploadAssets += (Resolve-Path -LiteralPath $asset.Target).Path
           }
-          Set-Content -LiteralPath "dist/lengrvis-$version-windows-sha256.txt" -Value $checksumLines -Encoding ASCII
+          $installers = @(
+            Get-ChildItem -Path "desktop/release/*.exe" -File
+            Get-ChildItem -Path "desktop/release/*.msi" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "desktop/release/*.blockmap" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "desktop/release/*.yml" -File -ErrorAction SilentlyContinue
+          )
+          if (@($installers | Where-Object { $_.Extension -in @(".exe", ".msi") }).Count -eq 0) {
+            throw "Downloaded candidate does not contain a Windows installer."
+          }
+          $uploadAssets += @($installers | ForEach-Object { $_.FullName })
+          $checksumLines = @($uploadAssets | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $(Split-Path -Leaf $_)"
+          })
+          $checksumPath = (Resolve-Path -LiteralPath dist).Path + "\lengrvis-$version-windows-sha256.txt"
+          Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ASCII
+          $uploadAssets += $checksumPath
+          New-Item -ItemType Directory -Path build -Force | Out-Null
+          Set-Content -LiteralPath build/release-upload-assets.txt -Value $uploadAssets -Encoding UTF8
 
-      - name: Publish signed installer to GitHub Release
-        if: steps.signing.outputs.has_azure_signing == 'true'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
-          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
-        run: npm --prefix desktop run dist:publish
-
-      - name: Create or update GitHub Release
+      - name: Create or update draft GitHub Release
         run: |
           $version = (Get-Content -LiteralPath desktop/package.json -Raw | ConvertFrom-Json).version
-          $signingMode = if ("${{ steps.signing.outputs.has_azure_signing }}" -eq "true") {
-            "signed Windows installer plus portable assets"
-          } else {
-            "unsigned portable/backend assets; Azure Trusted Signing secrets were not configured for this run"
-          }
+          $signingMode = "signed Windows installer plus portable assets"
           $notes = @"
           Lengrvis $version release.
 
           Publishing mode: $signingMode.
 
-          Automated release commit: $env:GITHUB_SHA.
+          Automated release commit: $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT.
           "@
-          gh release view "$env:RELEASE_TAG" *> $null
+          $existingJson = gh release view "$env:RELEASE_TAG" --json isDraft 2>$null
           if ($LASTEXITCODE -eq 0) {
+            $existing = $existingJson | ConvertFrom-Json
+            if (-not [bool]$existing.isDraft) {
+              throw "Refusing to replace assets on an already-published release."
+            }
             gh release edit "$env:RELEASE_TAG" --title "Lengrvis $version" --notes "$notes" --latest
           } else {
-            gh release create "$env:RELEASE_TAG" --title "Lengrvis $version" --notes "$notes" --latest --target "$env:GITHUB_SHA"
+            gh release create "$env:RELEASE_TAG" --title "Lengrvis $version" --notes "$notes" --draft --target "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT"
           }
 
-      - name: Upload portable artifacts to GitHub Release
+      - name: Upload the verified candidate bytes to GitHub Release
         run: |
-          $uploadAssets = @(
-            Get-ChildItem -LiteralPath dist -Filter "Lengrvis-*-win-portable.zip"
-            Get-ChildItem -LiteralPath dist -Filter "Lengrvis-*-x64-self-extracting.exe"
-            Get-ChildItem -LiteralPath dist -Filter "Lengrvis-*-backend.exe"
-            Get-ChildItem -LiteralPath dist -Filter "Lengrvis-*-backend-capabilities.json"
-            Get-ChildItem -LiteralPath dist -Filter "lengrvis-*-windows-sha256.txt"
-          ) | ForEach-Object { $_.FullName }
-          if ($uploadAssets.Count -lt 5) {
-            throw "Expected at least 5 release assets, found $($uploadAssets.Count)."
+          $uploadAssets = @(Get-Content -LiteralPath build/release-upload-assets.txt | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($uploadAssets.Count -lt 6) {
+            throw "Expected installer, portable, backend, capabilities, and checksum release assets."
           }
           gh release upload "$env:RELEASE_TAG" @uploadAssets --clobber
+
+      - name: Publish verified GitHub Release
+        run: gh release edit "$env:RELEASE_TAG" --draft=false --latest
 
       - name: Upload release diagnostics artifact
         if: always()

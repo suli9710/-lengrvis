@@ -18,6 +18,11 @@ import httpx
 
 from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
+from app.security.capability_manifest import (
+    CapabilityManifestError,
+    assert_capability_allowed,
+    mcp_server_capability_payload,
+)
 
 DEFAULT_TIMEOUT = 30
 JSONRPC_VERSION = "2.0"
@@ -46,6 +51,11 @@ class MCPClient:
         self._lock = asyncio.Lock()
 
     async def list_tools(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+        capability_error = self._capability_error()
+        if capability_error:
+            self._tools_cache_error = capability_error
+            self._tools_cache = []
+            return []
         unsupported = self._unsupported_transport_error()
         if unsupported:
             self._tools_cache_error = unsupported
@@ -92,6 +102,9 @@ class MCPClient:
             return normalized
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        capability_error = self._capability_error()
+        if capability_error:
+            return {"ok": False, "error": capability_error, "server": self.config.name}
         unsupported = self._unsupported_transport_error()
         if unsupported:
             return {"ok": False, "error": unsupported, "server": self.config.name}
@@ -177,8 +190,8 @@ class MCPClient:
         return {
             "name": self.config.name,
             "transport": self.config.transport,
-            "url": self.config.url,
-            "command": self.config.command,
+            "url": mcp_server_capability_payload(self.config)["endpoint"],
+            "command": mcp_server_capability_payload(self.config)["command"],
             "enabled": self.config.enabled,
             "state": state,
             "error": unsupported,
@@ -190,6 +203,8 @@ class MCPClient:
         }
 
     async def list_resources(self) -> list[dict[str, Any]]:
+        if self._capability_error():
+            return []
         if self._unsupported_transport_error() or self._auth_required():
             return []
         payload = {
@@ -213,6 +228,17 @@ class MCPClient:
     def _auth_required(self) -> bool:
         auth = self.config.auth or {}
         return bool(auth.get("required")) and not auth.get("token")
+
+    def _capability_error(self) -> str:
+        try:
+            assert_capability_allowed(
+                "mcp_server",
+                self.config.name,
+                payload=mcp_server_capability_payload(self.config),
+            )
+        except CapabilityManifestError as exc:
+            return exc.message
+        return ""
 
 
 def _validate_tool_arguments(arguments: Any, schema: dict[str, Any]) -> str:

@@ -3,8 +3,8 @@
 ADMIN_SCRIPT_CORE = r"""    const $ = (id) => document.getElementById(id);
     const planDefaults = {
       free: {label: 'Free', devices: 1, note: '免费或内部测试，默认 1 台设备。'},
-      pro: {label: 'Pro', devices: 2, note: '个人专业版，默认 2 台设备。'},
-      max: {label: 'Max', devices: 5, note: '高阶或小团队试点，默认 5 台设备。'},
+      plus: {label: 'Plus', devices: 2, note: '¥49/月，正式自动化与跨网能力，默认 2 台设备。'},
+      pro: {label: 'Pro', devices: 5, note: '¥129/月，与 Plus 相同安全控制，增加更强模型和更高额度。'},
     };
     const terminalStatuses = new Set(['canceled', 'expired', 'revoked']);
     const statusRank = {active: 0, trialing: 1, past_due: 2, canceled: 3, expired: 4, revoked: 5};
@@ -14,7 +14,7 @@ ADMIN_SCRIPT_CORE = r"""    const $ = (id) => document.getElementById(id);
       selectedKeyHash: null,
       renewItem: null,
       danger: null,
-      plan: 'pro',
+      plan: 'plus',
       pendingKey: '',
       pendingRecord: null,
     };
@@ -110,7 +110,7 @@ ADMIN_SCRIPT_CORE = r"""    const $ = (id) => document.getElementById(id);
       showAuthed(false);
     }
     function selectPlan(plan) {
-      state.plan = planDefaults[plan] ? plan : 'pro';
+      state.plan = planDefaults[plan] ? plan : 'plus';
       for (const button of $('planSegment').querySelectorAll('button')) {
         button.classList.toggle('active', button.dataset.plan === state.plan);
       }

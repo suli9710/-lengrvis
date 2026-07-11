@@ -1,11 +1,12 @@
-import type { ApprovalDetail, BackendApproval, BackendWakeup, MobileTask, MobileTaskLaunchResult, MobileTaskMode, MobileTaskTemplateId, PairingSession, RemoteInputGrant, RemoteInputGrantToken } from "./types";
+import type { ApprovalDetail, BackendApproval, BackendWakeup, MobilePushSubscription, MobileTask, MobileTaskLaunchResult, MobileTaskMode, MobileTaskTemplateId, PairingSession, RemoteInputGrant, RemoteInputGrantToken } from "./types";
 import { AuthExpiredError, BackendHttpError, ForbiddenError, InsecureLanBaseUrlError, authHeaders, fetchWithTimeout, jsonAuthHeaders, parseJson, parseRemoteInputGrantJson } from "./http";
-import { assertSafePairingSession, assertWebSocketSubprotocolToken, describeBaseUrlSecurity, mergeBaseUrlSecurityMetadata, normalizePairingSecurityMetadata, normalizePairingServerInfo, sessionHasUnsafeRemoteTransport, validatePairResult } from "./security";
-import { configureNativeTlsTrust } from "./nativeTlsTrust";
+import { assertSafePairingSession, assertSafeRefreshablePairingSession, assertWebSocketSubprotocolToken, describeBaseUrlSecurity, mergeBaseUrlSecurityMetadata, normalizePairingSecurityMetadata, normalizePairingServerInfo, sessionHasUnsafeRemoteTransport, validatePairResult } from "./security";
+import { activateNativeTlsTrust, configureNativeTlsTrust } from "./nativeTlsTrust";
 import { REMOTE_INPUT_SCOPE } from "./types";
 
 const remoteInputGrantTokens = new Map<string, RemoteInputGrantToken>();
 const REMOTE_INPUT_APPROVAL_DESKTOP_ONLY_MESSAGE = "Remote input approvals must be approved on the desktop.";
+const EXPO_PUSH_TOKEN_PATTERN = /^(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{1,200}\]$/;
 
 
 export async function pairWithBackend(
@@ -29,23 +30,89 @@ export async function pairWithBackend(
     },
     body: JSON.stringify({ code, device_name: deviceName, claim_secret: claimSecret }),
   });
-  const { payload, expiresAt } = validatePairResult(await parseJson<unknown>(response));
+  const { payload, expiresAt, refreshExpiresAt } = validatePairResult(await parseJson<unknown>(response));
   const pairingSecurity = normalizePairingSecurityMetadata(payload, baseUrlSecurity);
   const mergedBaseUrlSecurity = mergeBaseUrlSecurityMetadata(baseUrlSecurity, pairingSecurity);
   if (mergedBaseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(mergedBaseUrlSecurity)) {
     throw new InsecureLanBaseUrlError(mergedBaseUrlSecurity);
   }
-  await configureNativeTlsTrust(mergedBaseUrlSecurity);
+  await activateNativeTlsTrust(mergedBaseUrlSecurity);
   return {
     baseUrl: normalizedBaseUrl,
     token: payload.token,
+    refreshToken: payload.refresh_token,
     deviceId: payload.device_id,
+    tokenFamilyId: payload.token_family_id,
+    deviceCredentialId: payload.device_credential_id,
     ...(payload.device_trust ? { deviceTrust: payload.device_trust } : {}),
     expiresAt,
+    refreshExpiresAt,
     baseUrlSecurity: mergedBaseUrlSecurity,
     server: normalizePairingServerInfo(payload.server),
     security: pairingSecurity,
   };
+}
+
+/**
+ * Rotate the paired refresh-token family for a fresh short-lived access token.
+ *
+ * The transport identity is intentionally preserved from the established
+ * session: a refresh response cannot silently move the phone to another
+ * origin or replace the certificate trust decision made during pairing.
+ */
+export async function refreshMobileSession(session: PairingSession): Promise<PairingSession> {
+  const safeSession = await safeRefreshNetworkSession(session);
+  const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/session/refresh`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refresh_token: safeSession.refreshToken }),
+  });
+  const { payload, expiresAt, refreshExpiresAt } = validatePairResult(await parseJson<unknown>(response));
+  if (payload.device_id !== safeSession.deviceId) {
+    throw new ForbiddenError("Refreshed mobile session belongs to a different device.");
+  }
+  if (payload.token_family_id !== safeSession.tokenFamilyId) {
+    throw new ForbiddenError("Refreshed mobile session belongs to a different token family.");
+  }
+  if (payload.device_credential_id !== safeSession.deviceCredentialId) {
+    throw new ForbiddenError("Refreshed mobile session belongs to a different device credential.");
+  }
+  return {
+    ...safeSession,
+    token: payload.token,
+    refreshToken: payload.refresh_token,
+    expiresAt,
+    refreshExpiresAt,
+    ...(payload.device_trust ? { deviceTrust: payload.device_trust } : {}),
+  };
+}
+
+export async function registerMobilePushSubscription(
+  session: PairingSession,
+  subscription: MobilePushSubscription,
+): Promise<void> {
+  if (subscription.provider !== "expo" || !EXPO_PUSH_TOKEN_PATTERN.test(subscription.token)) {
+    throw new BackendHttpError(422, "Push notification registration is invalid.", "validation");
+  }
+  const safeSession = await safeNetworkSession(session);
+  const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/push-subscription`, {
+    method: "PUT",
+    headers: jsonAuthHeaders(safeSession.token),
+    body: JSON.stringify(subscription),
+  });
+  await parseJson<unknown>(response);
+}
+
+export async function unregisterMobilePushSubscription(session: PairingSession): Promise<void> {
+  const safeSession = await safeNetworkSession(session);
+  const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/push-subscription`, {
+    method: "DELETE",
+    headers: authHeaders(safeSession.token),
+  });
+  await parseJson<unknown>(response);
 }
 
 export async function listPendingApprovals(session: PairingSession): Promise<BackendApproval[]> {
@@ -372,6 +439,12 @@ export function normalizedRemoteInputGrantText(value: string | undefined): strin
 
 async function safeNetworkSession(session: PairingSession): Promise<PairingSession> {
   const safeSession = assertSafePairingSession(session);
+  await configureNativeTlsTrust(safeSession.baseUrlSecurity);
+  return safeSession;
+}
+
+async function safeRefreshNetworkSession(session: PairingSession): Promise<PairingSession> {
+  const safeSession = assertSafeRefreshablePairingSession(session);
   await configureNativeTlsTrust(safeSession.baseUrlSecurity);
   return safeSession;
 }

@@ -36,7 +36,7 @@ if os.name != "nt":
     collect_ignore_glob.append("test_start_app_script.py")
 
 
-# Remote desktop control (手机远控) is a Pro+ entitlement. The commercialization
+# Remote desktop control (手机远控) is a Plus+ entitlement. The commercialization
 # gate app.llm.registry._enforce_plan_entitlements() (applied inside
 # get_effective_settings()) force-disables remote_desktop_enabled on the default
 # FREE plan, and test_entitlements.py asserts that FREE -> disabled behavior.

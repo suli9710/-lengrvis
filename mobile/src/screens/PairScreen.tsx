@@ -18,6 +18,7 @@ import * as Device from "expo-device";
 import { Camera, Link2, QrCode, Smartphone, X } from "lucide-react-native";
 
 import { describeBaseUrlSecurity, pairWithBackend, type BaseUrlSecurity, type PairingSession } from "../api/client";
+import { stageNativeTlsTrust } from "../api/client/nativeTlsTrust";
 import {
   PAIRING_CODE_LENGTH,
   classifyPairingPayloadSecurity,
@@ -310,6 +311,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
           if (!confirmed) {
             return;
           }
+          await stageNativeTlsTrust(baseUrlSecurity);
         }
         const nextSession = await pairWithBackend(
           baseUrlSecurity.normalizedBaseUrl,

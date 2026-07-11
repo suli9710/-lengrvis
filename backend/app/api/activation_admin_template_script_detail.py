@@ -97,7 +97,7 @@ ADMIN_SCRIPT_DETAIL = r"""    function renderDetail() {
       }
     }
     function displayPlan(plan) {
-      const labels = {free: '免费版', pro: '专业版', max: '旗舰版'};
+      const labels = {free: 'Free', plus: 'Plus', pro: 'Pro'};
       return labels[String(plan || '').toLowerCase()] || plan || '';
     }
     function displayStatus(status) {

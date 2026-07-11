@@ -12,6 +12,7 @@ import httpx
 
 from app.config import get_env
 from app.core.process_tree import run_process_tree
+from app.security.execution_isolation import arbitrary_execution_denial
 from app.skills.schemas import SkillExecution, SkillExecutionType
 
 MAX_STDOUT_BYTES = 1024 * 1024
@@ -35,28 +36,42 @@ class SkillSandbox:
 
     def execute(self, execution: SkillExecution, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if execution.type == SkillExecutionType.PYTHON:
-            if not self._local_skill_execution_allowed(context):
-                return _local_skill_execution_disabled_error(execution)
+            denied = self._local_skill_execution_denial(execution, context)
+            if denied is not None:
+                return denied
             return self._execute_process(self._python_command(execution), execution, args, context)
         if execution.type == SkillExecutionType.SHELL:
-            if not self._local_skill_execution_allowed(context):
-                return _local_skill_execution_disabled_error(execution)
+            denied = self._local_skill_execution_denial(execution, context)
+            if denied is not None:
+                return denied
             return self._execute_process(self._shell_command(execution), execution, args, context)
         if execution.type == SkillExecutionType.HTTP:
-            if not self._local_skill_execution_allowed(context):
-                return _local_skill_execution_disabled_error(execution)
+            denied = self._local_skill_execution_denial(execution, context)
+            if denied is not None:
+                return denied
             return self._execute_http(execution, args, context)
         return {"error": f"Unsupported skill execution type: {execution.type}"}
 
-    def _local_skill_execution_allowed(self, context: dict[str, Any]) -> bool:
-        if _truthy(get_env(UNSAFE_LOCAL_SKILL_EXECUTION_ENV)):
-            return True
-        if self.allow_unsafe_local_skill_execution is True:
-            return True
-        if _truthy(context.get("allow_unsafe_local_skill_execution")):
-            return True
+    def _local_skill_execution_denial(
+        self,
+        execution: SkillExecution,
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._local_skill_execution_requested(context):
+            return _local_skill_execution_disabled_error(execution)
+        denied = arbitrary_execution_denial(f"Local {execution.type.value} Skill execution")
+        if denied is not None:
+            return {**denied, "execution_type": execution.type.value}
+        return None
+
+    def _local_skill_execution_requested(self, context: dict[str, Any]) -> bool:
         settings = context.get("settings")
-        return bool(getattr(settings, "allow_unsafe_local_skill_execution", False))
+        return bool(
+            _truthy(get_env(UNSAFE_LOCAL_SKILL_EXECUTION_ENV))
+            or self.allow_unsafe_local_skill_execution is True
+            or _truthy(context.get("allow_unsafe_local_skill_execution"))
+            or getattr(settings, "allow_unsafe_local_skill_execution", False)
+        )
 
     def resolve_local_entry(self, execution: SkillExecution) -> Path:
         return self.resolve_package_file(execution.entry, label="execution entry")

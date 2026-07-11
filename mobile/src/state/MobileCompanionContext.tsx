@@ -10,8 +10,10 @@ import {
   ForbiddenError,
   listMobileTasks,
   listPendingApprovals,
+  registerMobilePushSubscription,
   submitMobileTaskCommand,
   submitMobileTaskFollowUp,
+  unregisterMobilePushSubscription,
   type ApprovalEvent,
   type BackendApproval,
   type MobileTask,
@@ -21,7 +23,8 @@ import {
   type RemoteInputGrant,
 } from "../api/client";
 import type { HomeSnapshot } from "../navigation/types";
-import { notifyApproval, requestNotificationPermission } from "../notifications";
+import { requestApprovalPushSubscription } from "../notifications";
+import { approvalPushRegistrationRetryDelayMs, ensureApprovalPushSubscription } from "../pushSubscriptionLifecycle";
 import { isRemoteInputGrantUsable, remoteInputGrantDisplayStatus } from "../remoteInputGrant";
 import { isMobileTaskActive, isMobileTaskTerminal } from "../taskCompanionDisplay";
 import { taskStarterTemplates } from "../taskStarterTemplates";
@@ -105,10 +108,12 @@ export function MobileCompanionProvider({
   const [followUpTaskId, setFollowUpTaskId] = useState("");
   const [followUpDrafts, setFollowUpDrafts] = useState<Record<string, string>>({});
   const [notificationsOff, setNotificationsOff] = useState(false);
+  const [pushRegistrationAttempt, setPushRegistrationAttempt] = useState(0);
   const [streamReconnectKey, setStreamReconnectKey] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
+  const registeredPushSubscriptionKeyRef = useRef("");
 
   const pendingCount = useMemo(
     () => approvals.filter((approval) => approval.status === "pending").length,
@@ -202,10 +207,47 @@ export function MobileCompanionProvider({
   }, []);
 
   useEffect(() => {
-    void requestNotificationPermission()
-      .then((allowed) => setNotificationsOff(!allowed))
-      .catch(() => setNotificationsOff(true));
-  }, []);
+    let isActive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    void ensureApprovalPushSubscription(
+      session,
+      {
+        requestSubscription: requestApprovalPushSubscription,
+        registerSubscription: registerMobilePushSubscription,
+        unregisterSubscription: unregisterMobilePushSubscription,
+      },
+      registeredPushSubscriptionKeyRef.current,
+    )
+      .then((result) => {
+        if (!isActive) return;
+        if (result.status === "unavailable") {
+          registeredPushSubscriptionKeyRef.current = "";
+          setNotificationsOff(true);
+          return;
+        }
+        registeredPushSubscriptionKeyRef.current = result.registrationKey;
+        setPushRegistrationAttempt(0);
+        setNotificationsOff(false);
+      })
+      .catch((currentError: unknown) => {
+        if (!isActive) return;
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        // Notifications are optional: a provider or network failure never
+        // blocks the paired approval stream or exposes provider diagnostics.
+        setNotificationsOff(true);
+        retryTimer = setTimeout(
+          () => setPushRegistrationAttempt((attempt) => attempt + 1),
+          approvalPushRegistrationRetryDelayMs(pushRegistrationAttempt),
+        );
+      });
+    return () => {
+      isActive = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [handleAuthExpired, pushRegistrationAttempt, session]);
 
   useEffect(() => {
     let closedByEffect = false;
@@ -263,7 +305,6 @@ export function MobileCompanionProvider({
         }
         if (payload.type === "approval_notification" || payload.type === "approval_created") {
           upsertApproval(payload.approval);
-          void notifyApproval(payload.approval);
           return;
         }
         if (payload.type === "approval_decided") {
@@ -311,6 +352,7 @@ export function MobileCompanionProvider({
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") return;
+      setPushRegistrationAttempt((attempt) => attempt + 1);
       void refreshAllAsync()
         .catch((currentError: unknown) => {
           if (currentError instanceof AuthExpiredError) {

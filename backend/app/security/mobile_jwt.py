@@ -18,8 +18,11 @@ TOKEN_SCOPE = "mobile:approval"  # noqa: S105 - OAuth-style scope label, not a s
 REMOTE_VIEW_SCOPE = "remote:view"
 REMOTE_INPUT_SCOPE = "remote:input"
 MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token."
-MOBILE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
+MOBILE_ACCESS_TOKEN_MIN_TTL_SECONDS = 15 * 60
+MOBILE_ACCESS_TOKEN_MAX_TTL_SECONDS = 60 * 60
+MOBILE_TOKEN_TTL_SECONDS = 30 * 60
 MOBILE_REMOTE_VIEW_TTL_SECONDS = 4 * 60 * 60
+MOBILE_STEP_UP_TTL_SECONDS = 15 * 60
 # P1-5 fix: Pin the algorithm explicitly in both encode and decode.
 # The old code used "HS256" as a bare string, making algorithm confusion
 # attacks possible if a future change accidentally broadened the decode list.
@@ -27,7 +30,7 @@ MOBILE_REMOTE_VIEW_TTL_SECONDS = 4 * 60 * 60
 # alg=none bypass attacks.  To migrate to EdDSA (Ed25519) in the future:
 #   1. Add "EdDSA" to the algorithms list during a transition period.
 #   2. Issue new tokens with EdDSA while still accepting HS256.
-#   3. After all HS256 tokens expire (7-day TTL), remove "HS256".
+#   3. After all HS256 access tokens expire, remove "HS256".
 MOBILE_JWT_ALGORITHM = "HS256"
 
 
@@ -42,6 +45,10 @@ def issue_mobile_token(
     grant_id: str = "",
     token_id: str = "",
     token_epoch: int = 0,
+    family_id: str = "",
+    credential_id: str = "",
+    step_up_method: str = "",
+    step_up_expires_in_seconds: int = MOBILE_STEP_UP_TTL_SECONDS,
 ) -> str:
     now = datetime.now(UTC)
     scopes = _scope_values(scope)
@@ -58,13 +65,31 @@ def issue_mobile_token(
         "sub": f"mobile:{device_id}",
         "token_epoch": int(token_epoch),
     }
-    encoded_scope_exp = _encode_scope_exp(now, scopes, scope_ttl)
+    encoded_scope_exp = _encode_scope_exp(
+        now,
+        scopes,
+        scope_ttl,
+        max_ttl_seconds=expires_in_seconds,
+    )
     if encoded_scope_exp:
         payload["scope_exp"] = encoded_scope_exp
     if source:
         payload["source"] = source
     if grant_id:
         payload["grant_id"] = grant_id
+    if family_id:
+        payload["family_id"] = family_id
+    if credential_id:
+        payload["credential_id"] = credential_id
+    normalized_step_up_method = str(step_up_method or "").strip().lower()
+    if normalized_step_up_method:
+        step_up_ttl = max(1, min(int(step_up_expires_in_seconds), expires_in_seconds, MOBILE_STEP_UP_TTL_SECONDS))
+        payload["amr"] = [normalized_step_up_method]
+        payload["step_up"] = {
+            "method": normalized_step_up_method,
+            "verified_at": int(now.timestamp()),
+            "expires_at": int((now + timedelta(seconds=step_up_ttl)).timestamp()),
+        }
     return jwt.encode(payload, _secret(), algorithm=MOBILE_JWT_ALGORITHM)
 
 
@@ -86,6 +111,7 @@ def decode_mobile_token(
         raise HTTPException(status_code=401, detail="Invalid mobile token") from None
     if require_active_device:
         _raise_if_device_inactive(str(payload.get("device_id") or ""), token_epoch=_token_epoch(payload))
+        _raise_if_session_binding_inactive(payload)
         _raise_if_remote_input_grant_inactive(payload, scopes)
     payload["scopes"] = sorted(scopes)
     return payload
@@ -103,6 +129,7 @@ def validate_mobile_claims_active(
     exp_scopes = scope_exp_scopes if scope_exp_scopes is not None else {TOKEN_SCOPE}
     _raise_if_scope_expired(claims, scopes.intersection(exp_scopes))
     _raise_if_device_inactive(str(claims.get("device_id") or ""), token_epoch=_token_epoch(claims))
+    _raise_if_session_binding_inactive(claims)
     _raise_if_remote_input_grant_inactive(claims, scopes)
 
 
@@ -171,10 +198,33 @@ def mobile_token_scopes(claims: dict[str, Any]) -> set[str]:
     return scopes
 
 
+def mobile_token_has_fresh_step_up(
+    claims: dict[str, Any] | None,
+    *,
+    required_method: str = "biometric",
+) -> bool:
+    if not isinstance(claims, dict):
+        return False
+    step_up = claims.get("step_up")
+    if not isinstance(step_up, dict):
+        return False
+    method = str(step_up.get("method") or "").strip().lower()
+    if method != required_method.strip().lower():
+        return False
+    try:
+        expires_at = datetime.fromtimestamp(float(step_up.get("expires_at")), UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+    methods = {str(item).strip().lower() for item in claims.get("amr", []) if str(item).strip()}
+    return method in methods and expires_at > datetime.now(UTC)
+
+
 def _encode_scope_exp(
     issued_at: datetime,
     scopes: list[str],
     scope_ttl: dict[str, int] | None,
+    *,
+    max_ttl_seconds: int,
 ) -> dict[str, int]:
     if not scope_ttl:
         return {}
@@ -189,7 +239,9 @@ def _encode_scope_exp(
             continue
         if normalized_ttl <= 0:
             continue
-        encoded[scope] = int((issued_at + timedelta(seconds=normalized_ttl)).timestamp())
+        encoded[scope] = int(
+            (issued_at + timedelta(seconds=min(normalized_ttl, max(1, int(max_ttl_seconds))))).timestamp()
+        )
     return encoded
 
 
@@ -270,6 +322,44 @@ def _raise_if_device_inactive(device_id: str, *, token_epoch: int | None = None)
         raise HTTPException(status_code=401, detail="Mobile device has been revoked")
     if token_epoch is not None and int(device.get("token_epoch") or 0) != int(token_epoch):
         raise HTTPException(status_code=401, detail="Mobile session has been revoked")
+
+
+def _raise_if_session_binding_inactive(payload: dict[str, Any]) -> None:
+    family_id = str(payload.get("family_id") or "").strip()
+    credential_id = str(payload.get("credential_id") or "").strip()
+    if not family_id and not credential_id:
+        return
+    if not family_id or not credential_id:
+        raise HTTPException(status_code=401, detail="Mobile session binding is incomplete")
+
+    device_id = str(payload.get("device_id") or "").strip()
+    with db.connect() as conn:
+        family = conn.execute(
+            "SELECT device_id, credential_id, status, expires_at FROM token_families WHERE id = ?",
+            (family_id,),
+        ).fetchone()
+        credential = conn.execute(
+            "SELECT device_id, status FROM device_credentials WHERE id = ?",
+            (credential_id,),
+        ).fetchone()
+    if not family or not credential:
+        raise HTTPException(status_code=401, detail="Mobile session binding is invalid")
+    if str(family["device_id"]) != device_id or str(credential["device_id"]) != device_id:
+        raise HTTPException(status_code=401, detail="Mobile session binding is invalid")
+    if str(family["credential_id"]) != credential_id:
+        raise HTTPException(status_code=401, detail="Mobile session binding is invalid")
+    if str(family["status"] or "").lower() != "active":
+        raise HTTPException(status_code=401, detail="Mobile token family has been revoked")
+    if str(credential["status"] or "").lower() != "active":
+        raise HTTPException(status_code=401, detail="Mobile device credential has been revoked")
+    try:
+        family_expires_at = datetime.fromisoformat(str(family["expires_at"]).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Mobile token family expiry is invalid") from None
+    if family_expires_at.tzinfo is None:
+        family_expires_at = family_expires_at.replace(tzinfo=UTC)
+    if family_expires_at.astimezone(UTC) <= datetime.now(UTC):
+        raise HTTPException(status_code=401, detail="Mobile token family has expired")
 
 
 def _token_epoch(payload: dict[str, Any]) -> int:

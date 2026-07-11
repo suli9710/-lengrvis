@@ -35,6 +35,10 @@ jobs:
         run: npm run deps:verify
       - name: Maintainability source-size gate
         run: npm run maintainability:gate
+      - name: Full review scorecard gate
+        run: npm run review:scorecard
+      - name: Agentic threat model gate
+        run: npm run security:threat-model
 
   backend:
     name: Backend pytest + golden task gate
@@ -46,15 +50,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
-      - name: Install backend dependencies (direct lock + dev)
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install locked backend and development dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
-          python -m pip install pip-audit
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Backend dependency audit gate
         run: python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps
       - name: Install Playwright Chromium (browser tool tests)
@@ -89,14 +89,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev-lock.txt
       - name: Install backend dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Skip real LLM quality gate when secret is unavailable
         id: real-llm-skip
         if: ${{ env.LENGRVIS_API_KEY == '' }}
@@ -179,6 +176,14 @@ jobs:
         run: npm --prefix mobile run typecheck
       - name: Mobile token smoke
         run: npm --prefix mobile run smoke:token
+      - name: Mobile consent contract smoke
+        run: npm --prefix mobile run smoke:consent
+      - name: Mobile session lifecycle smoke
+        run: npm --prefix mobile run smoke:session-lifecycle
+      - name: Mobile push notification smoke
+        run: npm --prefix mobile run smoke:push-notifications
+      - name: Mobile push subscription lifecycle smoke
+        run: npm --prefix mobile run smoke:push-subscription-lifecycle
       - name: Mobile task companion smoke
         run: npm --prefix mobile run smoke:task-companion
       - name: Mobile remote input grant smoke
@@ -191,6 +196,8 @@ jobs:
         run: npm --prefix mobile run smoke:approval-status-label
       - name: Mobile Android hardening plugin smoke
         run: npm --prefix mobile run smoke:android-hardening-plugin
+      - name: Mobile Android prebuild network-security smoke
+        run: npm --prefix mobile run smoke:android-prebuild-network-security
       - name: Mobile Android manifest/resources hardening smoke
         run: npm --prefix mobile run smoke:android-manifest-resources
       - name: Mobile Android LAN TLS source + connected test contract
@@ -269,14 +276,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev-lock.txt
       - name: Install backend dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
       - name: IPC + Skill/MCP + settings security gate

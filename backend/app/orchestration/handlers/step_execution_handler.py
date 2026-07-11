@@ -3,8 +3,14 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from app.automation.intent_capsule import user_goal_digest
 from app.core import db
 from app.core.audit import record
+from app.core.content_provenance import (
+    collect_content_envelopes,
+    content_binding_payload,
+    revalidate_content_envelope,
+)
 from app.core.schemas import (
     Approval,
     ApprovalStatus,
@@ -79,6 +85,18 @@ class StepExecutionHandler:
         runtime.extra_context["explicit_path_scope"] = task.user_goal
         return runtime
 
+    def _bind_automation_authorization_context(
+        self,
+        runtime: TaskRuntimeContext,
+        plan: Plan,
+    ) -> None:
+        policy_version = permission_policy_version(PermissionStore().updated_at())
+        runtime.extra_context["plan_revision"] = plan.version
+        runtime.extra_context["policy_version"] = policy_version
+        if "automation_run_id" in runtime.extra_context:
+            runtime.extra_context["automation_plan_revision"] = plan.version
+            runtime.extra_context["automation_policy_version"] = policy_version
+
     async def execute_step(
         self,
         task: Task,
@@ -101,6 +119,8 @@ class StepExecutionHandler:
             return StepExecutionOutcome("fatal_failed")
 
         runtime = self._runtime_context_for_step(task, step, context)
+        self._bind_automation_authorization_context(runtime, plan)
+        self._bind_dependency_content_provenance(runtime, observation)
         safety_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
             task,
             step,
@@ -212,10 +232,15 @@ class StepExecutionHandler:
                     final_summary="SafetyReviewAgent stopped the task after applying a subagent proposal.",
                 )
                 return StepExecutionOutcome("fatal_denied")
-            orchestrator._persist_plan_update(plan, "Plan step updated from subagent tool proposal.")
+            orchestrator._persist_plan_update(
+                plan,
+                "Plan step updated from subagent tool proposal.",
+                revision_change=True,
+            )
             await self._yield_if_parallel(threaded_tools)
             if step.tool_name != original_tool_name or dict(step.args or {}) != original_args:
                 runtime = self._runtime_context(task, context)
+                self._bind_automation_authorization_context(runtime, plan)
                 review_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
                     task,
                     step,
@@ -266,7 +291,7 @@ class StepExecutionHandler:
             return self._expire_nonexecutable_step(task, plan, step, approval, state_error)
 
         tool = orchestrator.registry.get(step.tool_name)
-        binding_error = self._approval_binding_error(approval, task, step, tool)
+        binding_error = self._approval_binding_error(approval, task, plan, step, tool)
         if binding_error:
             return self._deny_approved_step(task, plan, step, approval, binding_error)
 
@@ -320,6 +345,10 @@ class StepExecutionHandler:
                 return task
 
         runtime = self._runtime_context_for_step(task, step)
+        self._bind_automation_authorization_context(runtime, plan)
+        provenance_error = self._bind_approved_content_provenance(runtime, approval, step.args, task.id)
+        if provenance_error:
+            return self._deny_approved_step(task, plan, step, approval, provenance_error)
         resource_error = await self._approval_resource_state_error(approval, step, tool, runtime)
         if resource_error:
             db.expire_approval_if_unconsumed(approval.id, now_iso(), resource_error)
@@ -343,7 +372,12 @@ class StepExecutionHandler:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
         approval = Approval.model_validate(claimed)
 
-        approved_args = {**step.args, "dry_run": False, "approved": True, "approval_id": approval.id}
+        approved_args = {
+            **content_binding_payload(step.args),
+            "dry_run": False,
+            "approved": True,
+            "approval_id": approval.id,
+        }
         orchestrator._persist_plan_update(plan, "Plan status updated after user approval.")
         execution = await self.tool_runtime.execute_allowed(
             task,
@@ -390,6 +424,41 @@ class StepExecutionHandler:
             task_id=task.id,
         )
         return task
+
+    def _bind_dependency_content_provenance(
+        self,
+        runtime: TaskRuntimeContext,
+        observation: ToolResult | None,
+    ) -> None:
+        if observation is None or observation.content_envelope is None:
+            return
+        existing = runtime.extra_context.get("upstream_content_envelopes")
+        envelopes = list(existing) if isinstance(existing, list | tuple) else []
+        envelopes.append(observation.content_envelope.model_dump(mode="json"))
+        runtime.extra_context["upstream_content_envelopes"] = envelopes
+
+    def _bind_approved_content_provenance(
+        self,
+        runtime: TaskRuntimeContext,
+        approval: Approval,
+        args: dict[str, Any],
+        task_id: str,
+    ) -> str:
+        boundary = approval.engineering_boundary if isinstance(approval.engineering_boundary, dict) else {}
+        provenance = boundary.get("content_provenance")
+        raw_envelopes = provenance.get("upstream_envelopes") if isinstance(provenance, dict) else None
+        try:
+            envelopes = collect_content_envelopes(raw_envelopes)
+            if not envelopes:
+                return ""
+            payload = content_binding_payload(args)
+            runtime.extra_context["approved_content_envelopes"] = [
+                revalidate_content_envelope(envelope, payload, task_scope=task_id).model_dump(mode="json")
+                for envelope in envelopes
+            ]
+        except (TypeError, ValueError) as exc:
+            return f"Approval content provenance is invalid: {exc}"
+        return ""
 
     def _has_pending_ready_steps(self, plan: Plan) -> bool:
         try:
@@ -461,7 +530,7 @@ class StepExecutionHandler:
         )
         return task
 
-    def _approval_binding_error(self, approval: Approval, task: Task, step: PlanStep, tool) -> str:
+    def _approval_binding_error(self, approval: Approval, task: Task, plan: Plan, step: PlanStep, tool) -> str:
         if approval.status != ApprovalStatus.APPROVED:
             return f"Approval status is {approval.status}; expected approved."
         if approval.consumed_at:
@@ -484,6 +553,20 @@ class StepExecutionHandler:
             return "Approved risk level does not match current tool risk."
         if approval.tool_version != getattr(tool, "tool_version", "1"):
             return "Approved tool version does not match current tool definition."
+        boundary = approval.engineering_boundary if isinstance(approval.engineering_boundary, dict) else {}
+        intent = boundary.get("intent") if isinstance(boundary.get("intent"), dict) else {}
+        if not intent:
+            return "Approval lacks intent binding metadata."
+        if str(intent.get("task_id") or "") != task.id:
+            return "Approved intent belongs to another task."
+        if str(intent.get("user_goal_digest") or "") != user_goal_digest(task.user_goal):
+            return "Approved goal does not match the current task goal."
+        try:
+            approved_revision = int(intent.get("plan_revision") or 0)
+        except (TypeError, ValueError):
+            return "Approved plan revision binding is invalid."
+        if approved_revision != plan.version:
+            return "Approved plan revision does not match the current plan."
         expected_args = args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id)
         if not hmac_compare(approval.args_binding_hmac, expected_args):
             return "Approved arguments do not match current plan step."

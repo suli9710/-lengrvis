@@ -342,7 +342,13 @@ def test_delegate_task_persists_supervisor_agent_hint(monkeypatch):
         fake_create_task_shell,
     )
     monkeypatch.setattr("app.services.task_service.orchestrator_registry.bind", lambda **kwargs: None)
-    monkeypatch.setattr("app.services.task_service._spawn_background", lambda coro: coro.close())
+
+    class StubTaskPool:
+        def submit_nowait(self, task, runner):  # noqa: ANN001
+            captured["submitted_task"] = task
+            captured["runner"] = runner
+
+    monkeypatch.setattr("app.services.task_service.get_pool", lambda: StubTaskPool())
 
     response = asyncio.run(
         task_service._delegate_task(
@@ -353,3 +359,4 @@ def test_delegate_task_persists_supervisor_agent_hint(monkeypatch):
     )
     assert response.agent == "BrowserAgent"
     assert captured["metadata"] == {"supervisor_agent_hint": "BrowserAgent"}
+    assert captured["submitted_task"].id == response.task_id

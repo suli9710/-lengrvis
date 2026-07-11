@@ -140,7 +140,7 @@ Product startup does not install dependencies in place.
 For a development setup, run:
   .\scripts\setup_dev.ps1
 Or install them manually:
-  $Python -m pip install -r requirements-dev.txt
+  $Python -m pip install --require-hashes -r requirements-dev-lock.txt
 "@
 }
 

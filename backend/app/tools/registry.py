@@ -5,6 +5,11 @@ from collections.abc import Iterable
 from app.config import AppSettings
 from app.core.audit import record
 from app.policy.risk import RiskLevel
+from app.security.capability_manifest import (
+    CapabilityManifestError,
+    assert_tool_allowed,
+    is_tool_allowed,
+)
 from app.skills.loader import register_skills
 from app.skills.schemas import SkillLoadError
 from app.tools.schemas import ToolDefinition
@@ -18,6 +23,12 @@ class ToolRegistry:
         self._name_index: dict[str, str] = {}
 
     def register(self, definition: ToolDefinition) -> None:
+        _mark_tool_authoritative(definition)
+        try:
+            assert_tool_allowed(definition)
+        except CapabilityManifestError:
+            return
+        _guard_tool_executor(definition)
         name = definition.name
         lower = name.casefold()
         # P0-9 fix: Reject registration if a tool with the same case-insensitive
@@ -36,7 +47,9 @@ class ToolRegistry:
         # check the case-insensitive index to detect and block case-based
         # impersonation attempts.
         if name in self._tools:
-            return self._tools[name]
+            tool = self._tools[name]
+            assert_tool_allowed(tool)
+            return tool
         # If the name doesn't match exactly but matches case-insensitively,
         # reject to prevent case-based bypass of permission checks.
         lower = name.casefold()
@@ -52,7 +65,7 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def list_for_planning(self) -> list[ToolDefinition]:
-        return [tool for tool in self.list() if self._is_planning_visible(tool)]
+        return [tool for tool in self.list() if is_tool_allowed(tool) and self._is_planning_visible(tool)]
 
     def search(
         self,
@@ -107,6 +120,8 @@ class ToolRegistry:
         return tool.is_model_visible() or _has_builtin_namespace(tool.name)
 
     def _tool_in_search_scope(self, tool: ToolDefinition, *, include_deferred: bool, deferred_only: bool) -> bool:
+        if not is_tool_allowed(tool):
+            return False
         if not (tool.is_model_visible() or tool.defer_loading or _has_builtin_namespace(tool.name)):
             return False
         if deferred_only:
@@ -179,6 +194,7 @@ def register_all_tools(
         developer_tools,
         document_tools,
         file_tools,
+        notification_tools,
         remote_tools,
         search_tools,
         system_tools,
@@ -194,6 +210,7 @@ def register_all_tools(
     file_tools.register(reg)
     developer_tools.register(reg)
     document_tools.register(reg)
+    notification_tools.register(reg)
     system_tools.register(reg)
     remote_tools.register(reg)
     ui_automation_tools.register(reg)
@@ -226,16 +243,33 @@ def register_all_tools(
 
 def _mark_builtin_tools_authoritative(reg: ToolRegistry | None = None) -> None:
     for tool in (reg if reg is not None else registry).list():
-        if tool.trust_tier == "unknown" and getattr(tool, "origin", "builtin") == "builtin":
-            tool.trust_tier = "builtin"
-        if tool.read_only is None:
-            tool.read_only = tool.risk_level == RiskLevel.R0_READ_ONLY and not tool.supports_dry_run
-        if tool.concurrency_safe is None:
-            tool.concurrency_safe = tool.is_read_only() and not tool.concurrency_key and not tool.destructive
-        if not tool.effects:
-            tool.effects = _infer_effects(tool)
-        if not tool.resource_kinds:
-            tool.resource_kinds = _infer_resource_kinds(tool)
+        _mark_tool_authoritative(tool)
+
+
+def _mark_tool_authoritative(tool: ToolDefinition) -> None:
+    if tool.trust_tier == "unknown" and getattr(tool, "origin", "builtin") == "builtin":
+        tool.trust_tier = "builtin"
+    if tool.read_only is None:
+        tool.read_only = tool.risk_level == RiskLevel.R0_READ_ONLY and not tool.supports_dry_run
+    if tool.concurrency_safe is None:
+        tool.concurrency_safe = tool.is_read_only() and not tool.concurrency_key and not tool.destructive
+    if not tool.effects:
+        tool.effects = _infer_effects(tool)
+    if not tool.resource_kinds:
+        tool.resource_kinds = _infer_resource_kinds(tool)
+
+
+def _guard_tool_executor(tool: ToolDefinition) -> None:
+    original = tool.execute
+    if bool(getattr(original, "__lengrvis_capability_guarded__", False)):
+        return
+
+    def guarded_execute(args, context):  # noqa: ANN001, ANN202 - preserves the ToolExecutor protocol.
+        assert_tool_allowed(tool)
+        return original(args, context)
+
+    guarded_execute.__lengrvis_capability_guarded__ = True  # type: ignore[attr-defined]
+    tool.execute = guarded_execute
 
 
 def _infer_effects(tool: ToolDefinition) -> list[str]:

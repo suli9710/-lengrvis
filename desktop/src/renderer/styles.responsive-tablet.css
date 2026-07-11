@@ -17,10 +17,6 @@
     overflow: visible;
   }
 
-  .workbench-panel {
-    display: none;
-  }
-
   .lengrvis-sidebar {
     grid-template-rows: auto auto auto;
     height: auto;
@@ -125,5 +121,21 @@
   .lengrvis-home {
     height: auto;
     overflow: visible;
+  }
+}
+
+/*
+ * Tablet-width desktop windows keep the home workspace in two columns. Once
+ * the shell switches to document scrolling, the taller inspector must not
+ * stretch the stage and turn the office map into an oversized empty canvas.
+ */
+@media (min-width: 961px) and (max-width: 1180px) {
+  .office-workspace {
+    align-items: start;
+  }
+
+  .office-stage {
+    width: 100%;
+    grid-template-rows: auto auto clamp(380px, 42vw, 500px);
   }
 }

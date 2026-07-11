@@ -73,6 +73,11 @@ export const IPC_CHANNELS = {
   browserHostRelease: "lengrvis:browser-host:release",
   browserHostStop: "lengrvis:browser-host:stop",
   browserHostAction: "lengrvis:browser-host:action",
+  credentialsListForSession: "lengrvis:credentials:list-for-session",
+  credentialsCaptureFromPage: "lengrvis:credentials:capture-from-page",
+  credentialsIssueUseTicket: "lengrvis:credentials:issue-use-ticket",
+  credentialsFill: "lengrvis:credentials:fill",
+  credentialsDelete: "lengrvis:credentials:delete",
   desktopWebSocketOpen: "lengrvis:desktop-ws:open",
   desktopWebSocketClose: "lengrvis:desktop-ws:close",
   desktopWebSocketEvent: "lengrvis:desktop-ws:event",
@@ -95,6 +100,7 @@ export type IpcChannelSecurityPolicy = {
     | "safe-external-url"
     | "permission-nonce"
     | "browser-host-approval"
+    | "credential-use-ticket"
     | "desktop-ws-session";
   risk: "read" | "write" | "sensitive" | "external-navigation" | "event";
 };
@@ -174,6 +180,11 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   browserHostRelease: { schema: "string", capability: "browser-host-approval", risk: "sensitive" },
   browserHostStop: { schema: "string", capability: "trusted-renderer", risk: "write" },
   browserHostAction: { schema: "typedRequest", capability: "browser-host-approval", risk: "sensitive" },
+  credentialsListForSession: { schema: "typedRequest", capability: "trusted-renderer", risk: "read" },
+  credentialsCaptureFromPage: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
+  credentialsIssueUseTicket: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
+  credentialsFill: { schema: "typedRequest", capability: "credential-use-ticket", risk: "sensitive" },
+  credentialsDelete: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   desktopWebSocketOpen: { schema: "typedRequest", capability: "desktop-ws-session", risk: "sensitive" },
   desktopWebSocketClose: { schema: "string", capability: "desktop-ws-session", risk: "write" },
   desktopWebSocketEvent: { schema: "event", capability: "desktop-ws-session", risk: "event" },
@@ -199,79 +210,3 @@ export const API_REQUEST_SECURITY_LIMITS = {
 } as const;
 
 export const API_REQUEST_ALLOWED_KEYS = ["endpoint", "method", "query", "body", "timeoutMs", "abortGroup"] as const;
-
-export const API_REQUEST_DENIED_PATH_PREFIXES = [
-  "/api/dev",
-  "/api/documents",
-  "/api/index",
-  "/api/mobile",
-  "/api/pair",
-  "/api/runtime",
-  "/api/schedules",
-  "/api/ui-automation",
-  "/api/ws"
-] as const;
-
-export const API_REQUEST_DENIED_EXACT_PATHS = [
-  "/api/apps/launch",
-  "/api/apps/open-file",
-  "/api/apps/open-folder",
-  "/api/apps/reveal",
-  "/api/browser/act",
-  "/api/browser/cua",
-  "/api/browser/cua-run",
-  "/api/browser/extract-links",
-  "/api/browser/links",
-  "/api/browser/open-url",
-  "/api/browser/observe",
-  "/api/browser/read",
-  "/api/browser/read-page",
-  "/api/browser/replay-export",
-  "/api/browser/screenshot",
-  "/api/browser/session/close",
-  "/api/browser/session/start",
-  "/api/browser/summarize-page",
-  "/api/commerce/license/activate",
-  "/api/commerce/license/install",
-  "/api/commerce/policy/import",
-  "/api/commands/execute",
-  "/api/context/compact",
-  "/api/files/cleanup/execute",
-  "/api/files/cleanup/rollback",
-  "/api/memories/recall",
-  "/api/perception/capture",
-  "/api/system/open-settings",
-  "/api/system/diagnostics/export",
-  "/api/system/privacy/erase-local-data",
-  "/api/settings/install-local-model",
-  "/api/settings/ollama/install",
-  "/api/settings/ollama/pull",
-  "/api/settings/ollama/start",
-  "/api/settings/test-llm-provider",
-  "/api/settings/onnx/test-embedding",
-  "/api/settings/onnx/test-generate",
-  "/api/settings/onnx/test-image-embedding",
-  "/api/settings/onnx/test-ocr",
-  "/api/settings/onnx/warmup",
-  "/api/skills/import",
-  "/api/skills/refresh"
-] as const;
-
-export const API_REQUEST_DENIED_METHOD_PATHS = [
-  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/approve" },
-  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/reject" },
-  { method: "POST", pathPrefix: "/api/perception/suggestions/", pathSuffix: "/launch" },
-  { method: "POST", pathPrefix: "/api/runs" },
-  { method: "POST", path: "/api/memories" },
-  { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/pause" },
-  { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/resume" },
-  { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/cancel" },
-  { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/rollback" },
-  { method: "POST", path: "/api/settings" },
-  { method: "POST", path: "/api/settings/confirm-sensitive-change" },
-  { method: "PUT", path: "/api/settings/permission-policy" },
-  { method: "POST", pathPrefix: "/api/settings/permission-policy/rules" },
-  { method: "DELETE", pathPrefix: "/api/settings/permission-policy/rules" },
-  { method: "POST", path: "/api/settings/permission-policy/confirm-relaxation" },
-  { method: "DELETE", pathPrefix: "/api/memories/" }
-] as const;

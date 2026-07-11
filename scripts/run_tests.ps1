@@ -117,6 +117,18 @@ if (Test-Path "mobile\package.json") {
     npm --prefix mobile run smoke:token
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    npm --prefix mobile run smoke:consent
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:session-lifecycle
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:push-notifications
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:push-subscription-lifecycle
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     npm --prefix mobile run smoke:task-companion
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -133,6 +145,12 @@ if (Test-Path "mobile\package.json") {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     npm --prefix mobile run smoke:android-hardening-plugin
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:android-prebuild-network-security
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:android-manifest-resources
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     npm --prefix mobile run smoke:android-lan-tls

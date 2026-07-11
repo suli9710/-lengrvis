@@ -11,15 +11,17 @@ exposed through npm scripts.
 | 1 | qa-gate | yes | `npm run qa:gate` | Backend tests, desktop/mobile typecheck, desktop smoke. |
 | 2 | golden-gate | yes | `npm run golden:gate` | Deterministic golden-task regression gate. |
 | 3 | maintainability-gate | yes | `npm run maintainability:gate` | Source-size p95 and per-area anti-regrowth gate. |
-| 4 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
-| 5 | dependency-audit | yes | `npm run audit:deps` | npm audit plus pip-audit over runtime/build/acceleration Python locks. |
-| 6 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
-| 7 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
-| 8 | release-safety | yes | `npm run release:safety` | Release safety checks. |
-| 9 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
-| 10 | current-release-evidence | no / strict yes | `npm run evidence:current-release` | Generate the current CI/release evidence summary used by strict readiness. |
-| 11 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
-| 12 | evidence | no / strict yes | `npm run evidence:release` | Collect the release evidence packet. |
+| 4 | review-scorecard | yes | `npm run review:scorecard` | Validate full-review scorecard totals and prevent 100/100 claims while RR-P0 evidence remains unfinished. |
+| 5 | agentic-threat-model | yes | `npm run security:threat-model` | Validate trust boundaries and the OWASP Agentic control/evidence map. |
+| 6 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
+| 7 | dependency-audit | yes | `npm run audit:deps` | npm audit plus pip-audit over runtime/build/acceleration Python locks. |
+| 8 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
+| 9 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
+| 10 | release-safety | yes | `npm run release:safety` | Release safety checks. |
+| 11 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
+| 12 | current-release-evidence | no / strict yes | `npm run evidence:current-release` | Generate the current CI/release evidence summary used by strict readiness. |
+| 13 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
+| 14 | evidence | no / strict yes | `npm run evidence:release` | Collect the release evidence packet. |
 
 Non-strict `delivery:run` inserts required `release-artifact-preflight` and
 `signed-artifacts` stages after `release-safety` unless `--skip-signature-verify` is
@@ -27,9 +29,17 @@ passed. Strict RC mode (`delivery:rc`) always runs `signed-artifacts` and ignore
 `--skip-signature-verify`.
 
 Strict RC mode inserts additional required stages after golden/safety/artifact checks:
-`real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
+`real-llm-eval`, `candidate-binding-context`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
 `clean-machine-evidence`, `result-quality-evidence`, `diagnostics-evidence`, and
 `android-strict-gate`.
+`candidate-binding-context` requires an explicit immutable candidate identity and
+checks its full commit against the checkout. The three reviewed-evidence stages run
+their Python validators with `--require-candidate-binding`; they reject a validly
+signed artifact from any other candidate rather than accepting it as replayable
+evidence. `diagnostics-evidence` validates the signed
+`diagnostics-external-review-evidence-reviewed` artifact; the machine chain can be
+ready while this stage still blocks on the actual package human content-review
+artifact.
 The real-LLM stage runs `scripts/run_real_llm_eval.py --quality-gate`, which refuses
 mock providers and requires at least 20 eligible `runs` / `chat` tasks to run before
 the quality metrics can pass. It also records numerator/denominator counts for each
@@ -46,11 +56,13 @@ is `clean`, so dirty-worktree candidates cannot be promoted by commit SHA alone.
 
 Windows RC signing order (`.github/workflows/release-candidate.yml`):
 
-1. `build_all.ps1` builds backend, portable tree, zip, and self-extracting EXE.
-2. `sign_windows_backend.ps1` signs `dist/backend.exe` and copies it into the portable tree.
-3. `refresh_portable_release_bundle.ps1` re-compresses portable and rebuilds the self-extracting EXE.
-4. `sign_windows_portable_artifacts.ps1` signs the portable launcher and self-extracting EXE.
-5. `desktop dist:signed` signs Electron installer artifacts.
+1. `npm run review:scorecard` verifies the full-review scorecard before any release artifacts are built.
+2. `npm run security:threat-model` verifies the Agentic trust and control map before artifacts are built.
+3. `build_all.ps1` builds backend, portable tree, zip, and self-extracting EXE.
+4. `sign_windows_backend.ps1` signs `dist/backend.exe` and copies it into the portable tree.
+5. `refresh_portable_release_bundle.ps1` re-compresses portable and rebuilds the self-extracting EXE.
+6. `sign_windows_portable_artifacts.ps1` signs the portable launcher and self-extracting EXE.
+7. `desktop dist:signed` signs Electron installer artifacts.
 
 ## Commands
 
@@ -107,13 +119,40 @@ The orchestrator prints and optionally writes a JSON verdict:
    `MR-P0` commercial rows still require their named real-world artifacts and owners.
 4. Strict Android evidence is supplied through `LENGRVIS_ANDROID_APK_PATH` and
    `LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH`; strict reviewed evidence checkers use
-   their default build paths or `LENGRVIS_*_EVIDENCE_PATH` overrides.
+   their default build paths or `LENGRVIS_*_EVIDENCE_PATH` overrides. All strict
+   reviewed evidence must also match the explicit candidate context:
+   `LENGRVIS_RELEASE_CANDIDATE_COMMIT`,
+   `LENGRVIS_RELEASE_BUILD_IDENTIFIER`,
+   `LENGRVIS_RELEASE_CANDIDATE_REPOSITORY`,
+   `LENGRVIS_RELEASE_CANDIDATE_RUN_ID`, and
+   `LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT`. The build identifier is immutable and
+   must be `rc-<run-id>-<attempt>-<full-40-char-commit>`.
+   `LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256` must come from the protected
+   production environment. Strict validation does not discover tools from `PATH`:
+   it requires one approved `build-tools/<version>` root, the expected version,
+   and protected SHA-256 values for `apksigner.bat`, `apksigner.jar`, and
+   `aapt2.exe`. Only that verified toolchain may run `apksigner verify --verbose
+   --print-certs` and `aapt` inspection. The gate requires v2 and v3 signatures,
+   compares the signer certificate SHA-256 to the controlled identity, matches
+   package/version to `mobile/app.json`, and inspects the final binary manifest
+   for debug, test-only, backup, cleartext, and exported-component safety.
+   The sealed reviewed evidence must also contain `app.provenance` binding the
+   candidate source, reviewed builder invocation and timestamp, APK digest,
+   package/version, and signer digest. A valid reviewed-evidence HMAC alone is not
+   APK code-signing verification.
 5. The JSON verdict should be attached to the RC handoff and the release evidence
    packet.
 6. Do not weaken a required stage to optional to make the pipeline pass. Use an
    explicit, owner-approved waiver row in the dashboard instead.
-7. CI should run `delivery:plan` plus both readiness validators on every PR. A
-   real release runs `delivery:rc` on the candidate build host.
+7. CI should run `delivery:plan`, `npm run review:scorecard`, and both readiness
+validators on every PR. A real release runs `delivery:rc` on the candidate
+build host.
+8. A GitHub Release is dispatched manually only after a signed candidate. The
+   publish workflow derives current-release machine evidence from actual
+   preflight step outcomes; it must never substitute an all-success JSON value.
+   It checks out the requested tag, derives the candidate commit from that checkout,
+   and requires the reviewed candidate run ID and attempt as dispatch inputs before
+   strict delivery can begin.
 
 ## What this closes and what it does not
 

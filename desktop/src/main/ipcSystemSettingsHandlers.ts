@@ -29,7 +29,7 @@ import { assertTrustedRenderer } from "./rendererTrust";
 const BACKEND_PRIVACY_ERASE_CONFIRMATION = "erase-local-data";
 
 export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): void {
-  const { backend, documentPathGrants, revealPathGrants } = context;
+  const { backend, documentPathGrants, localPrivacyEraser, revealPathGrants } = context;
 
   ipcMain.handle(IPC_CHANNELS.systemOpenSettings, async (event, request: unknown) => {
     assertTrustedRenderer(event);
@@ -80,8 +80,12 @@ export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): v
       title: "确认删除本机数据",
       message: "永久删除本机保存的个人数据？",
       detail:
-        "任务、对话、运行记录、录屏、配对、记忆、文件索引和已导出的诊断包将被删除。安全审计链会保留；日志仍需在系统信息中手动清理。此操作无法撤销。"
+        "任务、对话、运行记录、录屏、配对、记忆、文件索引、浏览器会话痕迹、已保存的网站密码和已导出的诊断包将被删除。安全审计链会保留；日志仍需在系统信息中手动清理。此操作无法撤销。"
     });
+    if (!localPrivacyEraser) {
+      throw new Error("Electron private data eraser is unavailable");
+    }
+    await localPrivacyEraser.eraseLocalPrivateData();
     return proxyExplicitDesktopBridgeRequest<DesktopPrivacyEraseResponse>(backend, {
       endpoint: "/api/system/privacy/erase-local-data",
       method: "POST",

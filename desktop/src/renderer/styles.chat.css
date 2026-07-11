@@ -406,12 +406,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .composer__voice--recording {
-    animation: none;
-  }
-}
-
 .composer__error {
   grid-column: 1 / -1;
   margin: 0;

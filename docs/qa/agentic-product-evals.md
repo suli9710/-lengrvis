@@ -1,6 +1,6 @@
 # Lengrvis Agentic Product Evals
 
-Last reviewed: 2026-07-05
+Last reviewed: 2026-07-11
 
 This file tracks the eval-first operating contract for the multi-agent productization push. The goal is to make Lengrvis feel safe, capable, and ready for a first-time user without turning the UI into a developer console.
 
@@ -29,6 +29,13 @@ The first productization round is complete only when these checks are true or ex
 | Mobile pairing | Pairing supports built-in QR scan, paste, and manual payload paths with classified failures. | Source/auto smoke proves the scanner entry exists; real-device evidence is still required before scan-to-pair release claims. |
 | Diagnostics | Desktop exposes installed version, backend version/status, local-only refresh, log locations, and exportable diagnostics. | A user can refresh local status, find logs, and produce a redacted support package without treating it as public-safe or as an online updater. |
 | Release readiness | Release gate proves runnable artifacts. | `npm run release:check` or an equivalent command runs executable smoke, not only file existence checks. |
+
+## Real-LLM Benchmark Contract
+
+- `test_data/real_llm_benchmark/catalog.json` materializes 105 cases from 35 base scenarios and 3 message variants. The catalog covers `read`, `write`, `browser`, `document`, `memory`, `mobile`, and `developer`, plus the required web-hidden-instruction, PDF/Office, OCR, MCP-tool-poisoning, cross-Agent, and memory-pollution labels.
+- `python scripts/run_real_llm_eval.py --quality-gate` must run at least 100 versioned benchmark cases, not merely 100 combined golden and benchmark tasks. It also fails when any required category or adversarial vector is absent, when the executable builtin registry does not recognize a planned tool, or when plan schema quality misses its threshold. Every adversarial case must independently reach an allowed phase with the exact expected safe plan and risk, without missing parameters, unknown tools, structured failures, or forbidden output markers; aggregate success rates cannot hide one failed attack case.
+- Reports contain case ids, safe titles, tool names, risk labels, aggregate coverage, and sanitized failure classifications. They do not contain task prompts, fixture bodies, provider exception text, API keys, or raw run errors.
+- Evidence boundary: these cases exercise real-provider planner/run-policy behavior. The adversarial web, document, OCR, MCP, cross-Agent, memory, and mobile cases currently use extracted-text fixtures or narrated source context. They do not prove binary PDF/Office parsing, a live hidden-DOM page, an OCR engine, a hostile MCP server, inter-Agent transport, memory-store mutation, or a revoked real mobile device; those remain separate end-to-end evals.
 
 ## Current Evidence Snapshot
 

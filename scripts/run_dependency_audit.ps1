@@ -8,7 +8,7 @@ param(
 
 # Dependency vulnerability scan (SCA) entrypoint (market-readiness checklist #16).
 # Covers npm audit for desktop / mobile and pip-audit for backend runtime,
-# backend build, and optional acceleration locks. npm uses AuditLevel; Python
+# development, backend build, and optional acceleration locks. npm uses AuditLevel; Python
 # audit fails closed on any pip-audit finding or audit error.
 
 $ErrorActionPreference = "Stop"
@@ -96,13 +96,14 @@ if (-not $SkipPython) {
     }
 
     if (-not $pipAuditAvailable) {
-        $failures += "pip-audit is not installed. Install with: python -m pip install pip-audit (or rerun with -SkipPython to record a waiver)."
+        $failures += "pip-audit is not installed. Install with: python -m pip install --require-hashes -r requirements-dev-lock.txt (or rerun with -SkipPython to record a waiver)."
     }
     else {
         $pipAuditLogDir = Join-Path $root ".tmp\pip-audit-cache"
         New-Item -ItemType Directory -Path $pipAuditLogDir -Force | Out-Null
         $pythonLocks = @(
             "backend/requirements-lock.txt",
+            "requirements-dev-lock.txt",
             "backend/requirements-build-lock.txt",
             "scripts/acceleration-requirements-lock.txt"
         )

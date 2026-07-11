@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from app.agents.orchestrator_agent import OrchestratorAgent
+from app.automation.intent_capsule import user_goal_digest
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, SafetyReview, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
@@ -360,6 +361,39 @@ def test_tool_runtime_persists_redacted_tool_call_args():
     assert rows[0]["args"]["selector"] == "***"
 
 
+def test_tool_runtime_persists_content_envelope_for_tool_results():
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        return {"value": 42}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.provenance_result",
+        description="provenance result",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+        resource_kinds=["system"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    stored = db.fetch_many("tool_results", "tool_call_id = ?", (execution.result.tool_call_id,), limit=1)[0]
+
+    assert execution.kind == "succeeded"
+    assert stored["content_envelope"]["source_kind"] == "tool_result"
+    assert stored["content_envelope"]["source_id"] == execution.result.tool_call_id
+    assert stored["content_envelope"]["task_scope"] == task.id
+    assert stored["content_envelope"]["trust_level"] == "internal"
+
+
 def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
     large_text = "approved-output-" * 60
 
@@ -401,6 +435,13 @@ def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
         settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="1",
+        engineering_boundary={
+            "intent": {
+                "task_id": task.id,
+                "user_goal_digest": user_goal_digest(task.user_goal),
+                "plan_revision": plan.version,
+            }
+        },
         status=ApprovalStatus.APPROVED,
     )
     db.upsert_model("approvals", approval)

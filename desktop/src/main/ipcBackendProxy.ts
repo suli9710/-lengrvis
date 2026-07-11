@@ -8,7 +8,7 @@ export function proxyExplicitDesktopBridgeRequest<TData>(
   request: InternalDesktopBridgeRequest
 ): Promise<ApiResponse<TData>> {
   return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken(), {
-    allowDeniedDesktopBridgePath: true,
+    allowExplicitDesktopBridgePath: true,
     allowInternalHeaders: true
   });
 }

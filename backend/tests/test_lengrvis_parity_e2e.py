@@ -167,7 +167,8 @@ def mock_mcp_server():
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_1_memory_planner_reflect_consolidation(memory_seed_capture):
+def test_scenario_1_memory_planner_reflect_consolidation(memory_seed_capture, monkeypatch):
+    monkeypatch.setenv("LENGRVIS_MEMORY_AUTO_LEARNING_ENABLED", "true")
     seed_agent = MemoryAgent()
     asyncio.run(
         seed_agent.remember(

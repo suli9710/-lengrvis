@@ -30,11 +30,13 @@ from app.core.schemas import (
     Task,
     TaskStatus,
     ToolResult,
+    now_iso,
 )
 from app.core.session_context import get_session_context_store
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.goal_stack import GoalStack
 from app.orchestration.handlers import (
     CompletionHandler,
@@ -110,6 +112,31 @@ class OrchestratorAgent:
         self.dispatcher.register("perception.screen_state", handle_perception_event)
 
     def _set_status(self, task: Task, status: TaskStatus, *, final_summary: str | None = None) -> Task:
+        persisted = db.fetch_one("tasks", task.id)
+        if persisted:
+            latest = Task.model_validate(persisted)
+            externally_stopped = (
+                latest.status in _TERMINAL_TASK_PHASES
+                or latest.execution_stage == ExecutionStage.PAUSED
+            )
+            stale_snapshot = (
+                latest.updated_at != task.updated_at
+                or latest.status != task.status
+                or latest.execution_stage != task.execution_stage
+            )
+            if externally_stopped and stale_snapshot:
+                task.status = latest.status
+                task.phase = latest.phase
+                task.execution_stage = latest.execution_stage
+                task.final_summary = latest.final_summary
+                task.updated_at = latest.updated_at
+                record(
+                    "task.stale_status_write_ignored",
+                    self.name,
+                    {"requested_status": str(status), "persisted_status": latest.status.value},
+                    task_id=task.id,
+                )
+                return task
         target_phase = _phase_of(status)
         original_summary = task.final_summary
         if final_summary is not None:
@@ -255,7 +282,23 @@ class OrchestratorAgent:
     def _mark_blocked_steps(self, pending: set[str], by_id: dict[str, PlanStep]) -> None:
         self.step_scheduler_handler._mark_blocked_steps(pending, by_id)
 
-    def _persist_plan_update(self, plan: Plan, content: str) -> None:
+    def _persist_plan_update(self, plan: Plan, content: str, *, revision_change: bool = False) -> None:
+        if revision_change:
+            plan.version += 1
+            for raw in db.fetch_many("approvals", "task_id = ?", (plan.task_id,), limit=500):
+                if str(raw.get("status") or "") not in {"pending", "approved"} or raw.get("consumed_at"):
+                    continue
+                db.expire_approval_if_unconsumed(
+                    str(raw.get("id") or ""),
+                    now_iso(),
+                    "Plan revision changed after approval was created.",
+                )
+            record(
+                "plan.revision_changed",
+                self.name,
+                {"plan_id": plan.id, "plan_revision": plan.version},
+                task_id=plan.task_id,
+            )
         db.upsert_model("plans", plan)
         self.bus.publish_text(
             plan.task_id,

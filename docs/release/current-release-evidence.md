@@ -4,29 +4,33 @@
 
 ## Summary
 
-- Commit SHA: 2bbfe6613ecba87c535e13225b3a6d474775f7dd
-- Date (UTC): 2026-07-06T06:32:01.7705052Z
-- CI status: machine_gates_failed_or_incomplete
+- Commit SHA: 307c968e421131fa7ce62afdadef404ff02e94a6
+- Release version: v0.1.2
+- Build identifier: v0.1.2 local/manual
+- Date (UTC): 2026-07-09T01:00:54.9742692Z
+- CI status: ci_results_unavailable
+- Worktree status: dirty
+- Worktree dirty file count: 50
 - Manual sign-off status: manual_signoff_pending
 - Release owner: suli9710
 - Owner signature: PENDING_RELEASE_OWNER_SIGNATURE
-- Workflow: CI
-- Run id: 28770782160
-- Run attempt: 1
+- Workflow: local/manual
+- Run id: local/manual
+- Run attempt: local/manual
 
 ## Machine Environment
 
 | Field | Value |
 | --- | --- |
-| runner_os | Windows |
+| runner_os | Win32NT |
 | runner_arch | X64 |
-| runner_name | GitHub Actions 1000003609 |
-| image_os | win25-vs2026 |
-| image_version | 20260628.158.1 |
-| os_description | Microsoft Windows 10.0.26100  |
-| powershell | 5.1.26100.32995 |
-| node | v22.23.1 |
-| npm | 10.9.8 |
+| runner_name | DESKTOP-IU8C7V4 |
+| image_os | unknown |
+| image_version | unknown |
+| os_description | Microsoft Windows 10.0.26200  |
+| powershell | 5.1.26100.7462 |
+| node | v24.11.1 |
+| npm | 11.6.2 |
 | python | Python 3.12.10 |
 | git | git version 2.54.0.windows.1 |
 
@@ -34,8 +38,10 @@
 
 | CI job | Command |
 | --- | --- |
-| Repo hygiene + dependency locks | `npm run hygiene` |
-| Repo hygiene + dependency locks | `npm run deps:verify` |
+| Repo hygiene + dependency locks + review scorecard | `npm run hygiene` |
+| Repo hygiene + dependency locks + review scorecard | `npm run deps:verify` |
+| Repo hygiene + dependency locks + review scorecard | `npm run maintainability:gate` |
+| Repo hygiene + dependency locks + review scorecard | `npm run review:scorecard` |
 | Backend pytest + golden task gate | `python -m pip install --require-hashes -r backend/requirements-lock.txt` |
 | Backend pytest + golden task gate | `python -m pip install -r requirements-dev.txt` |
 | Backend pytest + golden task gate | `python -m playwright install chromium` |
@@ -53,12 +59,18 @@
 | Mobile typecheck + behavior smokes | `npm --prefix mobile audit --audit-level=high` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run typecheck` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:token` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:consent` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:session-lifecycle` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:push-notifications` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:push-subscription-lifecycle` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:task-companion` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:remote-input-grant` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:wakeup-contract` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-back` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:approval-status-label` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-hardening-plugin` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-prebuild-network-security` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-manifest-resources` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-lan-tls` |
 | Mobile typecheck + behavior smokes | `cd mobile/android; .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace` |
 | Supply chain lock + SBOM | `npm run deps:verify` |
@@ -69,17 +81,17 @@
 
 | CI job | Scope | Result |
 | --- | --- | --- |
-| Repo hygiene + dependency locks | Repository hygiene and dependency lock consistency | success |
-| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | success |
-| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |
-| Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | success |
-| Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | success |
-| Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | success |
-| IPC + Skill/MCP + settings security gate | IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, Skill/MCP release-profile supply-chain controls, MCP schema/SSRF tests, and sensitive settings server-side enforcement | success |
+| Repo hygiene + dependency locks + review scorecard | Repository hygiene, dependency lock consistency, maintainability anti-regrowth, and full-review scorecard consistency | not_reported |
+| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | not_reported |
+| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | not_reported |
+| Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | not_reported |
+| Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | not_reported |
+| Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | not_reported |
+| IPC + Skill/MCP + settings security gate | IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, Skill/MCP release-profile supply-chain controls, MCP schema/SSRF tests, and sensitive settings server-side enforcement | not_reported |
 
 ## Failed Items
 
-- Real LLM quality gate: skipped
+- CI job results were not supplied; this file was generated outside the CI summary job or without RELEASE_EVIDENCE_NEEDS_JSON.
 
 ## Exemptions
 
@@ -100,8 +112,6 @@
 
 ## Artifact Links
 
-- CI run: https://github.com/suli9710/-lengrvis/actions/runs/28770782160
-- CI artifacts page: https://github.com/suli9710/-lengrvis/actions/runs/28770782160#artifacts
 - Current release evidence artifact: current-release-evidence
 - Current SBOM artifact: current-sbom
 - Extension security gate artifact: extension-security-gate

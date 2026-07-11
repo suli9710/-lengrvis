@@ -4,7 +4,7 @@ import { AppWindow, FolderOpen, Globe2, Laptop, Search, ShieldCheck, Sparkles } 
 import type { AgentConversation, Plan, SafetyReview, TaskEvent } from "../../../shared/executionTypes";
 import { zhAgentName } from "../../lib/zh";
 
-export type OfficeAgentPose = "working" | "coffee" | "treadmill" | "restroom" | "nap" | "wander" | "review";
+export type OfficeAgentPose = "working" | "phone" | "coffee" | "treadmill" | "restroom" | "nap" | "wander" | "review";
 
 export interface OfficeAgentDefinition {
   id: string;
@@ -218,9 +218,9 @@ export const officeAgents: OfficeAgentDefinition[] = [
 
 const leisureSpots: LeisureSpot[] = [
   { pose: "coffee", x: 360, y: 184, activity: "喝咖啡", bounds: { minX: 340, maxX: 382, minY: 156, maxY: 214 }, jitter: { x: 8, y: 12 } },
-  { pose: "coffee", x: 430, y: 284, activity: "等咖啡", bounds: { minX: 416, maxX: 456, minY: 262, maxY: 304 }, jitter: { x: 8, y: 10 } },
+  { pose: "phone", x: 430, y: 284, activity: "回消息摸鱼", bounds: { minX: 416, maxX: 456, minY: 262, maxY: 304 }, jitter: { x: 8, y: 10 } },
   { pose: "treadmill", x: 300, y: 474, activity: "跑步机训练", allowFurniture: "treadmill" },
-  { pose: "wander", x: 468, y: 382, activity: "在走道协作", bounds: { minX: 430, maxX: 494, minY: 326, maxY: 520 }, jitter: { x: 12, y: 18 } },
+  { pose: "phone", x: 468, y: 382, activity: "刷手机摸鱼", bounds: { minX: 430, maxX: 494, minY: 326, maxY: 520 }, jitter: { x: 12, y: 18 } },
   { pose: "restroom", x: 224, y: 790, activity: "洗手间中", allowFurniture: "toilet" },
   { pose: "nap", x: 472, y: 610, activity: "休息一下", bounds: { minX: 430, maxX: 506, minY: 548, maxY: 640 }, jitter: { x: 10, y: 14 } }
 ];
@@ -333,20 +333,38 @@ export function projectOfficePoint(x: number, y: number, mapSize: OfficeMapSize)
   };
 }
 
-export function activeOfficeAgentIds(workingAgentId: string, tasks: TaskEvent[], safetyAlert: boolean): Set<string> {
-  const activeIds = new Set<string>([workingAgentId || "pm"]);
+export function activeOfficeAgentIds(
+  preferredAgentId: string,
+  tasks: TaskEvent[],
+  safetyAlert: boolean,
+  isSubmitting = false
+): Set<string> {
+  const activeIds = new Set<string>();
+  let hasUnassignedActiveTask = false;
 
   for (const task of tasks) {
-    if (task.state !== "running" && task.state !== "queued" && task.state !== "blocked" && task.state !== "paused") continue;
-    const agentId = agentIdFromText(task.agent) || agentIdFromText(task.title) || agentIdFromText(task.description);
+    if (task.state !== "running" && task.state !== "queued") continue;
+    const agentId = officeAgentIdForTask(task);
     if (agentId) activeIds.add(agentId);
+    else hasUnassignedActiveTask = true;
   }
 
-  if (safetyAlert || activeIds.has("safety")) {
-    activeIds.add("safety");
-  }
+  if ((isSubmitting || hasUnassignedActiveTask) && preferredAgentId) activeIds.add(preferredAgentId);
+  if (safetyAlert) activeIds.add("safety");
 
   return activeIds;
+}
+
+export function officeAgentIdForTask(task: Pick<TaskEvent, "agent" | "title" | "description">) {
+  return agentIdFromText(task.agent) || agentIdFromText(task.title) || agentIdFromText(task.description);
+}
+
+export function shouldRefreshOfficeAgentRuntime(
+  current: OfficeAgentRuntime | undefined,
+  isWorking: boolean,
+  refreshIdleAgent: boolean
+) {
+  return isWorking || refreshIdleAgent || current?.pose === "working";
 }
 
 function agentIdFromText(value?: string) {

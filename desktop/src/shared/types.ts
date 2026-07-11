@@ -38,6 +38,14 @@ import type {
   NotificationPayload
 } from "./desktopBridgeTypes";
 import type { DocumentAskRequest, DocumentCompareRequest, DocumentParseRequest } from "./documentTypes";
+import type {
+  CredentialBrokerResult,
+  CredentialFillRequest,
+  CredentialRef,
+  CredentialRefRequest,
+  CredentialSessionRequest,
+  CredentialUseTicketRequest
+} from "./credentialTypes";
 
 export type {
   ChatMessage,
@@ -71,6 +79,16 @@ export type {
   BrowserReplayExport,
   BrowserSession
 } from "./browserTypes";
+export type {
+  CredentialBrokerResult,
+  CredentialFillRequest,
+  CredentialPurpose,
+  CredentialRef,
+  CredentialRefRequest,
+  CredentialSessionRequest,
+  CredentialUseTicket,
+  CredentialUseTicketRequest
+} from "./credentialTypes";
 export type {
   CommerceFeature,
   CommerceLicenseState,
@@ -412,6 +430,13 @@ export interface LengrvisDesktopBridge {
     stop: (sessionId: string) => Promise<BrowserHostActionResult>;
     performAction: (request: BrowserHostActionRequest) => Promise<BrowserHostActionResult>;
     onSnapshot: (handler: (snapshot: BrowserHostSnapshot) => void) => () => void;
+  };
+  credentials: {
+    listForSession: (request: CredentialSessionRequest) => Promise<CredentialRef[]>;
+    captureFromPage: (request: CredentialSessionRequest) => Promise<CredentialBrokerResult>;
+    issueUseTicket: (request: CredentialUseTicketRequest) => Promise<CredentialBrokerResult>;
+    fill: (request: CredentialFillRequest) => Promise<CredentialBrokerResult>;
+    delete: (request: CredentialRefRequest) => Promise<CredentialBrokerResult>;
   };
   shell: {
     openExternal: (url: string) => Promise<void>;

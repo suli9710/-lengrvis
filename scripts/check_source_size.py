@@ -13,13 +13,40 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
     ROOT / "backend" / "app",
     ROOT / "desktop" / "src",
+    ROOT / "desktop" / "scripts",
     ROOT / "mobile" / "src",
     ROOT / "mobile" / "app",
+    ROOT / "mobile" / "scripts",
+    ROOT / "mobile" / "android",
     ROOT / "scripts",
 )
-TEXT_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".ps1", ".css"}
+TEXT_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".cjs",
+    ".mjs",
+    ".ps1",
+    ".css",
+    ".kt",
+    ".java",
+    ".gradle",
+    ".kts",
+}
 SKIP_PARTS = {"__pycache__", "node_modules", "dist", "build", ".tmp"}
-KNOWN_AREAS = {"backend", "desktop", "desktop_styles", "mobile", "scripts", "other"}
+KNOWN_AREAS = {
+    "backend",
+    "desktop",
+    "desktop_scripts",
+    "desktop_styles",
+    "mobile",
+    "mobile_scripts",
+    "android_native",
+    "scripts",
+    "other",
+}
 
 
 @dataclass(frozen=True)
@@ -105,16 +132,26 @@ def source_roots_for(root: Path) -> tuple[Path, ...]:
     return (
         root / "backend" / "app",
         root / "desktop" / "src",
+        root / "desktop" / "scripts",
         root / "mobile" / "src",
         root / "mobile" / "app",
+        root / "mobile" / "scripts",
+        root / "mobile" / "android",
         root / "scripts",
     )
 
 
 def source_area(relative_path: Path) -> str:
     first = relative_path.parts[0] if relative_path.parts else "other"
+    second = relative_path.parts[1] if len(relative_path.parts) > 1 else ""
+    if first == "desktop" and second == "scripts":
+        return "desktop_scripts"
     if first == "desktop" and relative_path.suffix == ".css":
         return "desktop_styles"
+    if first == "mobile" and second == "scripts":
+        return "mobile_scripts"
+    if first == "mobile" and second == "android":
+        return "android_native"
     if first in {"backend", "desktop", "mobile", "scripts"}:
         return first
     return "other"
@@ -192,6 +229,21 @@ def threshold_violations(
     return violations
 
 
+def oversized_file_violations(
+    sizes: list[SourceFileSize],
+    *,
+    max_lines: int,
+    allow_over_max_lines: set[str],
+) -> list[SourceFileSize]:
+    if not max_lines:
+        return []
+    return [
+        item
+        for item in sizes
+        if item.lines > max_lines and item.path not in allow_over_max_lines
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -206,6 +258,13 @@ def main() -> int:
         help="Fail if the largest file in an area exceeds the limit.",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--allow-over-max-lines",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Allow a legacy source file to exceed --max-lines while preventing new oversized files.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -215,7 +274,12 @@ def main() -> int:
         parser.error(str(exc))
     sizes = scan_source_sizes(root)
     top = sizes[: max(args.top, 0)]
-    violations = [item for item in sizes if args.max_lines and item.lines > args.max_lines]
+    allow_over_max_lines = {str(item).replace("\\", "/") for item in args.allow_over_max_lines}
+    violations = oversized_file_violations(
+        sizes,
+        max_lines=args.max_lines,
+        allow_over_max_lines=allow_over_max_lines,
+    )
     source_summary = summarize_source_sizes(sizes)
     threshold_failures = threshold_violations(
         sizes,
@@ -227,6 +291,7 @@ def main() -> int:
         "ok": not violations and not threshold_failures,
         **asdict(source_summary),
         "max_lines": args.max_lines,
+        "allow_over_max_lines": sorted(allow_over_max_lines),
         "max_p95_lines": args.max_p95_lines,
         "max_area_max_lines": area_thresholds,
         "largest": [asdict(item) for item in top],

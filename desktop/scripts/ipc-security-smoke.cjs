@@ -250,7 +250,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     signNativeConfirmationPayload: (payload) =>
       Buffer.from(`signed:${payload}`, "utf8").toString("base64url")
   };
-  registerIpcHandlers(backend);
+  let localPrivacyEraseCalls = 0;
+  registerIpcHandlers(backend, {
+    eraseLocalPrivateData: async () => {
+      localPrivacyEraseCalls += 1;
+    }
+  });
   const backendStartHandler = ipcHandlers.get(IPC_CHANNELS.backendStart);
   assert.ok(backendStartHandler, "backend start handler must be registered");
   backendCalls = 0;
@@ -701,6 +706,11 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/pair/devices/phone-1", method: "DELETE" },
         pattern: /explicit desktop bridge/
       },
+      {
+        name: "future sensitive route absent from the allowlist",
+        request: { endpoint: "/api/credentials/export" },
+        pattern: /explicit desktop bridge/
+      },
       ...highRiskBridgeRequests.map((testCase) => ({
         ...testCase,
         pattern: /explicit desktop bridge/
@@ -1110,6 +1120,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         assert.equal(fetchCalls.length, 0, `${testCase.name} denied path must not call backend`);
       }
     }
+    assert.equal(localPrivacyEraseCalls, 1, "privacy erase must clear Electron-local credentials and browser artifacts");
 
     const privacyEraseHandler = ipcHandlers.get(IPC_CHANNELS.privacyEraseLocalData);
     messageBoxCalls = [];

@@ -55,6 +55,18 @@ paths = ['''^backend/tests/tls_test_material\.py$''']
 regexes = ['''-----BEGIN RSA PRIVATE KEY-----''']
 
 [[allowlists]]
+description = "Historical task-result redaction fixture"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "19671fb2c05d65d9ea1628e4afe2e1ec72af57ad",
+]
+paths = ['''^desktop/src/renderer/features/task-results/taskResultTimeline\.test\.ts$''']
+# Keep the historical token split with a character class so this allowlist
+# declaration is not itself mistaken for a current generic API-key finding.
+regexes = ['''token=abc123[4]56789''']
+
+[[allowlists]]
 description = "Historical test and vendored fixture placeholders before strict history scanning"
 condition = "AND"
 regexTarget = "match"

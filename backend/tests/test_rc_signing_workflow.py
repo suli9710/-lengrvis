@@ -6,6 +6,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-candidate.yml"
+RELEASE_PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-publish.yml"
+REVIEWED_EVIDENCE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-reviewed-evidence.yml"
 PACKAGE_JSON = REPO_ROOT / "package.json"
 CURRENT_EVIDENCE_SCRIPT = REPO_ROOT / "scripts" / "generate_current_release_evidence.ps1"
 
@@ -28,12 +30,14 @@ def test_release_candidate_workflow_splits_success_and_failure_artifacts() -> No
     failure_section = text[text.index("Upload blocked release candidate diagnostics") :]
 
     assert "if: success()" in success_section
-    assert "docs/release/current-release-evidence.md" in success_section
+    assert "build/delivery-candidate-verdict.json" in success_section
     assert "dist/backend.exe" in success_section
     assert "dist/Lengrvis-win-portable/**" in success_section
     assert "dist/Lengrvis-win-portable.zip" in success_section
     assert "dist/Lengrvis-*-x64-self-extracting.exe" in success_section
     assert "desktop/release/**" in success_section
+    assert "build/*-evidence-reviewed.json" not in success_section
+    assert "build/android-real-device-evidence-reviewed.json" not in success_section
     assert "if: failure()" in failure_section
     assert "docs/release/current-release-evidence.md" in failure_section
     assert "desktop/release" not in failure_section
@@ -42,32 +46,242 @@ def test_release_candidate_workflow_splits_success_and_failure_artifacts() -> No
 def test_release_candidate_workflow_runs_delivery_rc_once() -> None:
     text = RC_WORKFLOW.read_text(encoding="utf-8")
 
-    assert text.count("npm run delivery:rc") == 1
+    assert text.count("npm run delivery:candidate") == 1
+    assert "npm run delivery:rc" not in text
     assert "npm run release:check" not in text
 
 
-def test_release_candidate_workflow_passes_strict_current_evidence_values() -> None:
+def test_release_candidate_uploads_automated_candidate_without_requiring_reviewed_evidence() -> None:
     text = RC_WORKFLOW.read_text(encoding="utf-8")
-    verdict_section = text[text.index("Strict delivery verdict") : text.index("Upload release candidate artifacts")]
+    verdict = text.index("Automated candidate delivery verdict")
+    upload = text.index("Upload release candidate artifacts")
 
-    assert "release_owner_signature" in text
-    assert "manual_signoff_status" in text
-    assert "RELEASE_OWNER_SIGNATURE: ${{ inputs.release_owner_signature }}" in verdict_section
-    assert "RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS: ${{ inputs.manual_signoff_status }}" in verdict_section
-    assert "RELEASE_EVIDENCE_NEEDS_JSON" in verdict_section
-    assert '"hygiene":{"result":"success"}' in verdict_section
-    assert '"extension-security":{"result":"success"}' in verdict_section
+    assert "npm run delivery:candidate" in text
+    assert "npm run delivery:rc" not in text
+    assert verdict < upload
+    assert "build/*-evidence-reviewed.json" not in text
+
+
+def test_release_publish_promotes_downloaded_candidate_bytes_after_strict_verification() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "reviewed_evidence_run_id" in text
+    assert 'gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID"' in text
+    assert 'gh run download "$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID"' in text
+    assert "release-candidate-artifacts" in text
+    assert "release-reviewed-evidence" in text
+    assert "build_all.ps1" not in text
+    assert "dist:publish" not in text
+    assert "electron-builder --publish" not in text
+    assert text.index("Download immutable candidate artifacts") < text.index("npm run delivery:rc")
+    assert text.index("npm run delivery:rc") < text.index("Create or update draft GitHub Release")
+    assert text.index("verify:windows-release-signatures") < text.index("Create or update draft GitHub Release")
+    assert "desktop/release/*.exe" in text
+
+
+def test_release_publish_materializes_complete_strict_inputs_without_literal_wildcards() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    section = text[
+        text.index("Materialize only allowed staged release inputs") : text.index("Set up Node.js")
+    ]
+
+    assert 'Copy-Item -LiteralPath (Join-Path $source "*")' not in section
+    assert 'Get-ChildItem -LiteralPath $source -Force | Copy-Item' in section
+    assert "$candidateRoot" in section
+    for relative_path in (
+        "build/delivery-candidate-verdict.json",
+        "build/distribution-release-evidence-reviewed.json",
+        "build/clean-machine-release-evidence-reviewed.json",
+        "build/result-quality-review-evidence-reviewed.json",
+        "build/diagnostics-external-review-evidence-reviewed.json",
+        "build/android-real-device-evidence-reviewed.json",
+        "build/android/lengrvis-production.apk",
+    ):
+        assert relative_path in section
+
+
+def test_reviewed_evidence_workflow_produces_the_publish_contract() -> None:
+    assert REVIEWED_EVIDENCE_WORKFLOW.exists()
+    text = REVIEWED_EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in text
+    assert "environment: production" in text
+    assert "release-reviewed-evidence" in text
+    assert "actions/upload-artifact@" in text
+    assert "if-no-files-found: error" in text
+
+
+def test_release_publish_reads_reviewed_artifact_paths_relative_to_upload_common_root() -> None:
+    reviewed = REVIEWED_EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+    publish = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    upload_section = reviewed[reviewed.index("Upload immutable reviewed release evidence") :]
+    materialize_section = publish[
+        publish.index("Materialize only allowed staged release inputs") : publish.index("Set up Node.js")
+    ]
+
+    # upload-artifact strips the least common ancestor (build/) from these
+    # paths.  The promotion workflow must therefore address files from the
+    # downloaded artifact root and explicitly map them back under build/.
+    assert "build/distribution-release-evidence-reviewed.json" in upload_section
+    assert '"distribution-release-evidence-reviewed.json" = "build/distribution-release-evidence-reviewed.json"' in (
+        materialize_section
+    )
+    assert '"android/lengrvis-production.apk" = "build/android/lengrvis-production.apk"' in materialize_section
+    assert 'Join-Path $evidenceRoot $relative' not in materialize_section
+
+
+def test_reviewed_evidence_workflow_validates_candidate_and_human_inputs_before_upload() -> None:
+    text = REVIEWED_EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+    upload_index = text.index("Upload immutable reviewed release evidence")
+
+    for marker in (
+        "release-candidate.yml",
+        "candidateRun.workflow_id",
+        "candidateRun.run_attempt",
+        "candidateRun.event",
+        "candidateRun.head_repository.full_name",
+        "candidateRun.head_branch",
+        "candidateRun.head_sha",
+        "$expectedReviewBundleTag",
+        "package.json",
+        "release-candidate-artifacts",
+        "review_bundle_tag",
+        "reviewRelease.draft",
+        "reviewRelease.target_commitish",
+        "verify_distribution_release_evidence.py --require-candidate-binding",
+        "verify_clean_machine_evidence.py --require-candidate-binding",
+        "verify_result_quality_reviewed_evidence.py --require-candidate-binding",
+        "verify_diagnostics_external_reviewed_evidence.py --require-candidate-binding",
+        "verify_android_reviewed_evidence.py --require-candidate-binding",
+        "verify_android_release_gate.ps1",
+    ):
+        assert marker in text
+        assert text.index(marker) < upload_index
+
+
+def test_release_workflows_reject_non_default_branch_dispatches_before_protected_environments() -> None:
+    default_branch_guard = "if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+
+    for workflow in (RC_WORKFLOW, REVIEWED_EVIDENCE_WORKFLOW, RELEASE_PUBLISH_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        job_section = text[text.index("jobs:") :]
+        assert default_branch_guard in job_section
+        assert job_section.index(default_branch_guard) < job_section.index("environment:")
+
+
+def test_release_candidate_workflow_runs_review_scorecard_before_build() -> None:
+    text = RC_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "npm run review:scorecard" in text
+    assert text.index("Install Playwright Chromium") < text.index("npm run review:scorecard")
+    assert text.index("npm run review:scorecard") < text.index("Build release artifacts")
+
+
+def test_release_publish_workflow_runs_review_scorecard_before_build() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "npm run review:scorecard" in text
+    assert text.index("Verify release tag matches desktop version") < text.index("npm run review:scorecard")
+    assert text.index("npm run review:scorecard") < text.index("Verify downloaded candidate signatures")
+    assert "Build release artifacts" not in text
+
+
+def test_release_publish_workflow_fails_closed_before_creating_a_release() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "push:\n    tags:" not in text
+    assert 'LENGRVIS_STRICT_STATE_MACHINE: "true"' in text
+    assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in text
+    assert "npm run delivery:rc" in text
+    assert text.index("npm run delivery:rc") < text.index("Create or update draft GitHub Release")
+    assert "Verify downloaded candidate signatures" in text
+    assert "Download immutable candidate artifacts" in text
+    assert "unsigned portable/backend assets" not in text
+    for step in ("hygiene", "qa_gate", "real_llm_quality", "supply_chain", "extension_security"):
+        assert f"${{{{ steps.{step}.outcome }}}}" in text
+
+
+def test_release_workflows_bind_strict_evidence_to_the_checked_out_candidate() -> None:
+    rc = RC_WORKFLOW.read_text(encoding="utf-8")
+    publish = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    for text in (rc, publish):
+        assert "LENGRVIS_RELEASE_CANDIDATE_COMMIT" in text
+        assert "LENGRVIS_RELEASE_BUILD_IDENTIFIER" in text
+        assert "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY" in text
+        assert "LENGRVIS_RELEASE_CANDIDATE_RUN_ID" in text
+        assert "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT" in text
+        assert "verify_release_candidate_binding.py" in text
+        assert "--require-checkout-match" in text
+
+    assert "candidate_run_id" in publish
+    assert "candidate_run_attempt" in publish
+    assert "git rev-parse HEAD" in publish
+
+
+def test_release_publish_verifies_server_side_candidate_identity_before_checkout() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    validation_index = text.index("Validate immutable release candidate before checkout")
+    checkout_index = text.index("Checkout verified release candidate commit")
+    tag_binding_index = text.index("Verify supplied release tag is bound to verified candidate")
+
+    assert "actions: read" in text
+    assert validation_index < checkout_index < tag_binding_index
+    assert "id: candidate_identity" in text
+    assert "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-candidate.yml" in text
+    assert "repos/$env:GITHUB_REPOSITORY/actions/runs/$candidateRunId" in text
+    assert "candidateRun.workflow_id" in text
+    assert "candidateRun.run_attempt" in text
+    assert "candidateRun.conclusion" in text
+    assert "candidateRun.head_repository.full_name" in text
+    assert "candidateRun.head_branch" in text
+    assert "$env:GITHUB_REF_NAME -ne [string]$repository.default_branch" in text
+    assert "refs/tags/$env:RELEASE_TAG" in text
+    assert "ref: ${{ steps.candidate_identity.outputs.commit }}" in text
+    assert "ref: ${{ env.RELEASE_TAG }}" not in text
+
+
+def test_release_publish_accepts_reviewed_evidence_only_from_the_bound_workflow_run() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    for marker in (
+        "actions/workflows/release-reviewed-evidence.yml",
+        "evidenceRun.workflow_id",
+        "evidenceRun.event",
+        "evidenceRun.head_repository.full_name",
+        "evidenceRun.head_branch",
+        "evidenceRun.head_sha",
+    ):
+        assert marker in text
+    assert "evidenceRun.head_sha" in text[text.index("$evidenceRunJson") : text.index("$buildIdentifier")]
+
+
+def test_release_candidate_workflow_does_not_claim_manual_review_evidence() -> None:
+    text = RC_WORKFLOW.read_text(encoding="utf-8")
+    verdict_section = text[
+        text.index("Automated candidate delivery verdict") : text.index("Upload release candidate artifacts")
+    ]
+
+    assert "release_owner_signature" not in text
+    assert "manual_signoff_status" not in text
+    assert "RELEASE_OWNER_SIGNATURE" not in verdict_section
+    assert "RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS" not in verdict_section
+    assert "RELEASE_EVIDENCE_NEEDS_JSON" not in verdict_section
+    assert "npm run delivery:candidate" in verdict_section
 
 
 def test_release_candidate_workflow_passes_real_llm_env_to_strict_delivery() -> None:
     text = RC_WORKFLOW.read_text(encoding="utf-8")
-    verdict_section = text[text.index("Strict delivery verdict") : text.index("Upload release candidate artifacts")]
+    verdict_section = text[
+        text.index("Automated candidate delivery verdict") : text.index("Upload release candidate artifacts")
+    ]
 
     assert "LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}" in verdict_section
     assert "LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}" in verdict_section
     assert "LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}" in verdict_section
     assert "LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}" in verdict_section
-    assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in verdict_section
+    assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in text
     assert "LENGRVIS_MODE: efficiency" in verdict_section
 
 
@@ -79,6 +293,8 @@ def test_current_release_evidence_script_has_strict_signoff_gate() -> None:
     assert "PENDING_RELEASE_OWNER_SIGNATURE" in text
     assert "RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS" in text
     assert "rc_signoff_recorded" in text
+    assert "LENGRVIS_RELEASE_CANDIDATE_COMMIT" in text
+    assert "LENGRVIS_RELEASE_BUILD_IDENTIFIER" in text
 
 
 def test_package_json_exposes_portable_signing_scripts() -> None:

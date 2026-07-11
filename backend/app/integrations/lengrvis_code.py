@@ -62,6 +62,12 @@ from app.integrations.lengrvis_code_redaction import (  # noqa: F401
     _short_json,
 )
 from app.orchestration.execution_models import EngineTurnResult, RunObservation, RunPhase, RunState
+from app.security.execution_isolation import (
+    arbitrary_execution_denial,
+    assert_arbitrary_execution_allowed,
+    assert_developer_allowed_tools_safe,
+    constrain_developer_allowed_tools,
+)
 
 VENDORED_LENGRVIS_CODE_ROOT = PROJECT_ROOT / "vendor" / "lengrvis-code"
 VENDOR_ROOT_ENV = "LENGRVIS_CODE_VENDOR_ROOT"
@@ -406,6 +412,7 @@ def diagnose_lengrvis_code_runtime(
 ) -> LengrvisCodeRuntimeHealth:
     """Return a deterministic health check for the supported CLI/headless runtime."""
 
+    isolation_denial = arbitrary_execution_denial(f"{LENGRVIS_CODE_DISPLAY_NAME} Node subprocess execution")
     explicit = tuple(str(part) for part in (command or ())) or lengrvis_code_command_from_env()
     root = _vendor_source_root(source_root)
     node_cli = root / "dist" / "cli-node.js"
@@ -421,6 +428,16 @@ def diagnose_lengrvis_code_runtime(
         "bun_available": bool(bun),
         "build_hint": _build_hint(root),
     }
+    if isolation_denial is not None:
+        reason = str(isolation_denial["error"])
+        return LengrvisCodeRuntimeHealth(
+            ok=False,
+            available=False,
+            reason="execution isolation required",
+            diagnostic=reason,
+            safety_error=reason,
+            **base,
+        )
 
     if explicit:
         resolved = _resolve_command(explicit)
@@ -598,6 +615,7 @@ def allowed_tools_for_developer(*, writes_enabled: bool = False) -> tuple[str, .
     tools = DEFAULT_ALLOWED_TOOLS
     if writes_enabled:
         tools = DEFAULT_ALLOWED_TOOLS + WRITE_CAPABLE_ALLOWED_TOOLS
+    tools = constrain_developer_allowed_tools(tools, allow_write_tools=writes_enabled)
     return validate_allowed_tools(tools, allow_write_tools=writes_enabled)
 
 
@@ -606,6 +624,7 @@ def validate_allowed_tools(allowed_tools: Sequence[str], *, allow_write_tools: b
     for tool in normalized:
         if _is_forbidden_allowed_tool(tool, allow_write_tools=allow_write_tools):
             raise ValueError(f"Unsafe {LENGRVIS_CODE_DISPLAY_NAME} allowedTools entry is not permitted: {tool}")
+    assert_developer_allowed_tools_safe(normalized, allow_write_tools=allow_write_tools)
     return normalized
 
 
@@ -628,6 +647,7 @@ def build_lengrvis_code_command(
     config: LengrvisCodeConfig | None = None,
     allow_write_tools: bool = False,
 ) -> list[str]:
+    assert_arbitrary_execution_allowed(f"{LENGRVIS_CODE_DISPLAY_NAME} Node subprocess execution")
     active = config or LengrvisCodeConfig()
     workspace = Path(cwd).expanduser().resolve(strict=False)
     extra_args = tuple(str(arg) for arg in active.extra_args)
@@ -637,7 +657,11 @@ def build_lengrvis_code_command(
         raise RuntimeError(runtime.reason)
 
     model = str((settings.model if settings is not None else "") or "").strip()
-    allowed_tools = validate_allowed_tools(active.allowed_tools, allow_write_tools=allow_write_tools)
+    allowed_tools = constrain_developer_allowed_tools(
+        active.allowed_tools,
+        allow_write_tools=allow_write_tools,
+    )
+    allowed_tools = validate_allowed_tools(allowed_tools, allow_write_tools=allow_write_tools)
 
     command = [
         *runtime.command,
@@ -704,6 +728,17 @@ async def run_lengrvis_code(
     registry: LengrvisCodeProcessRegistry = lengrvis_code_process_registry,
     allow_write_tools: bool = False,
 ) -> LengrvisCodeStreamSummary:
+    isolation_denial = arbitrary_execution_denial(f"{LENGRVIS_CODE_DISPLAY_NAME} Node subprocess execution")
+    if isolation_denial is not None:
+        return LengrvisCodeStreamSummary(
+            launch_error=str(isolation_denial["error"]),
+            runtime_health={
+                "ok": False,
+                "available": False,
+                "reason": "execution isolation required",
+                "safety_error": str(isolation_denial["error"]),
+            },
+        )
     active = config or LengrvisCodeConfig(max_turns=settings.agent_loop_max_turns)
     # P1-11 fix: build_lengrvis_code_env starts from a sanitized parent-env
     # whitelist; caller-provided config env is passed through separately so it is

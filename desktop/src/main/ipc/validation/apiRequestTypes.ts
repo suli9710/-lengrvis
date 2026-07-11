@@ -10,5 +10,5 @@ export interface ValidatedApiRequest {
 }
 
 export interface ApiRequestValidationOptions {
-  allowDeniedDesktopBridgePath?: boolean;
+  allowExplicitDesktopBridgePath?: boolean;
 }

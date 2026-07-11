@@ -7,7 +7,9 @@ from app.api import (
     routes_approvals,
     routes_apps,
     routes_audit,
+    routes_automation,
     routes_browser,
+    routes_capabilities,
     routes_chat,
     routes_commands,
     routes_commerce,
@@ -45,6 +47,7 @@ from app.observability import (
 )
 from app.security.cors import configure_cors
 from app.security.desktop_api import assert_no_production_test_escape_hatches
+from app.security.execution_isolation import assert_release_execution_configuration
 from app.security.middleware import register_security_middleware
 
 
@@ -64,6 +67,7 @@ def create_app() -> FastAPI:
     db.init_db()
     db.bootstrap_sensitive_record_integrity()
     settings = get_effective_settings()
+    assert_release_execution_configuration(settings)
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.2", lifespan=full_backend_lifespan)
     # Hardened CORS shared with the guardian backend (app/guardian.py) via
     # app.security.cors.configure_cors so the two apps can never drift.
@@ -74,6 +78,15 @@ def create_app() -> FastAPI:
     @app.get("/health")
     @app.get("/api/health")
     def health():
+        # These routes are intentionally token-exempt so launchers, mobile LAN
+        # discovery, and load balancers can probe liveness. Keep the response
+        # constant and anonymous for loopback clients as well as LAN clients.
+        return {"status": "ok"}
+
+    @app.get("/api/health/diagnostics")
+    def health_diagnostics():
+        # Unlike the anonymous liveness routes, this path is protected by the
+        # desktop API token middleware and may therefore expose runtime detail.
         settings = get_effective_settings()
         payload = {"status": "ok", "mode": settings.mode}
         if (settings.mode or "efficiency").lower() in {"privacy", "hybrid"}:
@@ -82,6 +95,7 @@ def create_app() -> FastAPI:
 
     for router in [
         routes_chat.router,
+        routes_automation.router,
         routes_tasks.router,
         routes_agents.router,
         routes_apps.router,
@@ -95,6 +109,7 @@ def create_app() -> FastAPI:
         routes_settings.router,
         routes_audit.router,
         routes_browser.router,
+        routes_capabilities.router,
         routes_ui_automation.router,
         routes_schedules.router,
         routes_memories.router,
@@ -127,6 +142,5 @@ def create_app() -> FastAPI:
     register_observability_middleware(app)
 
     return app
-
 
 app = LazyASGIApp(create_app, title="Lengrvis Agent EXE Backend", version="0.1.2")

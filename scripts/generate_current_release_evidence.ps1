@@ -5,6 +5,8 @@ param(
     [string]$CommitSha = "",
     [string]$GeneratedAtUtc = "",
     [string]$NeedsJson = "",
+    [string]$ReleaseVersion = "",
+    [string]$BuildIdentifier = "",
     [string]$ReleaseOwner = "",
     [string]$OwnerSignature = "",
     [string]$ManualSignoffStatus = "",
@@ -104,6 +106,25 @@ function Get-FirstNonEmpty([string[]]$Values, [string]$Fallback) {
     return $Fallback
 }
 
+function Get-PackageJsonValue([string]$RelativePath, [string]$PropertyName, [string]$Fallback) {
+    $path = Join-Path $resolvedRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        return $Fallback
+    }
+
+    try {
+        $package = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $property = $package.PSObject.Properties[$PropertyName]
+        if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+            return ([string]$property.Value).Trim()
+        }
+    }
+    catch {
+    }
+
+    return $Fallback
+}
+
 function Get-ToolVersion([string]$CommandName, [string[]]$Arguments) {
     $command = Get-Command $CommandName -ErrorAction SilentlyContinue
     if ($null -eq $command) {
@@ -196,10 +217,39 @@ if ([string]::IsNullOrWhiteSpace($GeneratedAtUtc)) {
     $GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 if ([string]::IsNullOrWhiteSpace($CommitSha)) {
-    $CommitSha = Get-FirstNonEmpty @($env:GITHUB_SHA, (Get-GitValue @("rev-parse", "HEAD") "unknown")) "unknown"
+    $CommitSha = Get-FirstNonEmpty @(
+        $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT,
+        $env:GITHUB_SHA,
+        (Get-GitValue @("rev-parse", "HEAD") "unknown")
+    ) "unknown"
 }
 if ([string]::IsNullOrWhiteSpace($NeedsJson)) {
     $NeedsJson = $env:RELEASE_EVIDENCE_NEEDS_JSON
+}
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    $ReleaseVersion = Get-FirstNonEmpty @(
+        $env:RELEASE_VERSION,
+        (Get-PackageJsonValue "package.json" "version" "unknown")
+    ) "unknown"
+}
+$releaseVersionLabel = if ([string]::IsNullOrWhiteSpace($ReleaseVersion) -or $ReleaseVersion -eq "unknown") {
+    "unknown"
+}
+elseif ($ReleaseVersion.Trim().StartsWith("v")) {
+    $ReleaseVersion.Trim()
+}
+else {
+    "v$($ReleaseVersion.Trim())"
+}
+if ([string]::IsNullOrWhiteSpace($BuildIdentifier)) {
+    $BuildIdentifier = Get-FirstNonEmpty @(
+        $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER,
+        $env:RELEASE_BUILD_IDENTIFIER,
+        $(if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_RUN_ID)) {
+            "$(Get-FirstNonEmpty @($env:GITHUB_WORKFLOW, 'CI') 'CI') $($env:GITHUB_RUN_ID)"
+        }),
+        $(if ($releaseVersionLabel -ne "unknown") { "$releaseVersionLabel local/manual" })
+    ) "local/manual"
 }
 if ([string]::IsNullOrWhiteSpace($ReleaseOwner)) {
     $ReleaseOwner = Get-FirstNonEmpty @($env:RELEASE_OWNER, $env:GITHUB_ACTOR, [System.Environment]::UserName) "unknown"
@@ -279,12 +329,13 @@ if ($manualItems.Count -eq 0) {
 $gates = @(
     [ordered]@{
         id = "hygiene"
-        job = "Repo hygiene + dependency locks"
-        scope = "Repository hygiene, dependency lock consistency, and maintainability anti-regrowth"
+        job = "Repo hygiene + dependency locks + review scorecard"
+        scope = "Repository hygiene, dependency lock consistency, maintainability anti-regrowth, and full-review scorecard consistency"
         commands = @(
             "npm run hygiene",
             "npm run deps:verify",
-            "npm run maintainability:gate"
+            "npm run maintainability:gate",
+            "npm run review:scorecard"
         )
     },
     [ordered]@{
@@ -292,8 +343,7 @@ $gates = @(
         job = "Backend pytest + golden task gate"
         scope = "Backend pytest suite and golden task regression gate"
         commands = @(
-            "python -m pip install --require-hashes -r backend/requirements-lock.txt",
-            "python -m pip install -r requirements-dev.txt",
+            "python -m pip install --require-hashes -r requirements-dev-lock.txt",
             "python -m playwright install chromium",
             "python -m pytest backend/tests -q --maxfail=1",
             "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1"
@@ -330,12 +380,18 @@ $gates = @(
             "npm --prefix mobile audit --audit-level=high",
             "npm --prefix mobile run typecheck",
             "npm --prefix mobile run smoke:token",
+            "npm --prefix mobile run smoke:consent",
+            "npm --prefix mobile run smoke:session-lifecycle",
+            "npm --prefix mobile run smoke:push-notifications",
+            "npm --prefix mobile run smoke:push-subscription-lifecycle",
             "npm --prefix mobile run smoke:task-companion",
             "npm --prefix mobile run smoke:remote-input-grant",
             "npm --prefix mobile run smoke:wakeup-contract",
             "npm --prefix mobile run smoke:android-back",
             "npm --prefix mobile run smoke:approval-status-label",
             "npm --prefix mobile run smoke:android-hardening-plugin",
+            "npm --prefix mobile run smoke:android-prebuild-network-security",
+            "npm --prefix mobile run smoke:android-manifest-resources",
             "npm --prefix mobile run smoke:android-lan-tls",
             "cd mobile/android; .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace"
         )
@@ -445,6 +501,8 @@ $lines.Add("")
 $lines.Add("## Summary")
 $lines.Add("")
 $lines.Add("- Commit SHA: $CommitSha")
+$lines.Add("- Release version: $releaseVersionLabel")
+$lines.Add("- Build identifier: $BuildIdentifier")
 $lines.Add("- Date (UTC): $GeneratedAtUtc")
 $lines.Add("- CI status: $ciStatus")
 $lines.Add("- Worktree status: $worktreeStatus")

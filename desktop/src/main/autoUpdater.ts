@@ -1,6 +1,7 @@
 import { app, dialog, shell } from "electron";
 
 import { isVersionQuarantined, noteUpdateDownloaded } from "./updateHealthStore";
+import { buildUpdateRecoveryMessage } from "./updateRollbackMessage";
 
 /**
  * electron-updater 集成（GitHub Releases 通道，feed 来自打包时生成的 app-update.yml）。
@@ -218,19 +219,10 @@ export async function enterUpdateRollbackMode(
       ? `版本 ${quarantinedVersion} 启动异常，已暂停自动安装`
       : "更新启动异常，已暂停自动安装"
   });
-  const detailLines = [
-    quarantinedVersion
-      ? `版本 ${quarantinedVersion} 连续启动失败，已自动停用该更新以保护可用性。`
-      : "最近一次更新连续启动失败，已自动停用。",
-    lastGoodVersion
-      ? `建议恢复到上一个稳定版本 ${lastGoodVersion}。`
-      : "建议从历史版本页面重新安装稳定版本。"
-  ];
+  const recoveryMessage = buildUpdateRecoveryMessage(quarantinedVersion, lastGoodVersion);
   const result = await dialog.showMessageBox({
     type: "warning",
-    title: "更新已回滚",
-    message: "检测到更新后启动异常，已自动回滚保护。",
-    detail: detailLines.join("\n"),
+    ...recoveryMessage,
     buttons: ["查看历史版本", "稍后"],
     defaultId: 0,
     cancelId: 1

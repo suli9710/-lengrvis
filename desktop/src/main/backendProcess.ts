@@ -2,11 +2,12 @@ import { app } from "electron";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { sign as signEd25519, type KeyObject } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, rename, rm, stat, truncate } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { cwd as getCwd } from "node:process";
 
 import type { BackendStatus } from "../shared/types";
+import { BackendLifecycleCoordinator } from "./backendLifecycle";
 import { assertLoopbackBackendUrl } from "./backendUrl";
 import { resolveDesktopApiToken } from "./desktopApiToken";
 import { resolveNativeConfirmationKey } from "./nativeConfirmationKey";
@@ -46,6 +47,11 @@ const DEFAULT_WINDOWS_SERVICE_NAMES = [
   "Lengrvis Service",
   "Lengrvis"
 ] as const;
+export const BACKEND_LOG_MAX_BYTES = 512 * 1024;
+export const BACKEND_LOG_MAX_ENTRY_BYTES = 64 * 1024;
+const BACKEND_LOG_ROTATED_SUFFIX = ".1";
+const BACKEND_LOG_TRUNCATION_MARKER = " [truncated]";
+let backendLogWriteQueue: Promise<void> = Promise.resolve();
 
 function envAliases(name: string): string[] {
   return [name];
@@ -103,6 +109,7 @@ export class BackendProcessManager {
   private readonly nativeConfirmationPublicKey: string;
   private readonly backendConfigDir: string;
   private readonly backendDataDir: string;
+  private readonly lifecycle: BackendLifecycleCoordinator<BackendStatus>;
 
   constructor(private readonly options: BackendProcessOptions = {}) {
     const command = this.resolveBackendCommand();
@@ -127,6 +134,10 @@ export class BackendProcessManager {
       baseUrl: this.getBaseUrl(),
       lastCheckedAt: new Date().toISOString()
     };
+    this.lifecycle = new BackendLifecycleCoordinator(
+      () => this.startOperation(),
+      () => this.stopOperation()
+    );
   }
 
   getBaseUrl(): string {
@@ -145,7 +156,11 @@ export class BackendProcessManager {
     return signEd25519(null, Buffer.from(payload, "utf-8"), this.nativeConfirmationPrivateKey).toString("base64url");
   }
 
-  async start(): Promise<BackendStatus> {
+  start(): Promise<BackendStatus> {
+    return this.lifecycle.start();
+  }
+
+  private async startOperation(): Promise<BackendStatus> {
     if (this.child && !this.child.killed) {
       return this.refreshStatus("running", "后端进程已在运行");
     }
@@ -182,7 +197,7 @@ export class BackendProcessManager {
 
     try {
       const bundledOllamaEnv = resolveBundledOllamaEnv(command);
-      this.child = spawn(command, args, {
+      const child = spawn(command, args, {
         cwd: this.options.cwd ?? env("LENGRVIS_BACKEND_CWD") ?? dirname(command),
         env: {
           ...process.env,
@@ -199,17 +214,21 @@ export class BackendProcessManager {
         },
         windowsHide: true
       });
+      this.child = child;
 
-      this.child.stdout.on("data", (chunk) => {
+      child.stdout.on("data", (chunk) => {
         void writeBackendLog(`[stdout] ${chunk.toString().trimEnd()}`);
       });
 
-      this.child.stderr.on("data", (chunk) => {
+      child.stderr.on("data", (chunk) => {
         void writeBackendLog(`[stderr] ${chunk.toString().trimEnd()}`);
       });
 
-      this.child.once("exit", (code) => {
+      child.once("exit", (code) => {
         void writeBackendLog(`backend process exited; code=${code}`);
+        if (this.child !== child) {
+          return;
+        }
         this.child = null;
         this.status = this.makeStatus(
           code === 0 ? "stopped" : "error",
@@ -217,8 +236,11 @@ export class BackendProcessManager {
         );
       });
 
-      this.child.once("error", (error) => {
+      child.once("error", (error) => {
         void writeBackendLog(`backend process error; message=${error.message}`);
+        if (this.child !== child) {
+          return;
+        }
         this.child = null;
         this.status = this.makeStatus("error", error.message);
       });
@@ -231,7 +253,11 @@ export class BackendProcessManager {
     }
   }
 
-  async stop(): Promise<BackendStatus> {
+  stop(): Promise<BackendStatus> {
+    return this.lifecycle.stop();
+  }
+
+  private async stopOperation(): Promise<BackendStatus> {
     if (!this.child || this.child.killed) {
       this.child = null;
       const message = this.status.message?.includes("Windows Service")
@@ -241,7 +267,6 @@ export class BackendProcessManager {
     }
 
     const child = this.child;
-    this.child = null;
     // Graceful drain before the hard kill: ask the backend to pause in-flight
     // runs (bounded wait) so they survive as resumable PAUSED rows instead of
     // crash-orphaned RUNNING zombies that startup recovery has to reconcile.
@@ -256,6 +281,9 @@ export class BackendProcessManager {
       void writeBackendLog(`backend drain before stop failed; error=${drainError.message}`);
     }
     await terminateProcessTree(child);
+    if (this.child === child) {
+      this.child = null;
+    }
     return this.refreshStatus("stopped", "后端进程已停止");
   }
 
@@ -607,13 +635,52 @@ function isSensitiveUrlParam(key: string): boolean {
     || normalized.endsWith("_client_secret");
 }
 
-export async function writeBackendLog(message: string): Promise<void> {
+export function writeBackendLog(message: string): Promise<void> {
+  const entry = `[${new Date().toISOString()}] ${truncateBackendLogMessage(message)}\n`;
+  backendLogWriteQueue = backendLogWriteQueue
+    .catch(() => undefined)
+    .then(() => writeBackendLogEntry(entry));
+  return backendLogWriteQueue;
+}
+
+async function writeBackendLogEntry(entry: string): Promise<void> {
   try {
     const logDir = app.getPath("userData");
     await mkdir(logDir, { recursive: true });
-    await appendFile(join(logDir, "backend-process.log"), `[${new Date().toISOString()}] ${redactBackendLogText(message)}\n`, "utf8");
+    const logPath = join(logDir, "backend-process.log");
+    await rotateBackendLogIfNeeded(logPath, Buffer.byteLength(entry, "utf8"));
+    await appendFile(logPath, entry, "utf8");
   } catch {
     // Logging must never block app startup.
+  }
+}
+
+function truncateBackendLogMessage(message: string): string {
+  const redacted = redactBackendLogText(message);
+  if (Buffer.byteLength(redacted, "utf8") <= BACKEND_LOG_MAX_ENTRY_BYTES) {
+    return redacted;
+  }
+  const maxContentBytes = BACKEND_LOG_MAX_ENTRY_BYTES - Buffer.byteLength(BACKEND_LOG_TRUNCATION_MARKER, "utf8");
+  return `${Buffer.from(redacted, "utf8").subarray(0, maxContentBytes).toString("utf8")}${BACKEND_LOG_TRUNCATION_MARKER}`;
+}
+
+async function rotateBackendLogIfNeeded(logPath: string, incomingBytes: number): Promise<void> {
+  let currentBytes = 0;
+  try {
+    currentBytes = (await stat(logPath)).size;
+  } catch {
+    return;
+  }
+  if (currentBytes + incomingBytes <= BACKEND_LOG_MAX_BYTES) {
+    return;
+  }
+
+  const rotatedPath = `${logPath}${BACKEND_LOG_ROTATED_SUFFIX}`;
+  try {
+    await rm(rotatedPath, { force: true });
+    await rename(logPath, rotatedPath);
+  } catch {
+    await truncate(logPath, 0).catch(() => undefined);
   }
 }
 

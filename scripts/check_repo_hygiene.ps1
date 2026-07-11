@@ -21,8 +21,11 @@ $blockedPathspecs = @(
     ".codex-vite*",
     "pytest-backend.log",
     ".claude/settings.local.json",
+    ".cursor/",
     ".codex_remote/",
     ".tmp/",
+    "mobile/.expo/",
+    "mobile/android/.kotlin/",
     "desktop/output/",
     "desktop/lengrvis-home-smoke.png",
     "desktop/xiaoma-office*.png",
@@ -56,6 +59,7 @@ if ($LASTEXITCODE -ne 0) {
 $violations = @(
     $trackedArtifacts |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Where-Object { Test-Path -LiteralPath (Join-Path $resolvedRoot $_) } |
         Sort-Object -Unique
 )
 

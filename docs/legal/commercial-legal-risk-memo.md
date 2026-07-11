@@ -23,7 +23,7 @@
 | LGL-P0-006 | DPA 与处理者角色 | DPA 是条件性草案。默认本机模式下许可方未必构成处理者，但支持、诊断、账户、遥测和支付都可能改变角色。 | 企业销售前按数据流和客户类型补充角色分析。 |
 | LGL-P0-007 | SLA/支持承诺 | SLA 明确尚未生效。除非人员排班和法律条款获批，定价页或发布文案不得出现公开支持目标、可用率或响应时限。 | 法务批准外部 SLA 前，仅保留内部支持路由目标。 |
 | LGL-P0-008 | 公开 claims 证明 | 安全、隐私、本地优先、合规、吊销和额度 claims 都需要精确来源证据。禁止使用“合规”“零数据收集”“实时吊销”“无限”等未证明表述。 | 维护 `docs/business/public-claims-register.md` 和 reviewed claims evidence。 |
-| LGL-P0-009 | BUSL/商业许可边界 | EULA、源码许可证、定价页和产品 UI 必须描述一致的商业/非商业边界。陈旧的 “Team” 表述与 Free/Pro/Max 命名存在冲突。 | 付费发布前统一 EULA、pricing、license operations 和 checkout 文案。 |
+| LGL-P0-009 | BUSL/商业许可边界 | EULA、源码许可证、定价页和产品 UI 必须描述一致的商业/非商业边界。陈旧的 “Team/Max” 表述与 Free/Plus/Pro 命名存在冲突。 | 付费发布前统一 EULA、pricing、license operations 和 checkout 文案。 |
 | LGL-P0-010 | 税务/收款条款 | 税务处理、发票内容、merchant-of-record 覆盖和拒付/退款冲突处理尚不是法律结论。 | checkout 前必须取得税务 owner 批准和支付处理方证据。 |
 
 ## 最终法务签收前的起草修改项

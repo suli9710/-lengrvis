@@ -40,6 +40,10 @@ from app.commerce.licensing import (
     parse_revocation_manifest,
 )
 from app.config import AppSettings, _configured, _find_config_file, _load_dotenv, _load_yaml, env_value
+from app.security.execution_isolation import (
+    current_execution_isolation_attestation,
+    release_execution_configuration_issues,
+)
 
 
 def sections(config):
@@ -72,6 +76,12 @@ config = _load_yaml(config_path) if config_path else {}
 env_file = _load_dotenv(env_path) if env_path else {}
 env = {**env_file, **os.environ}
 settings = AppSettings.from_sources()
+execution_isolation = current_execution_isolation_attestation()
+execution_isolation_issues = release_execution_configuration_issues(
+    settings,
+    environ={**env, "LENGRVIS_RELEASE_BUILD": "true"},
+    attestation=execution_isolation,
+)
 
 allow_mock_fallback, allow_mock_source = flag(
     config,
@@ -242,6 +252,8 @@ print(json.dumps({
     "allow_mock_fallback_source": allow_mock_source,
     "strict_state_machine": strict_state_machine,
     "strict_state_machine_source": strict_source,
+    "execution_isolation": execution_isolation.public_payload(),
+    "execution_isolation_issues": execution_isolation_issues,
     "license_issues": license_issues,
 }, sort_keys=True))
 '@
@@ -259,6 +271,11 @@ print(json.dumps({
                 }
                 if (-not $settings.strict_state_machine) {
                     $issues.Add("Release/production gates require strict_state_machine=true; set LENGRVIS_STRICT_STATE_MACHINE=true or privacy.strict_state_machine: true in config.yaml (source: $($settings.strict_state_machine_source)).")
+                }
+                foreach ($executionIssue in @($settings.execution_isolation_issues)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$executionIssue)) {
+                        $issues.Add([string]$executionIssue)
+                    }
                 }
                 foreach ($licenseIssue in @($settings.license_issues)) {
                     if (-not [string]::IsNullOrWhiteSpace([string]$licenseIssue)) {
@@ -290,4 +307,4 @@ if ($issues.Count -gt 0) {
     exit 1
 }
 
-Write-Host "Release safety verification passed: allow_mock_fallback=false and strict_state_machine=true. Commercial license secrets are offline-only and paid profiles have a valid verifier."
+Write-Host "Release safety verification passed: allow_mock_fallback=false and strict_state_machine=true. Arbitrary local/code execution is either disabled or backed by a complete trusted Windows isolation attestation. Commercial license secrets are offline-only and paid profiles have a valid verifier."

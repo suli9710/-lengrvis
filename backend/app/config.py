@@ -143,6 +143,7 @@ class AppSettings(BaseSettings):
     context_micro_compact_enabled: bool = True
     context_history_snip_enabled: bool = True
     context_session_memory_enabled: bool = True
+    memory_auto_learning_enabled: bool = False
     context_session_summary_limit: int = 12000
     context_recent_message_limit: int = 24
     context_micro_compact_age: int = 8
@@ -424,6 +425,9 @@ class AppSettings(BaseSettings):
             ),
             context_session_memory_enabled=flag(
                 "LENGRVIS_CONTEXT_SESSION_MEMORY_ENABLED", "context_session_memory_enabled", True
+            ),
+            memory_auto_learning_enabled=flag(
+                "LENGRVIS_MEMORY_AUTO_LEARNING_ENABLED", "memory_auto_learning_enabled", False
             ),
             context_session_summary_limit=int_value(
                 "LENGRVIS_CONTEXT_SESSION_SUMMARY_LIMIT", "context_session_summary_limit", 12000

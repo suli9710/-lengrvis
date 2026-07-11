@@ -68,6 +68,89 @@
   flex-shrink: 0;
 }
 
+.activity-center-trigger {
+  position: relative;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 800;
+  box-shadow: 0 4px 14px rgba(44, 58, 92, 0.06);
+  transition:
+    border-color 0.18s var(--ease-out),
+    background 0.18s var(--ease-out),
+    transform 0.18s var(--ease-out),
+    box-shadow 0.18s var(--ease-out);
+}
+
+.activity-center-trigger:hover {
+  border-color: rgba(74, 108, 247, 0.32);
+  background: #ffffff;
+  color: var(--brand-deep);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(44, 58, 92, 0.1);
+}
+
+.activity-center-trigger[aria-expanded="true"] {
+  border-color: rgba(74, 108, 247, 0.42);
+  background: var(--brand-soft);
+  color: var(--brand-deep);
+}
+
+.activity-center-trigger__icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.activity-center-trigger strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.activity-center-trigger--running .activity-center-trigger__icon {
+  background: var(--brand-soft);
+  color: var(--brand);
+  animation: activity-center-pulse 2s ease-in-out infinite;
+}
+
+.activity-center-trigger--completed .activity-center-trigger__icon {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.activity-center-trigger--error .activity-center-trigger__icon {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.activity-center-trigger > i {
+  position: absolute;
+  top: -2px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+@keyframes activity-center-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 108, 247, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(74, 108, 247, 0.13); }
+}
+
 /* 顶栏图标按钮的轻量提示 */
 .window-actions .icon-button[aria-label] {
   position: relative;

@@ -29,6 +29,7 @@ from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.policy.sensitive_values import looks_sensitive_value
+from app.security.pinned_http_proxy import PinnedHttpProxy
 
 BROWSER_ACTION_KINDS = {
     "open",
@@ -168,6 +169,9 @@ class LocalBrowserActivityAdapter:
             data["playwright_error"] = _safe_browser_error(exc)
             if response_truncated:
                 data["response_truncated"] = True
+        finally:
+            if route_guard is not None:
+                route_guard.close()
         return data
 
     def _screenshot(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -201,6 +205,9 @@ class LocalBrowserActivityAdapter:
             if route_guard_error:
                 return {"ok": False, "error": f"Playwright screenshot failed: {route_guard_error}"}
             return {"ok": False, "error": f"Playwright screenshot failed: {_safe_browser_error(exc)}"}
+        finally:
+            if route_guard is not None:
+                route_guard.close()
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
     def _wait(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -228,6 +235,9 @@ class LocalBrowserActivityAdapter:
             if route_guard_error:
                 return {"ok": False, "error": f"wait_for failed: {route_guard_error}"}
             return {"ok": False, "error": f"wait_for failed: {_safe_browser_error(exc)}"}
+        finally:
+            if route_guard is not None:
+                route_guard.close()
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
     def _write_like(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -276,18 +286,45 @@ class LocalBrowserActivityAdapter:
             if route_guard_error:
                 return {"ok": False, "error": f"{kind} failed: {route_guard_error}"}
             return {"ok": False, "error": f"{kind} failed: {_safe_browser_error(exc)}"}
+        finally:
+            if route_guard is not None:
+                route_guard.close()
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
 
 
 @dataclass(slots=True)
 class _PlaywrightRouteGuard:
     blocked_error: str | None = None
+    proxy: PinnedHttpProxy | None = field(default=None, repr=False)
+
+    def block(self, error: str) -> None:
+        if self.blocked_error is None:
+            self.blocked_error = str(error or "Blocked outbound browser request")
+
+    def close(self) -> None:
+        proxy = self.proxy
+        self.proxy = None
+        if proxy is not None:
+            proxy.close()
 
 
 def _new_guarded_playwright_page(browser: Any, **context_options: Any) -> tuple[Any, _PlaywrightRouteGuard]:
     """Create a Playwright page whose outbound HTTP(S) requests fail closed."""
     guard = _PlaywrightRouteGuard()
-    context = browser.new_context(service_workers="block", **context_options)
+    proxy = PinnedHttpProxy(allow_private=_private_hosts_allowed(), on_block=guard.block).start()
+    guard.proxy = proxy
+    try:
+        context = browser.new_context(
+            service_workers="block",
+            **context_options,
+            proxy={"server": proxy.url, "bypass": "<-loopback>"},
+        )
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: close the proxy guard before propagating setup failures.
+        guard.close()
+        raise
+    on_event = getattr(context, "on", None)
+    if callable(on_event):
+        on_event("close", lambda: guard.close())
     context.route("**/*", lambda route: _guard_playwright_route(route, guard))
     return context.new_page(), guard
 
@@ -301,8 +338,8 @@ def _guard_playwright_route(route: Any, guard: _PlaywrightRouteGuard | None = No
     try:
         _validate_url(url)
     except ValueError as exc:
-        if guard is not None and guard.blocked_error is None:
-            guard.blocked_error = _safe_browser_error(exc)
+        if guard is not None:
+            guard.block(_safe_browser_error(exc))
         try:
             route.abort("blockedbyclient")
         except TypeError:
@@ -822,13 +859,6 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
 
 
-# RFC 2544 benchmarking range, used as the fake-IP pool by local tunneling
-# proxies (Clash/mihomo/sing-box). When DNS answers land here the connection
-# actually goes through the proxy to the public site, so blocking it would
-# break every domain on such machines. Literal fake-IP URLs stay blocked.
-_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
-
-
 def _is_private_host(hostname: str) -> bool:
     if not hostname:
         return True
@@ -849,8 +879,6 @@ def _is_private_host(hostname: str) -> bool:
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:
-            continue
-        if isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP_NETWORK:
             continue
         if _is_blocked_ip(ip):
             return True

@@ -96,7 +96,7 @@
 }
 
 .home-examples-card .office-quick-card:first-child {
-  min-height: 92px;
+  min-height: 72px;
   border-color: rgba(25, 163, 122, 0.3);
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(222, 247, 240, 0.52)),
@@ -114,10 +114,6 @@
   overflow: visible;
   text-overflow: clip;
   line-height: 1.25;
-}
-
-.home-examples-card .office-quick-card__trust {
-  row-gap: 4px;
 }
 
 .home-trust-card {

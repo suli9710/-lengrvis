@@ -6,6 +6,7 @@ from typing import Any
 
 from app.commerce.entitlements import Feature, active_plan, has_feature, require_feature
 from app.commerce.licensing import commercial_release_enabled
+from app.config import get_env
 from app.core.paths import resolve_authorized
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
@@ -18,6 +19,7 @@ from app.tools.tool_catalog import tool_description, tool_search_hint
 
 _EXTRACT_TEXT_LIMIT = 20000
 _CHUNK_CHARS = document_service.DEFAULT_CHUNK_CHARS
+DEFAULT_MAX_CSV_ANALYSIS_ROWS = 100_000
 
 
 def _allowed(context: dict[str, Any]) -> list[str]:
@@ -45,6 +47,16 @@ def _document_max_chars_to_llm(context: dict[str, Any]) -> int:
     settings = context.get("settings")
     value = getattr(settings, "document_max_chars_to_llm", document_service.DEFAULT_MAX_CHARS_TO_LLM)
     return max(1, int(value))
+
+
+def _max_csv_analysis_rows() -> int:
+    raw = get_env("LENGRVIS_DOCUMENT_MAX_CSV_ROWS")
+    if raw is None:
+        return DEFAULT_MAX_CSV_ANALYSIS_ROWS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_CSV_ANALYSIS_ROWS
 
 
 def _provider(task: str = "subagent"):
@@ -97,6 +109,7 @@ def _rank_chunks(query: str, chunks: list[str]) -> list[str]:
 
 
 def extract_text_from_path(path: Path) -> str:
+    document_intelligence_service._ensure_parseable_file_size(path)
     ext = path.suffix.lower()
     if ext in {".txt", ".md", ".json", ".csv", ".py", ".ts", ".tsx", ".js", ".yaml", ".yml"}:
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -189,8 +202,21 @@ def convert_to_markdown(args: dict[str, Any], context: dict[str, Any]) -> dict[s
 @_require_document_ai_tool
 def analyze_csv(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    rows = list(csv.DictReader(path.open("r", encoding="utf-8", errors="ignore")))
-    return {"path": str(path), "rows": len(rows), "columns": list(rows[0].keys()) if rows else []}
+    document_intelligence_service._ensure_parseable_file_size(path)
+    row_limit = _max_csv_analysis_rows()
+    with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+        reader = csv.DictReader(handle)
+        columns: list[str | None] = []
+        row_count = 0
+        for row in reader:
+            row_count += 1
+            if row_count > row_limit:
+                raise document_intelligence_service.DocumentTooLargeError(
+                    f"CSV exceeds row limit ({row_count} rows; max {row_limit})."
+                )
+            if row_count == 1:
+                columns = list(row.keys())
+    return {"path": str(path), "rows": row_count, "columns": columns}
 
 
 @_require_document_ai_tool

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_fie
 
 from app.core import db
 from app.core.schemas import now_iso
+from app.security.capability_manifest import assert_capability_allowed, permission_policy_capability_payload
 
 PermissionEffect = Literal["allow", "deny"]
 BUILTIN_BASELINE_DENY_RULE_ID = "builtin_high_risk_baseline"
@@ -306,6 +307,11 @@ def evaluate_permission_policy(
     context: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> PermissionDecision:
+    assert_capability_allowed(
+        "permission_policy",
+        policy.id,
+        payload=permission_policy_capability_payload(policy),
+    )
     context = context or {}
     current_time = now or _context_datetime(context)
     matching: list[PermissionRule] = []

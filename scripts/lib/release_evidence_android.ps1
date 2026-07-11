@@ -154,12 +154,30 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
     $artifactSha256 = [string]$latestAndroidReleaseGate.data.android_artifact.sha256
     $installableApk = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.installable_apk
     $apkZipHeaderValid = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_zip_header_valid
+    $apkStructureValid = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_structure_valid
+    $apkSignatureVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_signing.verification_succeeded
+    $apkV2SignatureVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_signing.v2_verified
+    $apkV3SignatureVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_signing.v3_verified
+    $apkSignerIdentityVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_signing.signer_identity_verified
+    $apkSignerSha256 = [string]$latestAndroidReleaseGate.data.android_artifact.apk_signing.signer_certificate_sha256
+    $apkExpectedSignerSha256 = [string]$latestAndroidReleaseGate.data.android_artifact.apk_signing.expected_signer_certificate_sha256
+    $apkPackageName = [string]$latestAndroidReleaseGate.data.android_artifact.manifest_identity.package_name
+    $apkVersionName = [string]$latestAndroidReleaseGate.data.android_artifact.manifest_identity.version_name
+    $apkVersionCode = Get-StrictJsonNonNegativeIntegerOrZero $latestAndroidReleaseGate.data.android_artifact.manifest_identity.version_code
+    $apkManifestIdentityVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.manifest_identity.matches_source_config
+    $apkProvenanceVerified = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.provenance.verified
     $artifactBytes = Get-StrictJsonNonNegativeIntegerOrZero $latestAndroidReleaseGate.data.android_artifact.bytes
     $artifactGateEvaluated = Test-JsonTrue $latestAndroidReleaseGate.data.artifact_gate.evaluated
     $artifactGatePassed = Test-JsonTrue $latestAndroidReleaseGate.data.artifact_gate.passed
     $realDeviceGateEvaluated = Test-JsonTrue $latestAndroidReleaseGate.data.real_device_gate.evaluated
     $realDeviceGatePassed = Test-JsonTrue $latestAndroidReleaseGate.data.real_device_gate.passed
     $sourceConfigPassed = Test-JsonTrue $latestAndroidReleaseGate.data.source_config.passed
+    $reviewedEvidenceContractEvaluated = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.evaluated
+    $reviewedEvidenceContractHashValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.valid_hash
+    $reviewedEvidenceContractSignatureValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.valid_signature
+    $reviewedEvidenceContractCandidateBound = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.candidate_binding_valid
+    $reviewedEvidenceArtifactIdentityValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.artifact_identity_valid
+    $reviewedEvidenceArtifactProvenanceValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.artifact_provenance_valid
 
     if ($androidArtifactType -ne "android-release-gate-summary") {
         $androidGateMismatches.Add("artifact_type is not android-release-gate-summary")
@@ -230,8 +248,26 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
         if (-not (Test-EmptyArrayValue $latestAndroidReleaseGate.data.real_device_gate.issues)) {
             $androidGateMismatches.Add("passed Android gate must have no real_device_gate issues")
         }
-        if (-not ($artifactProvided -and $installableApk -and $apkZipHeaderValid -and $artifactBytes -ge 1048576 -and $artifactGateEvaluated -and $artifactGatePassed -and $realDeviceGateEvaluated -and $realDeviceGatePassed)) {
-            $androidGateMismatches.Add("passed Android gate must include installable APK and real-device evidence gates")
+        if (-not ($artifactProvided -and $installableApk -and $apkZipHeaderValid -and $apkStructureValid -and $artifactBytes -ge 1048576 -and $artifactGateEvaluated -and $artifactGatePassed -and $realDeviceGateEvaluated -and $realDeviceGatePassed)) {
+            $androidGateMismatches.Add("passed Android gate must include structurally valid APK and real-device evidence gates")
+        }
+        if (-not ($apkSignatureVerified -and $apkV2SignatureVerified -and $apkV3SignatureVerified -and $apkSignerIdentityVerified)) {
+            $androidGateMismatches.Add("passed Android gate must include Android SDK v2/v3 signature verification and controlled signer identity")
+        }
+        if ($apkSignerSha256 -notmatch "^[a-fA-F0-9]{64}$") {
+            $androidGateMismatches.Add("passed Android gate must include a 64-character signer certificate SHA-256")
+        }
+        if ($apkExpectedSignerSha256 -notmatch "^[a-fA-F0-9]{64}$" -or $apkExpectedSignerSha256.ToLowerInvariant() -ne $apkSignerSha256.ToLowerInvariant()) {
+            $androidGateMismatches.Add("passed Android gate signer certificate must match the controlled expected certificate SHA-256")
+        }
+        if ([string]::IsNullOrWhiteSpace($apkPackageName) -or [string]::IsNullOrWhiteSpace($apkVersionName) -or $apkVersionCode -lt 1 -or -not $apkManifestIdentityVerified) {
+            $androidGateMismatches.Add("passed Android gate must include package/version identity matching source configuration")
+        }
+        if (-not $apkProvenanceVerified) {
+            $androidGateMismatches.Add("passed Android gate must include verified candidate-bound APK provenance")
+        }
+        if (-not ($reviewedEvidenceContractEvaluated -and $reviewedEvidenceContractHashValid -and $reviewedEvidenceContractSignatureValid -and $reviewedEvidenceContractCandidateBound -and $reviewedEvidenceArtifactIdentityValid -and $reviewedEvidenceArtifactProvenanceValid)) {
+            $androidGateMismatches.Add("passed Android gate must include a valid sealed reviewed-evidence contract, artifact identity/provenance, and strict candidate binding")
         }
     }
     else {
@@ -274,11 +310,31 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
             bytes = if ($androidGateSourceContractValid) { $artifactBytes } else { 0 }
             installable_apk = if ($androidGateSourceContractValid) { $installableApk } else { $false }
             apk_zip_header_valid = if ($androidGateSourceContractValid) { $apkZipHeaderValid } else { $false }
+            apk_structure_valid = if ($androidGateSourceContractValid) { $apkStructureValid } else { $false }
+            apk_signature_verified = if ($androidGateSourceContractValid) { $apkSignatureVerified } else { $false }
+            apk_v2_signature_verified = if ($androidGateSourceContractValid) { $apkV2SignatureVerified } else { $false }
+            apk_v3_signature_verified = if ($androidGateSourceContractValid) { $apkV3SignatureVerified } else { $false }
+            signer_identity_verified = if ($androidGateSourceContractValid) { $apkSignerIdentityVerified } else { $false }
+            signer_certificate_sha256 = if ($androidGateSourceContractValid) { $apkSignerSha256 } else { "" }
+            expected_signer_certificate_sha256 = if ($androidGateSourceContractValid) { $apkExpectedSignerSha256 } else { "" }
+            package_name = if ($androidGateSourceContractValid) { $apkPackageName } else { "" }
+            version_name = if ($androidGateSourceContractValid) { $apkVersionName } else { "" }
+            version_code = if ($androidGateSourceContractValid) { $apkVersionCode } else { 0 }
+            manifest_identity_verified = if ($androidGateSourceContractValid) { $apkManifestIdentityVerified } else { $false }
+            provenance_verified = if ($androidGateSourceContractValid) { $apkProvenanceVerified } else { $false }
         }
         artifact_gate_evaluated = if ($androidGateSourceContractValid) { $artifactGateEvaluated } else { $false }
         artifact_gate_passed = if ($androidGateSourceContractValid) { $artifactGatePassed } else { $false }
         real_device_gate_evaluated = if ($androidGateSourceContractValid) { $realDeviceGateEvaluated } else { $false }
         real_device_gate_passed = if ($androidGateSourceContractValid) { $realDeviceGatePassed } else { $false }
+        reviewed_evidence_contract = [ordered]@{
+            evaluated = if ($androidGateSourceContractValid) { $reviewedEvidenceContractEvaluated } else { $false }
+            valid_hash = if ($androidGateSourceContractValid) { $reviewedEvidenceContractHashValid } else { $false }
+            valid_signature = if ($androidGateSourceContractValid) { $reviewedEvidenceContractSignatureValid } else { $false }
+            candidate_binding_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceContractCandidateBound } else { $false }
+            artifact_identity_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceArtifactIdentityValid } else { $false }
+            artifact_provenance_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceArtifactProvenanceValid } else { $false }
+        }
         real_device_evidence_label = Redact-DisplayLabel ([string]$latestAndroidReleaseGate.data.real_device_gate.evidence_label)
         claim_controls = [ordered]@{
             installable_android_app_claim_allowed = if ($androidGateSourceContractValid) { $installClaimAllowed } else { $false }

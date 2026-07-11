@@ -165,7 +165,7 @@ ADMIN_SCRIPT_ACTIONS = r"""    async function renewSubscription(item) {
         event.returnValue = '授权码只显示一次，请确认已经安全保存。';
       }
     });
-    selectPlan('pro');
+    selectPlan('plus');
     updateExpiryPreview('expiresPreset', 'customExpiryWrap', 'expiresDate', 'expiryPreview');
     checkSession().catch(err => setMessage('loginMessage', err.message, 'error'));
 """

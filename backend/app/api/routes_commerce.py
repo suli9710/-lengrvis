@@ -1,5 +1,5 @@
 """Commercialization API: plan status, license status, cloud quota, and
-Team-tier audit export / policy management.
+paid-tier audit export / policy management.
 
 Entitlement gating is enforced per-endpoint via
 :func:`app.commerce.entitlements.require_feature`, which raises an
@@ -22,6 +22,8 @@ from app.commerce.entitlements import (
     active_plan,
     has_feature,
     is_high_risk,
+    model_tier,
+    monthly_price_cny,
     require_feature,
 )
 from app.commerce.licensing import install_license, license_status
@@ -54,6 +56,8 @@ def commerce_plan() -> dict[str, Any]:
     plan = active_plan(settings)
     return {
         "plan": plan.value,
+        "monthly_price_cny": monthly_price_cny(plan),
+        "model_tier": model_tier(plan),
         "remote_desktop_enabled": bool(getattr(settings, "remote_desktop_enabled", False)),
         "features": {feature.value: has_feature(plan, feature) for feature in Feature},
         "high_risk_features": [feature.value for feature in Feature if is_high_risk(feature)],

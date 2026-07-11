@@ -75,7 +75,7 @@ def git_worktree_diff_preview(
     root = Path(workspace).expanduser().resolve(strict=False)
     allowed = list(allowed_directories or [str(root)])
     command, error = _trusted_guarded_git_command(
-        ["diff", "--name-status", "HEAD"],
+        ["status", "--porcelain=v1", "--untracked-files=all"],
         root=root,
         allowed_directories=allowed,
     )
@@ -95,13 +95,12 @@ def git_worktree_diff_preview(
     stderr = str(result.get("stderr") or "")
     changed_files: list[dict[str, str]] = []
     for line in stdout.splitlines():
-        text = line.strip()
-        if not text:
+        if not line.strip():
             continue
-        parts = text.split("\t", 1)
-        if len(parts) != 2:
+        parsed = _parse_git_status_line(line)
+        if parsed is None:
             continue
-        status, rel_path = parts[0].strip(), parts[1].strip()
+        status, rel_path = parsed
         if not rel_path:
             continue
         try:
@@ -120,6 +119,20 @@ def git_worktree_diff_preview(
         "stderr": stderr[:500],
         "returncode": result.get("returncode"),
     }
+
+
+def _parse_git_status_line(line: str) -> tuple[str, str] | None:
+    if len(line) < 4:
+        return None
+    status = line[:2].strip() or line[:2]
+    rel_path = line[3:].strip()
+    if not rel_path:
+        return None
+    if " -> " in rel_path:
+        rel_path = rel_path.rsplit(" -> ", 1)[1].strip()
+    if len(rel_path) >= 2 and rel_path[0] == rel_path[-1] == '"':
+        rel_path = rel_path[1:-1]
+    return status, rel_path
 
 
 def infer_verification_command(goal: str, changed_paths: list[str]) -> str | None:

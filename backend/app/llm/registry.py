@@ -117,6 +117,7 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
         "LENGRVIS_CONTEXT_MICRO_COMPACT_ENABLED": "context_micro_compact_enabled",
         "LENGRVIS_CONTEXT_HISTORY_SNIP_ENABLED": "context_history_snip_enabled",
         "LENGRVIS_CONTEXT_SESSION_MEMORY_ENABLED": "context_session_memory_enabled",
+        "LENGRVIS_MEMORY_AUTO_LEARNING_ENABLED": "memory_auto_learning_enabled",
         "LENGRVIS_CONTEXT_SESSION_SUMMARY_LIMIT": "context_session_summary_limit",
         "LENGRVIS_CONTEXT_RECENT_MESSAGE_LIMIT": "context_recent_message_limit",
         "LENGRVIS_CONTEXT_MICRO_COMPACT_AGE": "context_micro_compact_age",

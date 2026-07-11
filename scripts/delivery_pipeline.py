@@ -4,7 +4,8 @@
 Runs the real delivery chain in order and emits a single machine-readable
 verdict that other tooling and the release owner can trust:
 
-    qa-gate -> supply-chain -> security-extensions -> release-safety
+    qa-gate -> golden-gate -> maintainability-gate -> review-scorecard
+             -> supply-chain -> security-extensions -> release-safety
              -> market-readiness -> current-release-evidence -> readiness -> evidence
 
 Design notes:
@@ -113,6 +114,7 @@ def default_stages(
     strict: bool,
     skip_signature_verify: bool = False,
     paid_launch: bool = False,
+    candidate_build: bool = False,
 ) -> List[Stage]:
     """Return the ordered delivery stages.
 
@@ -122,7 +124,7 @@ def default_stages(
     Non-strict runs still verify Windows release signatures unless
     ``skip_signature_verify`` is set (explicit dev opt-out only).
     """
-    effective_strict = strict or paid_launch
+    effective_strict = strict or paid_launch or candidate_build
     readiness_cmd = [
         sys.executable,
         "scripts/check_release_readiness_dashboard.py",
@@ -161,6 +163,18 @@ def default_stages(
             "Source-size anti-regrowth gate",
         ),
         Stage(
+            "review-scorecard",
+            ["npm", "run", "review:scorecard"],
+            True,
+            "Full-review scorecard consistency gate",
+        ),
+        Stage(
+            "agentic-threat-model",
+            ["npm", "run", "security:threat-model"],
+            True,
+            "Versioned trust-boundary and OWASP Agentic control-map gate",
+        ),
+        Stage(
             "supply-chain",
             ["npm", "run", "supply-chain:verify"],
             True,
@@ -188,7 +202,7 @@ def default_stages(
             "release-safety",
             ["npm", "run", "release:safety"],
             True,
-            "Release safety checks",
+            "Release configuration and execution-isolation fail-closed checks",
         ),
         Stage(
             "market-readiness",
@@ -231,6 +245,8 @@ def default_stages(
             by_name["qa-gate"],
             by_name["golden-gate"],
             by_name["maintainability-gate"],
+            by_name["review-scorecard"],
+            by_name["agentic-threat-model"],
             Stage(
                 "real-llm-eval",
                 [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
@@ -242,6 +258,16 @@ def default_stages(
             by_name["secret-scan"],
             by_name["security-extensions"],
             by_name["release-safety"],
+            Stage(
+                "candidate-binding-context",
+                [
+                    sys.executable,
+                    "scripts/verify_release_candidate_binding.py",
+                    "--require-checkout-match",
+                ],
+                True,
+                "Verify the explicit immutable candidate identity matches this checkout",
+            ),
             Stage(
                 "packaging-verify",
                 [
@@ -261,27 +287,43 @@ def default_stages(
             signed_artifacts_stage(),
             Stage(
                 "distribution-evidence",
-                ["npm", "run", "evidence:distribution-verify"],
+                [
+                    sys.executable,
+                    "scripts/verify_distribution_release_evidence.py",
+                    "--require-candidate-binding",
+                ],
                 True,
                 "Reviewed signing/distribution evidence",
             ),
             Stage(
                 "clean-machine-evidence",
-                ["npm", "run", "evidence:clean-machine-verify"],
+                [
+                    sys.executable,
+                    "scripts/verify_clean_machine_evidence.py",
+                    "--require-candidate-binding",
+                ],
                 True,
                 "Reviewed clean-machine install/runtime evidence",
             ),
             Stage(
                 "result-quality-evidence",
-                ["npm", "run", "evidence:result-quality-verify"],
+                [
+                    sys.executable,
+                    "scripts/verify_result_quality_reviewed_evidence.py",
+                    "--require-candidate-binding",
+                ],
                 True,
                 "Reviewed 30+ task natural-language result quality evidence",
             ),
             Stage(
                 "diagnostics-evidence",
-                ["npm", "run", "evidence:diagnostics-verify"],
+                [
+                    sys.executable,
+                    "scripts/verify_diagnostics_external_reviewed_evidence.py",
+                    "--require-candidate-binding",
+                ],
                 True,
-                "Reviewed diagnostics external-sharing evidence",
+                "Verify signed diagnostics reviewed evidence; blocks until actual package content review is recorded",
             ),
             Stage(
                 "android-strict-gate",
@@ -293,35 +335,53 @@ def default_stages(
                     (
                         "& ./scripts/verify_android_release_gate.ps1 "
                         "-ArtifactPath $env:LENGRVIS_ANDROID_APK_PATH "
-                        "-RealDeviceEvidencePath $env:LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH"
+                        "-RealDeviceEvidencePath $env:LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH "
+                        "-ExpectedSignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 "
+                        "-RequireCandidateBinding"
                     ),
                 ],
                 True,
-                "Strict Android APK plus reviewed LAN/WSS evidence gate",
+                "Strict Android SDK signature/package/version, controlled signer, provenance, and reviewed LAN/WSS evidence gate",
             ),
             *(
                 [
                     Stage(
                         "commercial-loop",
-                        ["npm", "run", "evidence:commercial-loop"],
+                        [
+                            sys.executable,
+                            "scripts/verify_commercial_loop_evidence.py",
+                            "--require-candidate-binding",
+                        ],
                         True,
-                        "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
+                        "Reviewed Free/Plus/Pro subscription activation commercial loop evidence",
                     ),
                     Stage(
                         "support-privacy-evidence",
-                        ["npm", "run", "evidence:support-privacy-verify"],
+                        [
+                            sys.executable,
+                            "scripts/verify_support_privacy_rehearsal_evidence.py",
+                            "--require-candidate-binding",
+                        ],
                         True,
                         "Reviewed support and privacy operations rehearsal evidence",
                     ),
                     Stage(
                         "claims-launch-evidence",
-                        ["npm", "run", "evidence:claims-launch-verify"],
+                        [
+                            sys.executable,
+                            "scripts/verify_launch_claims_reviewed_evidence.py",
+                            "--require-candidate-binding",
+                        ],
                         True,
                         "Reviewed paid-launch claims and asset evidence",
                     ),
                     Stage(
                         "commercial-operations-evidence",
-                        ["npm", "run", "evidence:commercial-operations-verify"],
+                        [
+                            sys.executable,
+                            "scripts/verify_commercial_operations_evidence.py",
+                            "--require-candidate-binding",
+                        ],
                         True,
                         "Reviewed legal, payment, tax, support, refunds, and claims operations evidence",
                     ),
@@ -334,6 +394,12 @@ def default_stages(
             by_name["readiness"],
             by_name["evidence"],
         ]
+        if candidate_build:
+            # A candidate must be buildable, testable and signed before it can
+            # be handed to reviewers. Human-reviewed evidence is necessarily a
+            # later promotion input and must not make candidate creation
+            # circular.
+            stages = stages[: stages.index(next(stage for stage in stages if stage.name == "signed-artifacts")) + 1]
     return stages
 
 
@@ -452,6 +518,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--candidate-build",
+        action="store_true",
+        help="Build and verify an immutable signed candidate without requiring later reviewed evidence.",
+    )
+    parser.add_argument(
         "--skip-signature-verify",
         action="store_true",
         help=(
@@ -476,9 +547,11 @@ def main() -> int:
         "--output", default="", help="Optional path to write the JSON verdict."
     )
     args = parser.parse_args()
+    if args.candidate_build and args.paid_launch:
+        parser.error("--candidate-build and --paid-launch are mutually exclusive")
 
     skip_signature_verify_requested = bool(args.skip_signature_verify)
-    effective_strict = bool(args.strict or args.paid_launch)
+    effective_strict = bool(args.strict or args.paid_launch or args.candidate_build)
     skip_signature_verify, signature_verify_warnings = build_signature_verify_warnings(
         strict=effective_strict,
         skip_signature_verify_requested=skip_signature_verify_requested,
@@ -489,6 +562,7 @@ def main() -> int:
         strict=effective_strict,
         skip_signature_verify=skip_signature_verify,
         paid_launch=bool(args.paid_launch),
+        candidate_build=bool(args.candidate_build),
     )
 
     if args.plan_only:
@@ -497,6 +571,7 @@ def main() -> int:
                 {
                     "strict": args.strict,
                     "paid_launch": args.paid_launch,
+                    "candidate_build": args.candidate_build,
                     "effective_strict": effective_strict,
                     "skip_signature_verify": skip_signature_verify,
                     "warnings": signature_verify_warnings,
@@ -514,6 +589,7 @@ def main() -> int:
     payload = {
         "strict": args.strict,
         "paid_launch": args.paid_launch,
+        "candidate_build": args.candidate_build,
         "effective_strict": effective_strict,
         "skip_signature_verify": skip_signature_verify,
         "warnings": signature_verify_warnings,

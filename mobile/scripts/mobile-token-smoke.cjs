@@ -99,6 +99,16 @@ function assertPairScreenQrSourceAssertions() {
     "describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security)",
     "Pair submit must fail closed using parsed QR transport metadata before sending a pairing request",
   );
+  assertSourceIncludes(
+    source,
+    'import { stageNativeTlsTrust } from "../api/client/nativeTlsTrust";',
+    "PairScreen must be able to stage user-confirmed Android LAN TLS trust before the first HTTPS pairing request",
+  );
+  assertSourceMatches(
+    source,
+    /if \(requiresServerTrustConfirmation\(baseUrlSecurity\)\) \{[\s\S]*const confirmed = await confirmServerTrust\(baseUrlSecurity\);[\s\S]*if \(!confirmed\) \{[\s\S]*return;[\s\S]*\}[\s\S]*await stageNativeTlsTrust\(baseUrlSecurity\);[\s\S]*\}[\s\S]*const nextSession = await pairWithBackend\(/,
+    "Confirmed self-signed LAN TLS trust must be staged before pairWithBackend opens /api/pair/confirm",
+  );
   assertSourceIncludes(source, "const pairRequestLockedRef = useRef(false);", "Pair submit must use a synchronous lock in addition to React busy state");
   assertSourceMatches(
     source,
@@ -304,10 +314,21 @@ async function assertNativeTlsTrustRuntimeBoundaries(client) {
       trust_status: "requires_trust",
       requires_trust: true,
       self_signed: true,
-      fingerprint_sha256: "aa:bb:cc:dd",
+      fingerprint_sha256: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
     },
   });
   const calls = [];
+  const pinRecord = (fingerprint, status = "active", expiresAt = Date.now() + 60_000, origin = "https://example.test:8443") => ({
+    schema_version: "tls-pin-record-v1",
+    pin_id: `pin-${status}`,
+    origin,
+    host: new URL(origin).hostname.replace(/^\[|\]$/g, "").toLowerCase(),
+    fingerprint_sha256: fingerprint,
+    status,
+    created_at: new Date(Date.now() - 1000).toISOString(),
+    expires_at: new Date(expiresAt).toISOString(),
+    ...(status === "revoked" ? { revoked_at: new Date().toISOString() } : {}),
+  });
   const androidTrust = loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"), {
     require: (id) => {
       if (id === "react-native") {
@@ -315,7 +336,26 @@ async function assertNativeTlsTrustRuntimeBoundaries(client) {
           Platform: { OS: "android" },
           NativeModules: {
             LengrvisLanTrust: {
-              trustServerCertificate: async (baseUrl, fingerprint) => calls.push({ baseUrl, fingerprint }),
+              stageServerCertificate: async (baseUrl, fingerprint, activeExpiry, nextExpiry, sourceDeviceId) => {
+                calls.push({ stage: true, baseUrl, fingerprint, activeExpiry, nextExpiry, sourceDeviceId });
+                return { ...pinRecord(fingerprint, "active", activeExpiry, baseUrl), source_device_id: sourceDeviceId };
+              },
+              assertServerCertificateTrusted: async (baseUrl, fingerprint) => {
+                calls.push({ assert: true, baseUrl, fingerprint });
+                return pinRecord(fingerprint, "active", Date.now() + 60_000, baseUrl);
+              },
+              activateServerCertificate: async (baseUrl, fingerprint, activeExpiry, sourceDeviceId) => {
+                calls.push({ activate: true, baseUrl, fingerprint, activeExpiry, sourceDeviceId });
+                return { ...pinRecord(fingerprint, "active", activeExpiry, baseUrl), source_device_id: sourceDeviceId };
+              },
+              listServerCertificatePins: async (baseUrl, includeRevoked) => {
+                calls.push({ list: true, baseUrl, includeRevoked });
+                return [pinRecord("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", "active", Date.now() + 60_000, baseUrl)];
+              },
+              revokeServerCertificate: async (baseUrl, fingerprint) => {
+                calls.push({ revoke: true, baseUrl, fingerprint });
+                return true;
+              },
               clearTrustedServers: async () => calls.push({ clear: true }),
             },
           },
@@ -324,10 +364,73 @@ async function assertNativeTlsTrustRuntimeBoundaries(client) {
       return require(id);
     },
   });
+  const expectedFingerprint = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+  const staged = await androidTrust.stageNativeTlsTrust(pinnedSecurity, "desktop-device-1");
+  assert.equal(staged.schema_version, "tls-pin-record-v1");
+  assert.equal(staged.fingerprint_sha256, expectedFingerprint);
+  assert.equal(calls[0].stage, true);
+  assert.equal(calls[0].baseUrl, "https://example.test:8443");
+  assert.equal(calls[0].fingerprint, expectedFingerprint);
+  assert.equal(calls[0].sourceDeviceId, "desktop-device-1");
+  assert.ok(calls[0].activeExpiry > calls[0].nextExpiry, "rotation overlap must expire sooner than an active pin");
   await androidTrust.configureNativeTlsTrust(pinnedSecurity);
-  assert.deepEqual(calls, [{ baseUrl: "https://example.test:8443", fingerprint: "AA:BB:CC:DD" }]);
+  assert.deepEqual(calls[1], { assert: true, baseUrl: "https://example.test:8443", fingerprint: expectedFingerprint });
+  await androidTrust.activateNativeTlsTrust(pinnedSecurity, "desktop-device-1");
+  assert.equal(calls[2].activate, true);
+  assert.equal(calls[2].sourceDeviceId, "desktop-device-1");
+  assert.equal((await androidTrust.listNativeTlsPins("https://example.test:8443")).length, 1);
+  await androidTrust.revokeNativeTlsPin("https://example.test:8443", expectedFingerprint);
   await androidTrust.clearNativeTlsTrust();
-  assert.deepEqual(calls[1], { clear: true });
+  assert.deepEqual(calls.at(-1), { clear: true });
+
+  const ipv6Security = client.describeBaseUrlSecurity("https://[2001:db8::1]:8443", {
+    transport: { http_scheme: "https", websocket_scheme: "wss", tls_enabled: true },
+    tls: {
+      enabled: true,
+      trust_status: "requires_trust",
+      requires_trust: true,
+      self_signed: true,
+      fingerprint_sha256: expectedFingerprint,
+    },
+  });
+  const ipv6Pin = await androidTrust.stageNativeTlsTrust(ipv6Security);
+  assert.equal(ipv6Pin.origin, "https://[2001:db8::1]:8443");
+  assert.equal(ipv6Pin.host, "2001:db8::1");
+
+  const idnaSecurity = client.describeBaseUrlSecurity("https://例子.测试:8443", {
+    transport: { http_scheme: "https", websocket_scheme: "wss", tls_enabled: true },
+    tls: {
+      enabled: true,
+      trust_status: "requires_trust",
+      requires_trust: true,
+      self_signed: true,
+      fingerprint_sha256: expectedFingerprint,
+    },
+  });
+  const idnaPin = await androidTrust.stageNativeTlsTrust(idnaSecurity);
+  assert.equal(idnaPin.origin, "https://xn--fsqu00a.xn--0zwm56d:8443");
+  assert.equal(idnaPin.host, "xn--fsqu00a.xn--0zwm56d");
+
+  const expiredTrust = loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"), {
+    require: (id) => {
+      if (id === "react-native") {
+        return {
+          Platform: { OS: "android" },
+          NativeModules: {
+            LengrvisLanTrust: {
+              assertServerCertificateTrusted: async (_baseUrl, fingerprint) => pinRecord(fingerprint, "active", Date.now() - 1),
+            },
+          },
+        };
+      }
+      return require(id);
+    },
+  });
+  await assert.rejects(
+    () => expiredTrust.configureNativeTlsTrust(pinnedSecurity),
+    (error) => error?.name === "TlsTrustConfigurationError" && /expired|revoked/.test(String(error.message)),
+    "expired native TLS pins must fail closed instead of being silently renewed",
+  );
 
   for (const osName of ["ios", "web"]) {
     const trust = loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"), {
@@ -337,7 +440,7 @@ async function assertNativeTlsTrustRuntimeBoundaries(client) {
       },
     });
     await assert.rejects(
-      () => trust.configureNativeTlsTrust(pinnedSecurity),
+      () => trust.stageNativeTlsTrust(pinnedSecurity),
       (error) => error?.name === "TlsTrustConfigurationError" && /pinning|runtime/.test(String(error.message)),
     );
   }
@@ -436,7 +539,11 @@ function makeSession(client, baseUrl, token = "session-token") {
     baseUrl: security.normalizedBaseUrl,
     baseUrlSecurity: security,
     deviceId: "device-1",
+    tokenFamilyId: "tf-mobile-smoke",
+    deviceCredentialId: "devcred-mobile-smoke",
     token,
+    refreshToken: "lrt.mrt_11111111111111111111111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    refreshExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   };
 }
 
@@ -486,6 +593,12 @@ async function main() {
   const pairingPayload = loadPairingPayload(client);
   const desktopPairingPayload = loadDesktopPairingPayload();
   let expectedPairToken = "paired-token";
+  let expectedRefreshToken = "refreshed-token";
+  const expectedPairRefreshToken = "lrt.mrt_11111111111111111111111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const expectedRotatedRefreshToken = "lrt.mrt_22222222222222222222222222222222.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const expectedTokenFamilyId = "tf-mobile-smoke";
+  const expectedDeviceCredentialId = "devcred-mobile-smoke";
+  let registeredPushToken = "";
   let pairResponseOverrides = {};
   assertAppShellSourceAssertions();
   assertPairScreenQrSourceAssertions();
@@ -497,6 +610,46 @@ async function main() {
     handleRequest: ({ res, url, request }) => {
       assert.equal(url.search, "", "mobile pair confirm requests must not inherit pasted base URL query strings");
       assert.doesNotMatch(request.url, /[?&](?:token|access_token|auth|authorization)=/i, "mobile pair confirm requests must not carry query auth");
+      if (request.method === "POST" && url.pathname === "/api/mobile/session/refresh") {
+        assertJsonRequest(request, {
+          method: "POST",
+          path: "/api/mobile/session/refresh",
+          body: { refresh_token: expectedPairRefreshToken },
+        });
+        assert.equal(request.headers.authorization, undefined, "refresh rotation must not depend on an access bearer token");
+        jsonResponse(res, 200, {
+          token: expectedRefreshToken,
+          token_type: "Bearer",
+          device_id: "device-1",
+          refresh_token: expectedRotatedRefreshToken,
+          refresh_expires_in: 30 * 24 * 60 * 60,
+          token_family_id: expectedTokenFamilyId,
+          device_credential_id: expectedDeviceCredentialId,
+          expires_in: 1800,
+        });
+        return true;
+      }
+      if (request.method === "PUT" && url.pathname === "/api/mobile/push-subscription") {
+        assertJsonRequest(request, {
+          method: "PUT",
+          path: "/api/mobile/push-subscription",
+          authorization: `Bearer ${expectedRefreshToken}`,
+          body: { provider: "expo", token: "ExponentPushToken[mobile-smoke]" },
+        });
+        registeredPushToken = request.json.token;
+        jsonResponse(res, 200, { status: "registered", provider: "expo" });
+        return true;
+      }
+      if (request.method === "DELETE" && url.pathname === "/api/mobile/push-subscription") {
+        assertJsonRequest(request, {
+          method: "DELETE",
+          path: "/api/mobile/push-subscription",
+          authorization: `Bearer ${expectedRefreshToken}`,
+        });
+        registeredPushToken = "";
+        jsonResponse(res, 200, { status: "unregistered" });
+        return true;
+      }
       if (request.method !== "POST" || url.pathname !== "/api/pair/confirm") return false;
       assertJsonRequest(request, {
         method: "POST",
@@ -509,6 +662,10 @@ async function main() {
         token: expectedPairToken,
         token_type: "Bearer",
         device_id: "device-1",
+        refresh_token: expectedPairRefreshToken,
+        refresh_expires_in: 30 * 24 * 60 * 60,
+        token_family_id: expectedTokenFamilyId,
+        device_credential_id: expectedDeviceCredentialId,
         device_trust: {
           attestation_verified: false,
           attestation_status: "not_verified",
@@ -516,7 +673,7 @@ async function main() {
           trust_basis: "pairing_code_tls",
           hardware_backed: false,
         },
-        expires_in: 3600,
+        expires_in: 1800,
         server: {
           host: "127.0.0.1",
           port: Number(url.port),
@@ -875,6 +1032,26 @@ async function main() {
     assert.equal(expiredStorage.asyncMap.has("lengrvis.mobile.session"), false);
     assert.equal(expiredStorage.secureMap.has("lengrvis.mobile.session.token"), false);
 
+    const refreshableExpiredStorage = makeStorage();
+    const refreshableExpiredAuth = loadAuth(client, refreshableExpiredStorage);
+    refreshableExpiredStorage.asyncMap.set(
+      "lengrvis.mobile.session",
+      JSON.stringify({
+        baseUrl: httpsSession.baseUrl,
+        baseUrlSecurity: httpsSession.baseUrlSecurity,
+        deviceId: httpsSession.deviceId,
+        tokenFamilyId: httpsSession.tokenFamilyId,
+        deviceCredentialId: httpsSession.deviceCredentialId,
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+        refreshExpiresAt: httpsSession.refreshExpiresAt,
+      }),
+    );
+    refreshableExpiredStorage.secureMap.set("lengrvis.mobile.session.token", "expired-access-token");
+    refreshableExpiredStorage.secureMap.set("lengrvis.mobile.session.refresh-token", httpsSession.refreshToken);
+    const refreshableExpiredSession = await refreshableExpiredAuth.loadSession();
+    assert.equal(refreshableExpiredSession.token, "expired-access-token");
+    assert.equal(refreshableExpiredSession.refreshToken, httpsSession.refreshToken);
+
     const orphanStorage = makeStorage();
     const orphanAuth = loadAuth(client, orphanStorage);
     orphanStorage.secureMap.set("lengrvis.mobile.session.token", "orphan-token");
@@ -916,7 +1093,10 @@ async function main() {
     assert.equal(server.requests.length, 2, "pairing must reach the local HTTP smoke service");
     assert.equal(paired.baseUrl, server.origin);
     assert.equal(paired.token, expectedPairToken);
+    assert.equal(paired.refreshToken, expectedPairRefreshToken);
     assert.equal(paired.deviceId, "device-1");
+    assert.equal(paired.tokenFamilyId, expectedTokenFamilyId);
+    assert.equal(paired.deviceCredentialId, expectedDeviceCredentialId);
     assert.equal(paired.deviceTrust.attestation_verified, false);
     assert.equal(paired.deviceTrust.attestation_status, "not_verified");
     assert.equal(paired.deviceTrust.trust_basis, "pairing_code_tls");
@@ -925,6 +1105,24 @@ async function main() {
     assert.equal(paired.security.transport.httpScheme, "http");
     assert.equal(paired.security.transport.webSocketScheme, "ws");
     assert.equal(paired.security.tls.trustStatus, "not_enabled");
+
+    const refreshed = await client.refreshMobileSession(paired);
+    assert.equal(refreshed.token, expectedRefreshToken);
+    assert.equal(refreshed.refreshToken, expectedRotatedRefreshToken);
+    assert.equal(refreshed.tokenFamilyId, paired.tokenFamilyId);
+    assert.equal(refreshed.deviceCredentialId, paired.deviceCredentialId);
+    assert.equal(refreshed.deviceId, paired.deviceId);
+    assert.equal(refreshed.baseUrl, paired.baseUrl);
+    assert.ok(Date.parse(refreshed.expiresAt) > Date.parse(paired.expiresAt));
+    assert.equal(server.requests.at(-1).path, "/api/mobile/session/refresh");
+
+    await client.registerMobilePushSubscription(refreshed, {
+      provider: "expo",
+      token: "ExponentPushToken[mobile-smoke]",
+    });
+    assert.equal(registeredPushToken, "ExponentPushToken[mobile-smoke]");
+    await client.unregisterMobilePushSubscription(refreshed);
+    assert.equal(registeredPushToken, "");
 
     const approvalInfo = client.approvalWebSocketConnectionInfo(paired);
     assert.equal(approvalInfo.url, `${server.origin.replace("http:", "ws:")}/ws/mobile/approvals`);
@@ -964,14 +1162,20 @@ async function main() {
         baseUrl: httpsSession.baseUrl,
         baseUrlSecurity: httpsSession.baseUrlSecurity,
         deviceId: httpsSession.deviceId,
+        tokenFamilyId: httpsSession.tokenFamilyId,
+        deviceCredentialId: httpsSession.deviceCredentialId,
+        refreshExpiresAt: httpsSession.refreshExpiresAt,
         token: "legacy-token",
+        refreshToken: httpsSession.refreshToken,
       }),
     );
     const migrated = await migratedAuth.loadSession();
     assert.equal(migrated.token, "legacy-token");
     assert.equal(migrated.baseUrl, "https://example.test:8443");
     assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "legacy-token");
+    assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.refresh-token"), httpsSession.refreshToken);
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /legacy-token/);
+    assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /lrt\.mrt_/);
 
     expectedPairToken = "stored-token";
     const storedSession = await client.pairWithBackend(
@@ -987,7 +1191,23 @@ async function main() {
     assert.equal(storedMetadata.deviceTrust.attestation_verified, false);
     assert.equal(storedMetadata.deviceTrust.trust_basis, "pairing_code_tls");
     assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "stored-token");
+    assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.refresh-token"), expectedPairRefreshToken);
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /stored-token/);
+    assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /lrt\.mrt_/);
+
+    const replacementSession = {
+      ...storedSession,
+      token: "replacement-token",
+      expiresAt: new Date(Date.now() + 7200_000).toISOString(),
+    };
+    assert.equal(
+      await migratedAuth.replaceSessionIfTokenMatches("stale-token", replacementSession),
+      false,
+      "a stale refresh must not overwrite a newer stored session",
+    );
+    assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "stored-token");
+    assert.equal(await migratedAuth.replaceSessionIfTokenMatches("stored-token", replacementSession), true);
+    assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "replacement-token");
 
     const beforeExpiredPairRequests = server.requests.length;
     expectedPairToken = "expired-pair-token";

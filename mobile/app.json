@@ -2,7 +2,7 @@
   "expo": {
     "name": "Lengrvis 手机端",
     "slug": "lengrvis-approval",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "orientation": "default",
     "scheme": "lengrvisapproval",
     "userInterfaceStyle": "light",

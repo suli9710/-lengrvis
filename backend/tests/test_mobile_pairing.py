@@ -26,6 +26,7 @@ from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security import mobile_jwt
+from app.security.mobile_identity import create_mobile_session
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     MOBILE_REMOTE_VIEW_TTL_SECONDS,
@@ -1024,7 +1025,8 @@ def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(m
     main_exp = datetime.fromtimestamp(claims["exp"], UTC)
     issued_at = datetime.fromtimestamp(claims["iat"], UTC)
     view_ttl = (view_exp - issued_at).total_seconds()
-    assert MOBILE_REMOTE_VIEW_TTL_SECONDS - 2 <= view_ttl <= MOBILE_REMOTE_VIEW_TTL_SECONDS + 2
+    effective_view_ttl = min(MOBILE_REMOTE_VIEW_TTL_SECONDS, MOBILE_TOKEN_TTL_SECONDS)
+    assert effective_view_ttl - 2 <= view_ttl <= effective_view_ttl + 2
     assert view_exp <= main_exp
     assert main_exp - issued_at >= timedelta(seconds=MOBILE_TOKEN_TTL_SECONDS - 2)
 
@@ -1552,7 +1554,8 @@ def test_remote_view_scope_expires_before_paired_approval_scope(monkeypatch, tmp
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
-    paired_token = _paired_token(client)
+    paired_session = _paired_session(client)
+    paired_token = paired_session.token
     claims = decode_mobile_token(paired_token, allowed_scopes={TOKEN_SCOPE, REMOTE_VIEW_SCOPE})
     expired_at = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], UTC) + timedelta(seconds=1)
 
@@ -1570,10 +1573,10 @@ def test_remote_view_scope_expires_before_paired_approval_scope(monkeypatch, tmp
     assert decode_mobile_token(paired_token, allowed_scopes={TOKEN_SCOPE})
 
     monkeypatch.setattr(mobile_jwt, "datetime", datetime)
-    refreshed = mobile_pairing_service.refresh_mobile_session_token(claims)
+    refreshed = mobile_pairing_service.refresh_mobile_session_token(paired_session.refresh_token)
     refreshed_claims = decode_mobile_token(refreshed["token"], allowed_scopes={REMOTE_VIEW_SCOPE})
     assert refreshed_claims["scope_exp"][REMOTE_VIEW_SCOPE] >= claims["scope_exp"][REMOTE_VIEW_SCOPE]
-    assert refreshed["view_expires_in"] == MOBILE_REMOTE_VIEW_TTL_SECONDS
+    assert refreshed["view_expires_in"] == min(MOBILE_REMOTE_VIEW_TTL_SECONDS, MOBILE_TOKEN_TTL_SECONDS)
 
 
 def test_mobile_session_refresh_endpoint(monkeypatch, tmp_path):
@@ -1581,11 +1584,11 @@ def test_mobile_session_refresh_endpoint(monkeypatch, tmp_path):
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
-    paired_token = _paired_token(client)
+    paired_session = _paired_session(client)
 
     response = client.post(
         "/api/mobile/session/refresh",
-        headers={"Authorization": f"Bearer {paired_token}"},
+        json={"refresh_token": paired_session.refresh_token},
     )
 
     assert response.status_code == 200
@@ -3379,6 +3382,10 @@ def test_mobile_approval_websocket_hides_remote_input_binding_ids(monkeypatch, t
 
 
 def _paired_token(client: TestClient) -> str:
+    return _paired_session(client).token
+
+
+def _paired_session(client: TestClient):
     del client
     device_id = mobile_jwt.new_device_id()
     device_name = "Test Phone"
@@ -3388,10 +3395,10 @@ def _paired_token(client: TestClient) -> str:
     if get_effective_settings().remote_desktop_enabled:
         scopes.append(REMOTE_VIEW_SCOPE)
         scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
-    return issue_mobile_token(
+    return create_mobile_session(
         device_id=device_id,
         device_name=device_name,
-        scope=scopes,
+        scopes=scopes,
         scope_ttl=scope_ttl,
     )
 

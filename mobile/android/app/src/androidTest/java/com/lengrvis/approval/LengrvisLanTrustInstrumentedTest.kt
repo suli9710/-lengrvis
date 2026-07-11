@@ -10,6 +10,7 @@ import java.security.cert.CertificateException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,6 +18,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert
@@ -63,6 +65,159 @@ class LengrvisLanTrustInstrumentedTest {
   }
 
   @Test
+  fun pinLifecycleSupportsOverlapPromotionExpiryAndTargetedRevocation() {
+    val origin = baseUrl
+    val activeFingerprint = fingerprintSha256
+    val nextFingerprint = wrongFingerprint(activeFingerprint)
+    val replacementNextFingerprint = anotherWrongFingerprint(activeFingerprint)
+    val now = System.currentTimeMillis()
+
+    val active = LengrvisLanTrust.stageServerCertificate(
+      context,
+      origin,
+      activeFingerprint,
+      now + 60_000,
+      now + 30_000,
+      "desktop-source-1",
+    )
+    Assert.assertEquals("tls-pin-record-v1", active.getString("schema_version"))
+    Assert.assertEquals("active", active.getString("status"))
+    Assert.assertEquals(normalizedFingerprint(activeFingerprint), active.getString("fingerprint_sha256"))
+    Assert.assertEquals("desktop-source-1", active.getString("source_device_id"))
+
+    val next = LengrvisLanTrust.stageServerCertificate(
+      context,
+      origin,
+      nextFingerprint,
+      now + 60_000,
+      now + 30_000,
+      null,
+    )
+    Assert.assertEquals("next", next.getString("status"))
+    Assert.assertTrue(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, activeFingerprint))
+    Assert.assertTrue(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, nextFingerprint))
+
+    val replacementNext = LengrvisLanTrust.stageServerCertificate(
+      context,
+      origin,
+      replacementNextFingerprint,
+      now + 60_000,
+      now + 30_000,
+      null,
+    )
+    Assert.assertEquals("next", replacementNext.getString("status"))
+    Assert.assertFalse(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, nextFingerprint))
+    Assert.assertTrue(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, replacementNextFingerprint))
+
+    val promoted = LengrvisLanTrust.activateServerCertificate(
+      context,
+      origin,
+      replacementNextFingerprint,
+      now + 120_000,
+      "desktop-source-2",
+    )
+    Assert.assertEquals("active", promoted.getString("status"))
+    Assert.assertEquals("desktop-source-2", promoted.getString("source_device_id"))
+    Assert.assertFalse(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, activeFingerprint))
+    Assert.assertTrue(LengrvisLanTrust.hostHasFingerprint(context, URL(origin).host, replacementNextFingerprint))
+    Assert.assertFalse(
+      LengrvisLanTrust.originHasFingerprint(context, differentPortOrigin(origin), replacementNextFingerprint),
+    )
+
+    val history = LengrvisLanTrust.listServerCertificatePins(context, origin, true)
+    Assert.assertTrue((0 until history.length()).any { history.getJSONObject(it).getString("status") == "revoked" })
+    Assert.assertTrue(LengrvisLanTrust.revokeServerCertificate(context, origin, replacementNextFingerprint))
+    Assert.assertFalse(LengrvisLanTrust.hostHasAnyFingerprintForHost(context, URL(origin).host))
+  }
+
+  @Test
+  fun expiredPinFailsClosedWithoutAutomaticRenewal() {
+    val now = System.currentTimeMillis()
+    LengrvisLanTrust.stageServerCertificate(
+      context,
+      baseUrl,
+      fingerprintSha256,
+      now + 80,
+      now + 80,
+      null,
+    )
+    Thread.sleep(120)
+
+    Assert.assertFalse(LengrvisLanTrust.hasAnyFingerprint(context, fingerprintSha256))
+    Assert.assertThrows(SSLPeerUnverifiedException::class.java) {
+      LengrvisLanTrust.assertServerCertificateTrusted(context, baseUrl, fingerprintSha256)
+    }
+  }
+
+  @Test
+  fun malformedMultiPinStoreBlocksRequestsUntilExplicitRepair() {
+    val now = System.currentTimeMillis()
+    LengrvisLanTrust.stageServerCertificate(
+      context,
+      baseUrl,
+      fingerprintSha256,
+      now + 60_000,
+      now + 30_000,
+      null,
+    )
+    LengrvisLanTrust.stageServerCertificate(
+      context,
+      baseUrl,
+      wrongFingerprint(fingerprintSha256),
+      now + 60_000,
+      now + 30_000,
+      null,
+    )
+    val client = OkHttpClientProvider.createClient(context)
+    getJson(client, "$baseUrl/api/health")
+    val records = LengrvisLanTrust.listServerCertificatePins(context, baseUrl, true)
+    val extra = JSONObject(records.getJSONObject(records.length() - 1).toString())
+      .put("pin_id", "corrupt-extra-pin")
+      .put("fingerprint_sha256", normalizedFingerprint(anotherWrongFingerprint(fingerprintSha256)))
+    val corrupted = JSONArray(records.toString()).put(extra)
+    Assert.assertTrue(
+      context.getSharedPreferences("lengrvis_lan_tls_trust", Context.MODE_PRIVATE)
+        .edit()
+        .putString("tls_pin_records_v1", corrupted.toString())
+        .commit(),
+    )
+
+    Assert.assertThrows(IllegalStateException::class.java) {
+      LengrvisLanTrust.hostHasAnyFingerprintForHost(context, URL(baseUrl).host)
+    }
+    assertTlsHandshakeFails(client, "malformed pin storage must block a pooled HTTPS request")
+    val preferences = context.getSharedPreferences("lengrvis_lan_tls_trust", Context.MODE_PRIVATE)
+    Assert.assertEquals("corrupt-v1", preferences.getString("tls_pin_store_corrupt_v1", null))
+
+    Assert.assertTrue(preferences.edit().remove("tls_pin_records_v1").commit())
+    assertTlsHandshakeFails(client, "persisted corrupt-state sentinel must block fallback after malformed data is removed")
+
+    LengrvisLanTrust.clearTrustedServers(context)
+    LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)
+    getJson(client, "$baseUrl/api/health")
+  }
+
+  @Test
+  fun legacyPinStoreBlocksRequestsUntilExplicitRepair() {
+    val legacy = JSONObject()
+      .put(URL(baseUrl).host, JSONArray().put(normalizedFingerprint(fingerprintSha256)))
+    val preferences = context.getSharedPreferences("lengrvis_lan_tls_trust", Context.MODE_PRIVATE)
+    Assert.assertTrue(
+      preferences.edit()
+        .putString("pinned_certificate_sha256_by_host", legacy.toString())
+        .commit(),
+    )
+
+    val client = OkHttpClientProvider.createClient(context)
+    assertTlsHandshakeFails(client, "legacy pin storage must block HTTPS instead of becoming an empty pin set")
+    Assert.assertEquals("corrupt-v1", preferences.getString("tls_pin_store_corrupt_v1", null))
+
+    LengrvisLanTrust.clearTrustedServers(context)
+    LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)
+    getJson(client, "$baseUrl/api/health")
+  }
+
+  @Test
   fun pinnedLanHttpsPairingAndApprovalWss() {
     assertTlsHandshakeFails("self-signed LAN HTTPS must fail before pinning")
 
@@ -95,10 +250,16 @@ class LengrvisLanTrustInstrumentedTest {
       token = token,
     )
     Assert.assertTrue("approval WSS should send a connected event: $connected", connected.contains("\"type\":\"connected\""))
+
+    Assert.assertTrue(LengrvisLanTrust.revokeServerCertificate(context, baseUrl, fingerprintSha256))
+    assertTlsHandshakeFails(client, "revoked LAN TLS pin must fail on an already pooled connection")
   }
 
   private fun assertTlsHandshakeFails(label: String) {
-    val client = OkHttpClientProvider.createClient(context)
+    assertTlsHandshakeFails(OkHttpClientProvider.createClient(context), label)
+  }
+
+  private fun assertTlsHandshakeFails(client: OkHttpClient, label: String) {
     try {
       client.newCall(Request.Builder().url("$baseUrl/api/health").build()).execute().use { response ->
         Assert.fail("$label; request unexpectedly completed with HTTP ${response.code}")
@@ -163,7 +324,9 @@ class LengrvisLanTrustInstrumentedTest {
   private fun isTlsFailure(error: Throwable): Boolean {
     var current: Throwable? = error
     while (current != null) {
-      if (current is SSLHandshakeException || current is CertificateException) return true
+      if (current is SSLHandshakeException || current is SSLPeerUnverifiedException || current is CertificateException) {
+        return true
+      }
       current = current.cause
     }
     return false
@@ -175,9 +338,24 @@ class LengrvisLanTrustInstrumentedTest {
   }
 
   private fun wrongFingerprint(fingerprint: String): String {
-    val normalized = fingerprint.trim().replace(":", "").uppercase()
+    val normalized = normalizedFingerprint(fingerprint).uppercase()
     require(normalized.length == 64) { "Expected a 64 hex character SHA-256 fingerprint." }
     val replacement = if (normalized.first() == 'A') 'B' else 'A'
     return replacement + normalized.substring(1)
+  }
+
+  private fun anotherWrongFingerprint(fingerprint: String): String {
+    val normalized = normalizedFingerprint(fingerprint).uppercase()
+    val replacement = if (normalized[1] == 'C') 'D' else 'C'
+    return "${normalized.first()}$replacement${normalized.substring(2)}"
+  }
+
+  private fun normalizedFingerprint(fingerprint: String): String =
+    fingerprint.trim().replace(":", "").lowercase()
+
+  private fun differentPortOrigin(origin: String): String {
+    val url = URL(origin)
+    val currentPort = if (url.port == -1) 443 else url.port
+    return "https://${url.host}:${currentPort + 1}"
   }
 }

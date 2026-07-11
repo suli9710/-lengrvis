@@ -16,6 +16,7 @@ from app.core.process_tree import run_process_tree
 from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
+from app.security.execution_isolation import arbitrary_execution_denial
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
@@ -340,6 +341,15 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     output_dir = _test_output_dir(context)
     if args.get("dry_run", False):
         return _test_run_dry_run_preview(tokens, cwd=root, command_text=command, timeout_seconds=timeout_seconds)
+    isolation_denial = arbitrary_execution_denial("Python/Node developer test execution")
+    if isolation_denial is not None:
+        return {
+            "ok": False,
+            "controlled": False,
+            "background": bool(args.get("background", False)),
+            "cwd": str(root),
+            **isolation_denial,
+        }
     if args.get("background", False):
         raise_if_tool_aborted(context)
         try:

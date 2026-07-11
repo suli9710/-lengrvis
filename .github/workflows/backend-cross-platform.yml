@@ -1,7 +1,7 @@
 # Blocking cross-platform backend test (code-review checklist I-03).
 # The Windows job in ci.yml remains the primary product gate; these Linux/macOS
 # jobs prevent platform-guard regressions from landing. Dependencies install
-# from the universal sha256-hashed backend lock so the same resolved package set
+# from the universal sha256-hashed development lock so the same resolved package set
 # is exercised across all supported runners.
 name: Backend cross-platform
 
@@ -25,14 +25,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
-      - name: Install backend dependencies (universal hash lock + dev)
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install backend dependencies (universal development hash lock)
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Install Playwright Chromium (browser tool tests)
         run: python -m playwright install chromium
       - name: Backend test suite
@@ -59,14 +56,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements-lock.txt
-            requirements-dev.txt
-      - name: Install backend dependencies (universal hash lock + dev)
+          cache-dependency-path: requirements-dev-lock.txt
+      - name: Install backend dependencies (universal development hash lock)
         run: |
           python -m pip install -U pip
-          python -m pip install --require-hashes -r backend/requirements-lock.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Install Playwright Chromium (browser tool tests)
         run: python -m playwright install chromium
       - name: Backend test suite

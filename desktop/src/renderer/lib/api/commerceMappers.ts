@@ -14,6 +14,8 @@ import type {
 export function mapCommercePlanStatus(data: BackendCommercePlanStatus): CommercePlanStatus {
   return {
     plan: normalizeCommercePlan(data.plan),
+    monthlyPriceCny: Number(data.monthly_price_cny || 0),
+    modelTier: data.model_tier === "advanced" ? "advanced" : "standard",
     remoteDesktopEnabled: Boolean(data.remote_desktop_enabled),
     features: data.features as Record<CommerceFeature, boolean>,
     highRiskFeatures: data.high_risk_features as CommerceFeature[]
@@ -114,6 +116,6 @@ export function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): Commer
   };
 }
 
-export function normalizeCommercePlan(plan: "free" | "pro" | "max" | "team"): CommercePlan {
-  return plan === "team" ? "max" : plan;
+export function normalizeCommercePlan(plan: "free" | "plus" | "pro" | "max" | "team"): CommercePlan {
+  return plan === "max" || plan === "team" ? "pro" : plan;
 }

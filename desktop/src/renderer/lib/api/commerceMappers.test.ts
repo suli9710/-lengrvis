@@ -1,18 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { mapCommerceLicenseStatus, mapCommercePlanStatus, mapCommerceQuotaStatus } from "./commerceMappers";
+import {
+  mapCommerceLicenseStatus,
+  mapCommercePlanStatus,
+  mapCommerceQuotaStatus,
+  normalizeCommercePlan
+} from "./commerceMappers";
 
 describe("commerce mappers", () => {
-  it("normalizes legacy team plans to max", () => {
+  it("normalizes legacy max and team plans to pro", () => {
+    expect(normalizeCommercePlan("plus")).toBe("plus");
+    expect(normalizeCommercePlan("max")).toBe("pro");
     expect(
       mapCommercePlanStatus({
         plan: "team",
+        monthly_price_cny: 129,
+        model_tier: "advanced",
         remote_desktop_enabled: 1 as unknown as boolean,
         features: { remote_control: true },
         high_risk_features: ["remote_control"]
       })
     ).toEqual({
-      plan: "max",
+      plan: "pro",
+      monthlyPriceCny: 129,
+      modelTier: "advanced",
       remoteDesktopEnabled: true,
       features: { remote_control: true },
       highRiskFeatures: ["remote_control"]
@@ -50,7 +61,7 @@ describe("commerce mappers", () => {
       state: "active",
       present: true,
       active: true,
-      requestedEnvPlan: "max",
+      requestedEnvPlan: "pro",
       licenseId: "lic_123",
       issuer: undefined,
       plan: "pro",
@@ -84,7 +95,7 @@ describe("commerce mappers", () => {
     });
 
     expect(withWindows).toMatchObject({
-      plan: "max",
+      plan: "pro",
       windowHours: 24,
       windows: [
         {

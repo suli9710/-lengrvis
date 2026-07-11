@@ -45,15 +45,15 @@ def test_plan_token_quota_windows() -> None:
         (5, 5_000_000),
         (168, 20_000_000),
     ]
-    assert [(quota.window_hours, quota.max_total_tokens) for quota in quota_windows_for_plan(Plan.PRO)] == [
+    assert [(quota.window_hours, quota.max_total_tokens) for quota in quota_windows_for_plan(Plan.PLUS)] == [
         (24, 10_000_000),
     ]
-    assert [(quota.window_hours, quota.max_total_tokens) for quota in quota_windows_for_plan(Plan.MAX)] == [
+    assert [(quota.window_hours, quota.max_total_tokens) for quota in quota_windows_for_plan(Plan.PRO)] == [
         (24, 100_000_000),
     ]
     assert not quota_for_plan(Plan.FREE).is_unlimited
+    assert not quota_for_plan(Plan.PLUS).is_unlimited
     assert not quota_for_plan(Plan.PRO).is_unlimited
-    assert not quota_for_plan(Plan.MAX).is_unlimited
 
 
 def test_enforce_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +79,7 @@ def test_enforce_blocks_when_over(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_enforce_blocks_paid_plans_when_over(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LENGRVIS_CLOUD_QUOTA_ENFORCED", "true")
     monkeypatch.setattr(commerce_usage, "_current_usage", _over_limit)
-    for plan in ("pro", "max", "team"):
+    for plan in ("plus", "pro", "max", "team"):
         with pytest.raises(QuotaExceededError):
             enforce_cloud_quota(_S(plan))
 
