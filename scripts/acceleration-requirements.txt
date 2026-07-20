@@ -10,24 +10,24 @@
 # packages plus the selected runtime flavor with --require-hashes.
 
 # Common packages
-tokenizers==0.22.2
-transformers==5.12.1
-huggingface_hub==1.21.0
-numpy==2.2.6
-Pillow==12.2.0
+tokenizers==0.23.1
+transformers==5.14.1
+huggingface_hub==1.24.0
+numpy==2.5.1
+Pillow==12.3.0
 
 # Runtime: winml
-onnxruntime-windowsml==1.27.0.202606181907 ; platform_system == "Windows"
+onnxruntime-windowsml==1.27.1.202607110137 ; platform_system == "Windows"
 onnxruntime-genai-winml==0.14.1 ; platform_system == "Windows"
 
 # Runtime: directml
-onnxruntime-directml==1.22.0 ; platform_system == "Windows"
-onnxruntime-genai-directml==0.8.0 ; platform_system == "Windows"
+onnxruntime-directml==1.24.4 ; platform_system == "Windows"
+onnxruntime-genai-directml==0.14.1 ; platform_system == "Windows"
 
 # Runtime: openvino
-onnxruntime-openvino==1.22.0
-openvino==2025.2.0
+onnxruntime-openvino==1.24.1
+openvino==2026.2.1
 
 # Runtime: cpu
-onnxruntime==1.26.0
-onnxruntime-genai==0.8.0
+onnxruntime==1.27.0
+onnxruntime-genai==0.14.1
