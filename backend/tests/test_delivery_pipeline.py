@@ -39,9 +39,10 @@ def test_default_stages_order_and_membership():
     names = [s.name for s in stages]
     assert names[0] == "qa-gate"
     assert names[1] == "golden-gate"
-    assert names[2] == "maintainability-gate"
-    assert names[3] == "review-scorecard"
-    assert names[4] == "agentic-threat-model"
+    assert names[2] == "mcp-conformance"
+    assert names[3] == "maintainability-gate"
+    assert names[4] == "review-scorecard"
+    assert names[5] == "agentic-threat-model"
     assert "signed-artifacts" in names
     assert names.index("release-safety") < names.index("signed-artifacts")
     assert names.index("signed-artifacts") < names.index("market-readiness")
@@ -121,6 +122,7 @@ def test_candidate_build_requires_automated_and_signed_gates_but_not_reviewed_ev
     assert names == [
         "qa-gate",
         "golden-gate",
+        "mcp-conformance",
         "maintainability-gate",
         "review-scorecard",
         "agentic-threat-model",
@@ -135,6 +137,7 @@ def test_candidate_build_requires_automated_and_signed_gates_but_not_reviewed_ev
         "signed-artifacts",
     ]
     assert not any(name.endswith("-evidence") for name in names)
+    assert "release-owner-signature" not in names
 
 
 def test_candidate_build_plan_cli_reports_candidate_mode():
@@ -176,6 +179,7 @@ def test_strict_adds_strict_flag_to_readiness():
     assert names == [
         "qa-gate",
         "golden-gate",
+        "mcp-conformance",
         "maintainability-gate",
         "review-scorecard",
         "agentic-threat-model",
@@ -186,6 +190,7 @@ def test_strict_adds_strict_flag_to_readiness():
         "security-extensions",
         "release-safety",
         "candidate-binding-context",
+        "release-owner-signature",
         "packaging-verify",
         "signed-artifacts",
         "distribution-evidence",

@@ -30,7 +30,7 @@ from app.llm.structured_output import (
     parse_and_validate_structured_content as _parse_and_validate_structured_content,
 )
 from app.llm.types import LLMResponse, LLMUsage
-from app.llm.usage import estimate_usage
+from app.llm.usage import estimate_usage, record_llm_response
 
 
 class LLMApiCircuitOpen(RuntimeError):
@@ -38,7 +38,17 @@ class LLMApiCircuitOpen(RuntimeError):
 
 
 # P1-10 fix: Redact API keys from error messages before surfacing to callers.
-_API_KEY_PATTERN = re.compile(r"(sk-[A-Za-z0-9]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})", re.IGNORECASE)
+# Covers common vendor key shapes beyond OpenAI's sk-/Bearer: Anthropic
+# (sk-ant-), Google AI (AIza...), Azure OpenAI api-key headers, and generic
+# `api[-_]key`/`token`/`secret` = <value> assignments a provider might echo back.
+_API_KEY_PATTERN = re.compile(
+    r"(sk-ant-[A-Za-z0-9._-]{20,}"
+    r"|sk-[A-Za-z0-9]{20,}"
+    r"|Bearer\s+[A-Za-z0-9._-]{20,}"
+    r"|AIza[A-Za-z0-9._-]{20,}"
+    r"|(?:api[-_]?key|api[-_]?token|access[-_]?token|secret|password)\s*[=:]\s*[\"']?[A-Za-z0-9._\-]{12,})",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_error_message(message: str) -> str:
@@ -112,9 +122,20 @@ def circuit_snapshot(settings: AppSettings) -> dict[str, Any]:
 class OpenAICompatibleProvider(LLMProvider):
     name = "openai_compatible"
 
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, *, allow_private_base: bool = False) -> None:
         self.settings = settings
+        self._allow_private_routing = bool(allow_private_base)
         self._last_transport_metadata: dict[str, Any] = {}
+        self._cloud_usage_meter_enabled = False
+        self._metering_task = "default"
+        self._metering_profile: Any = None
+
+    def configure_cloud_usage_meter(self, *, task: str, profile: Any) -> bool:
+        """Meter every HTTP attempt, including provider-internal retries and repairs."""
+        self._cloud_usage_meter_enabled = True
+        self._metering_task = str(task or "default")
+        self._metering_profile = profile
+        return True
 
     def transport_metadata(self) -> dict[str, Any]:
         return dict(self._last_transport_metadata)
@@ -134,7 +155,9 @@ class OpenAICompatibleProvider(LLMProvider):
     def _allow_private_base(self, base: str) -> bool:
         from app.llm.registry import LOCAL_PROVIDERS
 
-        return is_local_base_url(base) and self.settings.provider_name.lower() in LOCAL_PROVIDERS
+        return is_local_base_url(base) and (
+            self._allow_private_routing or self.settings.provider_name.lower() in LOCAL_PROVIDERS
+        )
 
     def _chat_endpoint(self) -> str:
         base_url = self._api_base_url()
@@ -181,8 +204,13 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
 
         for attempt in range(attempts):
+            trace["attempts"] = attempt + 1
+            reservation_id = self._reserve_transport_call(
+                payload,
+                endpoint_kind=endpoint_kind,
+                model=model,
+            )
             try:
-                trace["attempts"] = attempt + 1
                 client = _shared_http_client()
                 # Re-pin per attempt (DNS-rebinding TOCTOU): connect to the IP
                 # that passed SSRF validation; Host/SNI keep the real hostname
@@ -204,6 +232,13 @@ class OpenAICompatibleProvider(LLMProvider):
                     raise LLMApiResponseError(
                         f"LLM provider returned non-JSON response with content-type {content_type or 'unknown'}."
                     ) from exc
+                self._settle_transport_call(
+                    reservation_id,
+                    data,
+                    payload=payload,
+                    endpoint_kind=endpoint_kind,
+                    model=model,
+                )
                 self._record_success(circuit_key)
                 trace["ok"] = True
                 trace["circuit_after"] = circuit_snapshot(self.settings)
@@ -244,6 +279,73 @@ class OpenAICompatibleProvider(LLMProvider):
         trace["error"] = _sanitize_error_message(str(last_error or RuntimeError("LLM API request failed.")))
         self._last_transport_metadata = trace
         raise last_error or RuntimeError("LLM API request failed.")
+
+    def _reserve_transport_call(
+        self,
+        payload: dict[str, Any],
+        *,
+        endpoint_kind: str,
+        model: str,
+    ) -> str | None:
+        if not self._cloud_usage_meter_enabled:
+            return None
+        from app.commerce.usage import reserve_cloud_quota_call
+
+        prompt_tokens = max(1, _transport_token_estimate(payload))
+        max_completion_tokens = 0 if endpoint_kind == "embeddings" else max(1, int(self.settings.max_tokens))
+        reserved_usage = LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=max_completion_tokens,
+            total_tokens=prompt_tokens + max_completion_tokens,
+            estimated=True,
+        )
+        max_cost = (
+            self._metering_profile.estimate_cost(reserved_usage).total_cost_usd
+            if self._metering_profile is not None
+            else None
+        )
+        return reserve_cloud_quota_call(
+            self.settings,
+            provider=self.name,
+            model=model,
+            task=self._metering_task,
+            purpose=endpoint_kind,
+            prompt_tokens=prompt_tokens,
+            max_completion_tokens=max_completion_tokens,
+            max_cost_usd=max_cost,
+        )
+
+    def _settle_transport_call(
+        self,
+        reservation_id: str | None,
+        data: dict[str, Any],
+        *,
+        payload: dict[str, Any],
+        endpoint_kind: str,
+        model: str,
+    ) -> None:
+        if not reservation_id:
+            return
+        usage = _transport_usage(data, payload, endpoint_kind=endpoint_kind)
+        cost = self._metering_profile.estimate_cost(usage) if self._metering_profile is not None else None
+        response = LLMResponse(
+            content="",
+            provider=self.name,
+            model=model,
+            usage=usage,
+            cost=cost,
+            metadata={"transport_metered": True, "endpoint_kind": endpoint_kind},
+        )
+        record_llm_response(
+            response,
+            self.settings,
+            task=self._metering_task,
+            purpose=endpoint_kind,
+            profile=self._metering_profile.to_dict() if self._metering_profile is not None else {},
+            projection={"source": "transport_metering", "endpoint_kind": endpoint_kind},
+            reservation_id=reservation_id,
+            metered_cloud=True,
+        )
 
     def _ensure_circuit_allows_request(self, circuit_key: tuple[str, str, str, str]) -> None:
         state = _CIRCUITS.get(circuit_key)
@@ -832,6 +934,94 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def ocr(self, image_path: str) -> str:
         return await self.vision(image_path, load_prompt("vision_ocr.md"))
+
+
+# Conservative per-image token reservation for metered vision calls. Real
+# providers bill images by tile count (typically ~85–2833 tokens); this cap
+# stays above the realistic maximum without scaling with the raw byte size.
+_IMAGE_PART_TOKEN_ESTIMATE = 3000
+
+
+def _transport_token_estimate(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 1
+    if isinstance(value, int | float):
+        return 1
+    if isinstance(value, str):
+        if value.startswith("data:image/") and ";base64," in value[:128]:
+            # Vision models bill an image by tile count (hundreds to a few
+            # thousand tokens), NOT by its byte size. Reserving the decoded byte
+            # length here made even a 5MB image reserve >5M "tokens" and get
+            # rejected by the plan quota window. Use a fixed conservative cap.
+            return _IMAGE_PART_TOKEN_ESTIMATE
+        # A tokenizer cannot emit more tokens than the UTF-8 byte sequence has
+        # bytes. Using that upper bound keeps authorization conservative even
+        # for unknown provider tokenizers and mixed CJK text.
+        return max(1, len(value.encode("utf-8")))
+    if isinstance(value, dict):
+        return sum(_transport_token_estimate(key) + _transport_token_estimate(child) for key, child in value.items())
+    if isinstance(value, list | tuple):
+        return sum(_transport_token_estimate(child) for child in value)
+    return max(1, (len(str(value)) + 3) // 4)
+
+
+def _transport_usage(
+    data: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    endpoint_kind: str,
+) -> LLMUsage:
+    usage = data.get("usage") if isinstance(data, dict) else None
+    prompt_estimate = max(1, _transport_token_estimate(payload))
+    completion_estimate = (
+        0
+        if endpoint_kind == "embeddings"
+        else max(1, _nonnegative_usage_int(payload.get("max_tokens") or payload.get("max_output_tokens")) or 0)
+    )
+    if isinstance(usage, dict):
+        prompt_reported = _first_usage_int(usage, "prompt_tokens", "input_tokens")
+        completion_reported = _first_usage_int(usage, "completion_tokens", "output_tokens")
+        total_reported = _nonnegative_usage_int(usage.get("total_tokens"))
+        complete = prompt_reported is not None and (endpoint_kind == "embeddings" or completion_reported is not None)
+        prompt_tokens = prompt_reported if complete else max(prompt_estimate, prompt_reported or 0)
+        completion_tokens = (
+            0
+            if endpoint_kind == "embeddings"
+            else completion_reported
+            if complete and completion_reported is not None
+            else max(completion_estimate, completion_reported or 0)
+        )
+        total_tokens = max(prompt_tokens + completion_tokens, total_reported or 0)
+        return LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated=not complete,
+            details={key: value for key, value in usage.items() if str(key).endswith("_details")},
+        )
+    return LLMUsage(
+        prompt_tokens=prompt_estimate,
+        completion_tokens=completion_estimate,
+        total_tokens=prompt_estimate + completion_estimate,
+        estimated=True,
+    )
+
+
+def _first_usage_int(usage: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key in usage:
+            return _nonnegative_usage_int(usage.get(key))
+    return None
+
+
+def _nonnegative_usage_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _status_code(exc: Exception) -> int | None:

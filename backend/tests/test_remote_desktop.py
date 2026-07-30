@@ -40,8 +40,10 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
     db.init_db()
     routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
+    routes_remote._reset_remote_screen_runtime_for_tests()
     yield
     routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
+    routes_remote._reset_remote_screen_runtime_for_tests()
 
 
 def _test_app() -> FastAPI:
@@ -108,6 +110,64 @@ def _assert_no_sensitive_details(payload: dict, fragments: list[str]) -> None:
     serialized = json.dumps(payload, ensure_ascii=False).replace("\\\\", "\\")
     for fragment in fragments:
         assert fragment not in serialized
+
+
+def test_remote_input_websocket_honors_audit_fail_closed_before_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_remote_desktop()
+    token, _grant_id = _remote_input_grant_token("mobile_audit_blocked")
+    monkeypatch.setattr(db, "audit_fail_closed_enabled", lambda: True)
+
+    def reject_write() -> None:
+        raise db.SensitiveRecordIntegrityError("audit chain mismatch")
+
+    monkeypatch.setattr(db, "require_audit_fail_closed_ok", reject_write)
+    client = TestClient(_test_app())
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/input",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("remote input websocket should honor audit fail-closed")
+
+    assert exc_info.value.code == 1013
+
+
+def test_connected_remote_input_rechecks_audit_fail_closed_before_each_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_remote_desktop()
+    token, _grant_id = _remote_input_grant_token("mobile_audit_recheck")
+    blocked = False
+    input_calls: list[dict] = []
+    monkeypatch.setattr(db, "audit_fail_closed_enabled", lambda: True)
+    monkeypatch.setattr(
+        routes_remote,
+        "handle_remote_input_event",
+        lambda event, *, claims=None: input_calls.append(dict(event)) or {"ok": True},
+    )
+
+    def require_write_integrity() -> None:
+        if blocked:
+            raise db.SensitiveRecordIntegrityError("audit chain mismatch")
+
+    monkeypatch.setattr(db, "require_audit_fail_closed_ok", require_write_integrity)
+    client = TestClient(_test_app())
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        blocked = True
+        websocket.send_json({"type": "click", "x": 100, "y": 200, "frame_sequence": 1})
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
+
+    assert exc_info.value.code == 1013
+    assert input_calls == []
 
 
 def _expire_remote_input_grant(device_id: str, grant_id: str) -> None:
@@ -627,8 +687,112 @@ def test_remote_screen_ack_wait_only_suppresses_malformed_control_messages():
         )
 
 
+def test_remote_screen_capture_backoff_is_exponential_and_capped():
+    delays = [routes_remote._remote_screen_capture_backoff_seconds(5.0, failure) for failure in range(1, 7)]
+
+    assert delays == pytest.approx([0.2, 0.4, 0.8, 1.6, 2.0, 2.0])
+
+
+def test_remote_screen_lease_rejects_duplicate_device_connection():
+    claims = {"device_id": "mobile_same"}
+
+    assert routes_remote._acquire_remote_screen_lease(claims) is True
+    assert routes_remote._acquire_remote_screen_lease(claims) is False
+
+    routes_remote._release_remote_screen_lease(claims)
+    assert routes_remote._acquire_remote_screen_lease(claims) is True
+
+
+def test_remote_screen_lease_enforces_global_capacity():
+    claims = [{"device_id": f"mobile_{index}"} for index in range(4)]
+
+    assert all(routes_remote._acquire_remote_screen_lease(item) for item in claims[:3])
+    assert routes_remote._acquire_remote_screen_lease(claims[3]) is False
+
+    routes_remote._release_remote_screen_lease(claims[1])
+    assert routes_remote._acquire_remote_screen_lease(claims[3]) is True
+
+
+def test_remote_screen_geometry_cache_sweeps_and_forgets_frames(monkeypatch: pytest.MonkeyPatch):
+    clock = {"now": 100.0}
+    monkeypatch.setattr(routes_remote.time, "monotonic", lambda: clock["now"])
+    stale_claims = {"device_id": "mobile_stale"}
+    live_claims = {"device_id": "mobile_live", "grant_id": "grant_live"}
+
+    routes_remote._remember_remote_screen_frame(
+        stale_claims,
+        sequence=1,
+        origin_x=0,
+        origin_y=0,
+        width=100,
+        height=100,
+    )
+    clock["now"] += routes_remote._REMOTE_INPUT_FRAME_TTL_SECONDS + 1
+    routes_remote._remember_remote_screen_frame(
+        live_claims,
+        sequence=2,
+        origin_x=10,
+        origin_y=20,
+        width=200,
+        height=150,
+    )
+
+    assert routes_remote._latest_remote_screen_frame(stale_claims) is None
+    assert routes_remote._latest_remote_screen_frame(live_claims) is not None
+
+    routes_remote._forget_remote_screen_frames(live_claims)
+    assert routes_remote._latest_remote_screen_frame(live_claims) is None
+
+
+def test_remote_screen_recovers_after_one_capture_failure(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    attempts = 0
+    frame = remote_desktop_service.ScreenFrame(
+        image_base64="c2NyZWVu",
+        timestamp="2026-07-12T00:00:00Z",
+        width=100,
+        height=80,
+        original_width=100,
+        original_height=80,
+        quality=50,
+    )
+
+    def flaky_capture(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary capture failure")
+        return frame
+
+    monkeypatch.setattr(routes_remote, "capture_screen_frame", flaky_capture)
+    monkeypatch.setattr(routes_remote, "_remote_screen_capture_backoff_seconds", lambda _fps, _failures: 0)
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with client.websocket_connect(
+        "/ws/remote/screen",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        recovered_frame = websocket.receive_json()
+
+    assert recovered_frame["type"] == "frame"
+    assert recovered_frame["sequence"] == 2
+    assert attempts == 2
+    events = db.fetch_many("audit_events", limit=20)
+    failures = [event for event in events if event["event_type"] == "remote.screen.capture_failed"]
+    recoveries = [event for event in events if event["event_type"] == "remote.screen.capture_recovered"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["consecutive_failures"] == 1
+    assert failures[0]["payload"]["terminal"] is False
+    assert len(recoveries) == 1
+    assert recoveries[0]["payload"]["consecutive_failures"] == 1
+    assert recoveries[0]["payload"]["suppressed_failures"] == 0
+
+
 def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
+    capture_calls = 0
     raw_error = (
         r"capture failed at C:\\Users\\Suli\\Desktop\\secrets\\screen.txt "
         "token=secretREMOTE123456 selector=#password-field "
@@ -638,9 +802,12 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     )
 
     def fail_capture(**kwargs):
+        nonlocal capture_calls
+        capture_calls += 1
         raise RuntimeError(raw_error)
 
     monkeypatch.setattr(routes_remote, "capture_screen_frame", fail_capture)
+    monkeypatch.setattr(routes_remote, "_remote_screen_capture_backoff_seconds", lambda _fps, _failures: 0)
     client = TestClient(_test_app())
     token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
 
@@ -650,12 +817,16 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
         error = websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
 
     assert error == {
         "type": "error",
         "code": "remote_screen.capture_failed",
         "message": "Remote screen is temporarily unavailable.",
     }
+    assert exc_info.value.code == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_CLOSE_CODE
+    assert capture_calls == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT
     _assert_no_sensitive_details(
         error,
         [
@@ -671,25 +842,31 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
             "Test Phone",
         ],
     )
-    failure = next(
+    failures = [
         event
         for event in db.fetch_many("audit_events", limit=20)
         if event["event_type"] == "remote.screen.capture_failed"
-    )
-    _assert_no_sensitive_details(
-        failure["payload"],
-        [
-            r"C:\\Users\\Suli",
-            "secretREMOTE123456",
-            "#password-field",
-            "screen-host.internal.local",
-            "Traceback",
-            "line 117",
-            "mobile_test",
-            "Test Phone",
-        ],
-    )
-    assert "[REDACTED" in json.dumps(failure["payload"], ensure_ascii=False)
+    ]
+    assert len(failures) == 2
+    failure_counts = sorted(event["payload"]["consecutive_failures"] for event in failures)
+    assert failure_counts == [1, routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT]
+    terminal_failure = next(event for event in failures if event["payload"]["terminal"])
+    assert terminal_failure["payload"]["suppressed_failures"] == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT - 2
+    for failure in failures:
+        _assert_no_sensitive_details(
+            failure["payload"],
+            [
+                r"C:\\Users\\Suli",
+                "secretREMOTE123456",
+                "#password-field",
+                "screen-host.internal.local",
+                "Traceback",
+                "line 117",
+                "mobile_test",
+                "Test Phone",
+            ],
+        )
+        assert "[REDACTED" in json.dumps(failure["payload"], ensure_ascii=False)
 
 
 def test_revoked_remote_view_token_cannot_open_remote_screen(monkeypatch: pytest.MonkeyPatch):
@@ -1110,10 +1287,10 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
             approval_type="remote_input",
             message="Matching pending remote input",
             source="remote_input",
-                source_device_id=device_id,
-                source_grant_id=grant_id,
-                created_at="2026-01-01T00:00:00+00:00",
-                expires_at="2999-01-01T00:00:00+00:00",
+            source_device_id=device_id,
+            source_grant_id=grant_id,
+            created_at="2026-01-01T00:00:00+00:00",
+            expires_at="2999-01-01T00:00:00+00:00",
         ),
     )
     for index in range(1001):
@@ -1125,10 +1302,10 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
                 approval_type="remote_input",
                 message="Unrelated pending remote input",
                 source="remote_input",
-                    source_device_id=f"other_device_{index}",
-                    source_grant_id=f"other_grant_{index}",
-                    created_at="2026-01-02T00:00:00+00:00",
-                    expires_at="2999-01-01T00:00:00+00:00",
+                source_device_id=f"other_device_{index}",
+                source_grant_id=f"other_grant_{index}",
+                created_at="2026-01-02T00:00:00+00:00",
+                expires_at="2999-01-01T00:00:00+00:00",
             ),
         )
 

@@ -8,7 +8,10 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any
 
+import psutil
+
 from app.core.schemas import Approval, SafetyReview
+from app.perception import ui_automation_identity as _identity
 from app.perception.app_context import get_current_app_context
 from app.perception.schemas import AppContext
 from app.perception.ui_automation_actions import (
@@ -87,6 +90,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 
 logger = logging.getLogger(__name__)
+_element_action_fingerprint = _identity.element_action_fingerprint
 
 
 _UI_ACTION_ERROR_BASE = (
@@ -117,16 +121,32 @@ def _ui_provider_activation_error_types() -> tuple[type[BaseException], ...]:
     return (*_OPTIONAL_UI_PROVIDER_ERRORS, *_com_exception_types())
 
 
-def _element_action_fingerprint(element: UIAutomationElement) -> dict[str, Any]:
-    return {
-        "runtime_id": element.properties.get("runtime_id"),
-        "automation_id": element.automation_id,
-        "name": element.name,
-        "control_type": element.control_type,
-        "class_name": element.class_name,
-        "process_id": element.process_id,
-        "bounding_box": element.properties.get("bounding_box"),
-    }
+def _process_identity_fingerprint(process_id: int | None) -> dict[str, str] | None:
+    """Sample one process twice so PID reuse cannot cross the approval seam."""
+
+    if not isinstance(process_id, int) or process_id <= 0:
+        return None
+    try:
+        process = psutil.Process(process_id)
+        created_at = float(process.create_time())
+        executable = str(process.exe() or "")
+        if created_at != float(process.create_time()):
+            return None
+    except (psutil.Error, OSError, TypeError, ValueError):
+        return None
+    return _identity.process_identity_fingerprint(
+        process_id=process_id,
+        created_at=created_at,
+        executable=executable,
+    )
+
+
+def _native_window_handle(native: Any) -> int | None:
+    try:
+        value = getattr(native, "CurrentNativeWindowHandle", None)
+        return int(value) if value else None
+    except (*_ui_action_error_types(), OverflowError):
+        return None
 
 
 def _pyautogui_exception_types() -> tuple[type[BaseException], ...]:
@@ -796,6 +816,23 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
                 "error": "UI target changed after lookup; action was not performed.",
                 "selector": selector.as_query(),
             }
+        expected_window, has_approved_state = _identity.approved_window_identity(
+            self.approval_context.get("_expected_resource_state")
+        )
+        if expected_window is not None:
+            current_window = self._owning_window_fingerprint(target)
+            if current_window != expected_window:
+                return None, {
+                    "ok": False,
+                    "error": "UI target window or account context changed after approval; action was not performed.",
+                    "selector": selector.as_query(),
+                }
+        elif has_approved_state:
+            return None, {
+                "ok": False,
+                "error": "Approved UI target is missing a complete window identity; action was not performed.",
+                "selector": selector.as_query(),
+            }
         return target, None
 
     def _inspect_selector_sync(self, selector: UIAutomationSelector, max_candidates: int) -> dict[str, Any]:
@@ -827,16 +864,72 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         elif len(matches) == 1:
             element = matches[0]
             payload["element"] = element.to_dict()
-            payload["resource_state"] = {
-                "kind": "ui_automation_element",
-                "selector": selector.as_query(),
-                "fingerprint": _element_action_fingerprint(element),
-            }
+            target_window = self._owning_window_fingerprint(element)
+            payload["resource_state"] = _identity.semantic_resource_state(
+                selector=selector.as_query(),
+                element=element,
+                target_window=target_window,
+            )
         elif matches:
             payload["error"] = "UI selector matched multiple elements; refine the selector before continuing."
         else:
             payload["error"] = "UI element not found."
         return payload
+
+    def _owning_window_fingerprint(self, element: UIAutomationElement) -> dict[str, Any] | None:
+        process_id = element.process_id
+        process_identity = _process_identity_fingerprint(process_id)
+        if process_identity is None:
+            return None
+        try:
+            walker = getattr(self._automation, "ControlViewWalker", None)
+            get_parent = getattr(walker, "GetParentElement", None) if walker is not None else None
+        except _ui_action_error_types():
+            return None
+        if not callable(get_parent):
+            return None
+
+        current = element.native
+        candidate = element if element.control_type.casefold() == "window" or _native_window_handle(current) else None
+        parent_chain: list[dict[str, Any]] = []
+        candidate_parent_chain: list[dict[str, Any]] = []
+        for _ in range(64):
+            try:
+                current = get_parent(current)
+            except _ui_action_error_types():
+                return None
+            if current is None:
+                break
+            try:
+                ancestor = _element_from_native(current)
+            except _ui_action_error_types():
+                return None
+            if not isinstance(ancestor.process_id, int):
+                return None
+            if ancestor.process_id != process_id:
+                break
+            native_handle = _native_window_handle(current)
+            parent_chain.append(
+                _identity.accessibility_identity(
+                    ancestor,
+                    native_window_handle=native_handle,
+                )
+            )
+            if ancestor.control_type.casefold() == "window" or native_handle is not None:
+                candidate = ancestor
+                candidate_parent_chain = list(parent_chain)
+        else:
+            # A cyclic or unexpectedly deep provider tree cannot establish a
+            # complete, stable top-level ancestry proof.
+            return None
+        if candidate is None:
+            return None
+        return _identity.window_action_fingerprint(
+            candidate,
+            parent_chain=candidate_parent_chain,
+            process_identity=process_identity,
+            native_window_handle=_native_window_handle(candidate.native),
+        )
 
     def _find_unique_element_sync(
         self,
@@ -903,6 +996,20 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             current = _element_from_native(expected.native)
         if _element_action_fingerprint(current) != _element_action_fingerprint(expected):
             raise UIAutomationUnavailable("UI target changed before execution; action was not performed.")
+        expected_window, has_approved_state = _identity.approved_window_identity(
+            self.approval_context.get("_expected_resource_state")
+        )
+        if expected_window is not None:
+            current_window = self._owning_window_fingerprint(current)
+            if current_window != expected_window:
+                raise UIAutomationUnavailable(
+                    "UI target window, process, parent chain, or account context changed after approval; "
+                    "action was not performed."
+                )
+        elif has_approved_state:
+            raise UIAutomationUnavailable(
+                "Approved UI target is missing a complete window identity; action was not performed."
+            )
         if current.properties.get("is_enabled") is False:
             raise UIAutomationUnavailable("UI target is disabled; action was not performed.")
         if current.properties.get("is_offscreen") is True:

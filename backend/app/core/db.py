@@ -253,7 +253,6 @@ def _init_db_schema() -> None:
     with connect() as conn:
         initialize_schema(conn, _ensure_columns)
         apply_schema_migrations(conn)
-        _ensure_sensitive_record_integrity_schema(conn)
 
 
 def _ensure_cached_schema() -> None:
@@ -884,62 +883,17 @@ def _sensitive_record_digest(table: str, record_id: str, data: str) -> str:
     return sensitive_record_digest(table, record_id, data)
 
 
-def upsert_memory(payload: dict[str, Any]) -> None:
-    from app.core.db_memory import upsert_memory as _upsert_memory
+def _lazy_memory_api(name: str) -> Callable[..., Any]:
+    def invoke(*args: Any, **kwargs: Any) -> Any:
+        from app.core import db_memory
 
-    return _upsert_memory(payload)
+        return getattr(db_memory, name)(*args, **kwargs)
 
-
-def get_memory(
-    memory_id: str,
-    *,
-    principal_id: str | None = None,
-    workspace_id: str | None = None,
-    domain_scope: str | None = None,
-) -> dict[str, Any] | None:
-    from app.core.db_memory import get_memory as _get_memory
-
-    return _get_memory(
-        memory_id,
-        principal_id=principal_id,
-        workspace_id=workspace_id,
-        domain_scope=domain_scope,
-    )
+    invoke.__name__ = name
+    return invoke
 
 
-def list_memories(
-    *,
-    tags: list[str] | None = None,
-    kind: str | None = None,
-    principal_id: str | None = None,
-    workspace_id: str | None = None,
-    domain_scope: str | None = None,
-    limit: int = 200,
-) -> list[dict[str, Any]]:
-    from app.core.db_memory import list_memories as _list_memories
-
-    return _list_memories(
-        tags=tags,
-        kind=kind,
-        principal_id=principal_id,
-        workspace_id=workspace_id,
-        domain_scope=domain_scope,
-        limit=limit,
-    )
-
-
-def delete_memory(
-    memory_id: str,
-    *,
-    principal_id: str | None = None,
-    workspace_id: str | None = None,
-    domain_scope: str | None = None,
-) -> bool:
-    from app.core.db_memory import delete_memory as _delete_memory
-
-    return _delete_memory(
-        memory_id,
-        principal_id=principal_id,
-        workspace_id=workspace_id,
-        domain_scope=domain_scope,
-    )
+delete_memory = _lazy_memory_api("delete_memory")
+get_memory = _lazy_memory_api("get_memory")
+list_memories = _lazy_memory_api("list_memories")
+upsert_memory = _lazy_memory_api("upsert_memory")

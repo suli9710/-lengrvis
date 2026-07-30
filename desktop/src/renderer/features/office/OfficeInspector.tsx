@@ -221,7 +221,7 @@ export function OfficeInspector({
         </div>
       </div>
 
-      <details className="inspector-card home-more" data-testid="home-more">
+      <details className="home-more" data-testid="home-more">
         <summary className="home-more__summary">
           <span>更多状态与详情</span>
           <em>结果核验、隐私权限、任务驾驶舱与成果</em>

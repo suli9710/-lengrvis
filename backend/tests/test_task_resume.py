@@ -588,6 +588,31 @@ def test_stale_resume_failure_cannot_overwrite_cancelled_task(monkeypatch: pytes
     assert task_service.get_task(task.id).status == TaskPhase.CANCELLED
 
 
+def test_resume_failure_redacts_sensitive_exception_before_persisting() -> None:
+    task = Task(
+        user_goal="redact worker failures",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+    secret = "token=super-secret-resume-token"
+    local_path = r"C:\Users\John Doe\Secret Project\private-plan.json"
+
+    persisted = task_service._persist_resume_failure_if_active(
+        task.id,
+        RuntimeError(f"resume failed at {local_path} with {secret}"),
+    )
+
+    assert persisted.status == TaskPhase.FAILED
+    assert local_path not in persisted.final_summary
+    assert "John Doe" not in persisted.final_summary
+    assert "Secret Project" not in persisted.final_summary
+    assert "super-secret-resume-token" not in persisted.final_summary
+    assert "[REDACTED_LOCAL_PATH]" in persisted.final_summary
+    assert "[REDACTED]" in persisted.final_summary
+
+
 def test_approval_resume_defers_when_active_run_row_is_still_running(monkeypatch: pytest.MonkeyPatch) -> None:
     scheduled: list[str] = []
     active = concurrent.futures.Future()

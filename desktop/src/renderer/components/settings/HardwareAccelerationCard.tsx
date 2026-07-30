@@ -45,25 +45,32 @@ export function HardwareAccelerationCard({
     setRunningOperation(operation);
     setSmokeError("");
     onSmokeStatusChange(`正在运行 ${hardwareSmokeLabel(operation)}...`);
-    const response = await api.runHardwareAccelerationSmoke({
-      operation,
-      prompt: "用中文说一句来自 Lengrvis 硬件加速的问候。",
-      maxTokens: 16,
-      texts: ["Lengrvis 本地向量模型冒烟测试。"],
-      modelPath: status?.modelPath
-    });
-    if (response.ok && response.data) {
-      onSmokeChange(response.data);
-      onSmokeStatusChange(response.data.ok ? `${hardwareSmokeLabel(operation)} 就绪。` : response.data.error ?? "冒烟测试不可用。");
-      if (response.data.error) {
-        setSmokeError(response.data.error);
+    try {
+      const response = await api.runHardwareAccelerationSmoke({
+        operation,
+        prompt: "用中文说一句来自 Lengrvis 硬件加速的问候。",
+        maxTokens: 16,
+        texts: ["Lengrvis 本地向量模型冒烟测试。"],
+        modelPath: status?.modelPath
+      });
+      if (response.ok && response.data) {
+        onSmokeChange(response.data);
+        onSmokeStatusChange(response.data.ok ? `${hardwareSmokeLabel(operation)} 就绪。` : response.data.error ?? "冒烟测试不可用。");
+        if (response.data.error) {
+          setSmokeError(response.data.error);
+        }
+      } else {
+        const message = response.error?.message ?? "硬件冒烟测试失败。";
+        setSmokeError(message);
+        onSmokeStatusChange(message);
       }
-    } else {
-      const message = response.error?.message ?? "硬件冒烟测试失败。";
+    } catch (error) { // broad-exception-boundary
+      const message = readableHardwareError(error);
       setSmokeError(message);
       onSmokeStatusChange(message);
+    } finally {
+      setRunningOperation("");
     }
-    setRunningOperation("");
   }, [api, onSmokeChange, onSmokeStatusChange, status?.modelPath]);
 
   const checks = buildHardwareChecks(settings, status, error);
@@ -202,6 +209,10 @@ function hardwareSmokeLabel(operation: HardwareAccelerationSmokePayload["operati
   if (operation === "test_ocr") return "测试 OCR";
   if (operation === "test_image_embedding") return "测试图像";
   return "预热";
+}
+
+function readableHardwareError(error: unknown): string {
+  return error instanceof Error && error.message.trim() ? error.message : "硬件冒烟测试失败。";
 }
 
 

@@ -260,10 +260,23 @@ def test_erase_deletes_user_content_and_packages_preserving_audit_chain(monkeypa
     ):
         assert _table_count(table) == 0
     with db.connect() as conn:
-        assert conn.execute(
-            "SELECT 1 FROM sensitive_record_integrity WHERE table_name = 'approvals' AND record_id = ?",
-            ("approval_sample",),
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sensitive_record_integrity WHERE table_name = 'approvals' AND record_id = ?",
+                ("approval_sample",),
+            ).fetchone()
+            is None
+        )
+        # The presence ledger must not retain rows for erased tables: leftover
+        # rows leak that a record with that id/created_at once existed and make
+        # the integrity check report the record as missing.
+        assert (
+            conn.execute("SELECT COUNT(*) FROM sensitive_record_presence WHERE table_name = 'approvals'").fetchone()[0]
+            == 0
+        )
+    # A compliant erase must leave the integrity check passing; otherwise
+    # fail-closed/commercial mode would block all local writes after erase.
+    assert db.sensitive_integrity_check()["ok"] is True
     assert not list((tmp_path / "diagnostic-packages").glob("*.json"))
     # Settings survive a default erase.
     assert db.get_settings_overrides().get("preferred_mode") == "privacy"
@@ -375,12 +388,16 @@ def _erase_headers() -> dict[str, str]:
 
 
 def _public_key_b64(private_key: Ed25519PrivateKey) -> str:
-    return base64.urlsafe_b64encode(
-        private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
+    return (
+        base64.urlsafe_b64encode(
+            private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
         )
-    ).decode("ascii").rstrip("=")
+        .decode("ascii")
+        .rstrip("=")
+    )
 
 
 def _table_count(table: str) -> int:

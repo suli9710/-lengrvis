@@ -24,6 +24,7 @@ from app.core.schemas import (
     approval_is_expired,
     now_iso,
 )
+from app.orchestration.deterministic_contracts import deterministic_contract_status
 from app.orchestration.execution_models import APPROVAL_REMAINING_STEPS_SUMMARY
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
@@ -110,6 +111,21 @@ class StepExecutionHandler:
     ) -> StepExecutionOutcome:
         orchestrator = self.orchestrator
         step.task_id = step.task_id or task.id
+        deterministic_status = deterministic_contract_status(step)
+        if deterministic_status == "invalid":
+            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+            orchestrator._set_status(
+                task,
+                TaskStatus.DENIED,
+                final_summary="Deterministic plan integrity verification failed.",
+            )
+            record(
+                "deterministic_plan.integrity_failed",
+                orchestrator.name,
+                {"step": step.id, "tool": step.tool_name},
+                task_id=task.id,
+            )
+            return StepExecutionOutcome("fatal_denied")
         orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
         await self._yield_if_parallel(threaded_tools)
         try:
@@ -136,7 +152,11 @@ class StepExecutionHandler:
         if safety_outcome.kind not in {"allowed"}:
             return StepExecutionOutcome(safety_outcome.kind, safety_outcome.result)
 
-        action = await orchestrator._consult_subagent(task, step, observation=observation)
+        action = (
+            None
+            if deterministic_status == "valid"
+            else await orchestrator._consult_subagent(task, step, observation=observation)
+        )
         await self._yield_if_parallel(threaded_tools)
         if action and action.kind == "done":
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
@@ -286,6 +306,15 @@ class StepExecutionHandler:
             return task
         if approval.consumed_at:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+        deterministic_status = deterministic_contract_status(step)
+        if deterministic_status == "invalid":
+            return self._deny_approved_step(
+                task,
+                plan,
+                step,
+                approval,
+                "Deterministic plan integrity verification failed.",
+            )
         self._normalize_approved_step_state(task, step)
         state_error = self._approval_execution_state_error(task, step)
         if state_error:
@@ -298,7 +327,7 @@ class StepExecutionHandler:
 
         action = (
             None
-            if approval.approval_type == "remote_input"
+            if approval.approval_type == "remote_input" or deterministic_status == "valid"
             else await orchestrator._consult_subagent(task, step, observation=None)
         )
         if action and action.kind == "done":

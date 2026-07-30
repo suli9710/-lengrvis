@@ -13,6 +13,7 @@ from typing import Any
 
 SUPPORT_TEMPLATE_TYPE = "support-privacy-operations-evidence-template"
 CLAIMS_TEMPLATE_TYPE = "claims-launch-evidence-template"
+COMMERCIAL_LOOP_TEMPLATE_TYPE = "commercial-loop-evidence-template"
 OPERATIONS_TEMPLATE_TYPE = "commercial-operations-evidence-template"
 
 
@@ -169,6 +170,111 @@ def build_claims_launch_template(
         },
         "must_not_be_recorded_as": [
             "public claims approval",
+            "paid-launch pass",
+            "release sign-off",
+        ],
+    }
+
+
+def build_commercial_loop_template(
+    *,
+    candidate_commit: str,
+    build_identifier: str,
+    candidate_repository: str = "uncollected",
+    candidate_run_id: str = "uncollected",
+    candidate_run_attempt: str = "uncollected",
+) -> dict[str, Any]:
+    return {
+        "artifact_type": COMMERCIAL_LOOP_TEMPLATE_TYPE,
+        "template_mode": "not_reviewed_evidence",
+        "candidate": _candidate_binding(
+            candidate_commit=candidate_commit,
+            build_identifier=build_identifier,
+            candidate_repository=candidate_repository,
+            candidate_run_id=candidate_run_id,
+            candidate_run_attempt=candidate_run_attempt,
+        ),
+        "pilot": {"scope": "subscription_activation_free_plus_pro"},
+        "contracting": {
+            "status": "pending",
+            "entity_label": "",
+            "tax_treatment_label": "",
+            "billing_descriptor_label": "",
+        },
+        "legal": {
+            "status": "pending",
+            "eula_approval_label": "",
+            "privacy_policy_approval_label": "",
+            "refund_policy_approval_label": "",
+            "supported_jurisdictions_label": "",
+        },
+        "payment_pilot": {
+            "status": "pending",
+            "processor_or_manual_invoice_label": "",
+            "receipt_or_invoice_label": "",
+            "refund_rehearsal_label": "",
+            "chargeback_runbook_label": "",
+        },
+        "subscription_activation": {
+            "status": "pending",
+            "activation_api_https_label": "",
+            "reverse_proxy_label": "",
+            "activation_key_creation_label": "",
+            "first_activation_label": "",
+            "idempotent_repeat_activation_label": "",
+            "device_limit_label": "",
+            "strong_device_binding_label": "",
+            "renewal_refresh_label": "",
+            "cancel_period_end_label": "",
+            "refund_revocation_label": "",
+            "expired_downgrade_label": "",
+            "rate_limit_label": "",
+            "activation_audit_log_label": "",
+            "operations_runbook_label": "",
+            "secret_redaction_label": "",
+        },
+        "license_issuer": {
+            "status": "pending",
+            "key_profile": "",
+            "public_key_fingerprint_label": "",
+            "private_key_custody_label": "",
+            "issuance_log_label": "",
+            "revocation_manifest_freshness_label": "",
+            "issuance_rehearsal": _pending_check(),
+            "renewal_rehearsal": _pending_check(),
+            "replacement_rehearsal": _pending_check(),
+            "revocation_rehearsal": _pending_check(),
+        },
+        "support_privacy": {
+            "status": "pending",
+            "support_channel_label": "",
+            "privacy_request_runbook_label": "",
+            "diagnostic_handling_label": "",
+        },
+        "claims": {
+            "status": "pending",
+            "pricing_page_label": "",
+            "feature_matrix_label": "",
+            "preview_labels_review_label": "",
+            "security_privacy_claims_review_label": "",
+        },
+        "review": {
+            "status": "pending",
+            "reviewer_label": "",
+            "reviewed_at_utc": "",
+        },
+        "summary": {
+            "subscription_activation_ready": False,
+            "self_serve_checkout_enabled": False,
+            "commercial_launch_signoff": False,
+        },
+        "claim_controls": {
+            "template_is_reviewed_evidence": False,
+            "paid_launch_claim_allowed": False,
+            "release_signoff": False,
+        },
+        "must_not_be_recorded_as": [
+            "commercial loop pass",
             "paid-launch pass",
             "release sign-off",
         ],
@@ -335,6 +441,13 @@ def write_templates(
         candidate_run_id=candidate_run_id,
         candidate_run_attempt=candidate_run_attempt,
     )
+    commercial_loop = build_commercial_loop_template(
+        candidate_commit=candidate_commit,
+        build_identifier=build_identifier,
+        candidate_repository=candidate_repository,
+        candidate_run_id=candidate_run_id,
+        candidate_run_attempt=candidate_run_attempt,
+    )
     operations = build_commercial_operations_template(
         candidate_commit=candidate_commit,
         build_identifier=build_identifier,
@@ -344,10 +457,14 @@ def write_templates(
     )
     support_path = output_dir / "support-privacy-operations-evidence.template.json"
     claims_path = output_dir / "claims-launch-evidence.template.json"
+    commercial_loop_path = output_dir / "commercial-loop-evidence.template.json"
     operations_path = output_dir / "commercial-operations-evidence.template.json"
     markdown_path = output_dir / "paid-launch-evidence-templates.md"
     support_path.write_text(json.dumps(support, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     claims_path.write_text(json.dumps(claims, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    commercial_loop_path.write_text(
+        json.dumps(commercial_loop, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     operations_path.write_text(json.dumps(operations, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     markdown_path.write_text(
         "\n".join(
@@ -357,6 +474,7 @@ def write_templates(
                 f"- Generated at UTC: {datetime.now(UTC).isoformat()}",
                 f"- Support/privacy template: {support_path}",
                 f"- Claims template: {claims_path}",
+                f"- Commercial loop template: {commercial_loop_path}",
                 f"- Commercial operations template: {operations_path}",
                 "",
                 "These files are templates only. They are not reviewed evidence, not a paid-launch pass, and not release sign-off.",
@@ -364,6 +482,7 @@ def write_templates(
                 "",
                 "- build/support-privacy-operations-evidence-reviewed.json",
                 "- build/claims-launch-evidence-reviewed.json",
+                "- build/commercial-loop-evidence-reviewed.json",
                 "- build/commercial-operations-evidence-reviewed.json",
             ]
         )
@@ -373,6 +492,7 @@ def write_templates(
     return {
         "support_privacy_template": str(support_path),
         "claims_launch_template": str(claims_path),
+        "commercial_loop_template": str(commercial_loop_path),
         "commercial_operations_template": str(operations_path),
         "markdown": str(markdown_path),
     }

@@ -37,7 +37,45 @@ def sensitive_integrity_check() -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     checked = 0
     with db.connect() as conn:
-        db._ensure_sensitive_record_integrity_schema(conn)
+        integrity_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (db.SENSITIVE_RECORD_INTEGRITY_TABLE,),
+        ).fetchone()
+        if integrity_table is None:
+            return {
+                "ok": False,
+                "checked": 0,
+                "failures": [
+                    {
+                        "table": db.SENSITIVE_RECORD_INTEGRITY_TABLE,
+                        "id": "*",
+                        "reason": "Sensitive record integrity proof table is unavailable",
+                    }
+                ],
+            }
+        anchor_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sensitive_integrity_bootstrap_anchor'"
+        ).fetchone()
+        if anchor_table is None:
+            failures.append(
+                {
+                    "table": "sensitive_integrity_bootstrap_anchor",
+                    "id": "*",
+                    "reason": "Sensitive integrity bootstrap anchor is unavailable",
+                }
+            )
+            anchor_state = ""
+        else:
+            anchor = conn.execute("SELECT state FROM sensitive_integrity_bootstrap_anchor WHERE id = 1").fetchone()
+            anchor_state = str(anchor["state"] or "") if anchor is not None else ""
+            if anchor_state not in {"pending", "complete"}:
+                failures.append(
+                    {
+                        "table": "sensitive_integrity_bootstrap_anchor",
+                        "id": "1",
+                        "reason": "Sensitive integrity bootstrap anchor is invalid",
+                    }
+                )
         checks = (
             ("approvals", "SELECT id, data FROM approvals"),
             ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
@@ -47,11 +85,21 @@ def sensitive_integrity_check() -> dict[str, Any]:
                 "SELECT id, sequence, event_hash, event_id, created_at FROM audit_chain_heads",
             ),
         )
+        present_ids: dict[str, set[str] | None] = {}
         for table, query in checks:
             try:
                 rows = conn.execute(query).fetchall()
             except sqlite3.Error:
+                present_ids[table] = None
+                failures.append(
+                    {
+                        "table": table,
+                        "id": "*",
+                        "reason": "Sensitive local record table is unavailable",
+                    }
+                )
                 continue
+            present_ids[table] = {str(row["id"]) for row in rows}
             for row in rows:
                 checked += 1
                 data = (
@@ -69,7 +117,107 @@ def sensitive_integrity_check() -> dict[str, Any]:
                     db._require_sensitive_record_integrity(conn, table, str(row["id"]), data)
                 except db.SensitiveRecordIntegrityError as exc:
                     failures.append({"table": table, "id": str(row["id"]), "reason": str(exc)})
+                    continue
+                if table == "permission_policies" and not _valid_permission_policy_payload(data):
+                    failures.append(
+                        {
+                            "table": table,
+                            "id": str(row["id"]),
+                            "reason": "Sensitive permission policy payload is invalid",
+                        }
+                    )
+        try:
+            proofs = conn.execute(
+                f"""
+                SELECT table_name, record_id
+                FROM {db.SENSITIVE_RECORD_INTEGRITY_TABLE}
+                WHERE table_name IN ({",".join("?" for _ in db.SENSITIVE_RECORD_INTEGRITY_KINDS)})
+                """,  # noqa: S608 - table name and placeholders are fixed constants.
+                tuple(sorted(db.SENSITIVE_RECORD_INTEGRITY_KINDS)),
+            ).fetchall()
+        except sqlite3.Error:
+            failures.append(
+                {
+                    "table": db.SENSITIVE_RECORD_INTEGRITY_TABLE,
+                    "id": "*",
+                    "reason": "Sensitive record integrity proofs are unreadable",
+                }
+            )
+            proofs = []
+        for proof in proofs:
+            table = str(proof["table_name"])
+            record_id = str(proof["record_id"])
+            table_ids = present_ids.get(table)
+            if table_ids is not None and record_id not in table_ids:
+                failures.append(
+                    {
+                        "table": table,
+                        "id": record_id,
+                        "reason": "Sensitive local record is missing for an existing integrity proof",
+                    }
+                )
+        try:
+            presence_rows = conn.execute("SELECT table_name, record_id FROM sensitive_record_presence").fetchall()
+        except sqlite3.Error:
+            presence_rows = []
+            failures.append(
+                {
+                    "table": "sensitive_record_presence",
+                    "id": "*",
+                    "reason": "Sensitive record presence ledger is unreadable",
+                }
+            )
+        for presence in presence_rows:
+            table = str(presence["table_name"])
+            record_id = str(presence["record_id"])
+            table_ids = present_ids.get(table)
+            if table_ids is not None and record_id not in table_ids:
+                failures.append(
+                    {
+                        "table": table,
+                        "id": record_id,
+                        "reason": "Sensitive local record is missing for a presence ledger entry",
+                    }
+                )
+        if anchor_state == "complete" and not sensitive_integrity_bootstrap_completed(conn):
+            failures.append(
+                {
+                    "table": db.SENSITIVE_RECORD_INTEGRITY_TABLE,
+                    "id": "__meta__:bootstrap",
+                    "reason": "Sensitive integrity bootstrap marker is missing or invalid",
+                }
+            )
     return {"ok": not failures, "checked": checked, "failures": failures}
+
+
+def _valid_permission_policy_payload(data: str) -> bool:
+    try:
+        from app.policy.permissions import PermissionPolicy
+
+        PermissionPolicy.model_validate(json.loads(data))
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: semantic corruption is an integrity failure.
+        return False
+    return True
+
+
+def _ensure_default_permission_policy_record(conn: sqlite3.Connection) -> None:
+    """Create the baseline policy before the integrity anchor becomes complete."""
+    row = conn.execute("SELECT 1 FROM permission_policies WHERE id = 'default'").fetchone()
+    if row is not None:
+        return
+    serialized = json.dumps(
+        {"id": "default", "rules": [], "updated_at": db._now_iso()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    updated_at = db._now_iso()
+    conn.execute(
+        """
+        INSERT INTO permission_policies (id, data, updated_at)
+        VALUES ('default', ?, ?)
+        """,
+        (serialized, updated_at),
+    )
 
 
 def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
@@ -78,9 +226,53 @@ def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
     checked = 0
     bootstrap_completed = False
     with db.connect() as conn:
-        db._ensure_sensitive_record_integrity_schema(conn)
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (db.SENSITIVE_RECORD_INTEGRITY_TABLE,),
+        ).fetchone()
+        if table_exists is None:
+            status = {
+                "ok": False,
+                "checked": 0,
+                "failures": [
+                    {
+                        "table": db.SENSITIVE_RECORD_INTEGRITY_TABLE,
+                        "id": "*",
+                        "reason": "Sensitive record integrity proof table is unavailable",
+                    }
+                ],
+            }
+            set_startup_sensitive_integrity_status(status)
+            return status
+        anchor = conn.execute("SELECT state FROM sensitive_integrity_bootstrap_anchor WHERE id = 1").fetchone()
+        if anchor is None or str(anchor["state"] or "") not in {"pending", "complete"}:
+            status = {
+                "ok": False,
+                "checked": 0,
+                "failures": [
+                    {
+                        "table": "sensitive_integrity_bootstrap_anchor",
+                        "id": "1",
+                        "reason": "Sensitive integrity bootstrap anchor is unavailable",
+                    }
+                ],
+            }
+            set_startup_sensitive_integrity_status(status)
+            return status
         db._begin_immediate_transaction(conn)
-        bootstrap_completed = db._sensitive_integrity_bootstrap_completed(conn)
+        anchor_state = str(anchor["state"])
+        marker_valid = db._sensitive_integrity_bootstrap_completed(conn)
+        if anchor_state == "pending" and not marker_valid:
+            _ensure_default_permission_policy_record(conn)
+        if anchor_state == "complete" and not marker_valid:
+            failures.append(
+                {
+                    "table": db.SENSITIVE_RECORD_INTEGRITY_TABLE,
+                    "id": "__meta__:bootstrap",
+                    "reason": "Sensitive integrity bootstrap marker is missing or invalid",
+                }
+            )
+        bootstrap_completed = anchor_state == "complete" or marker_valid
         for table, row, data in iter_sensitive_record_rows(conn):
             checked += 1
             record_id = str(row["id"])
@@ -99,6 +291,8 @@ def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
                 )
             else:
                 db._store_sensitive_record_integrity(conn, table, record_id, data)
+            if not sensitive_record_presence_row_exists(conn, table, record_id):
+                store_sensitive_record_presence_locked(conn, table, record_id)
         if not failures and not bootstrap_completed:
             mark_sensitive_integrity_bootstrap_completed(conn)
     status = {"ok": not failures, "checked": checked, "failures": failures}
@@ -184,10 +378,7 @@ def iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str, 
         ),
     )
     for table, query in checks:
-        try:
-            rows = conn.execute(query).fetchall()
-        except sqlite3.Error:
-            continue
+        rows = conn.execute(query).fetchall()
         for row in rows:
             data = (
                 db._audit_chain_head_integrity_payload(
@@ -218,10 +409,19 @@ def ensure_sensitive_record_integrity_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _require_sensitive_record_integrity_schema(conn: sqlite3.Connection) -> None:
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (db.SENSITIVE_RECORD_INTEGRITY_TABLE,),
+    ).fetchone()
+    if present is None:
+        raise db.SensitiveRecordIntegrityError("Sensitive record integrity proof table is unavailable")
+
+
 def store_sensitive_record_integrity_locked(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
     if table not in db.SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
         return
-    ensure_sensitive_record_integrity_schema(conn)
+    _require_sensitive_record_integrity_schema(conn)
     digest = sensitive_record_digest(table, record_id, data)
     conn.execute(
         """
@@ -234,6 +434,7 @@ def store_sensitive_record_integrity_locked(conn: sqlite3.Connection, table: str
         """,
         (table, record_id, db.SENSITIVE_RECORD_INTEGRITY_VERSION, digest, db._now_iso()),
     )
+    store_sensitive_record_presence_locked(conn, table, record_id)
 
 
 def sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str, record_id: str) -> bool:
@@ -246,6 +447,31 @@ def sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str, 
         (table, record_id),
     ).fetchone()
     return row is not None
+
+
+def sensitive_record_presence_row_exists(conn: sqlite3.Connection, table: str, record_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sensitive_record_presence
+        WHERE table_name = ? AND record_id = ?
+        """,
+        (table, record_id),
+    ).fetchone()
+    return row is not None
+
+
+def store_sensitive_record_presence_locked(conn: sqlite3.Connection, table: str, record_id: str) -> None:
+    if table not in db.SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
+        return
+    _require_sensitive_record_integrity_schema(conn)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO sensitive_record_presence (table_name, record_id, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (table, record_id, db._now_iso()),
+    )
 
 
 def sensitive_integrity_bootstrap_payload() -> str:
@@ -275,7 +501,7 @@ def sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> bool:
 
 
 def mark_sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> None:
-    ensure_sensitive_record_integrity_schema(conn)
+    _require_sensitive_record_integrity_schema(conn)
     conn.execute(
         """
         INSERT INTO sensitive_record_integrity (table_name, record_id, version, digest, updated_at)
@@ -286,6 +512,14 @@ def mark_sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> No
             updated_at=excluded.updated_at
         """,
         (db.SENSITIVE_RECORD_INTEGRITY_VERSION, sensitive_integrity_bootstrap_digest(), db._now_iso()),
+    )
+    conn.execute(
+        """
+        UPDATE sensitive_integrity_bootstrap_anchor
+        SET state = 'complete', updated_at = ?
+        WHERE id = 1
+        """,
+        (db._now_iso(),),
     )
 
 

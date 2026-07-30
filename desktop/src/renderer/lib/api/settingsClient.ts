@@ -1,6 +1,7 @@
 import type { BackendPermissionPolicy, BackendPermissionRule } from "./backendTypes";
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
 import type { AppSettings } from "../../../shared/settingsTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type { BackendSettings, SensitiveChangeConfirmation } from "./settingsBackendTypes";
 import { mapSettings, mergeDesktopOnlySettings, settingsPatchFor } from "./settingsMappers";
 import { mapResponse } from "./transport";
@@ -35,9 +36,11 @@ export async function saveSettingsEndpoint(
 ): Promise<ApiResponse<AppSettings>> {
   const body = settingsPatchFor(settings, state.getLastLoadedSettings());
   const confirmation = window.lengrvis?.settings
-    ? await (window.lengrvis.settings.confirmSensitiveChange(body as Record<string, unknown>) as Promise<
-        ApiResponse<SensitiveChangeConfirmation>
-      >)
+    ? await safeIpcApiRequest(() =>
+        window.lengrvis.settings.confirmSensitiveChange(body as Record<string, unknown>) as Promise<
+          ApiResponse<SensitiveChangeConfirmation>
+        >
+      )
     : await request<SensitiveChangeConfirmation, Partial<BackendSettings>>({
         endpoint: "/api/settings/confirm-sensitive-change",
         method: "POST",
@@ -47,7 +50,9 @@ export async function saveSettingsEndpoint(
     body.confirmation_nonce = confirmation.data.nonce;
   }
   const responsePromise = window.lengrvis?.settings
-    ? window.lengrvis.settings.save(body as Record<string, unknown>) as Promise<ApiResponse<BackendSettings>>
+    ? safeIpcApiRequest(() =>
+        window.lengrvis.settings.save(body as Record<string, unknown>) as Promise<ApiResponse<BackendSettings>>
+      )
     : request<BackendSettings, Partial<BackendSettings>>({
         endpoint: "/api/settings",
         method: "POST",
@@ -68,9 +73,11 @@ export async function confirmPermissionRuleChangeEndpoint(
   rule: BackendPermissionRule
 ): Promise<ApiResponse<SensitiveChangeConfirmation>> {
   if (window.lengrvis?.permissionPolicy) {
-    return window.lengrvis.permissionPolicy.confirmRelaxation({ action: "upsert_rule", rule }) as Promise<
-      ApiResponse<SensitiveChangeConfirmation>
-    >;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.permissionPolicy.confirmRelaxation({ action: "upsert_rule", rule }) as Promise<
+        ApiResponse<SensitiveChangeConfirmation>
+      >
+    );
   }
   return request<SensitiveChangeConfirmation, { action: string; rule: BackendPermissionRule }>({
     endpoint: "/api/settings/permission-policy/confirm-relaxation",
@@ -84,9 +91,11 @@ export async function confirmPermissionRuleDeleteEndpoint(
   ruleId: string
 ): Promise<ApiResponse<SensitiveChangeConfirmation>> {
   if (window.lengrvis?.permissionPolicy) {
-    return window.lengrvis.permissionPolicy.confirmRelaxation({ action: "delete_rule", ruleId }) as Promise<
-      ApiResponse<SensitiveChangeConfirmation>
-    >;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.permissionPolicy.confirmRelaxation({ action: "delete_rule", ruleId }) as Promise<
+        ApiResponse<SensitiveChangeConfirmation>
+      >
+    );
   }
   return request<SensitiveChangeConfirmation, { action: string; rule_id: string }>({
     endpoint: "/api/settings/permission-policy/confirm-relaxation",
@@ -101,7 +110,9 @@ export function upsertPermissionRuleEndpoint(
   confirmationNonce?: string
 ): Promise<ApiResponse<BackendPermissionPolicy>> {
   if (window.lengrvis?.permissionPolicy) {
-    return window.lengrvis.permissionPolicy.upsertRule({ rule, confirmationNonce }) as Promise<ApiResponse<BackendPermissionPolicy>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.permissionPolicy.upsertRule({ rule, confirmationNonce }) as Promise<ApiResponse<BackendPermissionPolicy>>
+    );
   }
   return request<BackendPermissionPolicy, BackendPermissionRule>({
     endpoint: "/api/settings/permission-policy/rules",
@@ -117,9 +128,11 @@ export function deletePermissionRuleEndpoint(
   confirmationNonce?: string
 ): Promise<ApiResponse<{ ok: boolean; policy: BackendPermissionPolicy }>> {
   if (window.lengrvis?.permissionPolicy) {
-    return window.lengrvis.permissionPolicy.deleteRule({ ruleId, confirmationNonce }) as Promise<
-      ApiResponse<{ ok: boolean; policy: BackendPermissionPolicy }>
-    >;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.permissionPolicy.deleteRule({ ruleId, confirmationNonce }) as Promise<
+        ApiResponse<{ ok: boolean; policy: BackendPermissionPolicy }>
+      >
+    );
   }
   return request<{ ok: boolean; policy: BackendPermissionPolicy }>({
     endpoint: `/api/settings/permission-policy/rules/${encodeURIComponent(ruleId)}`,

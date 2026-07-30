@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -9,6 +10,8 @@ from app.config import AppSettings
 from app.core import db
 from app.core.schemas import now_iso
 from app.llm.types import LLMCost, LLMResponse, LLMUsage
+
+logger = logging.getLogger(__name__)
 
 CLAUDE_USAGE_KEYS = (
     "input_tokens",
@@ -75,12 +78,66 @@ def record_llm_response(
     purpose: str,
     profile: dict[str, Any] | None = None,
     projection: dict[str, Any] | None = None,
+    reservation_id: str | None = None,
+    metered_cloud: bool = False,
 ) -> None:
     try:
         db.init_db()
         cost = response.cost or LLMCost(estimated=True)
+        event_id = reservation_id or f"llm_usage_{uuid4().hex}"
+        created_at = now_iso()
+        accounted_prompt_tokens = max(0, int(response.usage.prompt_tokens))
+        accounted_completion_tokens = max(0, int(response.usage.completion_tokens))
+        accounted_total_tokens = max(
+            accounted_prompt_tokens + accounted_completion_tokens,
+            int(response.usage.total_tokens),
+        )
+        accounted_cost_usd = cost.total_cost_usd
+        conservative = bool(response.usage.estimated or cost.estimated)
+
+        if reservation_id:
+            with db.connect() as conn:
+                reservation = conn.execute(
+                    """
+                    SELECT prompt_tokens, completion_tokens, total_tokens,
+                           total_cost_usd, data, created_at
+                    FROM llm_usage_events
+                    WHERE id = ?
+                    """,
+                    (reservation_id,),
+                ).fetchone()
+                if reservation is None:
+                    raise RuntimeError("cloud usage reservation was not found")
+                reservation_data = _json_dict(_row_value(reservation, "data"))
+                reservation_state = reservation_data.get("reservation")
+                if not isinstance(reservation_state, dict) or reservation_state.get("state") != "reserved":
+                    raise RuntimeError("cloud usage reservation is not open")
+
+                if response.usage.estimated:
+                    accounted_prompt_tokens = max(
+                        accounted_prompt_tokens,
+                        _safe_int(_row_value(reservation, "prompt_tokens")),
+                    )
+                    accounted_completion_tokens = max(
+                        accounted_completion_tokens,
+                        _safe_int(_row_value(reservation, "completion_tokens")),
+                    )
+                    accounted_total_tokens = max(
+                        accounted_total_tokens,
+                        _safe_int(_row_value(reservation, "total_tokens")),
+                    )
+                reserved_cost = _row_value(reservation, "total_cost_usd")
+                if cost.estimated or accounted_cost_usd is None:
+                    accounted_cost_usd = float(reserved_cost) if reserved_cost is not None else accounted_cost_usd
+                conservative = bool(
+                    response.usage.estimated
+                    or cost.estimated
+                    or accounted_total_tokens > int(response.usage.total_tokens)
+                )
+                created_at = str(_row_value(reservation, "created_at", created_at) or created_at)
+
         data = {
-            "id": f"llm_usage_{uuid4().hex}",
+            "id": event_id,
             "provider": response.provider,
             "model": response.model,
             "mode": settings.mode,
@@ -94,36 +151,89 @@ def record_llm_response(
             "metadata": response.metadata,
             "profile": profile or {},
             "projection": projection or {},
-            "created_at": now_iso(),
+            "metered_cloud": bool(metered_cloud),
+            "accounted_usage": {
+                "prompt_tokens": accounted_prompt_tokens,
+                "completion_tokens": accounted_completion_tokens,
+                "total_tokens": accounted_total_tokens,
+                "total_cost_usd": accounted_cost_usd,
+                "conservative": conservative,
+            },
+            "created_at": created_at,
         }
-        with db.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO llm_usage_events (
-                    id, provider, model, mode, task, purpose,
-                    prompt_tokens, completion_tokens, total_tokens,
-                    total_cost_usd, estimated, data, created_at
+        if reservation_id:
+            data["reservation"] = {"state": "settled", "conservative": conservative}
+            with db.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute(
+                    "SELECT data FROM llm_usage_events WHERE id = ?",
+                    (reservation_id,),
+                ).fetchone()
+                current_data = _json_dict(_row_value(current, "data"))
+                current_state = current_data.get("reservation")
+                if not isinstance(current_state, dict) or current_state.get("state") != "reserved":
+                    raise RuntimeError("cloud usage reservation is not open")
+                cursor = conn.execute(
+                    """
+                    UPDATE llm_usage_events
+                    SET provider = ?, model = ?, mode = ?, task = ?, purpose = ?,
+                        prompt_tokens = ?, completion_tokens = ?, total_tokens = ?,
+                        total_cost_usd = ?, estimated = ?, data = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        response.provider,
+                        response.model,
+                        settings.mode,
+                        task,
+                        purpose,
+                        accounted_prompt_tokens,
+                        accounted_completion_tokens,
+                        accounted_total_tokens,
+                        accounted_cost_usd,
+                        1 if conservative else 0,
+                        json.dumps(data, ensure_ascii=False),
+                        reservation_id,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data["id"],
-                    response.provider,
-                    response.model,
-                    settings.mode,
-                    task,
-                    purpose,
-                    int(response.usage.prompt_tokens),
-                    int(response.usage.completion_tokens),
-                    int(response.usage.total_tokens),
-                    cost.total_cost_usd,
-                    1 if response.usage.estimated or cost.estimated else 0,
-                    json.dumps(data, ensure_ascii=False),
-                    data["created_at"],
-                ),
-            )
-    except Exception:  # noqa: BLE001 - broad-exception-boundary
-        # Usage telemetry must never make an LLM call fail.
+                if cursor.rowcount != 1:
+                    raise RuntimeError("cloud usage reservation could not be settled")
+        else:
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO llm_usage_events (
+                        id, provider, model, mode, task, purpose,
+                        prompt_tokens, completion_tokens, total_tokens,
+                        total_cost_usd, estimated, data, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        data["id"],
+                        response.provider,
+                        response.model,
+                        settings.mode,
+                        task,
+                        purpose,
+                        accounted_prompt_tokens,
+                        accounted_completion_tokens,
+                        accounted_total_tokens,
+                        accounted_cost_usd,
+                        1 if conservative else 0,
+                        json.dumps(data, ensure_ascii=False),
+                        data["created_at"],
+                    ),
+                )
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
+        if metered_cloud:
+            from app.commerce.usage import mark_cloud_metering_fault, quota_enforcement_enabled
+
+            if quota_enforcement_enabled():
+                mark_cloud_metering_fault("usage_record_failed")
+        logger.warning("LLM usage recording failed: error_type=%s", type(exc).__name__)
+        # A completed provider response remains usable. Metered cloud calls leave
+        # their conservative reservation intact and latch subsequent calls closed.
         return
 
 

@@ -58,11 +58,11 @@ def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = N
 
     if "move_back" in info:
         spec = info["move_back"]
-        return _move_back(spec.get("from"), spec.get("to"), allowed, context)
+        return _move_back_then_restore(spec, info.get("dst_backup"), allowed, context)
 
     if "rename_back" in info:
         spec = info["rename_back"]
-        return _move_back(spec.get("from"), spec.get("to"), allowed, context)
+        return _move_back_then_restore(spec, info.get("dst_backup"), allowed, context)
 
     if "trash_created_file" in info:
         return _trash(info["trash_created_file"], allowed, context)
@@ -148,9 +148,7 @@ def execute_rollback(task_id: str) -> dict[str, Any]:
 def _summarize_rollback(executed: list[dict[str, Any]]) -> dict[str, Any]:
     succeeded = sum(1 for item in executed if item.get("ok") is True)
     verified = sum(1 for item in executed if (item.get("verification") or {}).get("status") == "passed")
-    verification_failed = sum(
-        1 for item in executed if (item.get("verification") or {}).get("status") == "failed"
-    )
+    verification_failed = sum(1 for item in executed if (item.get("verification") or {}).get("status") == "failed")
     manual_required = sum(1 for item in executed if item.get("requires_user_action") is True)
     unrecoverable = sum(1 for item in executed if item.get("action") == "permanent_delete_unrecoverable")
     failed = len(executed) - succeeded - manual_required - unrecoverable
@@ -366,6 +364,25 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _move_back_then_restore(
+    spec: dict[str, Any],
+    dst_backup: Any,
+    allowed: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Undo a move/rename, then (if the destination was overwritten) restore the
+    destination's original content from its managed backup."""
+    result = _move_back(spec.get("from"), spec.get("to"), allowed, context)
+    if not dst_backup or not result.get("ok"):
+        return result
+    restore = _restore_backup(dst_backup, allowed, context)
+    result["dst_restore"] = restore
+    if not restore.get("ok"):
+        result["ok"] = False
+        result["verified"] = False
+    return result
 
 
 def _move_back(

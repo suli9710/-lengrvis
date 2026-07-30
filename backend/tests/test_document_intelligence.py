@@ -265,6 +265,31 @@ def test_edit_docx_rejects_oversized_file(tmp_path: Path, monkeypatch: pytest.Mo
         svc.edit_docx(path, find="x", replace="y", dry_run=True)
 
 
+def test_ensure_parseable_rejects_ooxml_decompression_bomb(tmp_path: Path):
+    import zipfile
+
+    # A tiny .docx whose declared uncompressed size dwarfs its on-disk size:
+    # a highly compressible payload that python-docx/lxml would expand in memory.
+    path = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", b"0" * (600 * 1024 * 1024))
+
+    assert path.stat().st_size < 5 * 1024 * 1024  # sanity: small on disk
+    with pytest.raises(svc.DocumentTooLargeError):
+        svc._ensure_parseable_file_size(path)
+
+
+def test_ensure_parseable_allows_normal_ooxml(tmp_path: Path):
+    path = tmp_path / "memo.docx"
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("A normal document should not trip the bomb guard.")
+    doc.save(path)
+
+    svc._ensure_parseable_file_size(path)  # must not raise
+
+
 def test_edit_docx_writes_replacement_when_dry_run_false(tmp_path: Path):
     path = tmp_path / "memo.docx"
     from docx import Document

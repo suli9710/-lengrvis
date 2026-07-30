@@ -8,14 +8,16 @@ def _text(project_root: Path, relative_path: str) -> str:
     return (project_root / relative_path).read_text(encoding="utf-8")
 
 
-def test_backend_build_requirements_pin_pyinstaller(project_root: Path) -> None:
+def test_backend_build_requirements_pin_packaging_tools(project_root: Path) -> None:
     text = _text(project_root, "backend/requirements-build.txt")
     requirement_lines = [
         line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
 
-    assert len(requirement_lines) == 1
-    assert re.fullmatch(r"pyinstaller==\d+\.\d+\.\d+", requirement_lines[0])
+    requirements = {line.split("==", 1)[0]: line for line in requirement_lines}
+    assert set(requirements) == {"pyinstaller", "setuptools"}
+    assert re.fullmatch(r"pyinstaller==\d+\.\d+\.\d+", requirements["pyinstaller"])
+    assert re.fullmatch(r"setuptools==\d+\.\d+\.\d+", requirements["setuptools"])
 
 
 def test_backend_packaging_scripts_install_hashed_build_lock(project_root: Path) -> None:
@@ -82,7 +84,6 @@ def test_portable_refresh_outputs_are_limited_to_release_directories(project_roo
 
     assert '$PortableZipPath = Resolve-ReleaseOutputPath -Path $PortableZip -Label "PortableZip"' in refresh
     assert (
-        '$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"'
-        in refresh
+        '$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"' in refresh
     )
     assert '$OutputPath = Resolve-ReleaseOutputPath -Path $OutputExe -Label "OutputExe"' in csharp_sfx

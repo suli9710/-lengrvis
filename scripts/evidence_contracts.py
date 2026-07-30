@@ -37,6 +37,7 @@ PROHIBITED_KEY_MARKERS = (
     "customer_name",
 )
 EVIDENCE_SIGNATURE_ENV = "LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"
+EVIDENCE_SIGNATURE_PAYLOAD_V2 = "reviewed-evidence-hmac-sha256/v2"
 UNSAFE_EVIDENCE_SIGNATURE_SECRETS = {
     "ci-release-evidence-hmac-secret",
     "dev-release-evidence-hmac-secret",
@@ -262,7 +263,11 @@ def canonical_evidence_payload_hash(payload: dict[str, Any]) -> str:
     if isinstance(evidence, dict):
         evidence.pop("payload_sha256", None)
         evidence.pop("signature", None)
-        evidence.pop("signing_key_fingerprint", None)
+        # Legacy reviewed evidence omitted this display fingerprint from the
+        # signed payload.  Version 2 keeps it inside the canonical payload so a
+        # reviewer-visible key identity cannot be replaced after sealing.
+        if evidence.get("signature_payload_version") != EVIDENCE_SIGNATURE_PAYLOAD_V2:
+            evidence.pop("signing_key_fingerprint", None)
     normalized = json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(normalized.encode("utf-8")).hexdigest()
 

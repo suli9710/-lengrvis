@@ -188,4 +188,4 @@ Inspection prints only safe metadata. A revoked, expired, malformed, or wrongly 
 - [ ] Ledger backup and restore tested; tamper detection demonstrated.
 - [ ] Customer delivery and revocation-manifest update channel approved.
 
-Until every item has named evidence, `MR-P0-004` remains `in_progress`.
+Until every item has named evidence, `MR-P0-004` remains `blocked` in the authoritative market-readiness dashboard.

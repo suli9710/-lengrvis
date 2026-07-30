@@ -307,3 +307,32 @@ def test_permission_mode_default_still_requires_approval_for_write():
     )
 
     assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+
+
+def test_trusted_edit_path_guard_canonicalizes_traversal():
+    from app.policy.permission_modes import _contains_runtime_or_sensitive_path
+
+    # A `..` traversal into a system directory must be flagged as sensitive even
+    # though the literal string starts under a user directory.
+    assert (
+        _contains_runtime_or_sensitive_path({"path": r"C:\Users\me\..\..\Windows\System32\drivers\etc\hosts"}) is True
+    )
+    assert _contains_runtime_or_sensitive_path({"path": "../../etc/shadow"}) is True
+    assert _contains_runtime_or_sensitive_path({"path": "/etc/passwd"}) is True
+    # A normal in-user-space path and ordinary prose are not flagged.
+    assert _contains_runtime_or_sensitive_path({"path": r"C:\Users\me\notes.txt"}) is False
+    assert _contains_runtime_or_sensitive_path({"message": "hold on... let me check"}) is False
+
+
+def test_is_modifying_or_higher_covers_r4():
+    from app.policy.risk import RiskLevel, is_modifying_or_higher
+
+    assert is_modifying_or_higher(RiskLevel.R0_READ_ONLY) is False
+    assert is_modifying_or_higher(RiskLevel.R1_OPEN_ONLY) is False
+    assert is_modifying_or_higher(RiskLevel.R2_REVERSIBLE_MODIFY) is True
+    assert is_modifying_or_higher(RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM) is True
+    # R4 must count as modifying-or-higher so runtime backstops fail closed
+    # rather than treating it as a non-write.
+    assert is_modifying_or_higher(RiskLevel.R4_FORBIDDEN_OR_HANDOFF) is True
+    assert is_modifying_or_higher("R4_FORBIDDEN_OR_HANDOFF") is True
+    assert is_modifying_or_higher(None) is False

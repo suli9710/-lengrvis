@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core import db
@@ -30,8 +30,10 @@ def _utc_now() -> datetime:
 def _next_run(cron_expr: str, *, base: datetime | None = None) -> str:
     if not _CRONITER_AVAILABLE:
         # Minimal fallback: assume 5-minute fixed interval when croniter missing.
+        # The next run must be strictly in the future, otherwise the schedule
+        # stays perpetually "due" and re-fires on every tick (wakeup storm).
         ref = base or _utc_now()
-        return ref.replace(microsecond=0).isoformat()
+        return (ref + timedelta(minutes=5)).replace(microsecond=0).isoformat()
     ref = base or _utc_now()
     itr = _Croniter(cron_expr, ref)
     next_dt = itr.get_next(datetime)
@@ -173,8 +175,10 @@ class Scheduler:
             schedule = ScheduledTask.model_validate(row)
             schedule.last_run_at = now_dt.replace(microsecond=0).isoformat()
             schedule.last_status = "running"
-            if _CRONITER_AVAILABLE:
-                schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
+            # Always advance next_run_at. When croniter is unavailable, _next_run
+            # returns the +5min fallback; leaving it unchanged would keep the row
+            # perpetually due and re-fire it on every tick.
+            schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
             schedule.updated_at = now_iso()
             claimed = db.claim_scheduled_task_run(
                 schedule.id,

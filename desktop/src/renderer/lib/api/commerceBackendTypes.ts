@@ -62,6 +62,8 @@ export interface BackendCommerceQuotaStatus {
   plan: BackendCommercePlan;
   enforced: boolean;
   unlimited: boolean;
+  available: boolean;
+  state: "available" | "metering_unavailable";
   window_hours: number;
   limits: {
     total_tokens: number | null;
@@ -79,6 +81,7 @@ export interface BackendCommerceQuotaStatus {
   windows?: Array<{
     key?: string;
     window_hours: number;
+    available: boolean;
     limits: {
       total_tokens: number | null;
       calls: number | null;

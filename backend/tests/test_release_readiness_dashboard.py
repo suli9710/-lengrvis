@@ -47,9 +47,7 @@ def test_script_path_exists():
 
 def test_release_readiness_workflow_hard_gate_uses_rc_release():
     text = RELEASE_READINESS_WORKFLOW.read_text(encoding="utf-8")
-    strict_section = text[
-        text.index("Strict release readiness") : text.index("Strict market readiness")
-    ]
+    strict_section = text[text.index("Strict release readiness") : text.index("Strict market readiness")]
 
     assert "--rc-release" in strict_section
     assert "--strict" not in strict_section
@@ -76,23 +74,15 @@ def test_current_dashboard_exposes_all_public_beta_stop_ship_rows():
     rows = mod.parse_rows(READINESS_PATH.read_text(encoding="utf-8"))
 
     assert mod.validate_public_beta_gate_set(rows) == []
-    assert {
-        row.row_id for row in rows if row.row_id.startswith("RR-P0-")
-    } == mod.REQUIRED_PUBLIC_BETA_P0_IDS
+    assert {row.row_id for row in rows if row.row_id.startswith("RR-P0-")} == mod.REQUIRED_PUBLIC_BETA_P0_IDS
 
 
 def test_public_beta_gate_set_rejects_missing_threat_model_row():
-    rows = [
-        row
-        for row in mod.parse_rows(READINESS_PATH.read_text(encoding="utf-8"))
-        if row.row_id != "RR-P0-007"
-    ]
+    rows = [row for row in mod.parse_rows(READINESS_PATH.read_text(encoding="utf-8")) if row.row_id != "RR-P0-007"]
 
     errors = mod.validate_public_beta_gate_set(rows)
 
-    assert errors == [
-        "Release readiness dashboard is missing required public Beta P0 rows: RR-P0-007"
-    ]
+    assert errors == ["Release readiness dashboard is missing required public Beta P0 rows: RR-P0-007"]
 
 
 def test_non_strict_allows_blocked_p0_but_warns():
@@ -309,6 +299,9 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
                 "- Worktree status: clean",
                 "- Manual sign-off status: rc_signoff_recorded",
                 "- Owner signature: release-owner-accepted-rc",
+                "- Owner signature verification: verified",
+                f"- Owner signature payload SHA-256: sha256:{'1' * 64}",
+                f"- Owner signature key fingerprint: sha256:{'2' * 64}",
                 "",
                 "## Execution Commands",
                 "",

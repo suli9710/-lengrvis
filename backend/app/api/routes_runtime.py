@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.routes_approvals import _execute_approved_step, approval_execution_response, latest_approval_payload
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus
-from app.services import run_service
+from app.services import run_service, task_service
 
 router = APIRouter()
 
@@ -31,6 +31,12 @@ async def runtime_background() -> dict:
         "status": "background_ready",
         **await run_service.prepare_for_background(),
     }
+
+
+@router.post("/runtime/emergency-stop")
+async def runtime_emergency_stop() -> dict:
+    """Fail-closed cancellation endpoint for the desktop emergency shortcut."""
+    return await task_service.emergency_stop_all_tasks()
 
 
 @router.post("/runtime/approvals/{approval_id}/continue")

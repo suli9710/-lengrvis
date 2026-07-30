@@ -67,6 +67,222 @@ class LengrvisLanTrustInstrumentedTest {
   }
 
   @Test
+  fun okHttpOriginCanonicalizerUnifiesIdnIpv6AndPortForms() {
+    val unicodeDefaultOrigin = "https://bücher.example:443"
+    val punycodeDefaultOrigin = "https://xn--bcher-kva.example"
+    val unicodeNonDefaultOrigin = "https://bücher.example:8443"
+    val punycodeNonDefaultOrigin = "https://xn--bcher-kva.example:8443"
+    val expandedIpv6Origin = "https://[2001:0db8:0:0:0:0:0:1]:9443"
+    val canonicalIpv6Origin = "https://[2001:db8::1]:9443"
+
+    val defaultRecord = LengrvisLanTrust.trustServerCertificate(
+      context,
+      unicodeDefaultOrigin,
+      fingerprintSha256,
+    )
+    Assert.assertEquals(punycodeDefaultOrigin, defaultRecord.getString("origin"))
+    LengrvisLanTrust.assertServerCertificateTrusted(context, punycodeDefaultOrigin, fingerprintSha256)
+
+    val nonDefaultFingerprint = wrongFingerprint(fingerprintSha256)
+    val nonDefaultRecord = LengrvisLanTrust.trustServerCertificate(
+      context,
+      unicodeNonDefaultOrigin,
+      nonDefaultFingerprint,
+    )
+    Assert.assertEquals(punycodeNonDefaultOrigin, nonDefaultRecord.getString("origin"))
+    LengrvisLanTrust.assertServerCertificateTrusted(
+      context,
+      punycodeNonDefaultOrigin,
+      nonDefaultFingerprint,
+    )
+
+    val ipv6Fingerprint = anotherWrongFingerprint(fingerprintSha256)
+    val ipv6Record = LengrvisLanTrust.trustServerCertificate(context, expandedIpv6Origin, ipv6Fingerprint)
+    Assert.assertEquals(canonicalIpv6Origin, ipv6Record.getString("origin"))
+    LengrvisLanTrust.assertServerCertificateTrusted(context, canonicalIpv6Origin, ipv6Fingerprint)
+  }
+
+  @Test
+  fun pinnedIdnOriginRejectsReplacementSystemCertificate() {
+    val unicodeOrigin = "https://bücher.example:8443"
+    val requestOrigin = "https://xn--bcher-kva.example:8443"
+    val replacementFingerprint = wrongFingerprint(fingerprintSha256)
+
+    LengrvisLanTrust.trustServerCertificate(context, unicodeOrigin, fingerprintSha256)
+
+    Assert.assertTrue(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        requestOrigin,
+        fingerprintSha256,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        requestOrigin,
+        replacementFingerprint,
+        requireExactOriginPin = false,
+      ),
+    )
+  }
+
+  @Test
+  fun legacyV1UnicodePinMigratesToCanonicalOriginWithoutTrustWidening() {
+    val unicodeOrigin = "https://bücher.example:8443"
+    val canonicalOrigin = "https://xn--bcher-kva.example:8443"
+    val canonical = LengrvisLanTrust.trustServerCertificate(context, canonicalOrigin, fingerprintSha256)
+    val legacyRecord = JSONObject(canonical.toString())
+      .put("origin", unicodeOrigin)
+      .put("host", "bücher.example")
+    val preferences = context.getSharedPreferences("lengrvis_lan_tls_trust", Context.MODE_PRIVATE)
+    Assert.assertTrue(
+      preferences.edit()
+        .putString("tls_pin_records_v1", JSONArray().put(legacyRecord).toString())
+        .remove("tls_pin_store_governed_v1")
+        .commit(),
+    )
+
+    val listed = LengrvisLanTrust.listServerCertificatePins(context, canonicalOrigin, true)
+    Assert.assertEquals(1, listed.length())
+    Assert.assertEquals(canonicalOrigin, listed.getJSONObject(0).getString("origin"))
+    Assert.assertEquals("xn--bcher-kva.example", listed.getJSONObject(0).getString("host"))
+    LengrvisLanTrust.assertServerCertificateTrusted(context, unicodeOrigin, fingerprintSha256)
+
+    val persisted = JSONArray(preferences.getString("tls_pin_records_v1", "[]"))
+    Assert.assertEquals(canonicalOrigin, persisted.getJSONObject(0).getString("origin"))
+    Assert.assertEquals("xn--bcher-kva.example", persisted.getJSONObject(0).getString("host"))
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        canonicalOrigin,
+        wrongFingerprint(fingerprintSha256),
+        requireExactOriginPin = false,
+      ),
+    )
+  }
+
+  @Test
+  fun legacyV1UnicodePinWithMismatchedHostFailsClosed() {
+    val canonicalOrigin = "https://xn--bcher-kva.example:8443"
+    val canonical = LengrvisLanTrust.trustServerCertificate(context, canonicalOrigin, fingerprintSha256)
+    val malformedRecord = JSONObject(canonical.toString())
+      .put("origin", "https://bücher.example:8443")
+      .put("host", "other.example")
+    val preferences = context.getSharedPreferences("lengrvis_lan_tls_trust", Context.MODE_PRIVATE)
+    Assert.assertTrue(
+      preferences.edit()
+        .putString("tls_pin_records_v1", JSONArray().put(malformedRecord).toString())
+        .remove("tls_pin_store_governed_v1")
+        .commit(),
+    )
+
+    Assert.assertThrows(IllegalStateException::class.java) {
+      LengrvisLanTrust.listServerCertificatePins(context, canonicalOrigin, true)
+    }
+    Assert.assertEquals("corrupt-v1", preferences.getString("tls_pin_store_corrupt_v1", null))
+  }
+
+  @Test
+  fun systemTrustedCertificatePinnedOnAnotherOriginCannotDowngradeExactOrigin() {
+    val otherOrigin = differentPortOrigin(baseUrl)
+    val otherFingerprint = wrongFingerprint(fingerprintSha256)
+    LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)
+    LengrvisLanTrust.trustServerCertificate(context, otherOrigin, otherFingerprint)
+
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        baseUrl,
+        otherFingerprint,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertTrue(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        otherOrigin,
+        otherFingerprint,
+        requireExactOriginPin = false,
+      ),
+    )
+  }
+
+  @Test
+  fun exactOriginPolicySeparatesSystemAndPinnedCertificatesAcrossPorts() {
+    val differentPort = differentPortOrigin(baseUrl)
+    val unpinnedFingerprint = wrongFingerprint(fingerprintSha256)
+
+    LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)
+
+    Assert.assertTrue(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        baseUrl,
+        fingerprintSha256,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertTrue(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        baseUrl,
+        fingerprintSha256,
+        requireExactOriginPin = true,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        baseUrl,
+        unpinnedFingerprint,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        baseUrl,
+        unpinnedFingerprint,
+        requireExactOriginPin = true,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        differentPort,
+        fingerprintSha256,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        differentPort,
+        fingerprintSha256,
+        requireExactOriginPin = true,
+      ),
+    )
+    Assert.assertTrue(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        differentPort,
+        unpinnedFingerprint,
+        requireExactOriginPin = false,
+      ),
+    )
+    Assert.assertFalse(
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        differentPort,
+        unpinnedFingerprint,
+        requireExactOriginPin = true,
+      ),
+    )
+  }
+
+  @Test
   fun pinLifecycleSupportsOverlapPromotionExpiryAndTargetedRevocation() {
     val origin = baseUrl
     val activeFingerprint = fingerprintSha256
@@ -149,6 +365,44 @@ class LengrvisLanTrustInstrumentedTest {
     Assert.assertThrows(SSLPeerUnverifiedException::class.java) {
       LengrvisLanTrust.assertServerCertificateTrusted(context, baseUrl, fingerprintSha256)
     }
+  }
+
+  @Test
+  fun reconfirmingActivePinExtendsExpiryWithoutRepairing() {
+    val now = System.currentTimeMillis()
+    val staged = LengrvisLanTrust.stageServerCertificate(
+      context,
+      baseUrl,
+      fingerprintSha256,
+      now + 60_000,
+      now + 30_000,
+      null,
+    )
+    Assert.assertEquals("active", staged.getString("status"))
+    val originalExpiry = staged.getString("expires_at")
+
+    // Re-confirming the SAME out-of-band fingerprint must renew the pin, so a
+    // stable self-signed certificate does not hard-expire and force a re-pair.
+    val renewed = LengrvisLanTrust.activateServerCertificate(
+      context,
+      baseUrl,
+      fingerprintSha256,
+      now + 600_000,
+      null,
+    )
+    Assert.assertEquals("active", renewed.getString("status"))
+    Assert.assertTrue(renewed.getString("expires_at") > originalExpiry)
+    Assert.assertTrue(LengrvisLanTrust.hasAnyFingerprint(context, fingerprintSha256))
+
+    // Renewal only ever extends: an earlier expiry must not shorten the pin.
+    val notShortened = LengrvisLanTrust.activateServerCertificate(
+      context,
+      baseUrl,
+      fingerprintSha256,
+      now + 90_000,
+      null,
+    )
+    Assert.assertEquals(renewed.getString("expires_at"), notShortened.getString("expires_at"))
   }
 
   @Test

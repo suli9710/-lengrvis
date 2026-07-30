@@ -383,7 +383,7 @@ export function OfficeScene({
               <Sparkles size={13} aria-hidden="true" />
               本机优先 AI 工作台
             </span>
-            <h1>问问 Lengrvis</h1>
+            <h2>问问 Lengrvis</h2>
             <p>一句话处理文件、文档、应用和电脑事务。</p>
           </div>
           <div className="office-headline__status" aria-label="当前工作状态">

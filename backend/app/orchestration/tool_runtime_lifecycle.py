@@ -8,6 +8,10 @@ from typing import Any
 
 from app.core import db
 from app.core.audit import record
+from app.core.content_provenance import (
+    clear_tool_output_provenance,
+    take_tool_output_provenance,
+)
 from app.core.schemas import (
     MessageType,
     OpenAIMessageRole,
@@ -120,6 +124,7 @@ class ToolRuntimeLifecycleMixin:
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
         tool_context = runtime.tool_context()
         tool_context.update({"task_id": task.id, "step_id": step.id})
+        clear_tool_output_provenance(tool_context)
         tool_context["_expected_resource_state"] = self._approved_resource_state(approval_id)
         # This path runs only after PolicyEngine review (auto-clear) or an atomic
         # approval claim, so stamp the context as a validated execution. Tool-layer
@@ -182,6 +187,7 @@ class ToolRuntimeLifecycleMixin:
             )
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             error_text = _exception_error_text(exc, step)
+            outcome_unknown = is_write_tool(tool)
             self._publish_tool_progress(
                 task,
                 step,
@@ -194,10 +200,24 @@ class ToolRuntimeLifecycleMixin:
             result = ToolResult(
                 tool_call_id=call.id,
                 ok=False,
+                output=(
+                    {
+                        "status": "outcome_unknown",
+                        "outcome_unknown": True,
+                        "automatic_replay_blocked": True,
+                        "error_type": type(exc).__name__,
+                    }
+                    if outcome_unknown
+                    else {}
+                ),
                 error=error_text,
                 observation=(
-                    f"{step.tool_name} raised {type(exc).__name__}; check the supplied args "
-                    f"({', '.join(sorted((step.args or {}).keys())) or 'none'}) or try an alternative tool."
+                    f"{step.tool_name} raised {type(exc).__name__}; its write outcome is unknown and replay is blocked."
+                    if outcome_unknown
+                    else (
+                        f"{step.tool_name} raised {type(exc).__name__}; check the supplied args "
+                        f"({', '.join(sorted((step.args or {}).keys())) or 'none'}) or try an alternative tool."
+                    )
                 ),
             )
         finally:
@@ -211,6 +231,9 @@ class ToolRuntimeLifecycleMixin:
                 metadata={"approval_id": approval_id, "approved_by_user": True} if approval_id else None,
             )
 
+        output_provenance = take_tool_output_provenance(tool_context)
+        if result.ok:
+            result._output_provenance = output_provenance  # noqa: SLF001 - in-process lifecycle handoff.
         return result
 
     async def _publish_result_and_finish(

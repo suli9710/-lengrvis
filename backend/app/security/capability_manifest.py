@@ -140,9 +140,7 @@ def prompt_capability_payload(content: str) -> dict[str, str]:
 
 def skill_manifest_capability_payload(raw_manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        str(key): value
-        for key, value in raw_manifest.items()
-        if str(key).casefold() not in {"signature", "signatures"}
+        str(key): value for key, value in raw_manifest.items() if str(key).casefold() not in {"signature", "signatures"}
     }
 
 
@@ -157,15 +155,29 @@ def mcp_server_capability_payload(config: Mapping[str, Any] | Any) -> dict[str, 
     endpoint_details = _sanitize_url_details(str(endpoint))
     command_path = str(data.get("command") or "").replace("\\", "/")
     command = command_path.rsplit("/", 1)[-1]
+    auth = data.get("auth") if isinstance(data.get("auth"), Mapping) else {}
+    env = data.get("env") if isinstance(data.get("env"), Mapping) else {}
     return {
         "name": str(data.get("name") or data.get("id") or "mcp"),
         "enabled": bool(data.get("enabled", True)),
         "transport": str(data.get("transport") or "http").casefold(),
+        "protocol_version": str(data.get("protocol_version") or data.get("protocolVersion") or "2025-11-25"),
+        "strict_lifecycle": bool(data.get("strict_lifecycle", data.get("strictLifecycle", True))),
         "endpoint": endpoint_details["endpoint"],
         "endpoint_options": endpoint_details["options"],
         "command": command,
         "command_path_hash": canonical_content_hash({"path": command_path}) if command_path else "",
         "args": _sanitize_command_args(data.get("args")),
+        "env_keys": sorted(str(key) for key in env if str(key)),
+        "inherit_env": sorted(_string_list(data.get("inherit_env") or data.get("inheritEnv"))),
+        "auth": {
+            "type": str(auth.get("type") or ("bearer" if auth.get("token") or auth.get("token_env") else "")),
+            "required": bool(auth.get("required")),
+            "resource": _sanitize_url_details(str(auth.get("resource") or auth.get("audience") or ""))["endpoint"],
+            "token_source": "environment"
+            if auth.get("token_env") or auth.get("tokenEnv")
+            else ("external_config" if auth.get("token") else ""),
+        },
         "owner": str(data.get("owner") or ""),
         "policy_id": str(data.get("policy_id") or data.get("policyId") or ""),
         "allowed_tools": sorted(_string_list(data.get("allowed_tools") or data.get("allowedTools"))),
@@ -302,7 +314,10 @@ def build_capability_manifest(
             entry = observe_tool(tool)
             entries[(entry.kind, entry.capability_id)] = entry
     _collect_prompt_entries(entries)
-    _collect_permission_policy_entry(entries)
+    collection_errors: list[dict[str, str]] = []
+    policy_collection_error = _collect_permission_policy_entry(entries)
+    if policy_collection_error is not None:
+        collection_errors.append(policy_collection_error)
     _collect_skill_entries(entries, effective_settings)
     _collect_mcp_entries(entries, effective_settings)
 
@@ -335,6 +350,7 @@ def build_capability_manifest(
         "schema_version": CAPABILITY_MANIFEST_SCHEMA_VERSION,
         "revocation_state": "valid" if revocations.valid else "invalid",
         "revocation_hash": revocation_hash,
+        "collection_errors": collection_errors,
         "entries": public_entries,
     }
     manifest_hash = canonical_content_hash(manifest_body)
@@ -348,7 +364,7 @@ def build_capability_manifest(
         "generated_at": datetime.now(UTC).isoformat(),
         "state": (
             "invalid"
-            if not revocations.valid
+            if not revocations.valid or collection_errors
             else "revoked"
             if any(entry["state"] == "revoked" for entry in public_entries)
             else "active"
@@ -453,7 +469,9 @@ def _collect_prompt_entries(entries: dict[tuple[str, str], CapabilityEntry]) -> 
         entries[(entry.kind, entry.capability_id)] = entry
 
 
-def _collect_permission_policy_entry(entries: dict[tuple[str, str], CapabilityEntry]) -> None:
+def _collect_permission_policy_entry(
+    entries: dict[tuple[str, str], CapabilityEntry],
+) -> dict[str, str] | None:
     try:
         from app.policy.permissions import PermissionStore
 
@@ -461,8 +479,12 @@ def _collect_permission_policy_entry(entries: dict[tuple[str, str], CapabilityEn
         policy = store.get_policy()
         persisted_version = store.updated_at()
         payload = permission_policy_capability_payload(policy)
-    except Exception:  # noqa: BLE001 - broad-exception-boundary; status remains available when local policy storage is unavailable.
-        return
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: manifest becomes explicitly invalid.
+        return {
+            "kind": "permission_policy",
+            "code": "collection_failed",
+            "error_type": type(exc).__name__,
+        }
     entry = CapabilityEntry(
         kind="permission_policy",
         capability_id=str(policy.id),
@@ -471,6 +493,7 @@ def _collect_permission_policy_entry(entries: dict[tuple[str, str], CapabilityEn
         origin="local_policy_store",
     )
     entries[(entry.kind, entry.capability_id)] = entry
+    return None
 
 
 def _collect_skill_entries(

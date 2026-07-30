@@ -312,6 +312,28 @@ def test_manifest_hash_is_versioned_and_deterministic_for_same_capabilities() ->
     assert first["generated_at"] != ""
 
 
+def test_manifest_fails_closed_when_permission_policy_collection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = AppSettings(provider_name="mock", mcp_servers=[])
+    healthy = build_capability_manifest(settings=settings, tools=[_test_tool()])
+
+    def fail_policy_read(_self):  # noqa: ANN001, ANN202
+        raise RuntimeError("policy failed token=manifest-secret-value")
+
+    monkeypatch.setattr("app.policy.permissions.PermissionStore.get_policy", fail_policy_read)
+    degraded = build_capability_manifest(settings=settings, tools=[_test_tool()])
+
+    assert degraded["state"] == "invalid"
+    assert degraded["collection_errors"] == [
+        {
+            "kind": "permission_policy",
+            "code": "collection_failed",
+            "error_type": "RuntimeError",
+        }
+    ]
+    assert degraded["manifest_hash"] != healthy["manifest_hash"]
+    assert "manifest-secret-value" not in json.dumps(degraded, sort_keys=True)
+
+
 def test_manifest_covers_prompts_tools_policy_skills_and_mcp_config(tmp_path: Path) -> None:
     _write_skill(tmp_path)
     load_skill_package(tmp_path / "manifest_demo")

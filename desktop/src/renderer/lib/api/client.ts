@@ -193,10 +193,12 @@ import {
 import {
   forgetMemoryEndpoint,
   listMemoriesEndpoint,
+  promoteMemoryEndpoint,
   recallMemoryEndpoint,
+  revokeMemoryEndpoint,
   saveMemoryEndpoint
 } from "./memoryClient";
-import type { RecallMemoryOptions, SaveMemoryOptions } from "./memoryClient";
+import type { RecallMemoryOptions, ReviewMemoryOptions, SaveMemoryOptions } from "./memoryClient";
 import type { BackendMemory } from "./memoryBackendTypes";
 import {
   createMobilePairingCodeEndpoint,
@@ -703,6 +705,14 @@ export class LengrvisApiClient {
 
   recallMemory(query: string, options: RecallMemoryOptions = {}): Promise<ApiResponse<BackendMemory[]>> {
     return recallMemoryEndpoint(this.requestEndpoint, query, options);
+  }
+
+  promoteMemory(memoryId: string, options: ReviewMemoryOptions = {}): Promise<ApiResponse<BackendMemory>> {
+    return promoteMemoryEndpoint(this.requestEndpoint, memoryId, options);
+  }
+
+  revokeMemory(memoryId: string, options: ReviewMemoryOptions = {}): Promise<ApiResponse<BackendMemory>> {
+    return revokeMemoryEndpoint(this.requestEndpoint, memoryId, options);
   }
 
   forgetMemory(memoryId: string): Promise<ApiResponse<{ ok: boolean; id: string }>> {

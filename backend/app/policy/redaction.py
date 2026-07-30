@@ -76,10 +76,31 @@ PUBLIC_MACHINE_LABELS = {
     BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
     BROWSER_CONTENT_TRUST,
 }
+QUOTED_LOCAL_PATH_PATTERN = re.compile(
+    r"(?i)(?P<quote>['\"])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    r"(?:(?!(?P=quote))[^\r\n])+(?P=quote)"
+)
+LOCAL_FILE_PATH_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    # Do not scan through another absolute-path prefix. Without this boundary,
+    # repeated extensionless paths make every prefix rescan the remaining text.
+    r"(?:(?!(?<![A-Za-z0-9])"
+    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/]))"
+    r"[^,;'‘’\"<>\r\n])*?\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}"
+    r"(?=$|[\s,;:'‘’\"<>\])}.。；：，、!?！？?=&/#])"
+)
 LOCAL_PATH_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    r"(?:[A-Za-z]:[\\/][^\s,;'\"<>]+|(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>]+|~[\\/][^\s,;'\"<>]+)"
+    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    r"(?:(?!\s+(?:with\s+)?(?:api[_-]?key|token|password|secret|authorization|cookie)\s*[:=])"
+    r"[^,;'\"<>\r\n])+"
 )
+PUBLIC_STACK_LOCATION_PATTERN = re.compile(r"(?is)file\s+\"[^\"\r\n]+\",\s+line\s+\d+,\s+in\s+[^\r\n]+")
 PUBLIC_FILE_NAME_PATTERN = re.compile(
     r"(?i)(?<![\w.-])(?:(?:\.(?:env|npmrc|pypirc|netrc)(?:\.[A-Za-z0-9_-]+)*)|(?:[A-Za-z0-9][A-Za-z0-9_.()-]{0,96}\."
     r"(?:csv|doc|docx|env|ini|json|key|log|md|pdf|pem|png|jpe?g|pptx?|py|sqlite|sqlite3|ts|tsx|txt|xls|xlsx|zip))"
@@ -105,6 +126,9 @@ def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
 
 def redact_public_text(text: str, *, redact_generic_tokens: bool = True) -> str:
     redacted = redact_text(text, redact_generic_tokens=redact_generic_tokens)
+    redacted = PUBLIC_STACK_LOCATION_PATTERN.sub("[REDACTED_STACK]", redacted)
+    redacted = QUOTED_LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redacted)
+    redacted = LOCAL_FILE_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redacted)
     redacted = LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redacted)
     redacted = PUBLIC_FILE_NAME_PATTERN.sub("[REDACTED_FILE_NAME]", redacted)
     return PUBLIC_PROMPT_TEXT_PATTERN.sub("[REDACTED_PROMPT]", redacted)
@@ -297,19 +321,29 @@ def _redact_url_secrets(text: str) -> str:
         try:
             split = urlsplit(raw_url)
         except ValueError:
-            return raw_url
+            # Malformed bracketed hosts and ports can make urllib reject the
+            # URL before its query or userinfo can be inspected. Treat the
+            # whole token as sensitive instead of returning it verbatim.
+            return "[REDACTED_URL]"
+
+        netloc = split.netloc.rsplit("@", 1)[-1]
+        changed = netloc != split.netloc
         if not split.query:
-            return raw_url
+            if not changed:
+                return raw_url
+            return urlunsplit((split.scheme, netloc, split.path, split.query, split.fragment))
+
         query = []
-        changed = False
         for key, value in parse_qsl(split.query, keep_blank_values=True):
             if contains_sensitive_key(key):
                 query.append((key, "[REDACTED]"))
                 changed = True
             else:
-                query.append((key, redact_text(value) if value else value))
+                safe_value = redact_text(value) if value else value
+                query.append((key, safe_value))
+                changed = changed or safe_value != value
         if not changed:
             return raw_url
-        return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
+        return urlunsplit((split.scheme, netloc, split.path, urlencode(query), split.fragment))
 
     return re.sub(r"https?://[^\s'\"<>]+", replace, text)

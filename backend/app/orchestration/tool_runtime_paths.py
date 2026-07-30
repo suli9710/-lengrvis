@@ -8,6 +8,7 @@ from app.core.errors import SecurityError
 from app.core.paths import resolve_task_path
 from app.orchestration.tool_runtime_support import _safe_runtime_error_text
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
+from app.policy.risk import is_modifying_or_higher
 from app.tools.schemas import ToolDefinition
 
 AUTHORIZED_PATH_ARG_KEYS = {
@@ -143,8 +144,7 @@ def is_authorized_path_arg_key(key: str, *, top_level: bool) -> bool:
         or normalized.endswith("_files")
         or (
             top_level
-            and normalized
-            in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
+            and normalized in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
         )
     )
 
@@ -179,15 +179,15 @@ def needs_completion_barrier(tool: ToolDefinition, args: dict[str, Any]) -> bool
 
 def is_write_tool(tool: ToolDefinition) -> bool:
     risk = getattr(tool, "risk_level", None)
-    risk_value = getattr(risk, "value", str(risk or ""))
-    if risk and risk_value.startswith(("R2", "R3")):
+    # >= R2 (includes R4_FORBIDDEN_OR_HANDOFF, e.g. all MCP tools) so a
+    # runtime backstop never treats a higher-risk tool as a non-write.
+    if risk is not None and is_modifying_or_higher(risk):
         return True
     if getattr(tool, "supports_dry_run", False):
         return True
     name = getattr(tool, "name", "")
     return name in BROWSER_WRITE_TOOLS or any(
-        token in name
-        for token in (".copy", ".move", ".rename", ".trash", ".write", ".create", ".delete", ".uninstall")
+        token in name for token in (".copy", ".move", ".rename", ".trash", ".write", ".create", ".delete", ".uninstall")
     )
 
 

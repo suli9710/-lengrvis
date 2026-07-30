@@ -102,19 +102,19 @@ export function registerBrowserHostIpcHandlers({
     return sanitizeActionResult(host.pause(String(sessionId)));
   });
 
-  handle(IPC_CHANNELS.browserHostResume, (event, sessionId) => {
+  handle(IPC_CHANNELS.browserHostResume, async (event, sessionId) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, browserHostResumeConfirmationOptions(String(sessionId)));
     return sanitizeActionResult(host.resume(String(sessionId)));
   });
 
-  handle(IPC_CHANNELS.browserHostTakeover, (event, sessionId) => {
+  handle(IPC_CHANNELS.browserHostTakeover, async (event, sessionId) => {
     assertTrustedRenderer(event);
-    void sessionId;
-    return deniedRendererBrowserHostWrite(
-      host,
-      "BrowserHost takeover requires an approval grant.",
-      sanitizeActionResult
-    );
+    const safeSessionId = String(sessionId);
+    await confirmNativeDesktopAction(event, browserHostTakeoverConfirmationOptions(safeSessionId));
+    const paused = host.pause(safeSessionId);
+    if (!paused.ok) return sanitizeActionResult(paused);
+    return sanitizeActionResult(host.takeover(safeSessionId));
   });
 
   handle(IPC_CHANNELS.browserHostRelease, (event, sessionId) => {
@@ -150,6 +150,33 @@ function browserHostOpenConfirmationOptions(request: BrowserHostOpenRequest): Na
     detail: [
       `Target: ${target}`,
       "The session may navigate to external websites using the app's configured browser-network permissions."
+    ].join("\n")
+  };
+}
+
+function browserHostTakeoverConfirmationOptions(sessionId: string): NativeConfirmationDialogOptions {
+  return {
+    type: "warning",
+    confirmLabel: "Pause and take over",
+    title: "Confirm browser takeover",
+    message: "Pause the agent and take manual control of this browser session?",
+    detail: [
+      `Session: ${truncateBrowserHostConfirmationOrigin(sessionId)}`,
+      "The agent will stay paused while manual interaction is enabled.",
+      "After returning control, observe the page again and explicitly resume the agent."
+    ].join("\n")
+  };
+}
+
+function browserHostResumeConfirmationOptions(sessionId: string): NativeConfirmationDialogOptions {
+  return {
+    type: "warning",
+    confirmLabel: "Resume agent",
+    title: "Confirm browser resume",
+    message: "Resume agent control of this browser session?",
+    detail: [
+      `Session: ${truncateBrowserHostConfirmationOrigin(sessionId)}`,
+      "Resume is allowed only after control was returned and the current page was observed again."
     ].join("\n")
   };
 }

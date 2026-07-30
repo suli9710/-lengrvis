@@ -61,6 +61,7 @@ function assertSourceContract() {
     'STATUS_REVOKED = "revoked"',
     "expiresAtEpochMs > nowEpochMs",
     "originHasFingerprint",
+    "certificateAllowedByExactOriginPolicy",
     "isSystemTrusted",
     "verifyPinnedOriginBeforeRequest",
     "stageServerCertificate",
@@ -83,10 +84,70 @@ function assertSourceContract() {
     /pins\.put\(host,\s*values\)/,
     "LAN TLS trust must not retain the legacy unbounded host-to-fingerprint array",
   );
+  assert.doesNotMatch(
+    trust,
+    /import java\.net\.URL/,
+    "pin persistence and requests must not use a different URL canonicalizer",
+  );
+  const normalizeOriginStart = trust.indexOf("private fun normalizeHttpsOrigin");
+  const normalizeOriginEnd = trust.indexOf("private fun originHost", normalizeOriginStart);
+  const normalizeOrigin = trust.slice(normalizeOriginStart, normalizeOriginEnd);
+  assert.match(
+    normalizeOrigin,
+    /value\.toHttpUrlOrNull\(\)/,
+    "persisted pin origins must use OkHttp HttpUrl IDN and IPv6 canonicalization",
+  );
+  assert.match(
+    normalizeOrigin,
+    /return renderHttpsOrigin\(url\)/,
+    "persisted pin origins must use the shared request-origin renderer",
+  );
   assert.match(
     trust,
-    /expectedOrigin == null \|\| !LengrvisLanTrust\.originHasFingerprint\(context, expectedOrigin, fingerprint\)/,
-    "self-signed TLS fallback must require an active exact-origin pin during the handshake",
+    /canonicalRewriteRequired[\s\S]*source\.optString\("origin"\) != record\.origin[\s\S]*writeRecordsLocked\(context, records\)/,
+    "legacy v1 IDN/IPv6 records must be rewritten only after canonical validation",
+  );
+  assert.match(
+    trust,
+    /private fun requireStoredHost\(value: String\): String = normalizeHost\(value\)/,
+    "legacy host fields must be canonicalized and validated before migration",
+  );
+  assert.match(
+    trust,
+    /HttpUrl\.Builder\(\)[\s\S]*\.host\(candidate\)/,
+    "host migration must use OkHttp canonicalization without parsing untrusted authority text",
+  );
+  assert.match(
+    normalizeOrigin,
+    /url\.encodedPath == "\/"/,
+    "pin enrollment must reject URLs that are not bare origins",
+  );
+  const renderOriginStart = trust.indexOf("private fun renderHttpsOrigin");
+  const renderOriginEnd = trust.indexOf("private class LengrvisPinnedTrustManager", renderOriginStart);
+  const renderAndRequestOrigin = trust.slice(renderOriginStart, renderOriginEnd);
+  assert.match(
+    renderAndRequestOrigin,
+    /val renderedHost = if \(host\.contains\(':'\)\) "\[\$host\]" else host/,
+    "shared origin rendering must bracket canonical IPv6 hosts",
+  );
+  assert.match(
+    renderAndRequestOrigin,
+    /val port = if \(url\.port == 443\) "" else ":\$\{url\.port\}"/,
+    "shared origin rendering must collapse default HTTPS ports and retain non-default ports",
+  );
+  assert.match(
+    renderAndRequestOrigin,
+    /private fun requestOrigin\(url: HttpUrl\): String = renderHttpsOrigin\(url\)/,
+    "requests and persisted pins must share the same canonical origin renderer",
+  );
+  assert.match(
+    trust,
+    /if \(requireExactOriginPin\) return false/,
+    "self-signed TLS fallback must require an active pin for the exact origin",
+  );
+  assert.ok(
+    (trust.match(/requireExactOriginPin = !systemTrusted/g) || []).length >= 3,
+    "handshake, pooled-request, and hostname paths must apply the same trust-aware exact-origin policy",
   );
   assert.doesNotMatch(
     trust,
@@ -109,6 +170,48 @@ function assertSourceContract() {
     trustManager.indexOf("assertRequestTrustStateHealthy") < trustManager.indexOf("systemTrustManager.checkServerTrusted"),
     "corrupt persisted pin state must be checked before system-trusted fallback",
   );
+  const systemTrustCheck = trustManager.indexOf("systemTrustManager.checkServerTrusted");
+  const certificateValidityCheck = trustManager.indexOf("leaf.checkValidity()", systemTrustCheck);
+  const exactOriginCheck = trustManager.indexOf("certificateAllowedByExactOriginPolicy", certificateValidityCheck);
+  assert.ok(
+    systemTrustCheck >= 0 && certificateValidityCheck > systemTrustCheck && exactOriginCheck > certificateValidityCheck,
+    "all handshake trust paths must validate lifetime and then apply the exact-origin boundary",
+  );
+  assert.match(
+    trustManager,
+    /requireExactOriginPin = !systemTrusted/,
+    "system-trusted and self-signed handshake paths must use the same exact-origin policy with pin-required mode",
+  );
+  assert.doesNotMatch(
+    trustManager,
+    /systemTrustManager\.checkServerTrusted\(chain, authType\)[\s\S]{0,100}\breturn\b/,
+    "system trust success must not return before the exact-origin policy check",
+  );
+
+  const networkVerifierStart = trust.indexOf("private fun verifyPinnedOriginBeforeRequest");
+  const networkVerifierEnd = trust.indexOf("private fun requestOrigin", networkVerifierStart);
+  const networkVerifier = trust.slice(networkVerifierStart, networkVerifierEnd);
+  assert.match(
+    networkVerifier,
+    /firstOrNull\(\)\s*\?: throw SSLPeerUnverifiedException/,
+    "a pooled HTTPS connection without a peer certificate must fail closed",
+  );
+  assert.ok(
+    networkVerifier.indexOf("leaf.checkValidity()") < networkVerifier.indexOf("isSystemTrusted(certificateChain)") &&
+      networkVerifier.indexOf("isSystemTrusted(certificateChain)") <
+        networkVerifier.indexOf("certificateAllowedByExactOriginPolicy"),
+    "pooled connections must validate lifetime, classify system trust, and then enforce exact origin",
+  );
+  assert.match(
+    networkVerifier,
+    /requireExactOriginPin = !systemTrusted/,
+    "pooled self-signed connections must require an exact-origin pin",
+  );
+  assert.doesNotMatch(
+    networkVerifier,
+    /firstOrNull\(\)\s*\?:\s*return|if\s*\(trustManager\.isSystemTrusted\([^)]*\)\)\s*(?:return|\{[^}]*\breturn\b)/s,
+    "pooled TLS validation must not contain an early-return trust bypass",
+  );
 
   const verifierStart = trust.indexOf("private class LengrvisPinnedHostnameVerifier");
   const verifierEnd = trust.indexOf("private fun sha256", verifierStart);
@@ -116,18 +219,29 @@ function assertSourceContract() {
   assert.notEqual(verifierEnd, -1, "LAN TLS trust implementation must keep sha256 outside the hostname verifier");
   const verifier = trust.slice(verifierStart, verifierEnd);
   assert.ok(
-    verifier.includes("hostHasAnyFingerprintForHost(context, hostname)"),
-    "pinned hosts must require the presented certificate to match a host pin",
+    verifier.includes("val expectedOrigin = LengrvisTlsOriginScope.get() ?: return false") &&
+      verifier.includes("private val trustManager: LengrvisPinnedTrustManager"),
+    "hostname verification must fail closed without the request exact origin",
   );
   assert.match(
     verifier,
-    /hostHasFingerprint\(context,\s*hostname,\s*fingerprint\)/,
-    "hostname verifier must check host-specific pins",
+    /certificateAllowedByExactOriginPolicy\(\s*context,\s*expectedOrigin,\s*fingerprint,\s*requireExactOriginPin = !systemTrusted/,
+    "hostname verifier must enforce the exact origin including port",
+  );
+  assert.doesNotMatch(
+    verifier,
+    /hostHas(?:AnyFingerprintForHost|Fingerprint)\(/,
+    "hostname verifier must not collapse origin-scoped pins to host-only checks",
+  );
+  assert.ok(
+    verifier.indexOf("leaf.checkValidity()") < verifier.indexOf("isSystemTrusted(certificateChain)") &&
+      verifier.indexOf("isSystemTrusted(certificateChain)") < verifier.indexOf("certificateAllowedByExactOriginPolicy"),
+    "hostname verification must validate lifetime and classify trust before exact-origin authorization",
   );
   assert.match(
     verifier,
-    /!\s*LengrvisLanTrust\.hasAnyFingerprint\(context,\s*fingerprint\)/,
-    "hostname verifier must reject a cert pinned for another host",
+    /requireExactOriginPin = !systemTrusted/,
+    "hostname verification must require an exact-origin pin on the self-signed path",
   );
 
   const instrumentation = readMobile(
@@ -140,6 +254,14 @@ function assertSourceContract() {
     "wrongFingerprint(fingerprintSha256)",
     "LengrvisLanTrust.trustServerCertificate(context, baseUrl, fingerprintSha256)",
     "pinLifecycleSupportsOverlapPromotionExpiryAndTargetedRevocation",
+    "okHttpOriginCanonicalizerUnifiesIdnIpv6AndPortForms",
+    "pinnedIdnOriginRejectsReplacementSystemCertificate",
+    "legacyV1UnicodePinMigratesToCanonicalOriginWithoutTrustWidening",
+    "legacyV1UnicodePinWithMismatchedHostFailsClosed",
+    "systemTrustedCertificatePinnedOnAnotherOriginCannotDowngradeExactOrigin",
+    "xn--bcher-kva.example",
+    "2001:db8::1",
+    "exactOriginPolicySeparatesSystemAndPinnedCertificatesAcrossPorts",
     "expiredPinFailsClosedWithoutAutomaticRenewal",
     "malformedMultiPinStoreBlocksRequestsUntilExplicitRepair",
     "legacyPinStoreBlocksRequestsUntilExplicitRepair",

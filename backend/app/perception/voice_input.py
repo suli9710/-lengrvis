@@ -303,7 +303,16 @@ class VoiceInputProcessor:
 
         return await self.process_utterance(chunks)
 
-    async def process_utterance(self, chunks: Iterable[AudioChunk] | bytes) -> VoiceInputEvent | None:
+    async def process_utterance(
+        self, chunks: Iterable[AudioChunk] | bytes, *, language: str | None = None
+    ) -> VoiceInputEvent | None:
+        """Transcribe one utterance.
+
+        ``language`` overrides ``self.language`` for THIS call only. Callers that
+        serve concurrent requests must pass it here rather than assigning
+        ``processor.language`` on the shared instance, which would race across
+        overlapping awaits.
+        """
         if isinstance(chunks, bytes):
             audio = chunks
             if len(audio) > self.max_buffered_audio_bytes:
@@ -333,7 +342,7 @@ class VoiceInputProcessor:
             for chunk in chunk_list:
                 audio_metadata.update(dict(chunk.metadata or {}))
 
-        result = await self._transcribe(audio, sample_rate=sample_rate)
+        result = await self._transcribe(audio, sample_rate=sample_rate, language=language)
         raw_text = normalize_transcript(result.text)
         allowed, wake_word, gated_text = self.wake_gate.apply(raw_text)
         if not allowed or len(gated_text) < self.min_transcript_chars:
@@ -356,8 +365,9 @@ class VoiceInputProcessor:
             event.auto_submitted = True
         return event
 
-    async def _transcribe(self, audio: bytes, *, sample_rate: int) -> TranscriptionResult:
-        result = self.transcriber.transcribe(audio, sample_rate=sample_rate, language=self.language)
+    async def _transcribe(self, audio: bytes, *, sample_rate: int, language: str | None = None) -> TranscriptionResult:
+        effective_language = language if language is not None else self.language
+        result = self.transcriber.transcribe(audio, sample_rate=sample_rate, language=effective_language)
         if inspect.isawaitable(result):
             result = await result
         return coerce_transcription_result(result)

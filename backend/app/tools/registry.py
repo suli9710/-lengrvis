@@ -139,6 +139,7 @@ def _has_builtin_namespace(name: str) -> bool:
             "document.",
             "file.",
             "image.",
+            "memory.",
             "remote.",
             "search.",
             "system.",
@@ -194,6 +195,7 @@ def register_all_tools(
         developer_tools,
         document_tools,
         file_tools,
+        memory_tools,
         notification_tools,
         remote_tools,
         search_tools,
@@ -208,6 +210,7 @@ def register_all_tools(
     reg._tools.clear()
     reg._name_index.clear()
     file_tools.register(reg)
+    memory_tools.register(reg)
     developer_tools.register(reg)
     document_tools.register(reg)
     notification_tools.register(reg)
@@ -309,6 +312,8 @@ def _infer_resource_kinds(tool: ToolDefinition) -> list[str]:
         return ["file"]
     if name.startswith("document."):
         return ["document"]
+    if name.startswith("memory."):
+        return ["memory"]
     if name.startswith("browser."):
         return ["browser"]
     if name.startswith("remote."):

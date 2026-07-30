@@ -15,10 +15,7 @@ import type {
   BackendBrowserReplayExport,
   BackendBrowserSession
 } from "./browserBackendTypes";
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
+import { optionalString } from "./mapperPrimitives";
 
 export function mapBrowserLink(link: BackendBrowserLink): BrowserLinkResult {
   return {

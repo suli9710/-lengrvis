@@ -119,7 +119,7 @@ lengrvis/
 - 浏览器自动化：只读抓取，以及带 dry-run 的 navigate / click / fill / submit / wait。
 - 系统信息读取：psutil、winreg、磁盘、电池、启动项。
 - 应用扫描、MSI 卸载、Excel COM 自动化、视觉 describe/OCR/compare。
-- MCP 客户端与 Registry：JSON-RPC 2.0 over HTTP。
+- MCP Preview 客户端与 Registry：Streamable HTTP/JSON/SSE 与开发态 stdio，含 lifecycle、schema 复验、progress/cancel 和 SSE 恢复；第三方工具保持 R4/default-deny，完整 OAuth 互操作仍未声明。
 
 ### 扩展
 
@@ -235,6 +235,7 @@ npm --prefix desktop run dev
 .\scripts\run_tests.ps1          # backend pytest（xdist）+ desktop/mobile typecheck + mobile smokes
 npm run qa:gate                  # 上述 + desktop 全量 smoke
 npm run golden:gate              # golden tasks 报告（≥95% 通过率）
+npm run mcp:conformance          # 官方 initialize/tools/SSE-resume conformance
 ```
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract、Android back navigation、manifest/resource hardening 和 LAN TLS source/connected-test contract smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
@@ -264,6 +265,7 @@ npm run evidence:current-release # CI/local current summary; not a pass
 ```powershell
 npm run qa:gate
 npm run golden:gate
+npm run mcp:conformance
 npm run audit:deps
 npm run release:readiness:rc # RC/GA gate; P0 waivers do not count as passed evidence
 npm run market:readiness

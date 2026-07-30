@@ -37,7 +37,7 @@ commercial_operations_seal = _load_script("seal_commercial_operations_evidence.p
 paid_launch_templates = _load_script("collect_paid_launch_evidence_templates.py")
 evidence_contracts = _load_script("evidence_contracts.py")
 candidate_binding_check = _load_script("verify_release_candidate_binding.py")
-TEST_EVIDENCE_SECRET = "fedcba9876543210" * 4  # noqa: S105 - deterministic test signing key.
+TEST_EVIDENCE_SECRET = sha256(b"release-evidence-contract-test-key").hexdigest()
 STRICT_CANDIDATE_BINDING = {
     "commit": "a" * 40,
     "build_identifier": f"rc-12345-2-{'a' * 40}",
@@ -589,17 +589,13 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     assert scripts["evidence:distribution-verify"] == "python scripts/verify_distribution_release_evidence.py"
     assert scripts["evidence:clean-machine-verify"] == "python scripts/verify_clean_machine_evidence.py"
     assert scripts["evidence:result-quality-verify"] == "python scripts/verify_result_quality_reviewed_evidence.py"
-    assert scripts["evidence:diagnostics-verify"] == (
-        "python scripts/verify_diagnostics_external_reviewed_evidence.py"
-    )
+    assert scripts["evidence:diagnostics-verify"] == ("python scripts/verify_diagnostics_external_reviewed_evidence.py")
     assert scripts["evidence:support-privacy-verify"] == "python scripts/verify_support_privacy_rehearsal_evidence.py"
     assert scripts["evidence:claims-launch-verify"] == "python scripts/verify_launch_claims_reviewed_evidence.py"
     assert scripts["evidence:commercial-operations-verify"] == (
         "python scripts/verify_commercial_operations_evidence.py"
     )
-    assert scripts["evidence:commercial-operations-seal"] == (
-        "python scripts/seal_commercial_operations_evidence.py"
-    )
+    assert scripts["evidence:commercial-operations-seal"] == ("python scripts/seal_commercial_operations_evidence.py")
     assert scripts["evidence:paid-launch-template"] == "python scripts/collect_paid_launch_evidence_templates.py"
     assert scripts["evidence:commercial-loop"] == "python scripts/verify_commercial_loop_evidence.py"
     assert scripts["activation:admin"] == "python scripts/activation_admin.py"
@@ -806,20 +802,29 @@ def test_strict_candidate_binding_accepts_the_same_immutable_candidate(tmp_path:
     result_payload = _with_strict_candidate_binding(_result_quality_sample())
     diagnostics_payload = _with_strict_candidate_binding(_diagnostics_reviewed_sample())
 
-    assert clean_machine.validate_payload(
-        clean_payload,
-        require_local_model=True,
-        repo_root=tmp_path,
-        expected_candidate_binding=binding,
-    ) == []
-    assert result_quality.validate_payload(
-        result_payload,
-        expected_candidate_binding=binding,
-    ) == []
-    assert diagnostics_reviewed.validate_payload(
-        diagnostics_payload,
-        expected_candidate_binding=binding,
-    ) == []
+    assert (
+        clean_machine.validate_payload(
+            clean_payload,
+            require_local_model=True,
+            repo_root=tmp_path,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
+    assert (
+        result_quality.validate_payload(
+            result_payload,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
+    assert (
+        diagnostics_reviewed.validate_payload(
+            diagnostics_payload,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
 
 
 def test_distribution_evidence_rejects_replay_from_another_candidate(tmp_path: Path, monkeypatch) -> None:
@@ -1057,21 +1062,25 @@ def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path
     )
     support_payload = json.loads(Path(paths["support_privacy_template"]).read_text(encoding="utf-8"))
     claims_payload = json.loads(Path(paths["claims_launch_template"]).read_text(encoding="utf-8"))
+    commercial_loop_payload = json.loads(Path(paths["commercial_loop_template"]).read_text(encoding="utf-8"))
     operations_payload = json.loads(Path(paths["commercial_operations_template"]).read_text(encoding="utf-8"))
 
-    for payload in (support_payload, claims_payload, operations_payload):
+    for payload in (support_payload, claims_payload, commercial_loop_payload, operations_payload):
         assert payload["candidate"] == STRICT_CANDIDATE_BINDING
 
     assert support_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert claims_payload["claim_controls"]["paid_launch_claim_allowed"] is False
+    assert commercial_loop_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert operations_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert any("paid-launch pass" in item for item in support_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in claims_payload["must_not_be_recorded_as"])
+    assert any("paid-launch pass" in item for item in commercial_loop_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in operations_payload["must_not_be_recorded_as"])
     assert any("artifact_type" in error for error in support_privacy.validate_payload(support_payload))
     assert any(
         "artifact_type" in error for error in claims_launch.validate_payload(claims_payload, repo_root=REPO_ROOT)
     )
+    assert any("artifact_type" in error for error in commercial.validate_payload(commercial_loop_payload))
     assert any(
         "artifact_type" in error
         for error in commercial_operations.validate_payload(operations_payload, repo_root=REPO_ROOT)
@@ -1139,9 +1148,7 @@ def test_diagnostics_reviewed_rejects_raw_package_path_and_ambiguous_time() -> N
 
     os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
     payload = _diagnostics_reviewed_sample()
-    payload["candidate"]["diagnostics_package_label"] = (
-        r"D:\Desktop\mavris\.lengrvis_data\diagnostic-packages\case.zip"
-    )
+    payload["candidate"]["diagnostics_package_label"] = r"D:\Desktop\mavris\.lengrvis_data\diagnostic-packages\case.zip"
     payload["review"]["reviewed_at_utc"] = "2026-06-27T12:00:00"
     payload = _resign(payload)
 

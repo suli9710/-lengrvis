@@ -1,13 +1,16 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { act, create } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
 
 import type { BackendStatus } from "../../shared/desktopBridgeTypes";
+import type { ChatMessage } from "../../shared/catalogTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import {
   backendTaskSubmitUnavailableMessage,
   createFailedAssistantMessage,
   createLocalUserMessage,
+  type TaskSubmissionActions,
   useTaskSubmission
 } from "./useTaskSubmission";
 
@@ -79,5 +82,56 @@ describe("useTaskSubmission", () => {
     expect(markup).toContain("&quot;draft&quot;:&quot;&quot;");
     expect(markup).toContain("&quot;heroSubmitting&quot;:false");
     expect(markup).toContain("&quot;heroSubmitError&quot;:null");
+  });
+
+  it("adds a failed assistant reply when suggestion launch IPC rejects", async () => {
+    Object.assign(window, {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout
+    });
+    const connected = backendStatus({ state: "running", health: { ok: true } });
+    const api = {
+      getBackendStatus: vi.fn().mockResolvedValue(connected),
+      launchPerceptionSuggestion: vi.fn().mockRejectedValue(new Error("建议启动 IPC 已断开"))
+    } as unknown as LengrvisApiClient;
+    const messageUpdates: Array<ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])> = [];
+    let actions!: TaskSubmissionActions;
+
+    function Harness() {
+      actions = useTaskSubmission({
+        api,
+        mode: "efficiency",
+        backendStatusRef: { current: connected },
+        chatStartedTaskIds: { current: new Set<string>() },
+        setMessages: (value) => messageUpdates.push(value),
+        setTasks: () => undefined,
+        setFocusedTaskId: () => undefined,
+        setBackendStatus: () => undefined,
+        refreshTaskSnapshot: async () => undefined
+      });
+      return null;
+    }
+
+    await act(async () => {
+      create(createElement(Harness));
+    });
+    await act(async () => {
+      await actions.executeSuggestion({
+        id: "downloads/cleanup",
+        title: "清理下载目录",
+        prompt: "检查下载目录",
+        confidence: 0.9
+      });
+    });
+
+    const messages = messageUpdates.reduce<ChatMessage[]>(
+      (current, update) => typeof update === "function" ? update(current) : update,
+      []
+    );
+    expect(api.launchPerceptionSuggestion).toHaveBeenCalledOnce();
+    expect(messageUpdates).toHaveLength(2);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ role: "user", content: "检查下载目录" });
+    expect(messages[1]).toMatchObject({ role: "assistant", status: "failed", content: "建议启动 IPC 已断开" });
   });
 });

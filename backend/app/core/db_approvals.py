@@ -6,6 +6,11 @@ from typing import Any
 
 from app.config_sources import env_flag
 from app.core import db
+from app.core.approval_observability import (
+    ApprovalClaimOutcome,
+    observe_atomic_decision,
+    record_claim_outcome,
+)
 
 
 def _normalized_approval(data: dict[str, Any]) -> dict[str, Any]:
@@ -53,6 +58,7 @@ def _approval_authorization_error(conn, data: dict[str, Any], consumed_at: str) 
 
 
 def _desktop_authorization_error(auth_context: dict[str, Any], authorized_at: datetime) -> str:
+    from app.security.approval_session import approval_session_authorization_error
     from app.security.native_confirmation import (
         native_confirmation_legacy_hmac_fingerprint,
         native_confirmation_public_key_fingerprint,
@@ -79,14 +85,14 @@ def _desktop_authorization_error(auth_context: dict[str, Any], authorized_at: da
         current = native_confirmation_public_key_fingerprint()
         if not expected or not current or expected != current:
             return "Desktop confirmation key has changed."
-        return ""
-    if proof_type == "legacy_hmac":
+    elif proof_type == "legacy_hmac":
         expected = str(auth_context.get("legacy_hmac_fingerprint") or "").strip()
         current = native_confirmation_legacy_hmac_fingerprint()
         if not expected or not current or expected != current:
             return "Desktop confirmation secret has changed."
-        return ""
-    return "Desktop confirmation proof type is invalid."
+    else:
+        return "Desktop confirmation proof type is invalid."
+    return approval_session_authorization_error(auth_context.get("approval_session_generation_fingerprint"))
 
 
 def _mobile_authorization_error(
@@ -103,6 +109,17 @@ def _mobile_authorization_error(
         token_epoch = int(auth_context.get("token_epoch"))
     except (TypeError, ValueError):
         return "Mobile authorization token epoch is invalid."
+    raw_family_generation = auth_context.get("family_generation")
+    if raw_family_generation is None and env_flag("LENGRVIS_TEST"):
+        family_generation = None
+    elif (
+        isinstance(raw_family_generation, bool)
+        or not isinstance(raw_family_generation, int)
+        or raw_family_generation < 0
+    ):
+        return "Mobile authorization family generation is invalid."
+    else:
+        family_generation = raw_family_generation
     if not device_id or not family_id or not credential_id:
         return "Mobile authorization binding is incomplete."
     if not isinstance(scopes, list) or not all(isinstance(scope, str) and scope.strip() for scope in scopes):
@@ -115,7 +132,7 @@ def _mobile_authorization_error(
 
     device_row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
     family = conn.execute(
-        "SELECT device_id, credential_id, status, expires_at FROM token_families WHERE id = ?",
+        "SELECT device_id, credential_id, status, current_generation, expires_at FROM token_families WHERE id = ?",
         (family_id,),
     ).fetchone()
     credential = conn.execute(
@@ -140,6 +157,12 @@ def _mobile_authorization_error(
         return "Mobile authorization device binding has changed."
     if str(family["credential_id"]) != credential_id:
         return "Mobile authorization credential binding has changed."
+    try:
+        current_family_generation = int(family["current_generation"])
+    except (TypeError, ValueError):
+        return "Mobile token family generation is invalid."
+    if family_generation is not None and current_family_generation != family_generation:
+        return "Mobile authorization family generation has changed."
     if str(family["status"] or "").lower() != "active":
         return "Mobile token family has been revoked."
     if str(credential["status"] or "").lower() != "active":
@@ -172,6 +195,19 @@ def _expire_approval_locked(
 
 def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str, Any] | None:
     """Atomically mark an approved approval as consumed before side effects run."""
+    try:
+        result, outcome = _claim_approval_for_execution(approval_id, consumed_at)
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: preserve the original claim failure.
+        record_claim_outcome("error")
+        raise
+    record_claim_outcome(outcome)
+    return result
+
+
+def _claim_approval_for_execution(
+    approval_id: str,
+    consumed_at: str,
+) -> tuple[dict[str, Any] | None, ApprovalClaimOutcome]:
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -179,18 +215,23 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
             (approval_id, "approved"),
         ).fetchone()
         if not row:
-            return None
+            return None, "unavailable"
         db._require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
         data = _normalized_approval(json.loads(row["data"]))
         if data.get("consumed_at"):
-            return None
+            return None, "already_consumed"
         if _approval_expired(data, consumed_at):
             _expire_approval_locked(conn, approval_id, data, consumed_at, "Approval authorization expired.")
-            return None
+            return None, "expired"
+        # Reading the atomically replaced desktop generation inside this write
+        # transaction is the claim's cross-process linearization point. A
+        # rotation completed before this read expires the approval; a rotation
+        # after it does not retroactively revoke an already-linearized claim.
+        # Existing runtime cancel/stop boundaries own any action already in flight.
         authorization_error = _approval_authorization_error(conn, data, consumed_at)
         if authorization_error:
             _expire_approval_locked(conn, approval_id, data, consumed_at, authorization_error)
-            return None
+            return None, "authorization_invalidated"
         data["consumed_at"] = consumed_at
         stored = db._json(data)
         cursor = conn.execute(
@@ -204,9 +245,9 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
             (stored, approval_id, "approved"),
         )
         if cursor.rowcount != 1:
-            return None
+            return None, "conflict"
         db._store_sensitive_record_integrity(conn, "approvals", approval_id, stored)
-    return data
+    return data, "claimed"
 
 
 def expire_approval_if_pending(approval_id: str, expired_at: str, reason: str = "") -> dict[str, Any] | None:
@@ -351,6 +392,7 @@ def count_pending_remote_input_approvals(grant_id: str, device_id: str) -> int:
     return len(rows)
 
 
+@observe_atomic_decision
 def decide_approval_atomically(
     approval_id: str,
     status: str,
@@ -435,6 +477,18 @@ def reauthorize_approval_atomically(
                 data,
                 authorized_at,
                 "Approval authorization expired.",
+            )
+        candidate = dict(data)
+        candidate["authorized_at"] = authorized_at
+        candidate["auth_context"] = dict(auth_context)
+        authorization_error = _approval_authorization_error(conn, candidate, authorized_at)
+        if authorization_error:
+            return _expire_approval_locked(
+                conn,
+                approval_id,
+                data,
+                authorized_at,
+                authorization_error,
             )
         data["authorized_at"] = authorized_at
         data["auth_context"] = dict(auth_context)

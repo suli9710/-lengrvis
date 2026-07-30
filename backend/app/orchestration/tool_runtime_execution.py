@@ -15,7 +15,7 @@ from app.orchestration.resource_state import (
     remember_read_states_for_tool,
     validate_write_preconditions,
 )
-from app.orchestration.tool_runtime_paths import ensure_authorized_paths, write_lock_keys
+from app.orchestration.tool_runtime_paths import ensure_authorized_paths, is_write_tool, write_lock_keys
 from app.orchestration.tool_runtime_support import (
     _DEFAULT_TOOL_TIMEOUT_SECONDS,
     _MAX_DAEMON_TOOL_THREADS,
@@ -134,12 +134,21 @@ class ToolRuntimeExecutionMixin:
                     f"{error}; execution is still finishing in the background and follow-up "
                     "calls for the same resource/tool will wait before running."
                 )
-            return {
+            result = {
                 "error": error,
                 "timed_out": True,
                 "pending_completion": pending_completion,
                 "retry_after_pending_completion": pending_completion,
             }
+            if is_write_tool(tool):
+                result.update(
+                    {
+                        "status": "outcome_unknown",
+                        "outcome_unknown": True,
+                        "automatic_replay_blocked": True,
+                    }
+                )
+            return result
         except asyncio.CancelledError:
             self._abort_tool_worker(worker, tool=tool, context=context)
             raise

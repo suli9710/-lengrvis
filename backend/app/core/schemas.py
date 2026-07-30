@@ -2,11 +2,31 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    model_validator,
+)
 
+from app.core.content_lineage import (
+    CONTENT_LINEAGE_SIDECAR_PREFIX as CONTENT_LINEAGE_SIDECAR_PREFIX,
+)
+from app.core.content_lineage import (
+    MAX_CONTENT_LINEAGE_ENTRIES as MAX_CONTENT_LINEAGE_ENTRIES,
+)
+from app.core.content_lineage import (
+    MAX_JSON_POINTER_CHARS as MAX_JSON_POINTER_CHARS,
+)
+from app.core.content_lineage import (
+    ContentEnvelope as ContentEnvelope,
+)
+from app.core.content_lineage import (
+    ContentLineageEdge as ContentLineageEdge,
+)
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
@@ -488,24 +508,6 @@ class ToolCall(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
-class ContentEnvelope(BaseModel):
-    """Provenance and taint metadata that stays attached to derived content."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    source_kind: str
-    source_id: str = ""
-    origin: str = ""
-    content_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    trust_level: Literal["untrusted", "unknown", "internal", "user_confirmed", "trusted"] = "unknown"
-    taint_flags: list[str] = Field(default_factory=list)
-    observed_at: str = Field(default_factory=now_iso)
-    task_scope: str = ""
-    user_confirmed: bool = False
-    sanitizers_applied: list[str] = Field(default_factory=list)
-    integrity_hmac: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
-
-
 class ToolResult(BaseModel):
     id: str = Field(default_factory=lambda: new_id("result"))
     tool_call_id: str
@@ -517,6 +519,7 @@ class ToolResult(BaseModel):
     observation: str = ""
     content_envelope: ContentEnvelope | None = None
     created_at: str = Field(default_factory=now_iso)
+    _output_provenance: Any = PrivateAttr(default=None)
 
 
 class Approval(BaseModel):

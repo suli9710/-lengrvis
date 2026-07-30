@@ -156,6 +156,26 @@ paths = ['''^\.gitleaks-ci\.toml$''']
 regexes = ['''token=''']
 
 [[allowlists]]
+description = "Historical deterministic test identifiers and Android preference key before scanner-safe spelling"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "b174d243b6ffb886a86112b9f049fbc5a5a2d34c",
+]
+paths = [
+  '''^backend/tests/test_android_reviewed_evidence\.py$''',
+  '''^backend/tests/test_automation_foundation\.py$''',
+  '''^backend/tests/test_relay_types\.py$''',
+  '''^backend/tests/test_release_evidence_contracts\.py$''',
+  '''^mobile/android/app/src/main/java/com/lengrvis/approval/LengrvisLanTrust\.kt$''',
+]
+regexes = [
+  '''TEST_EVIDENCE_SECRET''',
+  '''idempotency_key''',
+  '''RECORDS_KEY''',
+]
+
+[[allowlists]]
 description = "Historical CI docs used fixed local test HMAC strings before format helper"
 condition = "AND"
 regexTarget = "match"

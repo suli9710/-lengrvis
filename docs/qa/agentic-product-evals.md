@@ -1,6 +1,6 @@
 # Lengrvis Agentic Product Evals
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-17
 
 This file tracks the eval-first operating contract for the multi-agent productization push. The goal is to make Lengrvis feel safe, capable, and ready for a first-time user without turning the UI into a developer console.
 
@@ -35,7 +35,14 @@ The first productization round is complete only when these checks are true or ex
 - `test_data/real_llm_benchmark/catalog.json` materializes 105 cases from 35 base scenarios and 3 message variants. The catalog covers `read`, `write`, `browser`, `document`, `memory`, `mobile`, and `developer`, plus the required web-hidden-instruction, PDF/Office, OCR, MCP-tool-poisoning, cross-Agent, and memory-pollution labels.
 - `python scripts/run_real_llm_eval.py --quality-gate` must run at least 100 versioned benchmark cases, not merely 100 combined golden and benchmark tasks. It also fails when any required category or adversarial vector is absent, when the executable builtin registry does not recognize a planned tool, or when plan schema quality misses its threshold. Every adversarial case must independently reach an allowed phase with the exact expected safe plan and risk, without missing parameters, unknown tools, structured failures, or forbidden output markers; aggregate success rates cannot hide one failed attack case.
 - Reports contain case ids, safe titles, tool names, risk labels, aggregate coverage, and sanitized failure classifications. They do not contain task prompts, fixture bodies, provider exception text, API keys, or raw run errors.
-- Evidence boundary: these cases exercise real-provider planner/run-policy behavior. The adversarial web, document, OCR, MCP, cross-Agent, memory, and mobile cases currently use extracted-text fixtures or narrated source context. They do not prove binary PDF/Office parsing, a live hidden-DOM page, an OCR engine, a hostile MCP server, inter-Agent transport, memory-store mutation, or a revoked real mobile device; those remain separate end-to-end evals.
+- Evidence boundary: the full runner requires a reachable non-mock provider, while the versioned benchmark also has a deterministic planner/run-policy control replay. Browser cases use explicit task-local text fixtures with an exact-host fixture allowlist; document cases use isolated workspace files plus a task-local test entitlement. Both scopes are restored after each task and disclosed in `benchmark_capabilities`. The adversarial web, document, OCR, MCP, cross-Agent, memory, and mobile cases still do not prove binary PDF/Office parsing, a live hidden-DOM page, a production paid entitlement, an OCR engine, a hostile MCP server, inter-Agent transport, a real user memory mutation, or a revoked real mobile device; those remain separate end-to-end evals.
+
+### 2026-07-17 Deterministic Control Replay
+
+- Mock fallback was explicitly disabled and all 105 versioned cases were replayed through the production `/api/runs` or `/api/chat` execution path.
+- Result: `105/105` evaluation passes; intent accuracy, expected-tool overlap, risk match, and plan-schema validity were all `1.0`; missing-parameter, structured-failure, and unknown-tool rates were all `0`.
+- All 39 adversarial cases passed their per-case safety contracts. Deterministic actionable plans are sealed after runtime annotation with an HMAC over the exact task, step, tool, and args; execution rejects tampering and skips model-authored consultation/recovery/reflection for that sealed step.
+- This closes the repository-controlled benchmark failures and validates the fixture-backed planner/run-policy path. It is not a replacement for `scripts/run_real_llm_eval.py --quality-gate`: the current OpenAI-compatible configuration points at a loopback/private base URL, so the SSRF preflight rejects it before any task runs. No new 25-golden-plus-105-benchmark real-provider report was produced. The older failed real-provider report remains stop-ship evidence until an explicitly configured local-provider type or a reachable non-private provider reruns all 130 tasks.
 
 ## Current Evidence Snapshot
 

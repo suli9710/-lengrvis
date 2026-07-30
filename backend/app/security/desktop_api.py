@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 import time
 from collections.abc import Mapping
 from hashlib import sha256
@@ -21,7 +22,7 @@ DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY = "expires"
 DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY = "signature"
 DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS = 10 * 60
 DESKTOP_SIGNED_RESOURCE_PATHS = {"/api/library/preview"}
-PRODUCTION_ENV_VALUES = {"prod", "production", "release"}
+DESKTOP_HEALTH_CHALLENGE_PATTERN = re.compile(r"[A-Za-z0-9_-]{16,128}")
 PRODUCTION_TEST_ESCAPE_ENVS = (
     "LENGRVIS_TEST",
     "LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL",
@@ -40,6 +41,16 @@ def desktop_api_token() -> str:
 def desktop_api_token_headers() -> dict[str, str]:
     token = desktop_api_token()
     return {DESKTOP_API_TOKEN_HEADER: token} if token else {}
+
+
+def desktop_health_challenge_proof(challenge: str) -> str:
+    normalized = str(challenge or "")
+    if not DESKTOP_HEALTH_CHALLENGE_PATTERN.fullmatch(normalized):
+        return ""
+    token = desktop_api_token()
+    if not token:
+        return ""
+    return hmac.new(token.encode("utf-8"), normalized.encode("utf-8"), sha256).hexdigest()
 
 
 def should_require_desktop_api_token(request: Request) -> bool:
@@ -173,11 +184,25 @@ def desktop_api_token_optional_for_test() -> bool:
 
 
 def production_test_escape_fingerprint() -> dict[str, str]:
+    # Use the SAME release-profile signals as execution_isolation so this
+    # assertion cannot be defeated by labelling a build ga/beta/rc or by only
+    # setting a LENGRVIS_COMMERCIAL_RELEASE-style boolean. Reading through
+    # get_env/env_flag (rather than os.environ) keeps config-sourced values in
+    # scope, matching the rest of this module.
+    from app.security.execution_isolation import (
+        RELEASE_BOOLEAN_NAMES,
+        RELEASE_ENVIRONMENT_NAMES,
+        RELEASE_ENVIRONMENT_VALUES,
+    )
+
     production_envs: dict[str, str] = {}
-    for name in ("LENGRVIS_ENV", "APP_ENV", "ENVIRONMENT"):
+    for name in RELEASE_ENVIRONMENT_NAMES:
         value = str(get_env(name) or "").strip()
-        if value.lower() in PRODUCTION_ENV_VALUES:
+        if value.casefold() in RELEASE_ENVIRONMENT_VALUES:
             production_envs[name] = value
+    for name in RELEASE_BOOLEAN_NAMES:
+        if env_flag(name):
+            production_envs[name] = "<enabled>"
     if not production_envs:
         return {}
 

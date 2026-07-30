@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import threading
 from datetime import datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +88,26 @@ def test_guardian_health_is_lightweight(monkeypatch, tmp_path: Path):
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["mode"] == "guardian"
+
+
+def test_guardian_loopback_health_challenge_proves_backend_identity(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    token = _require_desktop_api_token(monkeypatch)
+    db.init_db()
+    challenge = "guardian-health-challenge-123456"
+
+    with TestClient(create_guardian_app(), client=("127.0.0.1", 50100)) as client:
+        response = client.get("/api/health", params={"desktop_challenge": challenge})
+
+    assert response.status_code == 200
+    assert (
+        response.json()["desktop_proof"]
+        == hmac.new(
+            token.encode("utf-8"),
+            challenge.encode("utf-8"),
+            sha256,
+        ).hexdigest()
+    )
 
 
 def test_guardian_schedules_require_scheduling_entitlement(monkeypatch, tmp_path: Path):
@@ -401,6 +423,56 @@ def test_guardian_runtime_internal_http_calls_send_desktop_token(monkeypatch, tm
     assert all(key.lower() not in {"host", "content-length"} for key in proxy_headers)
     assert sum(1 for key in proxy_headers if key.lower() == DESKTOP_API_TOKEN_HEADER) == 1
     assert "stale-token" not in proxy_headers.values()
+
+
+def test_guardian_proxy_cannot_be_pointed_at_foreign_host(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    _require_desktop_api_token(monkeypatch)
+    db.init_db()
+
+    import app.services.guardian_runtime as guardian_runtime
+
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+        content = b"{}"
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ANN002
+            return None
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            return FakeResponse()
+
+        async def request(self, method: str, url: httpx.URL, **kwargs):  # noqa: ANN003, ARG002
+            calls.append(str(url))
+            return FakeResponse()
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", FakeClient)
+    base_host = httpx.URL(guardian_runtime.FULL_BACKEND_URL).host
+
+    guardian = guardian_runtime.GuardianRuntime()
+    guardian.shell_mode = "foreground"
+
+    # A network-path reference "//evil.com/..." must never swap the target host
+    # (RFC 3986) nor exfiltrate the desktop token to a foreign host.
+    for hostile in ("//evil.com/x", "////attacker.tld/api", "/api/../..//169.254.169.254/latest"):
+        asyncio.run(guardian.proxy("GET", hostile))
+        # Either the request was refused, or it was forwarded to the local full
+        # backend only -- the attacker string must never appear as the host.
+        for recorded in calls:
+            assert httpx.URL(recorded).host == base_host
 
 
 def test_guardian_foreground_background_notifications_only_suppress_http_errors(monkeypatch, tmp_path: Path):

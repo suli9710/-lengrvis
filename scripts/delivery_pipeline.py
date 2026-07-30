@@ -4,9 +4,10 @@
 Runs the real delivery chain in order and emits a single machine-readable
 verdict that other tooling and the release owner can trust:
 
-    qa-gate -> golden-gate -> maintainability-gate -> review-scorecard
-             -> supply-chain -> security-extensions -> release-safety
-             -> market-readiness -> current-release-evidence -> readiness -> evidence
+    qa-gate -> golden-gate -> mcp-conformance -> maintainability-gate
+             -> review-scorecard -> supply-chain -> security-extensions -> release-safety
+             -> owner-signature -> market-readiness -> current-release-evidence
+             -> readiness -> evidence
 
 Design notes:
 - Pure helpers (default_stages, build_plan, aggregate_verdict) carry the policy
@@ -109,6 +110,20 @@ def current_release_evidence_stage(*, strict: bool) -> Stage:
     )
 
 
+def release_owner_signature_stage() -> Stage:
+    return Stage(
+        "release-owner-signature",
+        [
+            sys.executable,
+            "scripts/release_owner_signature.py",
+            "--output",
+            "build/release-owner-signature-verification.json",
+        ],
+        True,
+        "Verify detached Ed25519 release-owner approval for the exact candidate",
+    )
+
+
 def default_stages(
     *,
     strict: bool,
@@ -155,6 +170,12 @@ def default_stages(
             ["npm", "run", "golden:gate"],
             True,
             "Mock-provider deterministic golden tasks",
+        ),
+        Stage(
+            "mcp-conformance",
+            ["npm", "run", "mcp:conformance"],
+            True,
+            "Official MCP lifecycle, tools, and SSE resume conformance",
         ),
         Stage(
             "maintainability-gate",
@@ -244,6 +265,7 @@ def default_stages(
         stages = [
             by_name["qa-gate"],
             by_name["golden-gate"],
+            by_name["mcp-conformance"],
             by_name["maintainability-gate"],
             by_name["review-scorecard"],
             by_name["agentic-threat-model"],
@@ -268,6 +290,7 @@ def default_stages(
                 True,
                 "Verify the explicit immutable candidate identity matches this checkout",
             ),
+            *([] if candidate_build else [release_owner_signature_stage()]),
             Stage(
                 "packaging-verify",
                 [

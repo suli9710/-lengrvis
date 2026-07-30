@@ -38,7 +38,10 @@ def test_release_candidate_workflow_splits_success_and_failure_artifacts() -> No
     assert "dist/Lengrvis-win-portable/**" in success_section
     assert "dist/Lengrvis-win-portable.zip" in success_section
     assert "dist/Lengrvis-*-x64-self-extracting.exe" in success_section
-    assert "desktop/release/**" in success_section
+    assert "desktop/release/Lengrvis-*-x64.exe" in success_section
+    assert "desktop/release/Lengrvis-*-x64.exe.blockmap" in success_section
+    assert "desktop/release/latest.yml" in success_section
+    assert "desktop/release/**" not in success_section
     assert ".tmp/sbom/lengrvis-sbom.cdx.json" in success_section
     assert "include-hidden-files: true" in success_section
     assert "build/release-candidate-subjects.sha256" in success_section
@@ -65,6 +68,7 @@ def test_release_candidate_workflow_attests_provenance_and_sbom() -> None:
     assert text.count("actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1") == 2
     assert "subject-checksums: build/release-candidate-subjects.sha256" in text
     assert "sbom-path: .tmp/sbom/lengrvis-sbom.cdx.json" in text
+    assert "$subjects = @(Get-Item -LiteralPath $sbomPath)" in text
     assert '$sbom.bomFormat -ne "CycloneDX"' in text
     assert "Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256" in text
     assert "build-provenance.sigstore.json" in text
@@ -112,7 +116,9 @@ def test_release_publish_promotes_downloaded_candidate_bytes_after_strict_verifi
     assert text.index("Download immutable candidate artifacts") < text.index("npm run delivery:rc")
     assert text.index("npm run delivery:rc") < text.index("Create or update draft GitHub Release")
     assert text.index("verify:windows-release-signatures") < text.index("Create or update draft GitHub Release")
-    assert "desktop/release/*.exe" in text
+    assert '"desktop/release/Lengrvis-$version-x64.exe"' in text
+    assert '"desktop/release/Lengrvis-$version-x64.exe.blockmap"' in text
+    assert '"desktop/release/latest.yml"' in text
 
 
 def test_release_publish_verifies_candidate_manifest_and_github_provenance_before_materializing() -> None:
@@ -130,6 +136,7 @@ def test_release_publish_verifies_candidate_manifest_and_github_provenance_befor
     assert "Candidate checksum manifest contains an invalid line" in verify_section
     assert 'StartsWith("dist/"' in verify_section
     assert 'StartsWith("desktop/release/"' in verify_section
+    assert '.Equals(".tmp/sbom/lengrvis-sbom.cdx.json", [StringComparison]::Ordinal)' in verify_section
     assert "Candidate checksum manifest path escapes the immutable candidate root" in verify_section
     assert "Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256" in verify_section
     assert verify_section.count('gh attestation verify "$artifactPath"') == 2
@@ -151,12 +158,10 @@ def test_release_publish_verifies_candidate_manifest_and_github_provenance_befor
 
 def test_release_publish_materializes_complete_strict_inputs_without_literal_wildcards() -> None:
     text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    section = text[
-        text.index("Materialize only allowed staged release inputs") : text.index("Set up Node.js")
-    ]
+    section = text[text.index("Materialize only allowed staged release inputs") : text.index("Set up Node.js")]
 
     assert 'Copy-Item -LiteralPath (Join-Path $source "*")' not in section
-    assert 'Get-ChildItem -LiteralPath $source -Force | Copy-Item' in section
+    assert "Get-ChildItem -LiteralPath $source -Force | Copy-Item" in section
     assert "$candidateRoot" in section
     for relative_path in (
         "build/delivery-candidate-verdict.json",
@@ -179,10 +184,69 @@ def test_release_publish_includes_verified_sbom_as_a_release_asset() -> None:
         )
     ]
 
-    assert '$sbomSource = ".tmp/sbom/lengrvis-sbom.cdx.json"' in prepare_section
-    assert '$sbomTarget = "dist/Lengrvis-$version-sbom.cdx.json"' in prepare_section
-    assert "Copy-Item -LiteralPath $sbomSource -Destination $sbomTarget" in prepare_section
-    assert "$uploadAssets += (Resolve-Path -LiteralPath $sbomTarget).Path" in prepare_section
+    assert '$candidateRoot = (Resolve-Path -LiteralPath "build/promotion-input/candidate").Path' in prepare_section
+    assert "$sbomSource = Join-Path $candidateRoot $sbomRelativePath" in prepare_section
+    assert '$manifestPath = Join-Path $candidateRoot "build/release-candidate-subjects.sha256"' in prepare_section
+    assert '$sbomBundle = Join-Path $candidateRoot "build/attestations/sbom.sigstore.json"' in prepare_section
+    assert "Candidate checksum manifest must contain exactly the final 8 immutable subjects" in prepare_section
+    assert "Get-FileHash -LiteralPath $source -Algorithm SHA256" in prepare_section
+    assert "Immutable candidate SBOM does not match the signed attestation predicate" in prepare_section
+    assert prepare_section.count('gh attestation verify "$source"') == 2
+    assert "Final GitHub SBOM attestation verification failed for immutable candidate subject" in prepare_section
+    assert '@{ Source = $sbomRelativePath; Target = "Lengrvis-$version-sbom.cdx.json" }' in prepare_section
+    assert (
+        '$releaseAssetsDir = Join-Path (Resolve-Path -LiteralPath "build").Path "verified-release-assets"'
+        in prepare_section
+    )
+    assert "Copy-Item -LiteralPath $source -Destination $target" in prepare_section
+    assert "$uploadAssets += (Resolve-Path -LiteralPath $target).Path" in prepare_section
+    assert text.index("npm run supply-chain:verify") < text.index(
+        "$sbomSource = Join-Path $candidateRoot $sbomRelativePath"
+    )
+    assert text.index("npm run delivery:rc") < text.index("$sbomSource = Join-Path $candidateRoot $sbomRelativePath")
+
+
+def test_release_workflows_require_exact_installer_and_release_asset_sets() -> None:
+    candidate = RC_WORKFLOW.read_text(encoding="utf-8")
+    publish = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert '"desktop/release/Lengrvis-$version-x64.exe"' in candidate
+    assert '$blockmapPath = "$installerPath.blockmap"' in candidate
+    assert '"desktop/release/latest.yml"' in candidate
+    assert 'Extension -eq ".msi"' in candidate
+    assert "unexpected installer or updater assets" in candidate.lower()
+
+    assert '"desktop/release/Lengrvis-$version-x64.exe"' in publish
+    assert '"desktop/release/Lengrvis-$version-x64.exe.blockmap"' in publish
+    assert '"desktop/release/latest.yml"' in publish
+
+    assert "must contain exactly 8 immutable files" in candidate
+    assert "Candidate checksum manifest must contain the exact immutable release subject set" in publish
+    assert "Final GitHub Release asset set must contain exactly 9 uniquely named files" in publish
+    assert 'gh release view "$env:RELEASE_TAG" --json isDraft,assets' in publish
+    assert 'gh release delete-asset "$env:RELEASE_TAG"' in publish
+    assert 'gh release upload "$env:RELEASE_TAG" @uploadAssets --clobber' not in publish
+    assert "Compare-Object -ReferenceObject $expectedAssets -DifferenceObject $actualAssets" in publish
+    assert "Draft release asset set does not exactly match the verified candidate asset set" in publish
+
+
+def test_release_publish_reverifies_all_candidate_bytes_after_repository_gates() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    prepare_index = text.index("Prepare verified GitHub Release assets and checksums")
+    upload_index = text.index("Upload the verified candidate bytes to GitHub Release")
+    section = text[prepare_index:upload_index]
+
+    assert text.index("npm run delivery:rc") < prepare_index
+    assert "Final release subject changed after initial candidate verification" in section
+    assert section.count('gh attestation verify "$source"') == 2
+    assert '--bundle "$provenanceBundle"' in section
+    assert '--bundle "$sbomBundle"' in section
+    assert "Final GitHub provenance verification failed for immutable candidate subject" in section
+    assert "Final GitHub SBOM attestation verification failed for immutable candidate subject" in section
+    assert "Join-Path $candidateRoot $mapping.Source" in section
+    assert "Final release staging copy changed immutable candidate bytes" in section
+    assert 'Source = "dist/Lengrvis-win-portable.zip"' in section
+    assert 'Source = "desktop/release/latest.yml"' in section
 
 
 def test_upload_artifact_steps_preserve_explicit_dot_directory_evidence() -> None:
@@ -228,7 +292,7 @@ def test_release_publish_reads_reviewed_artifact_paths_relative_to_upload_common
         materialize_section
     )
     assert '"android/lengrvis-production.apk" = "build/android/lengrvis-production.apk"' in materialize_section
-    assert 'Join-Path $evidenceRoot $relative' not in materialize_section
+    assert "Join-Path $evidenceRoot $relative" not in materialize_section
 
 
 def test_reviewed_evidence_workflow_validates_candidate_and_human_inputs_before_upload() -> None:
@@ -268,6 +332,30 @@ def test_release_workflows_reject_non_default_branch_dispatches_before_protected
         job_section = text[text.index("jobs:") :]
         assert default_branch_guard in job_section
         assert job_section.index(default_branch_guard) < job_section.index("environment:")
+
+
+def test_protected_release_workflows_do_not_persist_checkout_credentials() -> None:
+    for workflow_path in (RC_WORKFLOW, REVIEWED_EVIDENCE_WORKFLOW, RELEASE_PUBLISH_WORKFLOW):
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        checkout_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if str(step.get("uses") or "").startswith("actions/checkout@")
+        ]
+        assert checkout_steps, f"{workflow_path.name}: protected workflow has no checkout step"
+        for step in checkout_steps:
+            assert (step.get("with") or {}).get("persist-credentials") is False, (
+                f"{workflow_path.name}: checkout must not leave the workflow token in git config"
+            )
+
+
+def test_protected_release_workflows_do_not_self_upgrade_pip_outside_the_hash_lock() -> None:
+    for workflow_path in (RC_WORKFLOW, RELEASE_PUBLISH_WORKFLOW):
+        text = workflow_path.read_text(encoding="utf-8")
+        assert "pip install -U pip" not in text
+        assert "pip install --upgrade pip" not in text
+        assert "pip install --require-hashes -r requirements-dev-lock.txt" in text
 
 
 def test_release_candidate_workflow_runs_review_scorecard_before_build() -> None:
@@ -372,6 +460,20 @@ def test_release_candidate_workflow_does_not_claim_manual_review_evidence() -> N
     assert "npm run delivery:candidate" in verdict_section
 
 
+def test_release_publish_cryptographically_verifies_owner_signoff() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    delivery_text = (REPO_ROOT / "scripts" / "delivery_pipeline.py").read_text(encoding="utf-8")
+    evidence_text = CURRENT_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "LENGRVIS_RELEASE_OWNER_PUBLIC_KEY: ${{ vars.LENGRVIS_RELEASE_OWNER_PUBLIC_KEY }}" in text
+    assert "release_owner_signature:" in text
+    assert "Ed25519" in text
+    assert "scripts/release_owner_signature.py" in delivery_text
+    assert "release-owner-signature" in delivery_text
+    assert "release-owner-signature-verification.json" in evidence_text
+    assert "Cryptographic release-owner signature verification failed." in evidence_text
+
+
 def test_release_candidate_workflow_passes_real_llm_env_to_strict_delivery() -> None:
     text = RC_WORKFLOW.read_text(encoding="utf-8")
     verdict_section = text[
@@ -379,7 +481,9 @@ def test_release_candidate_workflow_passes_real_llm_env_to_strict_delivery() -> 
     ]
 
     assert "LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}" in verdict_section
-    assert "LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}" in verdict_section
+    assert (
+        "LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}" in verdict_section
+    )
     assert "LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}" in verdict_section
     assert "LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}" in verdict_section
     assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in text
@@ -390,7 +494,7 @@ def test_current_release_evidence_script_has_strict_signoff_gate() -> None:
     text = CURRENT_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
 
     assert "[switch]$StrictReleaseSignoff" in text
-    assert "ciStatus -ne \"machine_gates_passed\"" in text
+    assert 'ciStatus -ne "machine_gates_passed"' in text
     assert "PENDING_RELEASE_OWNER_SIGNATURE" in text
     assert "RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS" in text
     assert "rc_signoff_recorded" in text
@@ -400,6 +504,8 @@ def test_current_release_evidence_script_has_strict_signoff_gate() -> None:
 
 def test_package_json_exposes_portable_signing_scripts() -> None:
     text = PACKAGE_JSON.read_text(encoding="utf-8")
+    assert "release:owner-signoff-payload" in text
+    assert "release_owner_signature.py --emit-payload-only" in text
     assert "sign:windows:preflight" in text
     assert "windows_signing_preflight.ps1" in text
     assert "refresh:portable-bundle" in text

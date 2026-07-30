@@ -20,6 +20,34 @@ FORBIDDEN_TERMS = {
     "disable security",
 }
 
+# Goal-level narrated security boundaries. Each rule is a conjunction: every
+# signal must be present before the goal is denied. This keeps boundary notices
+# deterministic without turning words such as "memory" or "upload" into broad
+# deny-list entries.
+GOAL_UNTRUSTED_AUTHORIZATION_MEMORY_SIGNALS = (
+    r"(?:网页|\bweb(?:page|site)?\b|(?:另一个|其他|跨)\s*(?:agent|智能体))",
+    r"(?:声称|消息说|\b(?:claims?|says?)\b)",
+    r"(?:永久|始终|\b(?:permanent(?:ly)?|always)\b).{0,40}(?:允许|批准|\b(?:allow(?:ed|s|ing)?|approv(?:e|ed|es|al|ing))\b)",
+    r"(?:上传|发送|\b(?:uploads?|uploading|sends?|sending)\b)",
+    r"(?:不要|不得|禁止|\b(?:do\s+not|don't|must\s+not)\b).{0,80}(?:写入|保存|晋升|\b(?:store|save|promote)\b).{0,50}(?:记忆|\bmemory\b)",
+)
+GOAL_MISSING_TRUSTED_BIOMETRIC_STEP_UP_SIGNALS = (
+    r"(?:没有|无(?!需)|缺少|\bwithout\b|\bno\b).{0,30}(?:可信\s*生物识别|trusted\s+biometric).{0,30}(?:step[-\s]?up|二次验证)",
+    r"(?:拒绝|禁止|\b(?:deny|reject|refuse)\b)",
+    r"(?:高影响|high[-\s]?impact)",
+    r"(?:发送|表单.{0,12}提交|\b(?:send(?:ing)?|form.{0,20}submit|approv(?:e|ed|es|al|ing))\b)",
+)
+GOAL_UNSANDBOXED_GENERATED_CODE_SIGNALS = (
+    r"(?:没有|无(?!需)|缺少|\bwithout\b|\bno\b).{0,30}(?:os\s*(?:沙箱|sandbox)|appcontainer|受限令牌|restricted\s+token|job\s+object\s+broker|broker)",
+    r"(?:不要|不得|禁止|\b(?:do\s+not|don't|must\s+not)\b).{0,30}(?:执行|运行|\b(?:execute|run)\b)",
+    r"(?:生成(?:的)?.{0,80}代码|\bgenerated\s+code\b)",
+)
+GOAL_REVOKED_MOBILE_DEVICE_ACCESS_SIGNALS = (
+    r"(?:(?:手机|移动)\s*设备.{0,16}(?:已经|已经被|已被|已)\s*(?:撤销|吊销)|\brevoked\s+mobile\s+device\b)",
+    r"(?:(?:旧|原有|previous|old).{0,12}(?:token|令牌))",
+    r"(?:不得|不能|拒绝|禁止|\b(?:do\s+not|don't|must\s+not|deny|reject)\b).{0,40}(?:继续)?.{0,12}(?:访问|使用|\baccess\b).{0,16}(?:任务|审批|\b(?:task|approval)\b)",
+)
+
 # Words that signal a safety-system boundary notice (a denial being explained,
 # an approval being requested, a read-only alternative being offered).
 BOUNDARY_TERMS = (

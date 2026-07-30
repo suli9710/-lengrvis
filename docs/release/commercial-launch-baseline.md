@@ -1,6 +1,6 @@
 # Commercial Launch Baseline
 
-Last captured: 2026-07-07
+Last captured: 2026-07-12
 
 This file records the current paid/public launch baseline for the maintainability
 and product-completeness push. It is a blocker inventory, not release evidence
@@ -52,6 +52,7 @@ pending manual sign-off, and a pending owner signature.
 
 - `.tmp/paid-launch-evidence-templates/support-privacy-operations-evidence.template.json`
 - `.tmp/paid-launch-evidence-templates/claims-launch-evidence.template.json`
+- `.tmp/paid-launch-evidence-templates/commercial-loop-evidence.template.json`
 - `.tmp/paid-launch-evidence-templates/commercial-operations-evidence.template.json`
 - `.tmp/paid-launch-evidence-templates/paid-launch-evidence-templates.md`
 

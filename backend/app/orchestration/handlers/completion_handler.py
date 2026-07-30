@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.context.management import summarize_messages
+from app.context.summary_provenance import build_summary_content_envelope
 from app.core.audit import record
 from app.core.schemas import Plan, Task, TaskStatus
+from app.core.session_context import SessionSummaryConflictError
 from app.llm.registry import get_effective_settings
 from app.policy.risk import SafetyVerdict
 
@@ -125,7 +127,10 @@ class CompletionHandler:
         store = getattr(self.orchestrator, "session_context_store", None)
         if store is None:
             return
-        messages = self.orchestrator.bus.get_messages(task.id)
+        messages = sorted(
+            self.orchestrator.bus.get_messages(task.id),
+            key=lambda message: (message.created_at, message.id),
+        )
         if not messages:
             return
         settings = get_effective_settings()
@@ -133,8 +138,44 @@ class CompletionHandler:
         summary = summarize_messages(llm_messages, settings)
         if not summary:
             return
-        store.remember_summary(
-            summary,
-            last_message_id=messages[-1].id,
-            token_stats={"last_task_id": task.id, "summarized_message_count": len(messages[-80:])},
-        )
+        source_messages = messages[-80:]
+        source_message_ids = [message.id for message in source_messages]
+        for _attempt in range(3):
+            context = store.load(store.current.id)
+            merged_summary = _merge_session_summary(context.conversation_summary, summary)
+            summary_envelope = build_summary_content_envelope(
+                merged_summary,
+                llm_messages,
+                session_id=context.id,
+                last_message_id=messages[-1].id,
+                source_message_ids=source_message_ids,
+                existing_summary=context.conversation_summary,
+                existing_envelope=context.conversation_summary_envelope,
+                existing_last_message_id=context.last_summarized_message_id,
+                task_id=task.id,
+                allow_message_id_count_mismatch=True,
+            )
+            try:
+                store.remember_summary(
+                    merged_summary,
+                    last_message_id=messages[-1].id,
+                    summary_envelope=summary_envelope,
+                    expected_updated_at=context.updated_at,
+                    token_stats={
+                        "last_task_id": task.id,
+                        "summarized_message_count": len(source_messages),
+                        "summary_source_message_ids": source_message_ids,
+                    },
+                )
+            except SessionSummaryConflictError:
+                continue
+            return
+        raise SessionSummaryConflictError("session summary changed repeatedly while completing a task")
+
+
+def _merge_session_summary(existing: str, new_summary: str) -> str:
+    existing_text = str(existing or "").strip()
+    new_text = str(new_summary or "").strip()
+    if existing_text and new_text:
+        return f"{existing_text}\n\n{new_text}"
+    return existing_text or new_text

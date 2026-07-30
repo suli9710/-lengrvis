@@ -56,13 +56,16 @@ export function LocalModelInstaller({
   });
   const [selectedSetupPlan, setSelectedSetupPlan] = useState<LocalModelSetupPlan | null>(setupPlan);
   const [isCheckingSetupPlan, setIsCheckingSetupPlan] = useState(false);
+  const [setupPlanError, setSetupPlanError] = useState("");
   const closeProgressSocketRef = useRef<() => void>();
 
   const isInstalling = status === "installing";
   const effectiveSetupPlan = selectedSetupPlan ?? setupPlan;
   const effectiveReadiness = effectiveSetupPlan?.readiness ?? readiness;
   const canInstall = effectiveSetupPlan?.canInstall ?? readiness?.canInstall ?? true;
-  const lastError = status === "error" ? localModelUserMessage(progress.error || progress.stage, "安装失败，请重新检查或重试。") : "";
+  const lastError = status === "error"
+    ? localModelUserMessage(progress.error || progress.stage, "安装失败，请重新检查或重试。")
+    : setupPlanError;
 
   useEffect(() => {
     const recommendedModel = effectiveReadiness?.recommendedModel;
@@ -86,12 +89,16 @@ export function LocalModelInstaller({
 
   const refreshSelectedSetupPlan = useCallback(async () => {
     setIsCheckingSetupPlan(true);
+    setSetupPlanError("");
     try {
       const response = await api.getLocalModelSetupPlan(model);
       if (response.ok && response.data) {
         setSelectedSetupPlan(response.data);
         return response.data;
       }
+      setSetupPlanError(localModelUserMessage(response.error?.message, "无法检查本地模型准备状态，请稍后重试。"));
+    } catch (error) { // broad-exception-boundary
+      setSetupPlanError(localModelErrorMessage(error, "无法检查本地模型准备状态，请稍后重试。"));
     } finally {
       setIsCheckingSetupPlan(false);
     }
@@ -117,7 +124,7 @@ export function LocalModelInstaller({
         setStatus("completed");
         setSocketStatus("closed");
         closeProgressSocket();
-        void onHealthRefresh?.();
+        void onHealthRefresh?.().catch(() => undefined);
         void refreshSelectedSetupPlan();
       }
     },
@@ -131,50 +138,60 @@ export function LocalModelInstaller({
         setProgress({ stage: fallbackStage, percent: 1 });
       }
 
-      const response = await api.installLocalModel({ model });
+      try {
+        const response = await api.installLocalModel({ model });
 
-      if (!response.ok) {
+        if (!response.ok) {
+          setStatus("error");
+          setProgress({
+            stage: localModelUserMessage(response.error?.message, "安装请求失败，请确认 Lengrvis 正在运行。"),
+            percent: 0,
+            error: localModelUserMessage(response.error?.message, "安装请求失败")
+          });
+          return;
+        }
+
+        const responseProgress = latestInstallModelProgress(response.data);
+        if (responseProgress) {
+          applyProgress(responseProgress);
+        }
+        const responsePercent = responseProgress ? clampPercent(responseProgress.percent) : 0;
+
+        if (response.data?.ok === false || response.data?.error) {
+          setStatus("error");
+          setProgress({
+            stage: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败。"),
+            percent: responseProgress ? responsePercent : 0,
+            error: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败")
+          });
+          return;
+        }
+
+        if (responseProgress && responsePercent >= 100) {
+          setSocketStatus("closed");
+          setStatus("completed");
+          void onHealthRefresh?.().catch(() => undefined);
+          void refreshSelectedSetupPlan();
+          return;
+        }
+
+        setProgress((current) =>
+          current.percent > 0
+            ? current
+            : {
+                stage: localModelUserMessage(response.data?.message, "安装任务已启动，正在等待进度..."),
+                percent: 1
+              }
+        );
+      } catch (error) { // broad-exception-boundary
+        const message = localModelErrorMessage(error, "安装请求失败，请确认 Lengrvis 正在运行。");
         setStatus("error");
         setProgress({
-          stage: localModelUserMessage(response.error?.message, "安装请求失败，请确认 Lengrvis 正在运行。"),
+          stage: message,
           percent: 0,
-          error: localModelUserMessage(response.error?.message, "安装请求失败")
+          error: message
         });
-        return;
       }
-
-      const responseProgress = latestInstallModelProgress(response.data);
-      if (responseProgress) {
-        applyProgress(responseProgress);
-      }
-      const responsePercent = responseProgress ? clampPercent(responseProgress.percent) : 0;
-
-      if (response.data?.ok === false || response.data?.error) {
-        setStatus("error");
-        setProgress({
-          stage: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败。"),
-          percent: responseProgress ? responsePercent : 0,
-          error: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败")
-        });
-        return;
-      }
-
-      if (responseProgress && responsePercent >= 100) {
-        setSocketStatus("closed");
-        setStatus("completed");
-        void onHealthRefresh?.();
-        void refreshSelectedSetupPlan();
-        return;
-      }
-
-      setProgress((current) =>
-        current.percent > 0
-          ? current
-          : {
-              stage: localModelUserMessage(response.data?.message, "安装任务已启动，正在等待进度..."),
-              percent: 1
-            }
-      );
     },
     [api, applyProgress, closeProgressSocket, model, onHealthRefresh, refreshSelectedSetupPlan]
   );
@@ -249,7 +266,7 @@ export function LocalModelInstaller({
               percent: 0,
               error: "安装进度连接中断，请重新检查或重试。"
             });
-            void onHealthRefresh?.();
+            void onHealthRefresh?.().catch(() => undefined);
           }
           return;
         }
@@ -311,7 +328,7 @@ export function LocalModelInstaller({
         checking={isInstalling || isCheckingSetupPlan}
         error={lastError}
         onPrimaryAction={() => void installModel()}
-        onRefresh={() => void onHealthRefresh?.()}
+        onRefresh={() => void onHealthRefresh?.().catch(() => undefined)}
         disabled={isInstalling || !canInstall}
       />
       <div className="local-model-installer__head">
@@ -469,7 +486,11 @@ function subscribeInstallModelProgressSocket(
 
   const url = buildInstallModelWebSocketUrl(baseUrl, path, model);
   if (!url) return null;
-  return subscribeInstallModelWebOnlyDevSocket(url, handlers);
+  try {
+    return subscribeInstallModelWebOnlyDevSocket(url, handlers);
+  } catch {
+    return null;
+  }
 }
 
 function isInstallModelWebOnlyDevFallbackEnabled(): boolean {
@@ -618,6 +639,10 @@ function normalizeInstallModelProgress(progress: InstallModelProgress): InstallM
     percent: clampPercent(progress.percent),
     ...(progress.error ? { error: localModelUserMessage(progress.error, "安装失败，请重新检查或重试。") } : {})
   };
+}
+
+function localModelErrorMessage(error: unknown, fallback: string): string {
+  return localModelUserMessage(error instanceof Error ? error.message : "", fallback);
 }
 
 function localModelOptionValue(model?: string): (typeof LOCAL_MODEL_OPTIONS)[number]["value"] {

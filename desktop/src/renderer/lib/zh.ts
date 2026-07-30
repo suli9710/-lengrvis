@@ -49,9 +49,19 @@ export function zhTaskState(state: TaskState) {
 
 export function zhBackendTaskStatus(status?: string) {
   if (!status) return "未知";
+  const normalized = status.trim().toLowerCase();
   const labels: Record<string, string> = {
+    created: "已创建",
+    goal_analysis: "分析目标中",
     queued: "排队中",
     planning: "规划中",
+    consultation: "Agent 协作中",
+    plan_review: "审核计划中",
+    execution: "执行中",
+    final_review: "核验结果中",
+    rolled_back: "已回滚",
+    repair_required: "回滚后需要修复",
+    // Legacy transport aliases remain readable while older evidence is open.
     agent_consultation: "Agent 协作中",
     reviewing_plan: "审核计划中",
     reviewing_tool_call: "审核工具调用中",
@@ -63,7 +73,7 @@ export function zhBackendTaskStatus(status?: string) {
     cancelled: "已取消",
     paused: "已暂停"
   };
-  return labels[status] ?? status;
+  return labels[normalized] ?? status;
 }
 
 export function zhStepState(state: PlanStepState) {
@@ -158,7 +168,25 @@ export function zhBackendText(text?: string): string {
     "Explicit absolute path is required when no authorized directories are configured.": "请先选择要整理的文件夹，或填写完整的文件位置，例如桌面、下载、文档、图片里的某个文件。",
     "No authorized directories configured.": "还没有选择要整理的文件夹。请先添加桌面、下载、文档或图片。",
     "Path is outside authorized directories.": "这个文件不在你已选择的文件夹里。请换一个文件，或先把所在文件夹加入设置。",
-    "Plan denied.": "计划已被安全策略拦截。"
+    "Plan denied.": "计划已被安全策略拦截。",
+    "Analyze spreadsheet": "分析表格",
+    "Analyze the visible spreadsheet and summarize the important numbers.": "分析当前可见的表格，并总结重要数据。",
+    "Spreadsheet context is visible.": "检测到当前窗口包含表格内容。",
+    "Summarize document": "总结文档",
+    "Summarize the visible document and call out likely next actions.": "总结当前可见的文档，并列出可能的下一步。",
+    "Document editing or reading context is visible.": "检测到当前窗口正在阅读或编辑文档。",
+    "Read page": "读取网页",
+    "Read the current page and extract the useful facts.": "读取当前网页并提取有用信息。",
+    "Browser context is visible.": "检测到当前窗口包含网页内容。",
+    "Organize files": "整理文件",
+    "Review the visible folder and suggest a safe organization plan.": "检查当前可见的文件夹，并建议安全的整理方案。",
+    "File or folder context is visible.": "检测到当前窗口包含文件或文件夹。",
+    "Check system": "检查系统",
+    "Check the visible system state and suggest a read-only diagnostic next step.": "检查当前可见的系统状态，并建议只读诊断步骤。",
+    "System management context is visible.": "检测到当前窗口包含系统管理信息。",
+    "Resume task": "继续任务",
+    "Resume the most recent unfinished task using the current screen context.": "结合当前屏幕上下文继续最近未完成的任务。",
+    "Session history has unfinished tasks.": "检测到会话中存在未完成的任务。"
   };
   if (exact[text]) return exact[text];
   for (const [prefix, translatedPrefix] of Object.entries(exact)) {

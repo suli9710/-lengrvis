@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 from app.adapters.base import AdapterBase, AdapterConfig, AdapterResult
@@ -70,7 +71,40 @@ def _validate_email_payload(payload: dict[str, Any]) -> str:
         return "Email 'subject' is required."
     if not payload.get("body"):
         return "Email 'body' is required."
+    # Header fields must never contain CR/LF: a newline in subject/to/from/cc/bcc
+    # lets an attacker (via injected model output or untrusted document content)
+    # inject extra SMTP headers (e.g. a hidden Bcc that also evades the
+    # run-budget recipient/domain binding). The body may legitimately contain
+    # newlines and is not checked here.
+    for field in ("subject", "from"):
+        if _contains_crlf(payload.get(field)):
+            return f"Email '{field}' must not contain line breaks."
+    for field in ("to", "cc", "bcc"):
+        for recipient in _as_recipient_list(payload.get(field)):
+            if _contains_crlf(recipient):
+                return f"Email '{field}' recipient must not contain line breaks."
+            if recipient and not _looks_like_email(recipient):
+                return f"Email '{field}' contains an invalid recipient address."
     return ""
+
+
+_EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _contains_crlf(value: Any) -> bool:
+    return isinstance(value, str) and ("\r" in value or "\n" in value)
+
+
+def _as_recipient_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list | tuple | set):
+        return [str(item).strip() for item in value]
+    return [str(value).strip()]
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(_EMAIL_ADDRESS_RE.match(value.strip()))
 
 
 def _build_message(payload: dict[str, Any], config: AdapterConfig) -> dict[str, Any]:

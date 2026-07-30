@@ -217,7 +217,6 @@ def read_local_secret(path: Path) -> str:
     raise RuntimeError(
         f"Refusing to read plaintext local secret at {path}; secure storage is required outside tests/dev."
     )
-    return stored
 
 
 def load_or_create_local_secret(path: Path, *, unavailable_message: str) -> str:

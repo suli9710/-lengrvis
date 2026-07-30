@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { App } from "./App";
+import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
 import { ConsentGate } from "./components/legal/ConsentGate";
 import { UiPreferencesProvider } from "./lib/uiPreferences";
 import "./styles.css";
@@ -18,6 +19,7 @@ import "./styles.home-command.css";
 import "./styles.home-actions.css";
 import "./styles.home-trust.css";
 import "./styles.details.css";
+import "./styles.technical-details.css";
 import "./styles.chat.css";
 import "./styles.timeline-files.css";
 import "./styles.timeline-cleanup.css";
@@ -25,6 +27,7 @@ import "./styles.file-tools.css";
 import "./styles.file-tool-panels.css";
 import "./styles.browser-explain.css";
 import "./styles.settings.css";
+import "./styles.memory-schedule.css";
 import "./styles.settings-local-llm.css";
 import "./styles.settings-privacy.css";
 import "./styles.settings-local-model.css";
@@ -44,10 +47,12 @@ import "./styles.motion.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <UiPreferencesProvider>
-      <ConsentGate>
-        <App />
-      </ConsentGate>
-    </UiPreferencesProvider>
+    <RendererErrorBoundary>
+      <UiPreferencesProvider>
+        <ConsentGate>
+          <App />
+        </ConsentGate>
+      </UiPreferencesProvider>
+    </RendererErrorBoundary>
   </React.StrictMode>
 );

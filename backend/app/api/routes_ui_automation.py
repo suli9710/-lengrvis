@@ -14,6 +14,7 @@ from app.orchestration.direct_tool_execution import execute_direct_tool_journale
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
+from app.perception.ui_automation_observability import record_approval_gate
 from app.policy.approval_binding import (
     args_binding_hmac,
     binding_preview,
@@ -116,9 +117,10 @@ def action(payload: dict | None = None):
     tool = _tool_definition(tool_name)
     if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
         return tool.execute(payload, context)
-    if payload.get("dry_run", True) is True:
+    if ui_automation_tools.is_dry_run(payload):
         review = _review_tool_call(tool_name, payload, context)
         if review.verdict == SafetyVerdict.DENY:
+            record_approval_gate(tool_name, decision="denied", stage="route_review")
             return _blocked_response(review)
         preview = tool.execute({**payload, "dry_run": True}, context)
         if not preview.get("ok") or preview.get("dry_run") is not True:
@@ -129,6 +131,7 @@ def action(payload: dict | None = None):
                 "preview": redacted_preview(binding_preview(preview)),
             }
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+            record_approval_gate(tool_name, decision="required", stage="route_review")
             approval = _create_action_approval(tool_name, payload, preview, review, context)
             return {
                 "ok": False,
@@ -144,6 +147,8 @@ def action(payload: dict | None = None):
 
     approval_error = _claim_valid_gui_approval(tool_name, payload, context)
     if approval_error is not None:
+        decision = "required" if approval_error.get("requires_approval") is True else "denied"
+        record_approval_gate(tool_name, decision=decision, stage="route_claim")
         return approval_error
     mark_execution_approved(context)
     return execute_direct_tool_journaled(
@@ -293,6 +298,8 @@ def _claim_valid_gui_approval(
     binding_error = _approval_binding_error(claimed_approval, tool_name, payload, context, allow_consumed=True)
     if binding_error:
         return {"ok": False, "status": "denied", "error": binding_error}
+    expected_state = (claimed_approval.diff_preview or {}).get("_resource_state")
+    context["_expected_resource_state"] = expected_state if isinstance(expected_state, list) else []
     return None
 
 

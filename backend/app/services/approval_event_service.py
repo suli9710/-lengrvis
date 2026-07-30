@@ -10,8 +10,9 @@ from app.policy.redaction import redact_value
 
 
 class ApprovalEventBus:
-    _lock = threading.RLock()
-    _subscriptions: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict]]] = set()
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._subscriptions: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict]]] = set()
 
     def publish(self, event: dict) -> None:
         with self._lock:
@@ -20,7 +21,12 @@ class ApprovalEventBus:
             if loop.is_closed():
                 self.unsubscribe(queue)
                 continue
-            loop.call_soon_threadsafe(self._enqueue_event, queue, event)
+            try:
+                loop.call_soon_threadsafe(self._enqueue_event, queue, event)
+            except RuntimeError:
+                # The event loop can close between is_closed() and scheduling.
+                # A stale websocket subscriber must not break approval creation.
+                self.unsubscribe(queue)
 
     def subscribe(self, *, max_queue_size: int = 100) -> asyncio.Queue[dict]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=max_queue_size)

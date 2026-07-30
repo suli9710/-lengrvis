@@ -7,8 +7,10 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from app.commerce.usage import reserve_cloud_quota_call
 from app.config import AppSettings
-from app.context.agent_message_projection import llm_safe_agent_message
+from app.context import compaction_observability as compaction_metrics
+from app.context.agent_message_projection import llm_safe_agent_message, strip_private_provenance
 from app.context.compact_boundaries import (
     compact_metadata as _compact_metadata,
 )
@@ -93,6 +95,7 @@ from app.context.prompt_errors import (
 from app.context.prompt_errors import (
     prompt_too_long_error_from_exception as prompt_too_long_error_from_exception,
 )
+from app.context.summary_provenance import build_summary_content_envelope
 from app.context.tokens import (
     CHARS_PER_TOKEN as CHARS_PER_TOKEN,
 )
@@ -123,7 +126,7 @@ from app.context.tokens import (
 from app.llm.base import LLMProvider
 from app.llm.profiles import ProviderProfile, profile_for_provider
 from app.llm.prompts import load_prompt, render_prompt
-from app.llm.types import LLMResponse
+from app.llm.types import LLMResponse, LLMUsage
 from app.llm.usage import estimate_usage, record_llm_response
 from app.observability.best_effort import log_best_effort_failure
 
@@ -181,7 +184,12 @@ def build_llm_request_snapshot(
     profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prompt_hash = hashlib.sha256(
-        json.dumps(projection.messages, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(
+            strip_private_provenance(projection.messages),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
     try:
         from app.policy.approval_binding import permission_policy_version
@@ -222,6 +230,7 @@ def _visible_tool_ids(tools: list[dict[str, Any]] | None) -> list[str]:
     return sorted({item for item in result if item})
 
 
+@compaction_metrics.observe_projection_failures
 def project_messages_for_llm(
     messages: list[dict[str, Any]],
     settings: AppSettings,
@@ -238,12 +247,15 @@ def project_messages_for_llm(
     micro_compact_metadata: dict[str, Any] = _empty_micro_compact_metadata()
     history_snipped = False
     session_summary_added = False
+    auto_compact_attempted = auto_compact_applied = auto_reduced_tokens = False
 
     if settings.context_micro_compact_enabled:
         projected, micro_compacted, micro_compact_metadata = _micro_compact_messages_with_metadata(projected, settings)
 
+    history_before_tokens = count_messages_tokens(projected)
     if settings.context_history_snip_enabled:
         projected, history_snipped = snip_history_if_needed(projected, settings)
+    history_reduced_tokens = history_snipped and count_messages_tokens(projected) < history_before_tokens
 
     if (
         settings.context_session_memory_enabled
@@ -259,8 +271,11 @@ def project_messages_for_llm(
     projected_tokens = count_messages_tokens(projected)
     compacted = micro_compacted or history_snipped or session_summary_added
     if settings.context_auto_compact_enabled and projected_tokens >= auto_compact_threshold(settings):
-        projected, auto_compacted = auto_compact_messages(projected, settings, session_context=session_context)
-        compacted = compacted or auto_compacted
+        auto_compact_attempted = True
+        before_auto_compact = projected
+        projected, auto_reduced_tokens = auto_compact_messages(projected, settings, session_context=session_context)
+        auto_compact_applied = projected != before_auto_compact
+        compacted = compacted or auto_compact_applied
         projected_tokens = count_messages_tokens(projected)
 
     projected = (
@@ -280,7 +295,7 @@ def project_messages_for_llm(
         micro_compacted=micro_compacted,
         history_snipped=history_snipped,
         session_summary_added=session_summary_added,
-        strategy=_strategy(micro_compacted, history_snipped, session_summary_added, compacted),
+        strategy=_strategy(micro_compacted, history_snipped, session_summary_added, auto_compact_applied, compacted),
         source=source,
         boundary_id=str((boundary or {}).get("id") or ""),
         compact_metadata=_projection_compact_metadata(boundary or {}, micro_compact_metadata),
@@ -300,7 +315,15 @@ def project_messages_for_llm(
                 "tokens_saved": max(0, projection.original_tokens - projection.projected_tokens),
             },
         )
-    return projection
+    return compaction_metrics.record_projection_result(
+        projection,
+        enabled=record_projection_event,
+        micro_applied=micro_compacted,
+        history_snip_applied=history_snipped,
+        auto_attempted=auto_compact_attempted,
+        auto_applied=auto_compact_applied,
+        token_reduced=bool(micro_compact_metadata.get("tokens_saved")) or history_reduced_tokens or auto_reduced_tokens,
+    )
 
 
 def project_ledger_for_llm(
@@ -388,12 +411,30 @@ def auto_compact_messages(
             summary_text = f"{session_summary}\n\n{summary_text}" if summary_text else session_summary
     if not summary_text:
         return messages, False
+    source_message_ids = [
+        str(message.get("id") or "").strip() for message in middle if str(message.get("id") or "").strip()
+    ]
+    summary_anchor = _projection_summary_anchor(messages)
+    summary_envelope = build_summary_content_envelope(
+        summary_text,
+        middle,
+        session_id=str((session_context or {}).get("session_id") or "projection"),
+        last_message_id=summary_anchor,
+        source_message_ids=source_message_ids,
+        existing_summary=str((session_context or {}).get("conversation_summary") or ""),
+        existing_envelope=(session_context or {}).get("_conversation_summary_envelope"),
+        existing_last_message_id=str((session_context or {}).get("last_summarized_message_id") or ""),
+        context_inputs={"session_summary": session_summary} if session_context and session_summary else None,
+        require_message_ids=False,
+    )
     boundary = _system_context_message(
         render_prompt("context_auto_compaction.md", {"summary_text": summary_text}),
         {
             "context_boundary": "auto_compact",
             "compacted_messages": len(middle),
             "pre_compact_tokens": count_messages_tokens(messages),
+            "summary": summary_text,
+            "summary_content_envelope": summary_envelope.model_dump(mode="json"),
         },
     )
     compacted = repair_tool_message_invariants([*head, boundary, *recent])
@@ -789,12 +830,23 @@ class ContextAwareProvider(LLMProvider):
         *,
         task: str = "default",
         profile: ProviderProfile | None = None,
+        meter_cloud_usage: bool = False,
     ) -> None:
         self.provider = provider
         self.settings = settings
         self.task = task
         self.name = getattr(provider, "name", self.name)
         self.profile = profile or profile_for_provider(provider, settings)
+        self.meter_cloud_usage = bool(meter_cloud_usage)
+        self.transport_metered = False
+        configure_transport_meter = getattr(provider, "configure_cloud_usage_meter", None)
+        if self.meter_cloud_usage and callable(configure_transport_meter):
+            self.transport_metered = bool(
+                configure_transport_meter(
+                    task=self.task,
+                    profile=self.profile,
+                )
+            )
 
     async def chat(
         self,
@@ -815,8 +867,9 @@ class ContextAwareProvider(LLMProvider):
         if tools and not self.profile.capabilities.tools:
             raise LLMCapabilityError(f"Provider '{self.profile.provider_name}' does not support tool calls.")
         projection = self.prepare(messages, purpose=f"{self.task}:chat")
+        reservation_id: str | None = None
         try:
-            response = await self._provider_chat_result(
+            response, reservation_id = await self._metered_provider_chat_result(
                 projection.messages,  # type: ignore[arg-type]
                 model=model,
                 temperature=temperature,
@@ -836,7 +889,7 @@ class ContextAwareProvider(LLMProvider):
                 },
             )
             try:
-                response = await self._provider_chat_result(
+                response, reservation_id = await self._metered_provider_chat_result(
                     retry_projection.messages,  # type: ignore[arg-type]
                     model=model,
                     temperature=temperature,
@@ -861,7 +914,7 @@ class ContextAwareProvider(LLMProvider):
                         "projected_messages": fallback_projection.projected_count,
                     },
                 )
-                response = await self._provider_chat_result(
+                response, reservation_id = await self._metered_provider_chat_result(
                     fallback_projection.messages,  # type: ignore[arg-type]
                     model=model,
                     temperature=temperature,
@@ -871,26 +924,30 @@ class ContextAwareProvider(LLMProvider):
         response = self._with_request_snapshot(response, projection, purpose="chat", tools=tools)
         response = self._with_cost(response)
         request_snapshot = response.metadata.get("request_snapshot") if isinstance(response.metadata, dict) else {}
-        record_llm_response(
-            response,
-            self.settings,
-            task=self.task,
-            purpose="chat",
-            profile=self.profile.to_dict(),
-            projection={
-                **projection.to_dict(),
-                "context_usage": _safe_context_usage_snapshot(projection, self.settings),
-                "request_snapshot": request_snapshot,
-            },
-        )
+        if not self.transport_metered:
+            record_llm_response(
+                response,
+                self.settings,
+                task=self.task,
+                purpose="chat",
+                profile=self.profile.to_dict(),
+                projection={
+                    **projection.to_dict(),
+                    "context_usage": _safe_context_usage_snapshot(projection, self.settings),
+                    "request_snapshot": request_snapshot,
+                },
+                reservation_id=reservation_id,
+                metered_cloud=self.meter_cloud_usage,
+            )
         return response
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
         if not self.profile.capabilities.structured_json:
             raise LLMCapabilityError(f"Provider '{self.profile.provider_name}' does not support structured JSON.")
         projection = self.prepare(messages, purpose=f"{self.task}:structured")
+        reservation_id: str | None = None
         try:
-            payload = await self.provider.structured_chat(
+            payload, reservation_id = await self._metered_structured_chat(
                 projection.messages,  # type: ignore[arg-type]
                 output_schema,
             )
@@ -909,7 +966,7 @@ class ContextAwareProvider(LLMProvider):
                 },
             )
             try:
-                payload = await self.provider.structured_chat(
+                payload, reservation_id = await self._metered_structured_chat(
                     retry_projection.messages,  # type: ignore[arg-type]
                     output_schema,
                 )
@@ -933,7 +990,7 @@ class ContextAwareProvider(LLMProvider):
                         "projected_messages": fallback_projection.projected_count,
                     },
                 )
-                payload = await self.provider.structured_chat(
+                payload, reservation_id = await self._metered_structured_chat(
                     fallback_projection.messages,  # type: ignore[arg-type]
                     output_schema,
                 )
@@ -958,18 +1015,21 @@ class ContextAwareProvider(LLMProvider):
             if isinstance(structured_response.metadata, dict)
             else {}
         )
-        record_llm_response(
-            structured_response,
-            self.settings,
-            task=self.task,
-            purpose="structured_chat",
-            profile=self.profile.to_dict(),
-            projection={
-                **projection.to_dict(),
-                "context_usage": _safe_context_usage_snapshot(projection, self.settings),
-                "request_snapshot": request_snapshot,
-            },
-        )
+        if not self.transport_metered:
+            record_llm_response(
+                structured_response,
+                self.settings,
+                task=self.task,
+                purpose="structured_chat",
+                profile=self.profile.to_dict(),
+                projection={
+                    **projection.to_dict(),
+                    "context_usage": _safe_context_usage_snapshot(projection, self.settings),
+                    "request_snapshot": request_snapshot,
+                },
+                reservation_id=reservation_id,
+                metered_cloud=self.meter_cloud_usage,
+            )
         return payload
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
@@ -1031,6 +1091,72 @@ class ContextAwareProvider(LLMProvider):
             usage=estimate_usage(messages, content),
         )
 
+    async def _metered_provider_chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[LLMResponse, str | None]:
+        reservation_id = self._reserve_cloud_call(
+            messages,
+            purpose="chat",
+            model=model,
+            extra_payload=tools,
+        )
+        response = await self._provider_chat_result(
+            messages,
+            model=model,
+            temperature=temperature,
+            tools=tools,
+        )
+        return response, reservation_id
+
+    async def _metered_structured_chat(
+        self,
+        messages: list[dict[str, str]],
+        output_schema: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        reservation_id = self._reserve_cloud_call(
+            messages,
+            purpose="structured_chat",
+            extra_payload=output_schema,
+        )
+        payload = await self.provider.structured_chat(messages, output_schema)
+        return payload, reservation_id
+
+    def _reserve_cloud_call(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        purpose: str,
+        model: str | None = None,
+        extra_payload: Any = None,
+    ) -> str | None:
+        if not self.meter_cloud_usage or self.transport_metered:
+            return None
+        prompt_tokens = count_messages_tokens(messages)
+        if extra_payload:
+            prompt_tokens += rough_token_count(_json(extra_payload))
+        max_completion_tokens = max(1, int(self.profile.model_profile.max_output_tokens))
+        reserved_usage = LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=max_completion_tokens,
+            total_tokens=prompt_tokens + max_completion_tokens,
+            estimated=True,
+        )
+        max_cost = self.profile.estimate_cost(reserved_usage).total_cost_usd
+        return reserve_cloud_quota_call(
+            self.settings,
+            provider=getattr(self.provider, "name", self.profile.provider_name),
+            model=model or self.profile.model,
+            task=self.task,
+            purpose=purpose,
+            prompt_tokens=prompt_tokens,
+            max_completion_tokens=max_completion_tokens,
+            max_cost_usd=max_cost,
+        )
+
     def _with_cost(self, response: LLMResponse) -> LLMResponse:
         if response.cost is not None:
             return response
@@ -1059,6 +1185,7 @@ class ContextAwareProvider(LLMProvider):
         return replace(response, metadata=metadata)
 
 
+@compaction_metrics.observe_reactive_compaction("reactive_summary")
 def force_compact_for_retry(messages: list[dict[str, Any]], settings: AppSettings) -> ContextProjection:
     normalized = _normalize_messages(messages)
     session_context = _load_session_context()
@@ -1092,6 +1219,7 @@ def force_compact_for_retry(messages: list[dict[str, Any]], settings: AppSetting
     )
 
 
+@compaction_metrics.observe_reactive_compaction("fallback_trim")
 def provider_safe_projection_fallback(
     messages: list[dict[str, Any]],
     settings: AppSettings,
@@ -1156,6 +1284,15 @@ def _system_context_message(content: str, metadata: dict[str, Any]) -> dict[str,
     }
 
 
+def _projection_summary_anchor(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        message_id = str(message.get("id") or "").strip()
+        if message_id:
+            return message_id
+    payload = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return f"projection:{hashlib.sha256(payload).hexdigest()}"
+
+
 def _message_to_llm_dict(message: AgentMessage) -> dict[str, Any]:
     payload = llm_safe_agent_message(message)
     metadata = dict(payload.get("metadata") or {})
@@ -1169,7 +1306,7 @@ def _load_session_context() -> dict[str, Any] | None:
     try:
         from app.core.session_context import get_session_context_store
 
-        return get_session_context_store().planning_context()
+        return get_session_context_store().planning_context(include_private_summary_envelope=True)
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: optional session context should not block projection.
         log_best_effort_failure(logger, "context.load_session_context", exc)
         return None
@@ -1237,7 +1374,9 @@ def _session_summary_text(session_context: dict[str, Any], *, limit: int) -> str
     return text[:limit]
 
 
-def _strategy(micro_compacted: bool, history_snipped: bool, session_summary_added: bool, compacted: bool) -> str:
+def _strategy(
+    micro_compacted: bool, history_snipped: bool, session_summary_added: bool, auto_compacted: bool, compacted: bool
+) -> str:
     parts: list[str] = []
     if micro_compacted:
         parts.append("micro")
@@ -1245,6 +1384,8 @@ def _strategy(micro_compacted: bool, history_snipped: bool, session_summary_adde
         parts.append("snip")
     if session_summary_added:
         parts.append("session")
+    if auto_compacted:
+        parts.append("auto")
     if compacted and not parts:
         parts.append("auto")
     return "+".join(parts) if parts else "none"

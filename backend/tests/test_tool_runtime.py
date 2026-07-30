@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -11,10 +12,11 @@ import pytest
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.automation.intent_capsule import user_goal_digest
 from app.core import db
-from app.core.content_provenance import create_content_envelope
+from app.core.content_provenance import create_content_envelope, record_tool_output_provenance
 from app.core.schemas import (
     Approval,
     ApprovalStatus,
+    ContentEnvelope,
     Plan,
     PlanStep,
     SafetyReview,
@@ -413,6 +415,98 @@ def test_tool_runtime_persists_content_envelope_for_tool_results():
     assert stored["content_envelope"]["trust_level"] == "internal"
 
 
+def test_tool_runtime_consumes_private_field_lineage_and_persists_rollback_safe_wire_format():
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        output = {"summary": "Ada was a programmer."}
+        record_tool_output_provenance(
+            context,
+            output,
+            source_content="Ada wrote the first algorithm.",
+            source_kind="document",
+            source_id="doc-runtime",
+            field_lineage={
+                "output_pointer": "/summary",
+                "source_pointer": "",
+                "operation": "summarize",
+            },
+        )
+        return output
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="document.test_runtime_lineage",
+        description="derived document result",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+        resource_kinds=["document"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    stored = db.fetch_many("tool_results", "tool_call_id = ?", (execution.result.tool_call_id,), limit=1)[0]
+
+    assert execution.kind == "succeeded"
+    assert execution.result.output == {"summary": "Ada was a programmer."}
+    assert "field_lineage" not in stored["content_envelope"]
+    restored = ContentEnvelope.model_validate(stored["content_envelope"])
+    matching = [edge for edge in restored.field_lineage if edge.output_pointer == "/summary"]
+    assert len(matching) == 1
+    assert matching[0].operation == "summarize"
+    assert matching[0].source_id == "doc-runtime"
+
+
+def test_tool_runtime_emits_safe_lifecycle_span(caplog):
+    secret = "tool-observability-secret"
+
+    def execute(_args, _context):  # noqa: ANN001
+        return {"secret": secret, "ok": True}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.observability_span",
+        description="observability span",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    task, _plan, step = _task_plan_step(tool.name, {"secret": secret})
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.DEBUG, logger="lengrvis.observability.tracing"):
+        execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+
+    assert execution.kind == "succeeded"
+    record = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "span.end" and record.observability["span"] == "tool.execute"
+    )
+    observability = record.observability
+    assert observability["trace_id"]
+    assert observability["span_id"]
+    assert observability["parent_span_id"] == ""
+    assert observability["attributes"]["task.id"] == task.id
+    assert observability["attributes"]["step.id"] == step.id
+    assert observability["attributes"]["tool.name"] == tool.name
+    assert secret not in str(observability)
+
+
 def test_tool_runtime_merges_all_upstream_content_envelopes_into_result():
     def execute(args, context):  # noqa: ANN001, ANN202, ARG001
         return {"value": "combined"}
@@ -459,9 +553,7 @@ def test_tool_runtime_merges_all_upstream_content_envelopes_into_result():
 
     assert execution.kind == "succeeded"
     assert stored["content_envelope"]["trust_level"] == "untrusted"
-    assert {"web_content", "document_content"}.issubset(
-        set(stored["content_envelope"]["taint_flags"])
-    )
+    assert {"web_content", "document_content"}.issubset(set(stored["content_envelope"]["taint_flags"]))
 
 
 def test_tool_runtime_crash_window_is_recovered_as_outcome_unknown(monkeypatch: pytest.MonkeyPatch):
@@ -506,6 +598,88 @@ def test_tool_runtime_crash_window_is_recovered_as_outcome_unknown(monkeypatch: 
     assert recover_interrupted_tool_executions() == [call["id"]]
     recovered = db.fetch_one("tool_calls", call["id"])
     assert recovered["status"] == "outcome_unknown"
+
+
+def test_tool_runtime_write_exception_is_immediately_outcome_unknown():
+    side_effects: list[str] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        side_effects.append("possibly-applied")
+        raise RuntimeError("write adapter failed after dispatch")
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    tool = ToolDefinition(
+        name="test.write_exception_unknown",
+        description="write exception unknown",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+        read_only=False,
+        concurrency_safe=False,
+        trust_tier="builtin",
+        effects=["write"],
+        resource_kinds=["test_resource"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    step.risk_level = tool.risk_level
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+
+    assert execution.kind == "failed"
+    assert execution.result is not None
+    assert execution.result.output["outcome_unknown"] is True
+    assert execution.result.output["automatic_replay_blocked"] is True
+    assert side_effects == ["possibly-applied"]
+    call = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0]
+    assert call["status"] == "outcome_unknown"
+    assert call["outcome_unknown_at"]
+
+
+def test_tool_runtime_cancelled_execution_marks_outcome_unknown_not_executing():
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    tool = ToolDefinition(
+        name="test.cancelled_unknown",
+        description="cancelled execution",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=lambda args, context: {"ok": True},  # noqa: ARG005
+        read_only=False,
+        concurrency_safe=False,
+        trust_tier="builtin",
+        effects=["write"],
+        resource_kinds=["test_resource"],
+    )
+    task, _plan, step = _task_plan_step(tool.name)
+    step.risk_level = tool.risk_level
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    runtime_obj = ToolRuntime(orchestrator)
+
+    async def _cancel(*args, **kwargs):  # noqa: ANN002, ANN003, ARG001
+        raise asyncio.CancelledError
+
+    runtime_obj._execute_tool_call = _cancel  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runtime_obj.execute_allowed(task, step, tool, runtime))
+
+    # The cancelled call must not remain "executing" (which would block every
+    # future resume of the same step as a duplicate until process restart).
+    call = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0]
+    assert call["status"] == "outcome_unknown"
 
 
 def test_tool_runtime_reuses_committed_result_without_repeating_side_effect():
@@ -1119,6 +1293,9 @@ async def test_timed_out_write_tool_blocks_followup_until_worker_finishes(tmp_pa
     assert first_started.is_set()
     assert first_result["error"].startswith("test.timeout_write_lock timed out after 0s")
     assert first_result["pending_completion"] is True
+    assert first_result["status"] == "outcome_unknown"
+    assert first_result["outcome_unknown"] is True
+    assert first_result["automatic_replay_blocked"] is True
     assert events == ["A:start"]
 
     second_context = {

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile
 
 from app.config import get_env
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
@@ -41,6 +41,15 @@ DEFAULT_TOP_K = 4
 DEFAULT_REPORT_BLOCKS = 8
 DEFAULT_PREVIEW_CHARS = 20000
 DEFAULT_MAX_PARSE_BYTES = 100 * 1024 * 1024
+# OOXML files (.docx/.xlsx/.pptx) are ZIP archives whose on-disk size says
+# nothing about how much memory python-docx/pptx/openpyxl allocate when lxml
+# loads the fully decompressed XML. Guard against decompression bombs (a tiny
+# file that expands to gigabytes) which the file watcher would otherwise parse
+# automatically and OOM the process.
+DEFAULT_MAX_OOXML_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_OOXML_COMPRESSION_RATIO = 200
+_OOXML_RATIO_FLOOR_BYTES = 8 * 1024 * 1024
+_OOXML_EXTENSIONS = frozenset({".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm"})
 logger = logging.getLogger(__name__)
 _OPTIONAL_IMPORT_ERRORS = (ImportError, OSError)
 _TEXT_TABLE_READ_ERRORS = (OSError, UnicodeError, csv.Error)
@@ -137,6 +146,55 @@ def _ensure_parseable_file_size(document_path: Path) -> None:
     max_bytes = _max_parse_bytes()
     if size > max_bytes:
         raise DocumentTooLargeError(f"Document exceeds parse size limit ({size} bytes; max {max_bytes}).")
+    _ensure_safe_ooxml(document_path)
+
+
+def _max_ooxml_uncompressed_bytes() -> int:
+    raw = get_env("LENGRVIS_DOCUMENT_MAX_OOXML_UNCOMPRESSED_BYTES")
+    if not raw:
+        return DEFAULT_MAX_OOXML_UNCOMPRESSED_BYTES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_OOXML_UNCOMPRESSED_BYTES
+
+
+def _ensure_safe_ooxml(document_path: Path) -> None:
+    """Reject OOXML decompression bombs before python-docx/pptx/openpyxl load them.
+
+    A few-KB archive can declare gigabytes of decompressed XML; parsing it would
+    OOM the process. We inspect the ZIP directory (declared sizes only, no
+    extraction) and reject files whose total uncompressed size or compression
+    ratio is implausible.
+    """
+    if document_path.suffix.lower() not in _OOXML_EXTENSIONS:
+        return
+    max_uncompressed = _max_ooxml_uncompressed_bytes()
+    try:
+        with ZipFile(document_path) as archive:
+            total_uncompressed = 0
+            total_compressed = 0
+            for info in archive.infolist():
+                total_uncompressed += int(info.file_size)
+                total_compressed += int(info.compress_size)
+                if total_uncompressed > max_uncompressed:
+                    raise DocumentTooLargeError(
+                        f"Document expands beyond the OOXML uncompressed limit "
+                        f"({total_uncompressed} bytes; max {max_uncompressed})."
+                    )
+            if (
+                total_uncompressed > _OOXML_RATIO_FLOOR_BYTES
+                and total_compressed > 0
+                and (total_uncompressed / total_compressed) > MAX_OOXML_COMPRESSION_RATIO
+            ):
+                raise DocumentTooLargeError(
+                    "Document has an implausible OOXML compression ratio "
+                    f"({total_uncompressed / total_compressed:.0f}:1); refusing to parse."
+                )
+    except BadZipFile:
+        # Not a valid ZIP/OOXML container: let the normal parser surface its own
+        # (graceful) error instead of masking it here.
+        return
 
 
 def parse_advanced(
@@ -316,6 +374,23 @@ def compare_documents(
     }
 
 
+def _redact_text_content(
+    content: str,
+    custom_patterns: dict[str, str] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Apply redaction patterns to a raw string, returning (redacted, findings)."""
+    redacted = content
+    findings: list[dict[str, Any]] = []
+    for label, pattern in _redaction_patterns(custom_patterns).items():
+        regex = re.compile(pattern)
+        matches = list(regex.finditer(redacted))
+        if not matches:
+            continue
+        redacted = regex.sub(f"[REDACTED:{label}]", redacted)
+        findings.append({"type": label, "count": len(matches)})
+    return redacted, findings
+
+
 def redact_preview(
     path: str | Path,
     *,
@@ -325,16 +400,7 @@ def redact_preview(
 ) -> dict[str, Any]:
     ir = parse_advanced(path, settings=settings)
     source = ir.text[: max(1, max_chars)]
-    redacted = source
-    findings: list[dict[str, Any]] = []
-
-    for label, pattern in _redaction_patterns(custom_patterns).items():
-        regex = re.compile(pattern)
-        matches = list(regex.finditer(redacted))
-        if not matches:
-            continue
-        redacted = regex.sub(f"[REDACTED:{label}]", redacted)
-        findings.append({"type": label, "count": len(matches)})
+    redacted, findings = _redact_text_content(source, custom_patterns)
 
     return {
         "document_id": ir.document_id,
@@ -1046,23 +1112,34 @@ def apply_redaction(
             "_resource_state": _document_resource_state(path_obj),
         }
     raise_if_tool_aborted(abort_context)
-    backup = _backup_document(path_obj, abort_context)
     ext = path_obj.suffix.lower()
+    findings = preview.get("findings") or []
     if ext in {".txt", ".md", ".csv", ".json"}:
+        # Redact the FULL raw file content, not the truncated/reconstructed
+        # parser IR. Writing back preview["redacted_text"] (which is built from
+        # ir.text[:max_chars]) would silently truncate large files and reformat
+        # csv/json into a lossy representation. Running the patterns over the raw
+        # text is structure-preserving: only matched substrings are replaced.
+        _ensure_parseable_file_size(path_obj)
+        raw = path_obj.read_text(encoding="utf-8", errors="replace")
+        redacted_raw, findings = _redact_text_content(raw, custom_patterns)
+        diff_preview[0]["findings"] = findings
+        backup = _backup_document(path_obj, abort_context)
         safe_write_text(
             path_obj,
-            str(preview.get("redacted_text") or ""),
+            redacted_raw,
             _document_allowed_directories(abort_context, path_obj),
             abort_context,
         )
     elif ext == ".docx":
+        backup = _backup_document(path_obj, abort_context)
         _apply_redaction_docx(path_obj, custom_patterns, abort_context=abort_context)
     else:
         raise ValueError(f"document.apply_redaction does not support {ext} files yet.")
     return {
         "ok": True,
         "path": str(path_obj),
-        "findings": preview.get("findings") or [],
+        "findings": findings,
         "changed_paths": [str(path_obj)],
         "diff_preview": diff_preview,
         "rollback_info": {"backup": backup},
@@ -1186,12 +1263,31 @@ def _apply_redaction_docx(
     from docx import Document
 
     doc = Document(str(path))
-    patterns = _redaction_patterns(custom_patterns)
-    for paragraph in doc.paragraphs:
+    compiled = [(label, re.compile(pattern)) for label, pattern in _redaction_patterns(custom_patterns).items()]
+
+    def _redact_paragraph(paragraph: Any) -> None:
         text = paragraph.text
-        for label, pattern in patterns.items():
-            text = re.compile(pattern).sub(f"[REDACTED:{label}]", text)
-        paragraph.text = text
+        for label, regex in compiled:
+            text = regex.sub(f"[REDACTED:{label}]", text)
+        if text != paragraph.text:
+            paragraph.text = text
+
+    # Cover body paragraphs AND table cells (and nested tables). doc.paragraphs
+    # excludes table-cell paragraphs, but findings are counted over parsed text
+    # that includes table content, so skipping tables would silently leave PII
+    # unredacted while reporting success.
+    for paragraph in doc.paragraphs:
+        _redact_paragraph(paragraph)
+
+    def _redact_tables(tables: Any) -> None:
+        for table in tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        _redact_paragraph(paragraph)
+                    _redact_tables(cell.tables)
+
+    _redact_tables(doc.tables)
     _safe_save_office_document(path, lambda: doc.save(str(path)), abort_context)
 
 

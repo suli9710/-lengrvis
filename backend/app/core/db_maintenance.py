@@ -84,6 +84,16 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
             WHERE table_name IN ({placeholders})""",  # noqa: S608
             tuple(integrity_kinds),
         )
+        # Also clear the presence ledger for the erased tables. Leaving these
+        # rows behind (a) leaks that records with those ids/created_at once
+        # existed (a PIPL/GDPR residual) and (b) makes sensitive_integrity_check
+        # report the records as missing, flipping ok=False and locking out all
+        # local writes in fail-closed/commercial mode after a compliant erase.
+        conn.execute(
+            f"""DELETE FROM sensitive_record_presence
+            WHERE table_name IN ({placeholders})""",  # noqa: S608
+            tuple(integrity_kinds),
+        )
 
         remaining = {
             table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)  # noqa: S608

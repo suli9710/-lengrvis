@@ -12,6 +12,7 @@ from app.policy.policy_engine import BROWSER_WRITE_TOOLS, PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services import browser_activity_runtime
 from app.tools import browser_tools
+from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
 
 
@@ -45,6 +46,26 @@ def _context(*, mode: str = "privacy", allow_browser_network: bool = True, allow
         ),
         "allowed_directories": [],
     }
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "required"),
+    [
+        ("browser.read_page", ["url"]),
+        ("browser.fill_form", ["url", "fields"]),
+        ("browser.submit_form", ["url"]),
+    ],
+)
+def test_browser_tools_publish_required_input_contracts(tool_name, required):
+    registry = register_all_tools(settings=AppSettings(), load_skills=False)
+
+    schema = registry.get(tool_name).input_schema
+
+    assert schema["type"] == "object"
+    assert schema["required"] == required
+    assert set(required) <= set(schema["properties"])
+    if tool_name == "browser.submit_form":
+        assert {"task_id", "account_id", "allowed_origins", "allowed_actions"} <= set(schema["properties"])
 
 
 def test_click_blocked_in_privacy_mode():
@@ -155,7 +176,15 @@ def test_fill_form_blocks_luhn_valid_card_value_after_approval():
     [
         (browser_tools.click_element, {"url": "https://example.com/start", "selector": "#go"}),
         (browser_tools.fill_form, {"url": "https://example.com/start", "fields": {"#name": "Alice"}}),
-        (browser_tools.submit_form, {"url": "https://example.com/start", "selector": "form#contact"}),
+        (
+            browser_tools.submit_form,
+            {
+                "url": "https://example.com/start",
+                "selector": "form#contact",
+                "task_id": "task-submit-result-redaction",
+                "account_id": "account-submit-result-redaction",
+            },
+        ),
     ],
 )
 def test_browser_write_live_results_redact_final_url_query(monkeypatch, tool, args):
@@ -226,7 +255,14 @@ def test_click_live_result_redacts_title_metadata(monkeypatch):
         ),
         (
             browser_tools.submit_form,
-            {"url": "https://example.com/start?token=secret-token", "selector": "form#contact"},
+            {
+                "url": "https://example.com/start?token=secret-token",
+                "selector": "form#contact",
+                "task_id": "task-browser-submit-audit",
+                "account_id": "account-browser-submit-audit",
+                "allowed_origins": ["https://example.com"],
+                "allowed_actions": ["submit"],
+            },
             "browser.submit_form",
         ),
     ],
@@ -282,6 +318,8 @@ def test_browser_write_audit_payload_redacts_url_query(monkeypatch, tool, args, 
                 "dry_run": False,
                 "approved": True,
                 "approval_id": "approval-test",
+                "task_id": "task-submit-failure-redaction",
+                "account_id": "account-submit-failure-redaction",
             },
         ),
         (
@@ -508,6 +546,55 @@ def test_submit_form_dry_run_in_efficiency_mode():
     )
     assert result["ok"] is True
     assert any(item["action"] == "submit" for item in result["diff_preview"])
+
+
+def test_submit_form_live_requires_task_and_account_binding():
+    context = _context(mode="efficiency")
+    base_args = {
+        "url": "https://example.com/form",
+        "selector": "form",
+        "dry_run": False,
+        "approved": True,
+        "approval_id": "approval-submit-binding",
+    }
+
+    missing_task = browser_tools.submit_form(base_args, context)
+    missing_account = browser_tools.submit_form({**base_args, "task_id": "task-submit-binding"}, context)
+
+    assert missing_task["ok"] is False
+    assert "task_id" in missing_task["error"]
+    assert missing_account["ok"] is False
+    assert "account_id" in missing_account["error"]
+
+
+def test_submit_form_live_forwards_exact_origin_account_and_action_scope(monkeypatch):
+    captured: dict = {}
+
+    class Runtime:
+        def act(self, args, _context):  # noqa: ANN001
+            captured.update(args)
+            return {"ok": True, "url": "https://example.com/done", "title": "Done"}
+
+    monkeypatch.setattr(browser_tools, "get_browser_activity_runtime", lambda: Runtime())
+    result = browser_tools.submit_form(
+        {
+            "url": "https://example.com/form",
+            "dry_run": False,
+            "approved": True,
+            "approval_id": "approval-submit-scope",
+            "task_id": "task-submit-scope",
+            "account_id": "account-submit-scope",
+            "allowed_origins": ["https://example.com:443"],
+            "allowed_actions": ["submit"],
+        },
+        _context(mode="efficiency"),
+    )
+
+    assert result["ok"] is True
+    assert captured["task_id"] == "task-submit-scope"
+    assert captured["account_id"] == "account-submit-scope"
+    assert captured["allowed_origins"] == ["https://example.com:443"]
+    assert captured["allowed_actions"] == ["submit"]
 
 
 def test_navigate_is_open_only_not_browser_write_gated():

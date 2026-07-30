@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import apply_licensed_plan
-from app.commerce.usage import enforce_cloud_quota
 from app.config import ENV_PREFIX, AppSettings, get_base_settings
 from app.context.management import ContextAwareProvider
 from app.core import db
@@ -230,7 +229,6 @@ def _is_local_base_url(base_url: str) -> bool:
 
 
 def _build_cloud_provider(settings: AppSettings) -> LLMProvider:
-    enforce_cloud_quota(settings)
     name = settings.provider_name.lower()
     if name in CLOUD_PROVIDERS:
         if not settings.api_key:
@@ -253,13 +251,13 @@ def _build_local_provider(settings: AppSettings) -> LLMProvider:
         and settings.base_url
         and _is_local_base_url(settings.base_url)
     ):
-        return OpenAICompatibleProvider(_local_settings(settings))
+        return OpenAICompatibleProvider(_local_settings(settings), allow_private_base=True)
     if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url:
         raise LocalBackendUnavailable(
             f"Configured local provider '{settings.provider_name}' has a non-local base_url and was blocked."
         )
     if _is_local_base_url(settings.base_url):
-        return OpenAICompatibleProvider(_local_settings(settings))
+        return OpenAICompatibleProvider(_local_settings(settings), allow_private_base=True)
     # Auto-detect Ollama / LM Studio / llama.cpp on the local machine.
     backend = detect_local_backend()
     if backend is not None:
@@ -272,7 +270,7 @@ def _build_local_provider(settings: AppSettings) -> LLMProvider:
                 "requires_openai_auth": False,
             }
         )
-        return OpenAICompatibleProvider(overrides)
+        return OpenAICompatibleProvider(overrides, allow_private_base=True)
     raise LocalBackendUnavailable(unavailable_message())
 
 
@@ -312,4 +310,11 @@ def get_provider_for_mode(settings: AppSettings | None = None, *, task: str = "d
 def get_provider(settings: AppSettings | None = None, *, task: str = "default") -> LLMProvider:
     effective = settings or get_effective_settings()
     provider = get_provider_for_mode(effective, task=task)
-    return ContextAwareProvider(provider, effective, task=task, profile=profile_for_provider(provider, effective))
+    profile = profile_for_provider(provider, effective)
+    return ContextAwareProvider(
+        provider,
+        effective,
+        task=task,
+        profile=profile,
+        meter_cloud_usage=profile.capabilities.cloud,
+    )

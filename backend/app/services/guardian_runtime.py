@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import shutil
 import sys
 import time
@@ -161,9 +162,30 @@ class GuardianRuntime:
                 },
             )
         await self.ensure_full_backend(reason=f"proxy:{path}")
-        url = httpx.URL(FULL_BACKEND_URL).join(path)
+        base = httpx.URL(FULL_BACKEND_URL)
+        # Never build the target with URL.join on a caller-controlled path:
+        # a path like "//evil.com/x" is a network-path reference that would
+        # swap the authority (SSRF), and the desktop token is attached below.
+        # Collapse "//" and resolve "."/".." to a single rooted path and set it
+        # on the fixed base without touching scheme/host/port.
+        normalized_path = posixpath.normpath("/" + path.lstrip("/"))
+        if not normalized_path.startswith("/"):
+            normalized_path = "/" + normalized_path
+        url = base.copy_with(path=normalized_path)
         if query:
             url = url.copy_with(query=query)
+        # Defense in depth: refuse to proxy anywhere other than the local full
+        # backend even if the construction above is later changed.
+        if (url.scheme, url.host, url.port) != (base.scheme, base.host, base.port):
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "invalid_proxy_target",
+                        "message": "Proxy target must be the local full backend.",
+                    }
+                },
+            )
         filtered_headers = {
             key: value
             for key, value in (headers or {}).items()

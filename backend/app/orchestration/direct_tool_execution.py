@@ -7,7 +7,8 @@ from pydantic import ValidationError
 
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import Approval, Plan, Task, ToolCall, ToolResult
+from app.core.schemas import Approval, ApprovalStatus, Plan, Task, ToolCall, ToolResult
+from app.orchestration.resource_state import ResourceStateError
 from app.orchestration.tool_execution_journal import (
     build_tool_execution_key,
     load_tool_result,
@@ -16,7 +17,8 @@ from app.orchestration.tool_execution_journal import (
     mark_tool_call_outcome_unknown,
     reserve_prepared_tool_call,
 )
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
+from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 DirectExecutor = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -39,8 +41,10 @@ def execute_direct_tool_journaled(
         return _blocked_execution(call)
     try:
         output = (executor or tool.execute)(args, context)
-    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: persist a redacted, known tool failure.
-        output = _exception_failure(exc)
+    except ResourceStateError as exc:
+        output = _exception_failure(exc, outcome_unknown=False)
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: a write may already have side effects.
+        output = _exception_failure(exc, outcome_unknown=_is_modifying_tool(tool))
     return _commit_direct_result(tool, claimed, output)
 
 
@@ -60,8 +64,10 @@ async def execute_direct_tool_journaled_async(
         return _blocked_execution(call)
     try:
         output = await executor(args, context)
-    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: persist a redacted, known tool failure.
-        output = _exception_failure(exc)
+    except ResourceStateError as exc:
+        output = _exception_failure(exc, outcome_unknown=False)
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: a write may already have side effects.
+        output = _exception_failure(exc, outcome_unknown=_is_modifying_tool(tool))
     return _commit_direct_result(tool, claimed, output)
 
 
@@ -71,7 +77,8 @@ def _prepare_direct_tool_call(
     approval_id: str,
 ) -> tuple[ToolCall, dict[str, Any] | None]:
     approval = _load_approval(approval_id)
-    task = _load_or_create_task(approval, tool)
+    _require_claimed_approval(approval, tool)
+    task = _load_task(approval)
     step_id = str(approval.step_id or f"direct-{approval.id}")
     plan_revision = _plan_revision(task.id)
     call = ToolCall(
@@ -126,27 +133,46 @@ def _commit_direct_result(tool: ToolDefinition, call: ToolCall, output: dict[str
         observation=f"Direct {tool.name} execution {'completed' if not error else 'failed'}.",
     )
     db.upsert_model("tool_results", result)
-    mark_tool_call_committed(call)
+    outcome_unknown = bool(normalized.get("outcome_unknown"))
+    if outcome_unknown:
+        mark_tool_call_outcome_unknown(call, expected_status="executing")
+    else:
+        mark_tool_call_committed(call)
     record(
-        "tool.execution_committed",
+        "tool.execution_outcome_unknown" if outcome_unknown else "tool.execution_committed",
         "DirectToolExecution",
         {
             "tool_call_id": call.id,
             "execution_key": call.execution_key,
             "tool_name": call.tool_name,
             "ok": result.ok,
+            "outcome_unknown": outcome_unknown,
         },
         task_id=call.task_id,
     )
     return _result_response(result)
 
 
-def _exception_failure(exc: Exception) -> dict[str, Any]:
-    return {
+def _exception_failure(exc: Exception, *, outcome_unknown: bool) -> dict[str, Any]:
+    safe_error = redact_public_text(str(redact_value(str(exc)) or "")).strip()
+    output: dict[str, Any] = {
         "ok": False,
-        "error": str(redact_value(str(exc))),
+        "error": safe_error or type(exc).__name__,
         "error_type": type(exc).__name__,
     }
+    if outcome_unknown:
+        output.update(
+            {
+                "status": "outcome_unknown",
+                "outcome_unknown": True,
+                "automatic_replay_blocked": True,
+            }
+        )
+    return output
+
+
+def _is_modifying_tool(tool: ToolDefinition) -> bool:
+    return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
 
 
 def _blocked_execution(call: ToolCall) -> dict[str, Any]:
@@ -195,16 +221,21 @@ def _load_approval(approval_id: str) -> Approval:
     return Approval.model_validate(data)
 
 
-def _load_or_create_task(approval: Approval, tool: ToolDefinition) -> Task:
+def _require_claimed_approval(approval: Approval, tool: ToolDefinition) -> None:
+    if approval.status != ApprovalStatus.APPROVED or not approval.consumed_at:
+        raise ValueError("Direct tool execution requires an approved, atomically consumed approval.")
+    if str(approval.tool_name or "") != tool.name:
+        raise ValueError("Direct tool execution approval is bound to a different tool.")
+
+
+def _load_task(approval: Approval) -> Task:
     data = db.fetch_one("tasks", approval.task_id)
-    if data:
-        try:
-            return Task.model_validate(data)
-        except ValidationError as exc:
-            raise ValueError("Direct tool execution task record is invalid.") from exc
-    task = Task(id=approval.task_id, user_goal=f"Direct tool execution: {tool.name}")
-    db.upsert_model("tasks", task)
-    return task
+    if not data:
+        raise ValueError("Direct tool execution requires its original task record.")
+    try:
+        return Task.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError("Direct tool execution task record is invalid.") from exc
 
 
 def _plan_revision(task_id: str) -> int:

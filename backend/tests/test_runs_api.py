@@ -1022,7 +1022,134 @@ def test_run_state_runtime_metadata_does_not_break_resume(monkeypatch, tmp_path)
     updated = run_service._update_run_from_state(run, state)
 
     assert updated.state["_runtime"]["data_dir"] == str(tmp_path / "data")
+    assert updated.state["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
     assert run_service._state_from_run(updated).phase == EngineRunPhase.RUNNING
+
+
+def test_run_trace_context_is_stable_and_inherits_request_parent(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    from app.observability.tracing import span
+
+    run = run_service.Run(
+        id="osrun_trace_context",
+        message="trace context",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.CREATED,
+        state={},
+    )
+
+    with span("request") as request_span:
+        first = run_service._ensure_run_trace_context(run)
+    second = run_service._ensure_run_trace_context(run)
+
+    assert first == second
+    assert first["trace_id"] == request_span.trace_id
+    assert first["parent_span_id"] == request_span.span_id
+    assert run.state["_runtime"]["observability"] == first
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_persisted_run_state_migrates_supported_checkpoint_versions(monkeypatch, tmp_path, schema_version):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run_id = f"osrun_checkpoint_v{schema_version}"
+    persisted = {
+        "schema_version": schema_version,
+        "run_id": run_id,
+        "engine": "os",
+        "phase": "paused",
+        "goal": "resume versioned checkpoint",
+        "mode": "efficiency",
+    }
+    if schema_version >= 2:
+        persisted["route_rule"] = "ambiguous_fallback"
+    run = run_service.Run(
+        id=run_id,
+        message="resume versioned checkpoint",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state=persisted,
+    )
+
+    state = run_service._state_from_run(run)
+    serialized = run_service._state_payload_for_run(run, state)
+    round_tripped = run_service._parse_persisted_run_state(run)
+
+    assert state.schema_version == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+    assert run.state["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+    assert serialized["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+    assert round_tripped == state
+    assert state.route_rule == "ambiguous_fallback"
+    assert state.continuation_kind == ""
+
+
+def test_unversioned_legacy_run_state_migrates_and_serializes_current_version(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="osrun_legacy_checkpoint",
+        message="resume legacy checkpoint",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "osrun_legacy_checkpoint",
+            "engine": "os",
+            "phase": "paused",
+            "goal": "resume legacy checkpoint",
+            "mode": "efficiency",
+        },
+    )
+
+    state = run_service._state_from_run(run)
+    serialized = run_service._state_payload_for_run(run, state)
+
+    assert state.schema_version == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+    assert run.state["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+    assert serialized["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("schema_version", [0, run_service.CURRENT_RUN_STATE_SCHEMA_VERSION + 1])
+def test_resume_with_unsupported_run_state_schema_fails_closed(monkeypatch, tmp_path, schema_version):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    scheduled: list[object] = []
+    run_id = f"osrun_unsupported_checkpoint_{schema_version}"
+    run = run_service.Run(
+        id=run_id,
+        message="resume unsupported checkpoint",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "schema_version": schema_version,
+            "run_id": run_id,
+            "engine": "os",
+            "phase": "paused",
+            "goal": "resume unsupported checkpoint",
+            "mode": "efficiency",
+        },
+    )
+    db.upsert_model("runs", run)
+    monkeypatch.setattr(run_service, "_engine_router", lambda settings: object())
+    monkeypatch.setattr(
+        run_service,
+        "_schedule_background",
+        lambda coro, *, data_dir=None: scheduled.append(coro),  # noqa: ARG005
+    )
+
+    resumed = run_service._schedule_resume(run)
+
+    assert resumed.phase == run_service.RunPhase.FAILED
+    assert scheduled == []
+    assert "schema_version" in resumed.error
+    assert run_service.get_run(run.id).phase == run_service.RunPhase.FAILED
 
 
 def test_resume_with_invalid_persisted_state_fails_run_without_scheduling(monkeypatch, tmp_path):
@@ -1679,6 +1806,9 @@ def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_pa
         assert response.status_code == 200
         assert response.json()["phase"] == "running"
         assert len(scheduled) == 1
+        persisted = db.fetch_one("runs", run.id)
+        assert persisted is not None
+        assert persisted["state"]["schema_version"] == run_service.CURRENT_RUN_STATE_SCHEMA_VERSION
 
 
 def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(monkeypatch, tmp_path):

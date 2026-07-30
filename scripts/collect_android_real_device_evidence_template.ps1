@@ -195,6 +195,7 @@ $packet = [ordered]@{
         required_transport = "Redacted HTTPS origin plus approval, remote screen, and remote input WSS URLs."
         required_artifact_match = "APK SHA-256, package name, version code/name, and signer certificate SHA-256 must match Android SDK inspection of the APK supplied to android:release-gate -ArtifactPath."
         required_artifact_provenance = "app.provenance must bind the reviewed builder invocation, source commit/repository, APK digest, package/version, signer digest, and build timestamp."
+        required_artifact_manifest = "evidence_artifact_manifest must bind redacted screenshot, video, backend/mobile log, and adb install-status labels to SHA-256 and byte size."
         required_candidate_binding = "Fill candidate.commit, build_identifier, repository, ci_run_id, and ci_run_attempt from the immutable reviewed candidate; seal with evidence:android-real-device-seal before strict release validation."
     }
     candidate = [ordered]@{
@@ -273,7 +274,12 @@ $packet = [ordered]@{
     evidence = [ordered]@{
         payload_sha256 = ""
         signature = ""
+        signature_payload_version = "reviewed-evidence-hmac-sha256/v2"
         signing_key_fingerprint = ""
+    }
+    evidence_artifact_manifest = [ordered]@{
+        version = "sha256-manifest/v1"
+        entries = @()
     }
     evidence_artifacts_redacted = @()
     claim_controls = [ordered]@{
@@ -378,6 +384,7 @@ $markdown = @(
     "- `review.status` must be `reviewed_passed`, with reviewer, UTC timestamp, artifact review, and redaction review recorded.",
     "- `app.artifact_sha256`, package/version, and signer certificate SHA-256 must match Android SDK inspection of the exact APK supplied to `android:release-gate -ArtifactPath`.",
     "- `app.provenance` must bind the reviewed builder invocation and timestamp to the candidate source plus the same APK digest, package/version, and signer digest.",
+    "- `evidence_artifact_manifest` must include SHA-256 and byte size for redacted device screenshot/video, backend/mobile logs, and adb install-status evidence; labels must match `evidence_artifacts_redacted`.",
     "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the protected release-evidence HMAC secret.",
     "- A template has no valid signature and can never satisfy the strict gate.",
     "- `transport` must contain redacted HTTPS plus approval/screen/input WSS labels.",

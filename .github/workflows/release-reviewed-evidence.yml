@@ -105,6 +105,7 @@ jobs:
         with:
           ref: ${{ steps.candidate_identity.outputs.commit }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Bind reviewed-input bundle to candidate release version
         shell: pwsh

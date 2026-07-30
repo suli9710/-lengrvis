@@ -7,7 +7,7 @@ from app.core.content_provenance import collect_content_envelopes
 from app.core.schemas import PlanStep
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
-from app.policy.risk import RiskLevel
+from app.policy.risk import is_modifying_or_higher
 from app.tools.schemas import ToolDefinition
 
 _DEVELOPER_LENGRVIS_CODE_TOOL = "developer.lengrvis_code"
@@ -23,13 +23,13 @@ def dry_run_preview_contract_error(preview: dict[str, Any]) -> str:
 
 def requires_runtime_approval(step: PlanStep, tool: ToolDefinition, runtime: TaskRuntimeContext) -> bool:
     if tool.name == _DEVELOPER_LENGRVIS_CODE_TOOL:
-        return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+        return is_modifying_or_higher(tool.risk_level)
     mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
     if mode in {"trusted_edits", "auto_review"} and trusted_reversible_edit_allowed(tool, step.args):
         return False
     if bool(getattr(step, "requires_approval", False)):
         return True
-    return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+    return is_modifying_or_higher(tool.risk_level)
 
 
 def auto_approved_args(

@@ -72,6 +72,55 @@ describe("LengrvisApiClient endpoint group delegates", () => {
     });
   });
 
+  it("normalizes rejected direct perception IPC into a sanitized API response", async () => {
+    (window as unknown as { lengrvis?: unknown }).lengrvis = {
+      perception: {
+        launchSuggestion: vi.fn().mockRejectedValue(new Error("C:\\Users\\secret\\bridge.log"))
+      }
+    };
+    const client = new LengrvisApiClient();
+
+    const response = await client.launchPerceptionSuggestion({
+      suggestionId: "downloads/cleanup",
+      prompt: "Check downloads",
+      mode: "privacy"
+    });
+
+    expect(response).toMatchObject({
+      ok: false,
+      status: 0,
+      error: {
+        code: "IPC_REQUEST_FAILED",
+        message: "Lengrvis 桌面连接暂时不可用，请重启应用后再试。"
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("Users");
+  });
+
+  it("normalizes rejected direct skill IPC without exposing bridge details", async () => {
+    (window as unknown as { lengrvis?: unknown }).lengrvis = {
+      skills: {
+        importPackage: vi.fn().mockRejectedValue(new Error("C:\\Users\\secret\\skill.zip")),
+        refresh: vi.fn().mockRejectedValue(new Error("registry token=secret"))
+      }
+    };
+    const client = new LengrvisApiClient();
+
+    const [importResponse, refreshResponse] = await Promise.all([
+      client.importSkill("C:\\safe\\skill.zip"),
+      client.refreshSkills()
+    ]);
+
+    for (const response of [importResponse, refreshResponse]) {
+      expect(response).toMatchObject({
+        ok: false,
+        status: 0,
+        error: { code: "IPC_REQUEST_FAILED" }
+      });
+      expect(JSON.stringify(response)).not.toContain("secret");
+    }
+  });
+
   it("keeps run start request compatibility", async () => {
     const client = new LengrvisApiClient();
     const request = vi.spyOn(client, "request").mockResolvedValue({

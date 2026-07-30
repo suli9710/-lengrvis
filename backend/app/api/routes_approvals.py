@@ -227,11 +227,14 @@ def _desktop_native_authorization(native_confirmation: dict[str, Any]) -> tuple[
         "confirmation_id": confirmation_id,
         "confirmed_at_epoch": confirmed_at_epoch,
     }
+    session_generation_fingerprint = str(
+        native_confirmation.get("approval_session_generation_fingerprint") or ""
+    ).strip()
+    if session_generation_fingerprint:
+        context["approval_session_generation_fingerprint"] = session_generation_fingerprint
     if native_confirmation.get("legacy_hmac"):
         context["proof_type"] = "legacy_hmac"
-        context["legacy_hmac_fingerprint"] = str(
-            native_confirmation.get("legacy_hmac_fingerprint") or ""
-        ).strip()
+        context["legacy_hmac_fingerprint"] = str(native_confirmation.get("legacy_hmac_fingerprint") or "").strip()
     else:
         context["proof_type"] = "ed25519"
         try:

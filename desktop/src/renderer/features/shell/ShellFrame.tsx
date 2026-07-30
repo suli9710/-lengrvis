@@ -701,7 +701,7 @@ function WindowBar({
     <header className="window-bar">
       <div className="window-bar__left">
         <div className="window-bar__title" key={activeView}>
-          <span>{viewMeta.title}</span>
+          <h1>{viewMeta.title}</h1>
           <small>{viewMeta.subtitle}</small>
         </div>
       </div>
@@ -766,7 +766,7 @@ function SideButton({
 }) {
   const className = ["side-button", active ? "side-button--active" : ""].filter(Boolean).join(" ");
   return (
-    <button className={className} onClick={onClick} type="button">
+    <button className={className} onClick={onClick} type="button" aria-current={active ? "page" : undefined}>
       <Icon size={15} aria-hidden="true" />
       <span>{label}</span>
     </button>

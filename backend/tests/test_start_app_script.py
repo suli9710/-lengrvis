@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from scripts.release_owner_signature import canonical_payload_bytes, create_signoff_payload
 from tls_test_material import write_lan_tls_material
 
 from app.commerce.licensing import sign_license, sign_revocation_manifest
@@ -27,6 +28,52 @@ _RELEASE_PUBLIC_KEY = "ed25519:" + base64.urlsafe_b64encode(
         format=serialization.PublicFormat.Raw,
     )
 ).rstrip(b"=").decode("ascii")
+
+
+def _release_owner_signoff_environment(
+    *,
+    commit: str = "a" * 40,
+    manual_status: str = "rc_signoff_recorded",
+) -> tuple[dict[str, str], str, str]:
+    candidate_run_id = "123"
+    candidate_run_attempt = "1"
+    reviewed_run_id = "456"
+    reviewed_run_attempt = "1"
+    build_identifier = f"rc-{candidate_run_id}-{candidate_run_attempt}-{commit}"
+    payload = create_signoff_payload(
+        repository="example/lengrvis",
+        release_tag="v0.1.2",
+        candidate_commit=commit,
+        candidate_run_id=candidate_run_id,
+        candidate_run_attempt=candidate_run_attempt,
+        reviewed_evidence_run_id=reviewed_run_id,
+        reviewed_evidence_run_attempt=reviewed_run_attempt,
+        build_identifier=build_identifier,
+        release_owner="release-owner",
+        manual_signoff_status=manual_status,
+    )
+    private_key = Ed25519PrivateKey.from_private_bytes(_RELEASE_PRIVATE_KEY_BYTES)
+    signature = "ed25519:" + base64.urlsafe_b64encode(private_key.sign(canonical_payload_bytes(payload))).rstrip(
+        b"="
+    ).decode("ascii")
+    env = os.environ.copy()
+    env.update(
+        {
+            "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY": "example/lengrvis",
+            "RELEASE_TAG": "v0.1.2",
+            "LENGRVIS_RELEASE_CANDIDATE_COMMIT": commit,
+            "LENGRVIS_RELEASE_CANDIDATE_RUN_ID": candidate_run_id,
+            "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT": candidate_run_attempt,
+            "LENGRVIS_REVIEWED_EVIDENCE_RUN_ID": reviewed_run_id,
+            "LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT": reviewed_run_attempt,
+            "LENGRVIS_RELEASE_BUILD_IDENTIFIER": build_identifier,
+            "RELEASE_OWNER": "release-owner",
+            "RELEASE_OWNER_SIGNATURE": signature,
+            "RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS": manual_status,
+            "LENGRVIS_RELEASE_OWNER_PUBLIC_KEY": _RELEASE_PUBLIC_KEY,
+        }
+    )
+    return env, signature, build_identifier
 
 
 def _start_app_text(project_root: Path) -> str:
@@ -396,6 +443,8 @@ def _android_release_gate_summary(
             "candidate_binding_valid": status == "passed",
             "artifact_identity_valid": status == "passed",
             "artifact_provenance_valid": status == "passed",
+            "artifact_manifest_valid": status == "passed",
+            "signing_key_fingerprint_bound": status == "passed",
         },
         "warnings": [],
         "claim_controls": {
@@ -1076,10 +1125,11 @@ def test_current_release_evidence_requires_every_ci_gate_success(
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_failed_or_incomplete" in text
     assert "- Worktree status:" in text
-    assert "- Backend pytest + golden task gate: failure" in text
+    assert "- Backend pytest + golden task + MCP conformance gate: failure" in text
     assert "machine_gates_passed" not in text
     assert (
-        "| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | failure |" in text
+        "| Backend pytest + golden task + MCP conformance gate | Backend pytest suite, golden task regression, and official MCP lifecycle/tools/SSE resume conformance | failure |"
+        in text
     )
 
 
@@ -1165,6 +1215,8 @@ def test_strict_current_release_evidence_requires_clean_worktree(
     _init_clean_git_repo(repo)
     (repo / "dirty.txt").write_text("untracked\n", encoding="utf-8")
     output_path = repo / "docs" / "release" / "current-release-evidence.md"
+    commit = "a" * 40
+    env, owner_signature, build_identifier = _release_owner_signoff_environment(commit=commit)
 
     result = subprocess.run(
         [
@@ -1179,7 +1231,9 @@ def test_strict_current_release_evidence_requires_clean_worktree(
             "-OutputPath",
             str(output_path),
             "-CommitSha",
-            "abc123",
+            commit,
+            "-BuildIdentifier",
+            build_identifier,
             "-GeneratedAtUtc",
             "2026-07-01T00:00:00Z",
             "-NeedsJson",
@@ -1187,7 +1241,7 @@ def test_strict_current_release_evidence_requires_clean_worktree(
             "-ReleaseOwner",
             "release-owner",
             "-OwnerSignature",
-            "release-owner-accepted-rc",
+            owner_signature,
             "-ManualSignoffStatus",
             "rc_signoff_recorded",
             "-StrictReleaseSignoff",
@@ -1196,6 +1250,7 @@ def test_strict_current_release_evidence_requires_clean_worktree(
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     output = result.stdout + result.stderr
 
@@ -1225,6 +1280,8 @@ def test_strict_current_release_evidence_accepts_clean_worktree(
     repo = tmp_path / "candidate"
     _init_clean_git_repo(repo)
     output_path = repo / "docs" / "release" / "current-release-evidence.md"
+    commit = "a" * 40
+    env, owner_signature, build_identifier = _release_owner_signoff_environment(commit=commit)
 
     result = subprocess.run(
         [
@@ -1239,7 +1296,9 @@ def test_strict_current_release_evidence_accepts_clean_worktree(
             "-OutputPath",
             str(output_path),
             "-CommitSha",
-            "abc123",
+            commit,
+            "-BuildIdentifier",
+            build_identifier,
             "-GeneratedAtUtc",
             "2026-07-01T00:00:00Z",
             "-NeedsJson",
@@ -1247,7 +1306,7 @@ def test_strict_current_release_evidence_accepts_clean_worktree(
             "-ReleaseOwner",
             "release-owner",
             "-OwnerSignature",
-            "release-owner-accepted-rc",
+            owner_signature,
             "-ManualSignoffStatus",
             "rc_signoff_recorded",
             "-StrictReleaseSignoff",
@@ -1256,6 +1315,7 @@ def test_strict_current_release_evidence_accepts_clean_worktree(
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     output = result.stdout + result.stderr
 
@@ -1265,6 +1325,9 @@ def test_strict_current_release_evidence_accepts_clean_worktree(
     assert "- Worktree status: clean" in text
     assert "- Worktree dirty file count: 0" in text
     assert "- Manual sign-off status: rc_signoff_recorded" in text
+    assert "- Owner signature verification: verified" in text
+    assert "- Owner signature payload SHA-256: sha256:" in text
+    assert "- Owner signature key fingerprint: sha256:" in text
 
 
 def test_release_safety_fails_closed_without_strict_state_machine(
@@ -1667,8 +1730,8 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "REPLACE_" not in signed_config
     assert "GITHUB_SHA" in release_version_script
     assert "does not match checked-out HEAD" in release_version_script
-    assert "git\", [\"rev-parse\", \"HEAD\"]" in release_version_script
-    assert "git\", [\"rev-list\", \"-n\", \"1\", tag]" in release_version_script
+    assert 'git", ["rev-parse", "HEAD"]' in release_version_script
+    assert 'git", ["rev-list", "-n", "1", tag]' in release_version_script
     assert "endpoint: process.env.AZURE_TRUSTED_SIGNING_ENDPOINT" in signed_config
     assert "codeSigningAccountName: process.env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME" in signed_config
     assert "certificateProfileName: process.env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME" in signed_config
@@ -2657,8 +2720,7 @@ def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(proje
     assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
     assert any(issue["code"] == "artifact_not_apk_zip" for issue in packet["artifact_gate"]["issues"])
     assert any(
-        issue["code"] == "android_reviewed_evidence_contract_invalid"
-        for issue in packet["real_device_gate"]["issues"]
+        issue["code"] == "android_reviewed_evidence_contract_invalid" for issue in packet["real_device_gate"]["issues"]
     )
 
 
@@ -2823,9 +2885,7 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
         assert blocker["must_not_claim"]
     assert blockers["mobile_real_device_lan_wss"]["status"] == "missing_real_device_artifacts"
     assert blockers["agentic_threat_model"]["status"] == "candidate_bound_review_required"
-    assert blockers["agentic_threat_model"]["must_not_claim"] == (
-        "public Beta threat-model gate passed"
-    )
+    assert blockers["agentic_threat_model"]["must_not_claim"] == ("public Beta threat-model gate passed")
     assert blockers["android_installable_remote_control"]["status"] == "missing_apk_or_real_device_gate"
     assert blockers["android_installable_remote_control"]["claim_allowed"] is False
     assert blockers["android_installable_remote_control"]["must_not_claim"] == (

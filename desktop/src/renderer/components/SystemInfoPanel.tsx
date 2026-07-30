@@ -86,6 +86,8 @@ export function SystemInfoPanel({
   const [diagnosticExport, setDiagnosticExport] = useState<DiagnosticExportState>({ status: "idle", message: "" });
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckState>({ status: "idle" });
   const [pathRevealError, setPathRevealError] = useState("");
+  const [isOpeningSettings, setIsOpeningSettings] = useState(false);
+  const [settingsOpenError, setSettingsOpenError] = useState("");
   const diagnostics = info.diagnostics;
   const processes = info.processes ?? diagnostics?.topProcesses ?? [];
   const startupItems = info.startupItems ?? diagnostics?.startupItems ?? [];
@@ -195,6 +197,19 @@ export function SystemInfoPanel({
       await onRevealPath(path);
     } catch (error) { // broad-exception-boundary
       setPathRevealError(error instanceof Error ? error.message : "无法打开这个位置。");
+    }
+  };
+
+  const openSystemSettings = async (uri: string) => {
+    if (!onOpenSettings || isOpeningSettings) return;
+    setIsOpeningSettings(true);
+    setSettingsOpenError("");
+    try {
+      await onOpenSettings(uri);
+    } catch { // broad-exception-boundary
+      setSettingsOpenError("无法打开 Windows 设置，请稍后重试。");
+    } finally {
+      setIsOpeningSettings(false);
     }
   };
 
@@ -443,14 +458,21 @@ export function SystemInfoPanel({
           {onOpenSettings && diagnostics?.suggestions?.length ? (
             <button
               className="button button--secondary"
+              data-testid="system-settings-button"
               type="button"
-              onClick={() => void onOpenSettings("ms-settings:display")}
+              onClick={() => void openSystemSettings("ms-settings:display")}
+              disabled={isOpeningSettings}
             >
-              <Settings size={14} aria-hidden="true" />
-              打开显示设置
+              {isOpeningSettings ? <Loader2 className="settings-spinner" size={14} aria-hidden="true" /> : <Settings size={14} aria-hidden="true" />}
+              {isOpeningSettings ? "正在打开" : "打开显示设置"}
             </button>
           ) : null}
         </div>
+        {settingsOpenError ? (
+          <span className="system-path-error" role="alert" data-testid="system-settings-error">
+            {settingsOpenError}
+          </span>
+        ) : null}
         <div className="system-suggestions">
           {(diagnostics?.suggestions?.length ? diagnostics.suggestions : ["暂无诊断建议。"]).map(
             (suggestion) => (

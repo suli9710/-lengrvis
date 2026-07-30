@@ -19,7 +19,7 @@ class IntentSuggestion(BaseModel):
     id: str
     title: str
     prompt: str
-    confidence: float
+    confidence: float = Field(ge=0, le=1)
     agent_hint: str = ""
     reason: str = ""
     source: str = RULE_SOURCE
@@ -59,10 +59,17 @@ class IntentPredictor:
             raw_candidates = self.model.predict(features)
         except Exception:  # noqa: BLE001 - broad-exception-boundary
             return []
-        return [
-            _with_source_metadata(_coerce_suggestion(item), source=MODEL_SOURCE, model_enabled=True)
-            for item in raw_candidates
-        ]
+        candidates: list[IntentSuggestion] = []
+        try:
+            for item in raw_candidates:
+                try:
+                    suggestion = _coerce_suggestion(item)
+                except Exception:  # noqa: BLE001,S112 - broad-exception-boundary: reject one malformed model item without losing valid peers.
+                    continue
+                candidates.append(_with_source_metadata(suggestion, source=MODEL_SOURCE, model_enabled=True))
+        except Exception:  # noqa: BLE001,S110 - broad-exception-boundary: preserve useful candidates if a model iterator fails.
+            pass
+        return candidates
 
 
 def predict_intents(

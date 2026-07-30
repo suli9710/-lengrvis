@@ -16,15 +16,19 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, StepStatus, now_iso
 from app.llm.registry import get_effective_settings
+from app.observability import context as observability_context
 from app.observability.best_effort import log_best_effort_failure
+from app.observability.tracing import Span, span
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
 from app.orchestration.execution_engine import default_run_store
 from app.orchestration.execution_models import (
     APPROVAL_REMAINING_STEPS_SUMMARY,
     TERMINAL_RUN_PHASES,
-    EngineTurnResult,
     RunState,
+)
+from app.orchestration.execution_models import (
+    CURRENT_RUN_STATE_SCHEMA_VERSION as CURRENT_RUN_STATE_SCHEMA_VERSION,
 )
 from app.orchestration.execution_models import (
     RunPhase as EngineRunPhase,
@@ -35,7 +39,6 @@ from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
 from app.policy.redaction import redact_run_payload, redact_value
 from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
-    ActiveRunHandle,
     active_run_ids,
     leftover_active_tasks,
 )
@@ -76,6 +79,21 @@ from app.services.run_service_capabilities import (
     engine_capabilities_for_run,  # noqa: F401 - re-exported for route callers and tests.
     engine_route_rule_for_run,  # noqa: F401 - re-exported for route callers and tests.
 )
+from app.services.run_service_events import (
+    publish_plan_events as _publish_plan_events,
+)
+from app.services.run_service_events import (
+    publish_terminal_event as _publish_terminal_event,
+)
+from app.services.run_service_events import (
+    publish_turn_result as _publish_turn_result,
+)
+from app.services.run_state_checkpoints import (
+    RunStateCheckpointError,
+    parse_run_state_checkpoint,
+    public_run_state_payload,
+    state_payload_with_runtime,
+)
 from app.services.task_service import get_task, set_task_status
 
 TERMINAL_PHASES = {RunPhase(phase.value) for phase in TERMINAL_RUN_PHASES}
@@ -96,8 +114,11 @@ ENGINE_TERMINAL_PHASES = {
 _RUN_ENGINE_ROUTERS: dict[str, EngineRouter] = {}
 _RUN_ENGINE_ROUTERS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
+_RUN_OBSERVABILITY_RUNTIME_KEY = "observability"
+
+
 _PERSISTED_RUN_ROW_ERRORS = (ValidationError, TypeError)
-_PERSISTED_RUN_STATE_ERRORS = (ValidationError, AttributeError)
+_PERSISTED_RUN_STATE_ERRORS = (ValidationError, AttributeError, RunStateCheckpointError)
 _PERSISTED_AGENT_MESSAGE_ERRORS = (ValidationError, TypeError)
 _PERSISTED_PLAN_ROW_ERRORS = (ValidationError,)
 _PERSISTED_STORE_READ_ERRORS = (
@@ -109,59 +130,17 @@ _PERSISTED_STORE_READ_ERRORS = (
 logger = logging.getLogger(__name__)
 
 
-def _schedule_background(coro, *, data_dir: str | None = None) -> concurrent.futures.Future:
-    return _bg_schedule_background(coro, data_dir=data_dir)
-
-
-def _new_active_run_handle() -> ActiveRunHandle:
-    return _bg_new_active_run_handle()
-
-
-def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
-    _bg_track_active_run(run_id, task)
-
-
-def _track_active_run_if_idle(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> bool:
-    return _bg_track_active_run_if_idle(run_id, task)
-
-
-def _bind_active_run(
-    run_id: str,
-    owner: asyncio.Future | concurrent.futures.Future,
-    task: asyncio.Future | concurrent.futures.Future,
-) -> bool:
-    return _bg_bind_active_run(run_id, owner, task)
-
-
-def _active_run_owned_by(run_id: str, owner: asyncio.Future | concurrent.futures.Future) -> bool:
-    return _bg_active_run_owned_by(run_id, owner)
-
-
-def _untrack_active_run(
-    run_id: str,
-    owner: asyncio.Future | concurrent.futures.Future | None = None,
-) -> bool:
-    return _bg_untrack_active_run(run_id, owner)
-
-
-def _run_active(run_id: str) -> bool:
-    return _bg_run_active(run_id)
-
-
-def _cancel_active_run_task(run_id: str, *, grace_seconds: float = 0.0) -> None:
-    _bg_cancel_active_run_task(run_id, grace_seconds=grace_seconds)
-
-
-def _register_resident_task(
-    run_id: str,
-    task: asyncio.Task,
-    owner: asyncio.Future | concurrent.futures.Future | None = None,
-) -> bool:
-    return _bg_register_resident_task(run_id, task, owner)
-
-
-def _unregister_resident_task(run_id: str, task: asyncio.Task | None = None) -> None:
-    _bg_unregister_resident_task(run_id, task)
+_schedule_background = _bg_schedule_background
+_new_active_run_handle = _bg_new_active_run_handle
+_track_active_run = _bg_track_active_run
+_track_active_run_if_idle = _bg_track_active_run_if_idle
+_bind_active_run = _bg_bind_active_run
+_active_run_owned_by = _bg_active_run_owned_by
+_untrack_active_run = _bg_untrack_active_run
+_run_active = _bg_run_active
+_cancel_active_run_task = _bg_cancel_active_run_task
+_register_resident_task = _bg_register_resident_task
+_unregister_resident_task = _bg_unregister_resident_task
 
 
 async def create_run(
@@ -220,6 +199,21 @@ async def create_run(
 
     run = _run_from_state(state, requested_engine=requested_engine)
     run.state.setdefault("_runtime", {})["data_dir"] = settings.data_dir
+    trace_context = _ensure_run_trace_context(run)
+    with span(
+        "run.create",
+        {
+            "run.id": run.id,
+            "run.engine": run.engine.value,
+            "run.requested_engine": run.requested_engine.value,
+            "run.phase": run.phase.value,
+            "task.id": run.task_id or "",
+        },
+        trace_id=trace_context["trace_id"],
+        span_id=trace_context["run_span_id"],
+        parent_span_id=trace_context["parent_span_id"],
+    ):
+        pass
     db.upsert_model("runs", run)
     run_event_bus.publish(
         run.id,
@@ -580,6 +574,7 @@ def _schedule_resume(run: Run) -> Run:
         settings = get_effective_settings()
         router = _engine_router(settings)
         state = _state_from_run(run)
+        trace_context = _ensure_run_trace_context(run)
     except _PERSISTED_RUN_STATE_ERRORS as exc:
         error = _redacted_error(exc)
         if not isinstance(run.state, dict):
@@ -591,6 +586,13 @@ def _schedule_resume(run: Run) -> Run:
     except Exception:  # noqa: BLE001 - broad-exception-boundary: resume setup failures must release the active-run claim.
         _untrack_active_run(run.id, active_owner)
         raise
+    with span(
+        "run.resume",
+        {"run.id": run.id, "run.engine": run.engine.value, "run.phase": run.phase.value, "task.id": run.task_id or ""},
+        trace_id=trace_context["trace_id"],
+        parent_span_id=trace_context["run_span_id"],
+    ):
+        pass
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
     coro = _resume_engine_loop(run.id, router, state, active_owner=active_owner)
@@ -733,6 +735,61 @@ async def _run_engine_loop(
     bridge_task: asyncio.Future | None,
     active_owner: asyncio.Future | concurrent.futures.Future | None = None,
 ) -> None:
+    try:
+        run = get_run(run_id)
+        trace_context = _ensure_run_trace_context(run)
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: tracing must never block execution.
+        log_best_effort_failure(logger, "run_trace.context_lookup", exc, run_id=run_id)
+        trace_context = {
+            "trace_id": observability_context.get_trace_id() or observability_context.new_trace_id(),
+            "run_span_id": observability_context.get_span_id() or observability_context.new_span_id(),
+            "parent_span_id": "",
+        }
+    with span(
+        "run.execute",
+        {"run.id": run_id, "run.engine": state.engine, "task.id": state.task_id or ""},
+        trace_id=trace_context["trace_id"],
+        parent_span_id=trace_context["run_span_id"],
+    ) as run_span:
+        try:
+            if state.task_id:
+                with span(
+                    "task.execute",
+                    {"task.id": state.task_id, "run.id": run_id, "task.phase": state.phase.value},
+                ) as task_span:
+                    try:
+                        await _run_engine_loop_body(
+                            run_id,
+                            router,
+                            state,
+                            stop_event=stop_event,
+                            bridge_task=bridge_task,
+                            active_owner=active_owner,
+                        )
+                    finally:
+                        _finish_lifecycle_span(task_span, run_id=run_id, task_id=state.task_id)
+            else:
+                await _run_engine_loop_body(
+                    run_id,
+                    router,
+                    state,
+                    stop_event=stop_event,
+                    bridge_task=bridge_task,
+                    active_owner=active_owner,
+                )
+        finally:
+            _finish_lifecycle_span(run_span, run_id=run_id, task_id=state.task_id)
+
+
+async def _run_engine_loop_body(
+    run_id: str,
+    router: EngineRouter,
+    state: RunState,
+    *,
+    stop_event: asyncio.Event | None,
+    bridge_task: asyncio.Future | None,
+    active_owner: asyncio.Future | concurrent.futures.Future | None = None,
+) -> None:
     current_task = asyncio.current_task()
     resident_registered = False
     if current_task is not None:
@@ -846,38 +903,6 @@ def _router_for_run(run_id: str, settings: AppSettings) -> EngineRouter:
 def _release_run_router(run_id: str) -> None:
     with _RUN_ENGINE_ROUTERS_LOCK:
         _RUN_ENGINE_ROUTERS.pop(run_id, None)
-
-
-async def _monitor_task_to_terminal(
-    run_id: str,
-    task_id: str,
-    stop_event: asyncio.Event,
-    bridge_task: asyncio.Future,
-) -> None:
-    try:
-        for _ in range(600):
-            await asyncio.sleep(0.1)
-            task = get_task(task_id)
-            phase = _phase_for_task(task)
-            if phase not in TERMINAL_PHASES and phase != RunPhase.AWAITING_APPROVAL:
-                continue
-            run = get_run(run_id)
-            _update_run(run, phase=phase)
-            run_event_bus.publish(run_id, "turn.completed", {"task_id": task.id, "task_status": task.status.value})
-            run_event_bus.publish(
-                run_id,
-                phase.event_name,
-                {"task_id": task.id, "final_summary": task.final_summary, "phase": phase.value},
-            )
-            return
-    finally:
-        stop_event.set()
-        try:
-            await asyncio.wait_for(bridge_task, timeout=0.5)
-        except (TimeoutError, asyncio.CancelledError):
-            bridge_task.cancel()
-        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: terminal monitor already persisted the task outcome.
-            log_best_effort_failure(logger, "monitor_task_terminal_phase.stop_bridge", exc, run_id=run_id)
 
 
 async def _resume_engine_loop(
@@ -1070,6 +1095,10 @@ def _update_run_from_state(run: Run, state: RunState) -> Run:
 def _state_from_run(run: Run) -> RunState:
     if run.state:
         state = _parse_persisted_run_state(run)
+        # Persist the normalised checkpoint on the next run-row write.  This
+        # upgrades legacy/N-1/N-2 rows in memory immediately while preserving
+        # the private runtime metadata that is intentionally outside RunState.
+        run.state = _state_payload_for_run(run, state)
         return default_run_store.put(state)
     try:
         return default_run_store.get(run.id)
@@ -1087,7 +1116,7 @@ def _state_from_run(run: Run) -> RunState:
 
 
 def _parse_persisted_run_state(run: Run) -> RunState:
-    return RunState.model_validate(_run_state_payload(run.state))
+    return parse_run_state_checkpoint(run.state)
 
 
 def _run_data_dir(run: Run) -> str:
@@ -1095,6 +1124,63 @@ def _run_data_dir(run: Run) -> str:
     if isinstance(runtime, dict) and runtime.get("data_dir"):
         return str(runtime["data_dir"])
     return ""
+
+
+def _ensure_run_trace_context(run: Run) -> dict[str, str]:
+    """Return stable trace linkage persisted with a run's private runtime data."""
+
+    if not isinstance(run.state, dict):
+        run.state = {}
+    runtime = run.state.setdefault("_runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+        run.state["_runtime"] = runtime
+    existing = runtime.get(_RUN_OBSERVABILITY_RUNTIME_KEY)
+    if isinstance(existing, dict):
+        trace_id = str(existing.get("trace_id") or "")
+        run_span_id = str(existing.get("run_span_id") or "")
+        parent_span_id = str(existing.get("parent_span_id") or "")
+        if trace_id and run_span_id:
+            return {
+                "trace_id": trace_id,
+                "run_span_id": run_span_id,
+                "parent_span_id": parent_span_id,
+            }
+
+    trace_id = observability_context.get_trace_id() or observability_context.new_trace_id()
+    parent_span_id = observability_context.get_span_id() or ""
+    context = {
+        "trace_id": trace_id,
+        "run_span_id": observability_context.new_span_id(),
+        "parent_span_id": parent_span_id,
+    }
+    runtime[_RUN_OBSERVABILITY_RUNTIME_KEY] = dict(context)
+    return context
+
+
+def _run_has_unknown_tool_outcome(task_id: str) -> bool:
+    if not task_id:
+        return False
+    try:
+        return bool(db.fetch_many("tool_calls", "task_id = ? AND status = ?", (task_id, "outcome_unknown"), limit=1))
+    except _PERSISTED_STORE_READ_ERRORS as exc:
+        log_best_effort_failure(logger, "run_trace.unknown_outcome_lookup", exc, task_id=task_id)
+        return False
+
+
+def _finish_lifecycle_span(current: Span, *, run_id: str, task_id: str = "") -> None:
+    """Attach final phase and unknown-outcome status without recording content."""
+
+    try:
+        run = get_run(run_id)
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: tracing must never affect execution.
+        log_best_effort_failure(logger, "run_trace.finish_lookup", exc, run_id=run_id, task_id=task_id)
+        return
+    current.set_attribute("run.phase", run.phase.value)
+    if run.phase == RunPhase.FAILED:
+        current.set_status("error")
+    if _run_has_unknown_tool_outcome(task_id or run.task_id or ""):
+        current.mark_outcome_unknown()
 
 
 def _run_cancelled(run_id: str) -> bool:
@@ -1115,7 +1201,7 @@ def _is_approval_continuation(run: Run) -> bool:
     if run.phase != RunPhase.RUNNING:
         return False
     try:
-        state = RunState.model_validate(_run_state_payload(run.state or {}))
+        state = _parse_persisted_run_state(run)
     except _PERSISTED_RUN_STATE_ERRORS as exc:
         log_best_effort_failure(logger, "is_approval_continuation.parse_state", exc, run_id=run.id)
         return False
@@ -1126,7 +1212,7 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
     if not run.state:
         return
     try:
-        state = RunState.model_validate(_run_state_payload(run.state))
+        state = _parse_persisted_run_state(run)
     except _PERSISTED_RUN_STATE_ERRORS as exc:
         log_best_effort_failure(logger, "sync_persisted_state_phase.parse_state", exc, run_id=run.id, phase=phase.value)
         return
@@ -1167,15 +1253,11 @@ def _cancel_persisted_state(run: Run) -> None:
 
 
 def _run_state_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in (raw or {}).items() if not str(key).startswith("_")}
+    return public_run_state_payload(raw)
 
 
 def _state_payload_for_run(run: Run, state: RunState) -> dict[str, Any]:
-    payload = state.model_dump(mode="json")
-    runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
-    if isinstance(runtime, dict) and runtime:
-        payload["_runtime"] = dict(runtime)
-    return payload
+    return state_payload_with_runtime(run.state, state)
 
 
 def _update_run(run: Run, *, phase: RunPhase, task_id: str | None = None, error: str | None = None) -> Run:
@@ -1235,88 +1317,6 @@ def _latest_plan_for_task(task_id: str) -> Plan | None:
     except _PERSISTED_PLAN_ROW_ERRORS as exc:
         log_best_effort_failure(logger, "latest_plan_for_task.validate_row", exc, task_id=task_id)
         return None
-
-
-def _publish_plan_events(run_id: str, state: RunState) -> None:
-    if not state.current_plan:
-        return
-    run_event_bus.publish(
-        run_id,
-        "plan.generated",
-        {"plan": state.current_plan, "engine": state.engine, "turn": state.turn_count},
-    )
-    for step in state.current_plan.get("steps") or []:
-        if isinstance(step, dict):
-            run_event_bus.publish(run_id, "step.selected", {"step": step, "engine": state.engine})
-            if step.get("tool"):
-                run_event_bus.publish(
-                    run_id,
-                    "tool.proposed",
-                    {"tool_name": step.get("tool"), "step_id": step.get("id"), "engine": state.engine},
-                )
-
-
-def _publish_turn_result(run_id: str, result: EngineTurnResult) -> None:
-    state = result.state
-    for source, payload in result.outputs.items():
-        run_event_bus.publish(
-            run_id,
-            "tool.progress",
-            {"tool_name": source, "status": "completed", "engine": state.engine, "turn": state.turn_count},
-        )
-        run_event_bus.publish(
-            run_id,
-            "tool.result",
-            {"tool_name": source, "output": payload, "engine": state.engine, "turn": state.turn_count},
-        )
-        if isinstance(payload, dict):
-            for event in [*(payload.get("lengrvis_events") or []), *(payload.get("events") or [])]:
-                if not isinstance(event, dict):
-                    continue
-                name = event.get("name") or event.get("event")
-                event_payload = event.get("payload") or {
-                    key: value for key, value in event.items() if key not in {"name", "event"}
-                }
-                if isinstance(name, str) and isinstance(event_payload, dict):
-                    run_event_bus.publish(
-                        run_id,
-                        name,
-                        {**event_payload, "engine": state.engine, "turn": state.turn_count, "source": source},
-                    )
-    run_event_bus.publish(
-        run_id,
-        "turn.completed",
-        {
-            "turn": state.turn_count,
-            "engine": state.engine,
-            "phase": state.phase.value,
-            "message": result.message,
-            "transition_reason": state.transition_reason,
-        },
-    )
-
-
-def _publish_terminal_event(run_id: str, state: RunState, result: EngineTurnResult) -> None:
-    phase = RunPhase(state.phase.value)
-    if phase == RunPhase.AWAITING_APPROVAL:
-        event_name = "run.waiting_approval"
-    elif phase == RunPhase.CANCELLED:
-        event_name = "run.cancelled"
-    elif phase in {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.DENIED}:
-        event_name = phase.event_name
-    else:
-        return
-    run_event_bus.publish(
-        run_id,
-        event_name,
-        {
-            "engine": state.engine,
-            "phase": phase.value,
-            "message": result.message,
-            "transition_reason": state.transition_reason,
-            "task_id": state.task_id,
-        },
-    )
 
 
 def _phase_for_task(task: Any) -> RunPhase:

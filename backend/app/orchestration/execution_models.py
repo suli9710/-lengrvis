@@ -8,6 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 EngineName = Literal["os", "developer"]
 EngineSelection = Literal["auto", "os", "developer"]
 
+# RunState is persisted in the ``runs.state`` JSON column.  Keep the
+# checkpoint version separate from the database schema version: a run can be
+# resumed after the application has upgraded while the surrounding database
+# remains unchanged.  The in-memory model intentionally accepts only the
+# current version; persisted legacy payloads are normalised by run_service
+# before validation.
+RUN_STATE_SCHEMA_VERSION = 3
+CURRENT_RUN_STATE_SCHEMA_VERSION = RUN_STATE_SCHEMA_VERSION
+MIN_SUPPORTED_RUN_STATE_SCHEMA_VERSION = RUN_STATE_SCHEMA_VERSION - 2
+
 
 class RunPhase(StrEnum):
     CREATED = "created"
@@ -67,6 +77,10 @@ class LargeResultRef(BaseModel):
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # ``Literal`` makes accidental construction of an old/future in-memory
+    # checkpoint fail closed.  The persistence boundary performs explicit
+    # migrations for supported historical versions first.
+    schema_version: Literal[RUN_STATE_SCHEMA_VERSION] = RUN_STATE_SCHEMA_VERSION
     run_id: str
     engine: EngineName
     phase: RunPhase = RunPhase.CREATED

@@ -52,6 +52,27 @@ def test_send_email_tool_executes_end_to_end_with_fake_client():
     assert client.sent == [result["message"]]
 
 
+def test_email_payload_rejects_header_injection():
+    from app.adapters.email import _validate_email_payload
+
+    # A CRLF in the subject would inject extra SMTP headers (e.g. a hidden Bcc
+    # that also evades the run-budget recipient binding).
+    assert "line breaks" in _validate_email_payload(
+        {"to": "a@b.test", "subject": "Hi\r\nBcc: victim@x.test", "body": "b"}
+    )
+    assert "line breaks" in _validate_email_payload({"to": "a@b.test\r\nBcc: x@y.test", "subject": "Hi", "body": "b"})
+    assert _validate_email_payload({"to": "not-an-email", "subject": "Hi", "body": "b"})
+    # A well-formed message (body may contain newlines) passes.
+    assert _validate_email_payload({"to": "a@b.test", "subject": "Hi", "body": "line1\nline2"}) == ""
+
+
+def test_calendar_payload_rejects_crlf_injection():
+    from app.adapters.calendar import _validate_event_payload
+
+    assert "line breaks" in _validate_event_payload({"title": "Sync\r\nX-EVIL: 1", "start": "s", "end": "e"})
+    assert _validate_event_payload({"title": "Sync", "start": "s", "end": "e"}) == ""
+
+
 def test_create_calendar_event_tool_executes_end_to_end_with_fake_client():
     client = FakeCalendarClient()
     registry = ToolRegistry()

@@ -54,6 +54,45 @@ def test_same_tool_has_different_risk_for_user_document_and_system_path():
     assert RISK_ORDER[system_review.risk_level] > RISK_ORDER[user_doc_review.risk_level]
 
 
+def test_dynamic_risk_canonicalizes_parent_traversal_before_path_classification():
+    assessment = DynamicRiskAssessor().assess(
+        tool_name="file.list_directory",
+        args={"path": r"C:\Users\Public\..\..\Windows\System32"},
+        base_risk=RiskLevel.R0_READ_ONLY,
+    )
+
+    assert assessment.factors["canonical_paths"] == ["c:/windows/system32"]
+    assert assessment.factors["path_category"] == "system"
+    assert assessment.adjusted_risk == RiskLevel.R2_REVERSIBLE_MODIFY
+
+
+def test_dynamic_risk_marks_ambiguous_paths_unsafe():
+    assessment = DynamicRiskAssessor().assess(
+        tool_name="file.list_directory",
+        args={"path": r"C:workspace\notes.txt"},
+        base_risk=RiskLevel.R0_READ_ONLY,
+    )
+
+    assert assessment.factors["path_category"] == "unsafe"
+    assert assessment.factors["invalid_paths"] == 1
+    assert assessment.adjusted_risk == RiskLevel.R2_REVERSIBLE_MODIFY
+
+
+def test_dynamic_risk_uses_one_canonical_identity_for_unc_case_and_separators():
+    assessment = DynamicRiskAssessor().assess(
+        tool_name="file.list_directory",
+        args={"paths": [r"\\SERVER\Share\Folder\file.txt", r"//server/share/folder\FILE.txt"]},
+        base_risk=RiskLevel.R0_READ_ONLY,
+    )
+
+    assert assessment.factors["canonical_paths"] == [
+        "//server/share/folder/file.txt",
+        "//server/share/folder/file.txt",
+    ]
+    assert assessment.factors["path_category"] == "other"
+    assert assessment.adjusted_risk == RiskLevel.R0_READ_ONLY
+
+
 def test_policy_engine_applies_static_tool_risk_before_dynamic_adjustments():
     review = PolicyEngine().review_tool_call(
         "task_dynamic",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 
 class RiskLevel(StrEnum):
@@ -31,3 +32,18 @@ def max_risk(levels: list[RiskLevel]) -> RiskLevel:
     if not levels:
         return RiskLevel.R0_READ_ONLY
     return max(levels, key=lambda level: RISK_ORDER[level])
+
+
+def is_modifying_or_higher(risk: Any) -> bool:
+    """True for R2 and above (reversible modify, destructive/system, forbidden).
+
+    Use this instead of an explicit ``in {R2, R3}`` set so R4_FORBIDDEN_OR_HANDOFF
+    is never treated as non-modifying by a runtime backstop (it must fail closed,
+    not fall through as "not a write").
+    """
+    value = str(getattr(risk, "value", risk) or "")
+    try:
+        level = RiskLevel(value)
+    except ValueError:
+        return False
+    return RISK_ORDER[level] >= RISK_ORDER[RiskLevel.R2_REVERSIBLE_MODIFY]

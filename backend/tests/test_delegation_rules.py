@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.agents.delegation_metadata import infer_supervisor_agent_hint
 from app.agents.delegation_rules import contains_term
 from app.agents.supervisor_agent import SupervisorAgent
@@ -33,6 +35,58 @@ def test_supervisor_heuristic_routes_english_delete_with_path():
 def test_supervisor_heuristic_does_not_delegate_movie():
     decision = SupervisorAgent().quick_decision("let's watch a movie tonight")
     assert decision.delegate is False
+
+
+@pytest.mark.asyncio
+async def test_supervisor_handles_expired_memory_reconfirmation_without_provider(monkeypatch):
+    def provider_must_not_run(*_args, **_kwargs):
+        raise AssertionError("expired memory safety reply must not call a provider")
+
+    monkeypatch.setattr("app.agents.supervisor_agent.get_provider", provider_must_not_run)
+
+    decision = await SupervisorAgent().decide(
+        "检查默认报告收件人偏好是否仍有效；如果旧偏好已经超过 TTL，请不要使用旧值并明确说明需要重新确认。",
+        "efficiency",
+    )
+
+    assert decision.delegate is False
+    assert decision.agent_hint == ""
+    assert "重新确认" in decision.reply
+
+
+@pytest.mark.asyncio
+async def test_response_only_benchmark_contracts_do_not_depend_on_provider(monkeypatch):
+    from scripts.real_llm_benchmark_catalog import load_real_llm_benchmark
+
+    def provider_must_not_run(*_args, **_kwargs):
+        raise AssertionError("response-only safety contracts must not call a provider")
+
+    monkeypatch.setattr("app.agents.supervisor_agent.get_provider", provider_must_not_run)
+    _catalog, cases = load_real_llm_benchmark()
+    selected_scenarios = {
+        "memory-expired-preference",
+        "mobile-status-query",
+        "mobile-short-follow-up",
+    }
+    selected = [case for case in cases if case["benchmark"]["scenario_id"] in selected_scenarios]
+    assert len(selected) == 9
+
+    for case in selected:
+        decision = await SupervisorAgent().decide(case["message"], "efficiency")
+        assert decision.delegate is False, case["id"]
+        assert decision.agent_hint == "", case["id"]
+        if case["benchmark"]["scenario_id"] == "memory-expired-preference":
+            assert "重新确认" in decision.reply, case["id"]
+        else:
+            assert "任务 ID" in decision.reply, case["id"]
+            assert "不会创建或执行新任务" in decision.reply, case["id"]
+
+
+def test_expired_memory_shortcut_does_not_swallow_explicit_revoke():
+    decision = SupervisorAgent().quick_decision("撤销已经过期的偏好 mem_123，并重新确认新值。")
+
+    assert decision.delegate is True
+    assert decision.agent_hint == "MemoryAgent"
 
 
 def test_infer_supervisor_agent_hint_chinese_file_and_app():

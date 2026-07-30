@@ -101,10 +101,12 @@ export function useWorkspaceRefresh({
     const controller = new AbortController();
     workspaceAbortRef.current = controller;
     const { signal } = controller;
-    await api.beginBatch("workspace-refresh");
-    setIsLoading(true);
+    let batchStarted = false;
 
     try {
+      await api.beginBatch("workspace-refresh");
+      batchStarted = true;
+      setIsLoading(true);
       const currentStatus = await api.getBackendStatus();
       if (signal.aborted) return;
       setBackendStatus(currentStatus);
@@ -225,7 +227,7 @@ export function useWorkspaceRefresh({
         lastCheckedAt: new Date().toISOString()
       });
     } finally {
-      api.endBatch("workspace-refresh");
+      if (batchStarted) api.endBatch("workspace-refresh");
       if (!signal.aborted) {
         setIsLoading(false);
       }

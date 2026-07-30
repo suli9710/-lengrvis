@@ -4,16 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import os
 import re
 import sys
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
     CandidateBinding,
+    EVIDENCE_SIGNATURE_ENV,
+    EVIDENCE_SIGNATURE_PAYLOAD_V2,
     candidate_binding_from_environment,
     get_path,
+    is_sha256_hex,
     load_json,
     print_result,
     require_artifact_type,
@@ -22,6 +27,7 @@ from evidence_contracts import (
     require_sha256_hex,
     validate_candidate_binding,
     validate_evidence_signature,
+    validate_evidence_signature_secret,
 )
 
 ARTIFACT_TYPE = "android-real-device-remote-control-evidence"
@@ -30,6 +36,132 @@ ENV_VAR = "LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH"
 ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$")
 PROVENANCE_TYPE = "reviewed-build-record/v1"
 PLACEHOLDER_VALUES = {"todo", "tbd", "pending", "unknown", "uncollected", "placeholder", "n/a"}
+ARTIFACT_MANIFEST_VERSION = "sha256-manifest/v1"
+REQUIRED_ARTIFACT_KINDS = frozenset(
+    {
+        "adb_install_status",
+        "backend_log",
+        "device_screenshot",
+        "device_video",
+        "mobile_log",
+    }
+)
+ALLOWED_ARTIFACT_KINDS = REQUIRED_ARTIFACT_KINDS | frozenset(
+    {"certificate_record", "command_log", "proxy_trace", "review_note"}
+)
+ARTIFACT_MANIFEST_ENTRY_KEYS = frozenset({"kind", "label_redacted", "sha256", "size_bytes"})
+MAX_ARTIFACT_MANIFEST_ENTRIES = 64
+
+
+def _validate_artifact_manifest(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    manifest = get_path(payload, "evidence_artifact_manifest")
+    if not isinstance(manifest, dict):
+        return ["evidence_artifact_manifest must be an object"]
+    unknown_manifest_keys = sorted(set(manifest) - {"version", "entries"})
+    if unknown_manifest_keys:
+        errors.append(
+            "evidence_artifact_manifest contains unsupported fields: "
+            + ", ".join(unknown_manifest_keys)
+        )
+    if manifest.get("version") != ARTIFACT_MANIFEST_VERSION:
+        errors.append(f"evidence_artifact_manifest.version must be {ARTIFACT_MANIFEST_VERSION}")
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        return [*errors, "evidence_artifact_manifest.entries must be an array"]
+    if not entries:
+        errors.append("evidence_artifact_manifest.entries must not be empty")
+    if len(entries) > MAX_ARTIFACT_MANIFEST_ENTRIES:
+        errors.append(
+            "evidence_artifact_manifest.entries must contain at most "
+            f"{MAX_ARTIFACT_MANIFEST_ENTRIES} artifacts"
+        )
+
+    labels: list[str] = []
+    digests: list[str] = []
+    kinds: set[str] = set()
+    for index, entry in enumerate(entries):
+        path = f"evidence_artifact_manifest.entries[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{path} must be an object")
+            continue
+        unknown_keys = sorted(set(entry) - ARTIFACT_MANIFEST_ENTRY_KEYS)
+        if unknown_keys:
+            errors.append(f"{path} contains unsupported fields: {', '.join(unknown_keys)}")
+
+        kind = str(entry.get("kind") or "").strip()
+        if kind not in ALLOWED_ARTIFACT_KINDS:
+            errors.append(f"{path}.kind must be an allowed reviewed artifact kind")
+        else:
+            kinds.add(kind)
+
+        label = str(entry.get("label_redacted") or "").strip()
+        if (
+            not label
+            or label.casefold() in PLACEHOLDER_VALUES
+            or len(label) > 160
+            or "/" in label
+            or "\\" in label
+        ):
+            errors.append(f"{path}.label_redacted must be a non-path redacted label")
+        else:
+            labels.append(label)
+        if not is_sha256_hex(entry.get("sha256")):
+            errors.append(f"{path}.sha256 must be a 64-character SHA256 hex digest")
+        else:
+            digests.append(str(entry["sha256"]).strip().lower())
+        size_bytes = entry.get("size_bytes")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 1:
+            errors.append(f"{path}.size_bytes must be a positive integer")
+
+    if len(labels) != len({label.casefold() for label in labels}):
+        errors.append("evidence_artifact_manifest labels must be unique")
+    if len(digests) != len(set(digests)):
+        errors.append("evidence_artifact_manifest SHA256 digests must be unique")
+    missing_kinds = sorted(REQUIRED_ARTIFACT_KINDS - kinds)
+    if missing_kinds:
+        errors.append(
+            "evidence_artifact_manifest is missing required artifact kinds: "
+            + ", ".join(missing_kinds)
+        )
+
+    redacted_labels = payload.get("evidence_artifacts_redacted")
+    if not isinstance(redacted_labels, list) or any(not isinstance(item, str) for item in redacted_labels):
+        errors.append("evidence_artifacts_redacted must be an array of labels")
+    elif len(redacted_labels) != len(set(redacted_labels)) or set(redacted_labels) != set(labels):
+        errors.append(
+            "evidence_artifacts_redacted must exactly match the unique labels in evidence_artifact_manifest"
+        )
+    return errors
+
+
+def _validate_signature_payload_version(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if get_path(payload, "evidence.signature_payload_version") != EVIDENCE_SIGNATURE_PAYLOAD_V2:
+        errors.append(
+            "evidence.signature_payload_version must bind the signing key fingerprint using "
+            f"{EVIDENCE_SIGNATURE_PAYLOAD_V2}"
+        )
+    if not is_sha256_hex(get_path(payload, "evidence.signing_key_fingerprint")):
+        errors.append("evidence.signing_key_fingerprint must be a full SHA256 hex digest")
+    else:
+        try:
+            secret = validate_evidence_signature_secret(
+                str(os.getenv(EVIDENCE_SIGNATURE_ENV) or "")
+            )
+        except ValueError:
+            # validate_evidence_signature reports the canonical secret error.
+            pass
+        else:
+            fingerprint = str(
+                get_path(payload, "evidence.signing_key_fingerprint") or ""
+            ).strip().lower()
+            expected_fingerprint = sha256(secret.encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(fingerprint, expected_fingerprint):
+                errors.append(
+                    "evidence.signing_key_fingerprint does not match the configured signing key"
+                )
+    return errors
 
 
 def _validate_artifact_identity(payload: dict[str, Any]) -> list[str]:
@@ -132,8 +264,12 @@ def validate_payload_with_contract(
         errors.append("review.status must be reviewed_passed")
     identity_errors = _validate_artifact_identity(payload)
     provenance_errors = _validate_artifact_provenance(payload)
+    artifact_manifest_errors = _validate_artifact_manifest(payload)
+    signature_payload_errors = _validate_signature_payload_version(payload)
     errors.extend(identity_errors)
     errors.extend(provenance_errors)
+    errors.extend(artifact_manifest_errors)
+    errors.extend(signature_payload_errors)
 
     signature = validate_evidence_signature(payload, errors)
     binding_error_start = len(errors)
@@ -145,6 +281,10 @@ def validate_payload_with_contract(
         "candidate_binding_valid": candidate_binding_valid,
         "artifact_identity_valid": not identity_errors,
         "artifact_provenance_valid": not provenance_errors,
+        "artifact_manifest_valid": not artifact_manifest_errors,
+        "signing_key_fingerprint_bound": not signature_payload_errors
+        and signature["valid_hash"]
+        and signature["valid_signature"],
     }
 
 
@@ -167,6 +307,8 @@ def main() -> int:
         "candidate_binding_valid": False,
         "artifact_identity_valid": False,
         "artifact_provenance_valid": False,
+        "artifact_manifest_valid": False,
+        "signing_key_fingerprint_bound": False,
     }
     if payload is not None:
         payload_errors, contract = validate_payload_with_contract(

@@ -103,6 +103,21 @@ def _create_key(client: TestClient, csrf: str, **overrides: Any) -> dict[str, An
     return response.json()
 
 
+def test_admin_create_rejects_non_iso_datetime_with_422(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    client = TestClient(_app())
+    csrf = _login(client)
+
+    response = client.post(
+        "/api/admin/subscriptions",
+        headers={"x-lengrvis-admin-csrf": csrf},
+        json={"plan": "pro", "status": "active", "seats": 1, "expires_at": "2026/12/31"},
+    )
+
+    # A non-ISO datetime must be a validation error (422), not an unhandled 500.
+    assert response.status_code == 422, response.text
+
+
 def test_admin_password_hash_round_trips() -> None:
     encoded = hash_admin_password("secret", salt=b"0123456789abcdef", iterations=1000)
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO_ROOT / "test_data" / "real_llm_benchmark" / "catalog.json"
@@ -32,6 +34,7 @@ VALID_PHASES = frozenset(
         "awaiting_approval",
     }
 )
+VALID_ENTRIES = frozenset({"runs", "chat"})
 VALID_RISK_LEVELS = (
     "R0_READ_ONLY",
     "R1_OPEN_ONLY",
@@ -61,9 +64,8 @@ def materialize_cases(catalog: dict[str, Any]) -> list[dict[str, Any]]:
                 "id": f"rllm-{scenario['id']}-{variant['id']}",
                 "category": scenario["category"],
                 "title": f"{scenario['title']} [{variant['id']}]",
-                "entry": "runs",
+                "entry": str(scenario.get("entry") or "runs"),
                 "message": prompt,
-                "mode": "efficiency",
                 "engine": "os",
                 "expect": copy.deepcopy(scenario["expect"]),
                 "benchmark": {
@@ -76,6 +78,10 @@ def materialize_cases(catalog: dict[str, Any]) -> list[dict[str, Any]]:
             }
             if scenario.get("fixtures"):
                 case["fixtures"] = copy.deepcopy(scenario["fixtures"])
+            if scenario.get("memory_fixture"):
+                case["memory_fixture"] = copy.deepcopy(scenario["memory_fixture"])
+            if scenario.get("browser_fixture"):
+                case["browser_fixture"] = copy.deepcopy(scenario["browser_fixture"])
             cases.append(case)
     return cases
 
@@ -136,6 +142,9 @@ def validate_catalog(catalog: dict[str, Any]) -> list[str]:
             errors.append(f"{scenario_id}: title is required")
         if not str(scenario.get("prompt") or "").strip():
             errors.append(f"{scenario_id}: prompt is required")
+        entry = str(scenario.get("entry") or "runs")
+        if entry not in VALID_ENTRIES:
+            errors.append(f"{scenario_id}: unsupported entry {entry!r}")
         expect = scenario.get("expect")
         if not isinstance(expect, dict):
             errors.append(f"{scenario_id}: expect.phase is required")
@@ -181,6 +190,78 @@ def validate_catalog(catalog: dict[str, Any]) -> list[str]:
                         )
                     if not isinstance(content, str):
                         errors.append(f"{scenario_id}: fixture content must be text")
+        memory_fixture = scenario.get("memory_fixture")
+        if memory_fixture is not None:
+            if category != "memory":
+                errors.append(
+                    f"{scenario_id}: memory_fixture is only supported for memory scenarios"
+                )
+            if not isinstance(memory_fixture, dict):
+                errors.append(f"{scenario_id}: memory_fixture must be an object")
+            else:
+                allowed_fields = {"kind", "content", "expired", "recall_query"}
+                unknown_fields = sorted(set(memory_fixture) - allowed_fields)
+                if unknown_fields:
+                    errors.append(
+                        f"{scenario_id}: unsupported memory_fixture fields: "
+                        + ", ".join(unknown_fields)
+                    )
+                if (
+                    not isinstance(memory_fixture.get("content"), str)
+                    or not str(memory_fixture.get("content") or "").strip()
+                ):
+                    errors.append(
+                        f"{scenario_id}: memory_fixture.content must be non-empty text"
+                    )
+                if "kind" in memory_fixture and (
+                    not isinstance(memory_fixture.get("kind"), str)
+                    or not str(memory_fixture.get("kind") or "").strip()
+                ):
+                    errors.append(
+                        f"{scenario_id}: memory_fixture.kind must be non-empty text"
+                    )
+                if type(memory_fixture.get("expired")) is not bool:
+                    errors.append(
+                        f"{scenario_id}: memory_fixture.expired must be a boolean"
+                    )
+                recall_query = memory_fixture.get("recall_query")
+                if recall_query is not None and (
+                    not isinstance(recall_query, str) or not recall_query.strip()
+                ):
+                    errors.append(
+                        f"{scenario_id}: memory_fixture.recall_query must be non-empty text"
+                    )
+        browser_fixture = scenario.get("browser_fixture")
+        if browser_fixture is not None:
+            if category != "browser":
+                errors.append(
+                    f"{scenario_id}: browser_fixture is only supported for browser scenarios"
+                )
+            if not isinstance(browser_fixture, dict):
+                errors.append(f"{scenario_id}: browser_fixture must be an object")
+            else:
+                allowed_fields = {"url", "title", "text"}
+                unknown_fields = sorted(set(browser_fixture) - allowed_fields)
+                if unknown_fields:
+                    errors.append(
+                        f"{scenario_id}: unsupported browser_fixture fields: "
+                        + ", ".join(unknown_fields)
+                    )
+                fixture_url = browser_fixture.get("url")
+                if not _valid_browser_fixture_url(fixture_url):
+                    errors.append(
+                        f"{scenario_id}: browser_fixture.url must be an absolute public http(s) URL"
+                    )
+                for field in ("title", "text"):
+                    value = browser_fixture.get(field, "")
+                    if not isinstance(value, str):
+                        errors.append(
+                            f"{scenario_id}: browser_fixture.{field} must be text"
+                        )
+                    elif len(value) > 20_000:
+                        errors.append(
+                            f"{scenario_id}: browser_fixture.{field} exceeds 20000 characters"
+                        )
     missing_categories = sorted(REQUIRED_CATEGORIES - categories)
     if missing_categories:
         errors.append("missing categories: " + ", ".join(missing_categories))
@@ -201,6 +282,37 @@ def validate_catalog(catalog: dict[str, Any]) -> list[str]:
         if any(len(case["message"]) > 16000 for case in materialized):
             errors.append("materialized benchmark messages must fit the run API limit")
     return errors
+
+
+def _valid_browser_fixture_url(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    parsed = urlparse(value.strip())
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return False
+    hostname = parsed.hostname.casefold().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(
+        (".localhost", ".local", ".internal", ".lan")
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname.split("%")[0])
+    except ValueError:
+        return "." in hostname
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
 
 
 def validate_catalog_tool_contract(

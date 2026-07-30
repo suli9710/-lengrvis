@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import fnmatch
 import hashlib
 import hmac
@@ -163,11 +164,14 @@ def _decode_token(token: str) -> IntentCapsule:
         raise IntentCapsuleError("intent capsule token is malformed")
     try:
         payload = _b64decode(parts[0])
-        supplied = _b64decode(parts[1])
     except (ValueError, TypeError) as exc:
         raise IntentCapsuleError("intent capsule token encoding is invalid") from exc
-    expected = hmac.new(_secret().encode("utf-8"), payload, hashlib.sha256).digest()
-    if not hmac.compare_digest(supplied, expected):
+    try:
+        _b64decode(parts[1])
+    except (ValueError, TypeError) as exc:
+        raise IntentCapsuleError("intent capsule signature is invalid") from exc
+    expected = _b64encode(hmac.new(_secret().encode("utf-8"), payload, hashlib.sha256).digest())
+    if not hmac.compare_digest(parts[1], expected):
         raise IntentCapsuleError("intent capsule signature is invalid")
     try:
         raw: Any = json.loads(payload.decode("utf-8"))
@@ -181,7 +185,19 @@ def _b64encode(value: bytes) -> str:
 
 
 def _b64decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if not value or "=" in value:
+        raise ValueError("base64url value must be unpadded")
+    try:
+        decoded = base64.b64decode(
+            value + "=" * (-len(value) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("base64url value is invalid") from exc
+    if not hmac.compare_digest(_b64encode(decoded), value):
+        raise ValueError("base64url value is not canonical")
+    return decoded
 
 
 def _store_capsule(capsule: IntentCapsule) -> None:

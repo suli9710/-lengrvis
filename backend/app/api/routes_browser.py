@@ -182,18 +182,22 @@ def _browser_approval_binding_error(
 
 
 def _browser_payload_is_live_write(tool_name: str, payload: dict) -> bool:
-    if payload.get("dry_run") is True:
-        return False
     if tool_name in {"browser.cua", "browser.cua_run"}:
-        return True
+        return not bool(payload.get("dry_run", True))
     if tool_name != "browser.act":
         return False
     action = payload.get("action")
     kind = ""
     if isinstance(action, dict):
         kind = str(action.get("kind") or "")
-    kind = str(payload.get("kind") or kind).strip().casefold().replace("_", "-")
-    return kind in {"click", "fill", "submit", "scroll", "cua"}
+    kind = str(kind or payload.get("kind") or "").strip().casefold().replace("_", "-")
+    if kind not in {"click", "fill", "submit", "scroll", "cua"}:
+        return False
+    if isinstance(action, dict) and "dry_run" in action:
+        dry_run = action.get("dry_run")
+    else:
+        dry_run = payload.get("dry_run", True)
+    return not bool(dry_run)
 
 
 @router.post("/browser/open-url")
@@ -238,6 +242,11 @@ def act(payload: dict):
     blocked = _blocked_review_response(review)
     if review.verdict == SafetyVerdict.DENY:
         return blocked
+    if not _browser_payload_is_live_write("browser.act", payload):
+        result = browser_tools.act(payload, context)
+        if blocked is not None:
+            result.setdefault("review", review.model_dump(mode="json"))
+        return result
     approval_error = _claim_valid_browser_approval("browser.act", payload, context)
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)
@@ -258,6 +267,11 @@ async def cua_run(payload: dict):
     blocked = _blocked_review_response(review)
     if review.verdict == SafetyVerdict.DENY:
         return blocked
+    if not _browser_payload_is_live_write("browser.cua_run", payload):
+        result = await browser_tools.cua_run_async(payload, context)
+        if blocked is not None:
+            result.setdefault("review", review.model_dump(mode="json"))
+        return result
     approval_error = _claim_valid_browser_approval("browser.cua_run", payload, context)
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)

@@ -251,6 +251,92 @@ def test_cancel_task_sessions_closes_only_matching_active_sessions() -> None:
     assert events[-1]["type"] == "session.cancelled"
 
 
+@pytest.mark.parametrize(
+    ("task_id", "account_id", "error_fragment"),
+    [
+        ("task-2", "account-1", "different task"),
+        ("task-1", "account-2", "different account"),
+    ],
+)
+def test_runtime_rejects_cross_task_or_account_session_rebinding(
+    task_id: str,
+    account_id: str,
+    error_fragment: str,
+) -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    owner_context = {**_context(), "task_id": "task-1", "account_id": "account-1"}
+    started = runtime.session_start({"url": "https://example.test/start"}, owner_context)
+
+    result = runtime.observe(
+        {"session_id": started["session"]["id"]},
+        {**_context(), "task_id": task_id, "account_id": account_id},
+    )
+    session = runtime.session_info({"session_id": started["session"]["id"]})["session"]
+
+    assert result["ok"] is False
+    assert error_fragment in result["error"]
+    assert adapter.calls == []
+    assert session["task_id"] == "task-1"
+    assert session["account_id"] == "account-1"
+
+
+def test_runtime_enforces_session_allowed_origins_and_actions() -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    context = {**_context(), "task_id": "task-scope", "account_id": "account-scope"}
+    started = runtime.session_start(
+        {
+            "url": "https://example.test/start",
+            "allowed_origins": ["https://EXAMPLE.test"],
+            "allowed_actions": ["observe"],
+        },
+        context,
+    )
+    session_id = started["session"]["id"]
+
+    same_origin = runtime.observe({"session_id": session_id}, context)
+    cross_origin = runtime.observe(
+        {"session_id": session_id, "url": "https://other.example.test/page"},
+        context,
+    )
+    disallowed_action = runtime.act(
+        {"session_id": session_id, "action": {"kind": "click", "url": "https://example.test/start"}},
+        context,
+    )
+
+    assert started["session"]["allowed_origins"] == ["https://example.test:443"]
+    assert started["session"]["allowed_actions"] == ["observe"]
+    assert same_origin["ok"] is True
+    assert cross_origin["ok"] is False
+    assert "allowed_origins" in cross_origin["error"]
+    assert disallowed_action["ok"] is False
+    assert "allowed_actions" in disallowed_action["error"]
+    assert len(adapter.calls) == 1
+
+
+def test_runtime_rejects_cross_origin_adapter_final_url() -> None:
+    class CrossOriginRedirectAdapter(FakeBrowserAdapter):
+        def perform(self, session, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
+            return {
+                "ok": True,
+                "url": "https://login.example.test/final",
+                "title": "Unexpected redirect",
+                "text": "",
+                "links": [],
+            }
+
+    runtime = BrowserActivityRuntime(adapter=CrossOriginRedirectAdapter())
+    started = runtime.session_start({"url": "https://example.test/start"}, _context())
+
+    result = runtime.observe({"session_id": started["session"]["id"]}, _context())
+    session = runtime.session_info({"session_id": started["session"]["id"]})["session"]
+
+    assert result["ok"] is False
+    assert "same-origin" in result["error"]
+    assert session["current_url"] == "https://example.test/start"
+
+
 def test_runtime_event_titles_use_public_redaction() -> None:
     class TitleLeakAdapter(FakeBrowserAdapter):
         def perform(self, session, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
@@ -586,6 +672,21 @@ def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
             _read_limited_http_response(client, "https://example.test/page", 64)
 
 
+def test_httpx_observe_rejects_redirect_to_different_public_origin(monkeypatch) -> None:
+    _stub_public_dns(monkeypatch)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"Location": "https://other.example.test/final"}, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="same-origin"):
+            _read_limited_http_response(client, "https://example.test/page", 64)
+
+    assert len(calls) == 1
+
+
 def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_errors(monkeypatch) -> None:
     def failing_sync_playwright():
         raise RuntimeError("playwright launch failed")
@@ -875,4 +976,4 @@ def test_safe_url_redacts_query_and_handles_invalid_url() -> None:
     from app.services.browser_activity_runtime import _safe_url
 
     assert _safe_url("https://example.test/path?token=secret") == "https://example.test/path?***"
-    assert _safe_url("http://[bad?token=secret-token-value") == "http://[bad?token=[REDACTED]"
+    assert _safe_url("http://[bad?token=secret-token-value") == "[REDACTED_URL]"

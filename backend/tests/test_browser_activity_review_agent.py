@@ -344,6 +344,59 @@ def test_direct_browser_act_api_requires_approval_for_live_write(monkeypatch):
     assert result["review"]["target_type"] == "browser_activity:scroll"
 
 
+def test_direct_browser_act_api_allows_read_only_action_without_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    calls: list[dict[str, Any]] = []
+
+    def fake_act(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {"ok": True, "event": {"type": "act.observe"}}
+
+    monkeypatch.setattr(routes_browser.browser_tools, "act", fake_act)
+    payload = {"action": {"kind": "observe", "url": "https://example.com"}, "dry_run": False}
+
+    result = routes_browser.act(payload)
+
+    assert result["ok"] is True
+    assert calls and calls[0]["args"] == payload
+    assert db.fetch_many("tool_calls", limit=10) == []
+
+
+def test_direct_browser_act_api_returns_dry_run_preview_without_consuming_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    calls: list[dict[str, Any]] = []
+
+    def fake_act(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {
+            "ok": True,
+            "dry_run": True,
+            "diff_preview": [{"action": "scroll", "delta_y": 400}],
+        }
+
+    monkeypatch.setattr(routes_browser.browser_tools, "act", fake_act)
+    payload = {
+        "action": {"kind": "scroll", "url": "https://example.com", "delta_y": 400},
+        "dry_run": True,
+    }
+
+    result = routes_browser.act(payload)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["diff_preview"] == [{"action": "scroll", "delta_y": 400}]
+    assert result["review"]["verdict"] == SafetyVerdict.NEEDS_USER_APPROVAL.value
+    assert calls and calls[0]["args"] == payload
+    assert db.fetch_many("approvals", limit=10) == []
+    assert db.fetch_many("tool_calls", limit=10) == []
+
+
 def test_direct_browser_act_api_rejects_forged_approval(monkeypatch):
     settings = AppSettings(
         provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
@@ -403,6 +456,7 @@ def test_direct_browser_act_api_allows_valid_bound_approval(monkeypatch):
     approval.args_binding_hmac = args_binding_hmac(
         "browser.act", payload, task_id=approval.task_id, step_id=approval.step_id
     )
+    db.upsert_model("tasks", Task(id=approval.task_id, user_goal="Approved direct browser action"))
     db.upsert_model("approvals", approval, status=approval.status)
 
     result = routes_browser.act(payload)
@@ -493,6 +547,35 @@ def test_direct_cua_run_api_rejects_forged_approval(monkeypatch):
     assert result["ok"] is False
     assert result["status"] == "denied"
     assert "approval database" in result["error"]
+
+
+def test_direct_cua_run_api_returns_dry_run_preview_without_consuming_approval(monkeypatch):
+    settings = AppSettings(
+        provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+    )
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_cua_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {
+            "ok": True,
+            "dry_run": True,
+            "diff_preview": [{"action": "cua", "instruction": "***"}],
+        }
+
+    monkeypatch.setattr(routes_browser.browser_tools, "cua_run_async", fake_cua_run)
+    payload = {"instruction": "click the safe demo button", "dry_run": True}
+
+    result = asyncio.run(routes_browser.cua_run(payload))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["diff_preview"] == [{"action": "cua", "instruction": "***"}]
+    assert result["review"]["verdict"] == SafetyVerdict.NEEDS_USER_APPROVAL.value
+    assert calls and calls[0]["args"] == payload
+    assert db.fetch_many("approvals", limit=10) == []
+    assert db.fetch_many("tool_calls", limit=10) == []
 
 
 def test_direct_cua_run_api_rejects_payload_ack_without_consuming_bound_approval(monkeypatch):

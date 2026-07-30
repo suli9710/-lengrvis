@@ -1008,3 +1008,29 @@ def test_commerce_api_activation_records_safe_audit(
     assert audit_events[0][2]["subscription_id"] == "sub_activated"
     assert "activation-key-redacted" not in str(audit_events)
     assert invalidations == [True]
+
+
+def test_clock_watermark_defeats_rollback(tmp_path):
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(data_dir=str(tmp_path))
+
+    # First real check (now=None) records the watermark at ~system time.
+    t0 = licensing._effective_now(settings, None)
+    stored = licensing._read_clock_watermark(settings)
+    assert stored is not None
+
+    # Simulate the persisted watermark being far in the future (i.e. the app has
+    # previously observed a much later wall-clock than the current system clock).
+    future = datetime.now(UTC) + timedelta(days=30)
+    licensing._write_clock_watermark(settings, future)
+
+    # A subsequent real check must not regress below the watermark: a rolled-back
+    # system clock cannot make time appear earlier than the latest observed time.
+    effective = licensing._effective_now(settings, None)
+    assert effective >= future - timedelta(seconds=1)
+
+    # An explicit `now` (tests/replays) is still honored verbatim.
+    explicit = datetime(2020, 1, 1, tzinfo=UTC)
+    assert licensing._effective_now(settings, explicit) == explicit
+    assert t0.tzinfo is not None

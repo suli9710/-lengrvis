@@ -30,6 +30,10 @@
     overflow: visible;
   }
 
+  .primary-nav-wrap {
+    overflow: visible;
+  }
+
   .sidebar-section--dialogues,
   .sidebar-user {
     display: none;

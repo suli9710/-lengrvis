@@ -83,6 +83,7 @@ class OrchestratorAgent:
             "AppAgent": AppAgent(self.bus),
             "BrowserAgent": BrowserAgent(self.bus),
             "SearchAgent": SearchAgent(self.bus),
+            "MemoryAgent": self.memory,
         }
         # Per-orchestrator toolset: rebuilding the module-global registry here
         # would wipe custom tool registrations of every other live orchestrator
@@ -116,8 +117,7 @@ class OrchestratorAgent:
         if persisted:
             latest = Task.model_validate(persisted)
             externally_stopped = (
-                latest.status in _TERMINAL_TASK_PHASES
-                or latest.execution_stage == ExecutionStage.PAUSED
+                latest.status in _TERMINAL_TASK_PHASES or latest.execution_stage == ExecutionStage.PAUSED
             )
             stale_snapshot = (
                 latest.updated_at != task.updated_at

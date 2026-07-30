@@ -298,7 +298,13 @@ class DeveloperExecutionEngine(ExecutionEngine):
         result = lengrvis_code_summary_to_turn_result(state, summary)
         if writes_enabled and summary.permission_denials:
             result = _await_write_approval(result, summary)
-        elif writes_enabled and result.state.phase == RunPhase.COMPLETED:
+        elif writes_enabled:
+            # Run write verification on ANY terminal outcome, not only COMPLETED:
+            # a run that already wrote files but then failed/timed out must still
+            # have its out-of-bounds write detection (validate_write_paths) and
+            # diff preview run. run_write_verification only flips the phase to
+            # FAILED when out-of-bounds writes are actually detected, so this is
+            # safe for an already-FAILED run.
             result = _apply_write_verification(result, summary, settings=self.settings, writes_enabled=writes_enabled)
         step_status = _plan_step_status(result.state.phase)
         result.state.current_plan = _mark_plan_steps_status(
@@ -592,7 +598,6 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
             ],
         },
     )
-
 
 
 def _developer_terminal_run_phase(task: Task) -> RunPhase | None:

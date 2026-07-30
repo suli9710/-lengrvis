@@ -53,7 +53,7 @@ def test_rough_token_count_weighs_cjk_denser_than_ascii():
     chinese_tokens = rough_token_count(chinese_text)
 
     assert ascii_tokens == 100  # ~4 chars/token
-    assert chinese_tokens == 250  # ~1.6 chars/token
+    assert chinese_tokens == round(400 / 1.2)  # ~1.2 chars/token
     assert chinese_tokens > ascii_tokens * 2
 
 
@@ -62,7 +62,7 @@ def test_rough_token_count_mixed_cjk_ascii():
 
     mixed = "hello 世界！" * 100  # 6 ASCII+space, 3 CJK (incl. fullwidth punctuation)
     tokens = rough_token_count(mixed)
-    expected = round((600 / 4) + (300 / 1.6))
+    expected = round((600 / 4) + (300 / 1.2))
     assert tokens == expected
 
 

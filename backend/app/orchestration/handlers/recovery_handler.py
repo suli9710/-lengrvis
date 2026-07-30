@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.orchestration.deterministic_contracts import deterministic_contract_status
 from app.orchestration.events import ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import set_step_status
@@ -118,6 +119,15 @@ class RecoveryHandler:
                 retry_count=self._get_retry_count(key),
             )
         )
+
+        if deterministic_contract_status(step) != "none":
+            return await self.rollback_and_fail(
+                task,
+                plan,
+                step,
+                result,
+                reason="deterministic_contract_failed",
+            )
 
         retry_block_reason = self._automatic_recovery_block_reason(step, result)
         if retry_block_reason:

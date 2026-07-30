@@ -10,7 +10,6 @@ from app.config import get_env
 DESKTOP_CORS_ALLOW_ORIGINS = ["app://local"]
 DEV_CORS_ALLOW_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 CORS_ALLOW_ORIGINS = [*DEV_CORS_ALLOW_ORIGINS, *DESKTOP_CORS_ALLOW_ORIGINS]
-PRODUCTION_ENV_VALUES = {"prod", "production", "release"}
 # P1-7 fix: hardened method/header allowlists instead of wildcard "*". Kept as
 # the single source of truth for both the guardian and full backends so their
 # CORS policy can never drift.
@@ -48,7 +47,17 @@ def cors_allow_origins() -> list[str]:
 
 
 def _is_production_environment() -> bool:
-    for name in ("LENGRVIS_ENV", "APP_ENV", "ENVIRONMENT"):
-        if str(get_env(name) or "").strip().lower() in PRODUCTION_ENV_VALUES:
+    # Use the same release-profile signals as execution_isolation so a build
+    # labelled ga/beta/rc (or flagged only via LENGRVIS_COMMERCIAL_RELEASE etc.)
+    # does not keep trusting the Vite dev origins in a shipped product.
+    from app.config import env_flag
+    from app.security.execution_isolation import (
+        RELEASE_BOOLEAN_NAMES,
+        RELEASE_ENVIRONMENT_NAMES,
+        RELEASE_ENVIRONMENT_VALUES,
+    )
+
+    for name in RELEASE_ENVIRONMENT_NAMES:
+        if str(get_env(name) or "").strip().casefold() in RELEASE_ENVIRONMENT_VALUES:
             return True
-    return False
+    return any(env_flag(name) for name in RELEASE_BOOLEAN_NAMES)

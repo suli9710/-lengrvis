@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from app.agents.delegation_metadata import (
     SupervisorHintPlanError,
+    is_memory_non_persistence_goal,
     plan_matches_supervisor_hint,
     plan_tools_outside_visible,
 )
@@ -12,6 +13,10 @@ from app.agents.worker_agents import normalize_supervisor_agent_hint
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import MessageType, Plan, StepStatus, Task, TaskStatus
+from app.orchestration.deterministic_contracts import (
+    DETERMINISTIC_PLAN_CREATOR,
+    seal_deterministic_plan,
+)
 from app.orchestration.step_phase import set_step_status
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
@@ -136,6 +141,9 @@ class PlanningHandler:
         visible_tools = [
             tool for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)
         ]
+        memory_non_persistence = is_memory_non_persistence_goal(goal)
+        if memory_non_persistence:
+            visible_tools = [tool for tool in visible_tools if not tool.name.startswith("memory.")]
         hint = normalize_supervisor_agent_hint(agent_hint)
         if hint:
             hinted_tools = [
@@ -167,6 +175,16 @@ class PlanningHandler:
                 )
             planner_kwargs = _filter_planner_kwargs(create_plan, planner_kwargs)
             plan = await create_plan(task.id, goal, mode, tools, **planner_kwargs)
+            if memory_non_persistence:
+                blocked_memory_steps = [step.tool_name for step in plan.steps if step.tool_name.startswith("memory.")]
+                if blocked_memory_steps:
+                    plan.steps = [step for step in plan.steps if not step.tool_name.startswith("memory.")]
+                    record(
+                        "planner.memory_non_persistence_enforced",
+                        "PlanningHandler",
+                        {"blocked_tools": blocked_memory_steps},
+                        task_id=task.id,
+                    )
             self._annotate_plan_tool_contracts(plan, tools)
             if not hint:
                 break
@@ -256,6 +274,11 @@ class PlanningHandler:
 
             plan.global_risk_level = max_risk([step.risk_level for step in plan.steps])
             plan.requires_user_approval = any(step.requires_approval for step in plan.steps)
+        if plan.created_by_agent == DETERMINISTIC_PLAN_CREATOR:
+            # Annotation may normalize risk, add dry-run args and replace the
+            # model-action envelope. Bind the final exact call after those
+            # changes so later model-driven layers cannot rewrite it.
+            seal_deterministic_plan(plan)
 
     def _publish_annotated_plan(self, task_id: str, plan: Plan) -> None:
         publish_text = getattr(getattr(self.orchestrator, "bus", None), "publish_text", None)

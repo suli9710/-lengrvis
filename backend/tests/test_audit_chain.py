@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from hashlib import sha256
 
 import pytest
 from fastapi.testclient import TestClient
@@ -266,6 +267,10 @@ def test_audit_verification_detects_external_anchor_mismatch(monkeypatch, tmp_pa
     anchor_path = db.audit_anchor_path()
     payload = json.loads(anchor_path.read_text(encoding="utf-8"))
     payload["event_hash"] = "f" * 64
+    unsigned_anchor = {key: value for key, value in payload.items() if key != "anchor_sha256"}
+    payload["anchor_sha256"] = sha256(
+        json.dumps(unsigned_anchor, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     anchor_path.write_text(json.dumps(payload), encoding="utf-8")
 
     result = db.verify_audit_log()
@@ -274,6 +279,25 @@ def test_audit_verification_detects_external_anchor_mismatch(monkeypatch, tmp_pa
     assert result["checked"] == 1
     assert result["last_event_id"] == event.id
     assert result["failure_reason"] == "external_anchor_mismatch"
+
+
+def test_audit_verification_rejects_invalid_anchor_checksum(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    db.init_db()
+    event = record("security.anchor_checksum", "pytest", {"ok": True})
+
+    anchor_path = db.audit_anchor_path()
+    payload = json.loads(anchor_path.read_text(encoding="utf-8"))
+    payload["anchor_sha256"] = "bad"
+    anchor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = db.verify_audit_log()
+
+    assert result["ok"] is False
+    assert result["checked"] == 1
+    assert result["last_event_id"] == event.id
+    assert result["failure_reason"] == "external_anchor_invalid"
 
 
 def test_audit_fail_closed_blocks_after_anchor_mismatch(monkeypatch, tmp_path):
@@ -290,6 +314,24 @@ def test_audit_fail_closed_blocks_after_anchor_mismatch(monkeypatch, tmp_path):
 
     with pytest.raises(db.SensitiveRecordIntegrityError, match="Audit fail-closed gate blocked"):
         db.require_audit_fail_closed_ok()
+
+
+def test_audit_fail_closed_exempt_path_excludes_mutating_diagnostics_export():
+    from app.security.middleware import _audit_fail_closed_exempt_path
+
+    # Read-only recovery/health routes stay exempt so the user can inspect and
+    # recover while fail-closed is active.
+    assert _audit_fail_closed_exempt_path("/api/health") is True
+    assert _audit_fail_closed_exempt_path("/api/audit/verify") is True
+    assert _audit_fail_closed_exempt_path("/api/system/diagnostics") is True
+
+    # The mutating diagnostics export (writes a support package to disk) and any
+    # other /api/system/diagnostics* subpath must NOT be exempt: a prefix match
+    # previously let it run even with a tampered audit chain.
+    assert _audit_fail_closed_exempt_path("/api/system/diagnostics/export") is False
+    assert _audit_fail_closed_exempt_path("/api/system/diagnostics/anything") is False
+    # Dead prefix removed.
+    assert _audit_fail_closed_exempt_path("/api/privacy/export") is False
 
 
 def test_audit_hmac_secret_read_once_per_process(monkeypatch, tmp_path):

@@ -76,38 +76,43 @@ export interface CommerceLicenseStatus {
 export interface CommerceQuotaWindow {
   key: string;
   windowHours: number;
+  available: boolean;
   limits: {
     totalTokens: number | null;
     calls: number | null;
     totalCostUsd: number | null;
   };
-  usage?: {
+  usage: {
     calls: number;
     totalTokens: number;
     totalCostUsd: number;
     windowHours: number;
     lastEventAt?: string;
-  };
+  } | null;
   exceeded: string[];
 }
+
+export type CommerceQuotaState = "available" | "metering_unavailable";
 
 export interface CommerceQuotaStatus {
   plan: CommercePlan;
   enforced: boolean;
   unlimited: boolean;
+  available: boolean;
+  state: CommerceQuotaState;
   windowHours: number;
   limits: {
     totalTokens: number | null;
     calls: number | null;
     totalCostUsd: number | null;
   };
-  usage?: {
+  usage: {
     calls: number;
     totalTokens: number;
     totalCostUsd: number;
     windowHours: number;
     lastEventAt?: string;
-  };
+  } | null;
   exceeded: string[];
   windows: CommerceQuotaWindow[];
 }

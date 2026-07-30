@@ -7,6 +7,7 @@ from typing import Any
 from app.commerce.entitlements import Feature, active_plan, has_feature, require_feature
 from app.commerce.licensing import commercial_release_enabled
 from app.config import get_env
+from app.core.content_provenance import record_tool_output_provenance
 from app.core.paths import resolve_authorized
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
@@ -153,15 +154,50 @@ def extract_text_from_path(path: Path) -> str:
     return "[Unsupported document type]"
 
 
+def _record_document_output(
+    context: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    source_content: Any,
+    source_id: str,
+    field_lineage: list[dict[str, str]],
+    source_kind: str = "document",
+    origin: str = "local_document",
+) -> dict[str, Any]:
+    record_tool_output_provenance(
+        context,
+        output,
+        source_content=source_content,
+        source_kind=source_kind,
+        source_id=source_id,
+        origin=origin,
+        trust_level="untrusted",
+        taint_flags=["external_content", "document_content"],
+        task_scope=str(context.get("task_id") or ""),
+        field_lineage=field_lineage,
+    )
+    return output
+
+
 @_require_document_ai_tool
 def extract_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
-    return {
+    extracted = text[:_EXTRACT_TEXT_LIMIT]
+    output = {
         "path": str(path),
-        "text": text[:_EXTRACT_TEXT_LIMIT],
+        "text": extracted,
         "truncated": len(text) > _EXTRACT_TEXT_LIMIT,
     }
+    return _record_document_output(
+        context,
+        output,
+        source_content=extracted,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/text", "source_pointer": "", "operation": "extract"},
+        ],
+    )
 
 
 @_require_document_ai_tool
@@ -174,7 +210,16 @@ def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         max_chars_to_llm=_document_max_chars_to_llm(context),
         provider_resolver=_document_provider(context),
     )
-    return {"path": str(path), **result}
+    output = {"path": str(path), **result}
+    return _record_document_output(
+        context,
+        output,
+        source_content=text,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/summary", "source_pointer": "", "operation": "summarize"},
+        ],
+    )
 
 
 @_require_document_ai_tool
@@ -189,14 +234,32 @@ def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         max_chars_to_llm=_document_max_chars_to_llm(context),
         provider_resolver=_document_provider(context),
     )
-    return {"path": str(path), **result}
+    output = {"path": str(path), **result}
+    return _record_document_output(
+        context,
+        output,
+        source_content=text,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/answer", "source_pointer": "", "operation": "rewrite"},
+        ],
+    )
 
 
 @_require_document_ai_tool
 def convert_to_markdown(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
-    return {"markdown": f"# {path.name}\n\n{text}"[:_EXTRACT_TEXT_LIMIT]}
+    output = {"markdown": f"# {path.name}\n\n{text}"[:_EXTRACT_TEXT_LIMIT]}
+    return _record_document_output(
+        context,
+        output,
+        source_content=text,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/markdown", "source_pointer": "", "operation": "rewrite"},
+        ],
+    )
 
 
 @_require_document_ai_tool
@@ -223,18 +286,39 @@ def analyze_csv(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 def analyze_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
-    return {"path": str(path), "preview": text[:2000]}
+    preview = text[:2000]
+    output = {"path": str(path), "preview": preview}
+    return _record_document_output(
+        context,
+        output,
+        source_content=preview,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/preview", "source_pointer": "", "operation": "extract"},
+        ],
+    )
 
 
 @_require_document_ai_tool
 def generate_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     content = str(args.get("content") or "").strip()
     title = str(args.get("title") or "Report").strip() or "Report"
-    return document_service.generate_report(
+    output = document_service.generate_report(
         content,
         title=title,
         max_chars_to_llm=_document_max_chars_to_llm(context),
         provider_resolver=_document_provider(context),
+    )
+    return _record_document_output(
+        context,
+        output,
+        source_content=content,
+        source_id=str(context.get("step_id") or context.get("task_id") or "document.generate_report:input"),
+        source_kind="document_input",
+        origin="tool_argument",
+        field_lineage=[
+            {"output_pointer": "/report", "source_pointer": "", "operation": "rewrite"},
+        ],
     )
 
 
@@ -248,18 +332,40 @@ def parse_advanced(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
 @_require_document_ai_tool
 def extract_tables(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    return document_intelligence_service.extract_tables(path, settings=context.get("settings"))
+    output = document_intelligence_service.extract_tables(path, settings=context.get("settings"))
+    tables = output.get("tables") if isinstance(output.get("tables"), list) else []
+    return _record_document_output(
+        context,
+        output,
+        source_content=tables,
+        source_id=str(path),
+        source_kind="document_ir",
+        origin="document_parser",
+        field_lineage=[
+            {"output_pointer": "/tables", "source_pointer": "", "operation": "extract"},
+        ],
+    )
 
 
 @_require_document_ai_tool
 def ask_with_citations(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    return document_intelligence_service.ask_with_citations(
+    output = document_intelligence_service.ask_with_citations(
         path,
         str(args.get("question") or ""),
         settings=context.get("settings"),
         provider_resolver=_document_provider(context),
         top_k=int(args.get("top_k") or document_intelligence_service.DEFAULT_TOP_K),
+    )
+    source_blocks = output.get("source_blocks") if isinstance(output.get("source_blocks"), list) else []
+    return _record_document_output(
+        context,
+        output,
+        source_content=source_blocks,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/answer", "source_pointer": "", "operation": "rewrite"},
+        ],
     )
 
 
@@ -290,13 +396,23 @@ def redact_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
 @_require_document_ai_tool
 def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    return document_intelligence_service.generate_cited_report(
+    output = document_intelligence_service.generate_cited_report(
         path,
         title=str(args.get("title") or "Cited Report"),
         query=str(args.get("query") or ""),
         settings=context.get("settings"),
         provider_resolver=_document_provider(context),
         max_blocks=int(args.get("max_blocks") or document_intelligence_service.DEFAULT_REPORT_BLOCKS),
+    )
+    source_blocks = output.get("source_blocks") if isinstance(output.get("source_blocks"), list) else []
+    return _record_document_output(
+        context,
+        output,
+        source_content=source_blocks,
+        source_id=str(path),
+        field_lineage=[
+            {"output_pointer": "/report", "source_pointer": "", "operation": "summarize"},
+        ],
     )
 
 
@@ -414,7 +530,8 @@ def register(registry) -> None:
         "document.extract_text": _path_schema(),
         "document.summarize": _path_schema(),
         "document.qa": _path_schema(
-            {"question": {"type": "string", "description": "Question to answer from the document."}}
+            {"question": {"type": "string", "description": "Question to answer from the document."}},
+            required=["path", "question"],
         ),
         "document.convert_to_markdown": _path_schema(),
         "document.analyze_csv": _path_schema(),
@@ -433,7 +550,8 @@ def register(registry) -> None:
             {
                 "question": {"type": "string", "description": "Question to answer with cited evidence."},
                 "top_k": {"type": "integer", "description": "Optional number of evidence blocks to retrieve."},
-            }
+            },
+            required=["path", "question"],
         ),
         "document.compare": {
             "type": "object",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,6 +20,7 @@ from app.core.schemas import (
     TaskStatus,
     ToolResult,
 )
+from app.observability.tracing import span
 from app.orchestration.automation_runtime_guard import (
     AutomationExecutionDenied,
     authorize_automation_execution,
@@ -214,6 +216,50 @@ class ToolRuntime(
         approved_args: dict[str, Any] | None = None,
         approval_id: str | None = None,
     ) -> RuntimeExecutionResult:
+        """Execute a tool while emitting a safe lifecycle span.
+
+        The span intentionally records only stable identifiers and result
+        status.  Prompt text, tool arguments, and tool output bodies remain
+        outside the observability payload even when a caller passes them in.
+        """
+
+        attributes: dict[str, object] = {
+            "task.id": task.id,
+            "step.id": step.id,
+            "tool.name": tool.name,
+            "tool.approval": bool(approval_id),
+        }
+        with span("tool.execute", attributes) as tool_span:
+            result = await self._execute_allowed_impl(
+                task,
+                step,
+                tool,
+                runtime,
+                threaded_tools=threaded_tools,
+                approved_args=approved_args,
+                approval_id=approval_id,
+            )
+            tool_span.set_attribute("tool.result_kind", result.kind)
+            if result.result is not None:
+                tool_span.set_attribute("tool.call_id", result.result.tool_call_id)
+                tool_span.set_attribute("tool.ok", result.result.ok)
+                unknown = bool((result.result.output or {}).get("outcome_unknown"))
+                if unknown:
+                    tool_span.mark_outcome_unknown()
+                    tool_span.set_status("error")
+            return result
+
+    async def _execute_allowed_impl(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
+        *,
+        threaded_tools: bool = False,
+        approved_args: dict[str, Any] | None = None,
+        approval_id: str | None = None,
+    ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         args = approved_args if approved_args is not None else step.args
         if _tool_requires_content_revalidation(tool, args):
@@ -330,16 +376,26 @@ class ToolRuntime(
             return self._block_duplicate_tool_execution(task, step, current_call)
         call = claimed_call
 
-        result = await self._execute_tool_call(
-            task,
-            step,
-            tool,
-            runtime,
-            call,
-            args,
-            threaded_tools=threaded_tools,
-            approval_id=approval_id,
-        )
+        try:
+            result = await self._execute_tool_call(
+                task,
+                step,
+                tool,
+                runtime,
+                call,
+                args,
+                threaded_tools=threaded_tools,
+                approval_id=approval_id,
+            )
+        except asyncio.CancelledError:
+            # A cancelled in-flight tool must not leave the ToolCall row stuck in
+            # "executing": that row would block every future resume of the same
+            # step (same execution_key) as a duplicate until the process
+            # restarts. Record the outcome as unknown (the side effect may or may
+            # not have applied) so replay is deliberately gated instead of the
+            # step being permanently wedged.
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+            raise
 
         result = apply_result_budget(
             result,
@@ -347,9 +403,7 @@ class ToolRuntime(
             max_result_size=tool.max_result_size,
             runtime=runtime,
         )
-        upstream_envelopes = collect_content_envelopes(
-            runtime.extra_context.get("upstream_content_envelopes")
-        )
+        upstream_envelopes = collect_content_envelopes(runtime.extra_context.get("upstream_content_envelopes"))
         if result.content_envelope is not None:
             upstream_envelopes.append(result.content_envelope)
         result.content_envelope = content_envelope_for_tool_output(
@@ -361,9 +415,13 @@ class ToolRuntime(
             external_network=tool.external_network,
             resource_kinds=tool.resource_kinds,
             upstream=upstream_envelopes,
+            output_provenance=result._output_provenance,  # noqa: SLF001 - in-process lifecycle handoff.
         )
         db.upsert_model("tool_results", result)
-        mark_tool_call_committed(call)
+        if bool(result.output.get("outcome_unknown")):
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+        else:
+            mark_tool_call_committed(call)
         post_tool_review = self._review_tool_result(task, step, tool, result)
         if post_tool_review.verdict == SafetyVerdict.DENY:
             result = _withheld_tool_result(result, post_tool_review, runtime)

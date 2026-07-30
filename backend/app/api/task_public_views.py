@@ -16,9 +16,11 @@ EVIDENCE_PRIVACY_NOTE = (
 REVIEW_EVENT_KINDS = {"post_tool_review", "safety_review"}
 CAPABILITY_BOUNDARY_KINDS = {"context_boundary", "context_projection", "model_boundary_denied", "tool_contract"}
 SAFE_BOUNDARY_PAYLOAD_KEYS = {
+    "automatic_replay_blocked",
     "event_type",
     "kind",
     "risk_level",
+    "requires_user_review",
     "source",
     "status",
     "strategy",
@@ -110,6 +112,7 @@ PUBLIC_STATUS_ALIASES = {
     "failure": "failed",
     "in_progress": "running",
     "ok": "completed",
+    "outcome_unknown": "outcome_unknown",
     "pending": "pending",
     "queued": "pending",
     "retry": "retrying",
@@ -668,6 +671,7 @@ def public_error_category(error: Any) -> str:
 
 
 def public_tool_call(call: dict) -> dict:
+    outcome_unknown = str(call.get("status") or "") == "outcome_unknown"
     return {
         "id": call.get("id"),
         "task_id": call.get("task_id"),
@@ -675,6 +679,9 @@ def public_tool_call(call: dict) -> dict:
         "tool_name": public_tool_label(str(call.get("tool_name") or "")),
         "risk_level": call.get("risk_level"),
         "status": public_status_label(str(call.get("status") or "")),
+        "outcome_unknown": outcome_unknown,
+        "automatic_replay_blocked": outcome_unknown,
+        "requires_user_review": outcome_unknown,
         "dry_run": call.get("dry_run"),
         "created_at": call.get("created_at"),
         "args": redacted_public_field(call.get("args") or {}),

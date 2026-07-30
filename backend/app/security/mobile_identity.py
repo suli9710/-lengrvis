@@ -111,6 +111,7 @@ def create_mobile_session_locked(
         scope_ttl=scope_ttl,
         token_epoch=token_epoch,
         family_id=family.id,
+        family_generation=family.current_generation,
         credential_id=credential.id,
     )
     return MobileSessionTokens(
@@ -268,6 +269,7 @@ def rotate_mobile_refresh_token(
                         scope_ttl=scope_ttl,
                         token_epoch=int(device_payload.get("token_epoch") or 0),
                         family_id=family.id,
+                        family_generation=family.current_generation,
                         credential_id=credential.id,
                     )
                     session = MobileSessionTokens(

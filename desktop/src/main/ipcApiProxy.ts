@@ -48,6 +48,7 @@ export async function proxyApiRequest<TData>(
         ...(validatedRequest.serializedBody !== undefined ? { "Content-Type": "application/json" } : {})
       },
       body: validatedRequest.serializedBody,
+      redirect: "error",
       signal
     });
 

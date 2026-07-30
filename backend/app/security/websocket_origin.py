@@ -33,12 +33,25 @@ def is_trusted_websocket_origin(websocket: WebSocket, *, allow_missing_origin_wi
         return False
     if _same_http_origin_as_websocket(parsed, websocket):
         return True
-    return origin in _DEFAULT_TRUSTED_LOOPBACK_ORIGINS
+    return _dev_origins_trusted() and origin in _DEFAULT_TRUSTED_LOOPBACK_ORIGINS
+
+
+def _dev_origins_trusted() -> bool:
+    # The Vite dev-server origins must not be trusted in a shipped product:
+    # otherwise any local process squatting on :5173 passes the WebSocket Origin
+    # CSRF check. Trust them only outside a release profile.
+    from app.security.execution_isolation import release_profile_active
+
+    return not release_profile_active()
 
 
 def strict_websocket_origin_enabled() -> bool:
+    # Default strict in a release profile so a missing Origin header is only
+    # accepted alongside a valid token.
+    from app.security.execution_isolation import release_profile_active
+
     commercial = str(get_env("LENGRVIS_COMMERCIAL_RELEASE") or "").strip().lower()
-    return env_flag(STRICT_WEBSOCKET_ORIGIN_ENV) or commercial in {"1", "true", "yes", "on"}
+    return env_flag(STRICT_WEBSOCKET_ORIGIN_ENV) or commercial in {"1", "true", "yes", "on"} or release_profile_active()
 
 
 def _same_http_origin_as_websocket(origin, websocket: WebSocket) -> bool:
@@ -67,16 +80,21 @@ def _websocket_http_port(websocket: WebSocket) -> int:
 
 
 def _configured_trusted_origins() -> set[str]:
-    origins = set(_DEFAULT_TRUSTED_LOOPBACK_ORIGINS)
+    # Default dev-server origins and the VITE_DEV_SERVER_URL signal are dev-only.
+    # The explicit LENGRVIS_TRUSTED_WEBSOCKET_ORIGINS override is an intentional
+    # operator opt-in and is honored regardless of profile.
+    dev_trusted = _dev_origins_trusted()
+    origins = set(_DEFAULT_TRUSTED_LOOPBACK_ORIGINS) if dev_trusted else set()
     raw = str(get_env(TRUSTED_WEBSOCKET_ORIGINS_ENV) or "")
     for item in raw.replace(";", ",").split(","):
         origin = _normalized_origin(item)
         if origin:
             origins.add(origin)
-    vite = str(get_env("VITE_DEV_SERVER_URL") or "").strip()
-    origin = _normalized_origin(vite)
-    if origin:
-        origins.add(origin)
+    if dev_trusted:
+        vite = str(get_env("VITE_DEV_SERVER_URL") or "").strip()
+        origin = _normalized_origin(vite)
+        if origin:
+            origins.add(origin)
     return origins
 
 

@@ -7,19 +7,22 @@ import { dirname, join } from "node:path";
 import { cwd as getCwd } from "node:process";
 
 import type { BackendStatus } from "../shared/types";
+import { ApprovalSessionGenerationManager } from "./approvalSessionGeneration";
+import { BackendControlTransport } from "./backendControlTransport";
 import { BackendLifecycleCoordinator } from "./backendLifecycle";
-import { assertLoopbackBackendUrl } from "./backendUrl";
+import {
+  forcedEnv,
+  hardenPackagedProcessEnvironment,
+  packagedBackendConfigDir,
+  packagedBackendEnvironment,
+  setResolvedProcessEnv
+} from "./backendProcessEnvironment";
 import { resolveDesktopApiToken } from "./desktopApiToken";
 import { resolveNativeConfirmationKey } from "./nativeConfirmationKey";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 const DEFAULT_ACTIVATION_BASE_URL = "https://agent.lengzhehao.com";
 const DEFAULT_LICENSE_PUBLIC_KEY = "ed25519:0LY7FXJpX494464DDN_vqSbqgCMX4sAj2iwf5gmC5c4";
-const HEALTH_ENDPOINT = "/health";
-const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
-const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
-const RUNTIME_BACKGROUND_ENDPOINT = "/api/runtime/background";
-const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
 const REDACTED_LOG_VALUE = "[redacted]";
 const SENSITIVE_LOG_KEY_PATTERN =
   "x-lengrvis-desktop-token|authorization|cookie|set-cookie|api[_-]?key|apikey|desktop[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|oauth[_-]?token|client[_-]?secret|token|secret|password|passwd|pwd|jwt|session(?:[_-]?id)?|otp|passcode|one[_-]?time[_-]?code|verification[_-]?code";
@@ -78,6 +81,8 @@ export interface BackendProcessOptions {
   command?: string;
   args?: string[];
   cwd?: string;
+  configDir?: string;
+  dataDir?: string;
   windowsServiceNames?: string[];
 }
 
@@ -105,6 +110,8 @@ export class BackendProcessManager {
   private status: BackendStatus;
   private managedWindowsServiceName: string | null = null;
   private readonly desktopApiToken: string;
+  private readonly controlTransport: BackendControlTransport;
+  private readonly approvalSessionGeneration: ApprovalSessionGenerationManager;
   private readonly nativeConfirmationPrivateKey: KeyObject;
   private readonly nativeConfirmationPublicKey: string;
   private readonly backendConfigDir: string;
@@ -112,23 +119,28 @@ export class BackendProcessManager {
   private readonly lifecycle: BackendLifecycleCoordinator<BackendStatus>;
 
   constructor(private readonly options: BackendProcessOptions = {}) {
+    if (app.isPackaged) {
+      hardenPackagedProcessEnvironment(DEFAULT_BACKEND_URL);
+    }
     const command = this.resolveBackendCommand();
-    const tokenResolution = resolveDesktopApiToken({ command });
+    const tokenResolution = resolveDesktopApiToken({
+      command,
+      configDir: this.options.configDir ?? (
+        app.isPackaged ? packagedBackendConfigDir(command, process.resourcesPath) : undefined
+      ),
+      dataDir: this.options.dataDir ?? (app.isPackaged ? app.getPath("userData") : undefined)
+    });
     this.desktopApiToken = tokenResolution.token;
+    this.controlTransport = new BackendControlTransport(() => this.getBaseUrl(), this.desktopApiToken);
     this.backendConfigDir = tokenResolution.configDir;
     this.backendDataDir = tokenResolution.dataDir;
+    this.approvalSessionGeneration = new ApprovalSessionGenerationManager({ dataDir: this.backendDataDir });
     const nativeConfirmationKey = resolveNativeConfirmationKey({ dataDir: this.backendDataDir });
     this.nativeConfirmationPrivateKey = nativeConfirmationKey.privateKey;
     this.nativeConfirmationPublicKey = nativeConfirmationKey.publicKey;
-    for (const alias of envAliases("LENGRVIS_DESKTOP_API_TOKEN")) {
-      process.env[alias] = process.env[alias] ?? this.desktopApiToken;
-    }
-    for (const alias of envAliases("LENGRVIS_CONFIG_DIR")) {
-      process.env[alias] = process.env[alias] ?? this.backendConfigDir;
-    }
-    for (const alias of envAliases("LENGRVIS_DATA_DIR")) {
-      process.env[alias] = process.env[alias] ?? this.backendDataDir;
-    }
+    setResolvedProcessEnv("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken, app.isPackaged);
+    setResolvedProcessEnv("LENGRVIS_CONFIG_DIR", this.backendConfigDir, app.isPackaged);
+    setResolvedProcessEnv("LENGRVIS_DATA_DIR", this.backendDataDir, app.isPackaged);
     this.status = {
       state: "stopped",
       baseUrl: this.getBaseUrl(),
@@ -141,11 +153,14 @@ export class BackendProcessManager {
   }
 
   getBaseUrl(): string {
-    return this.options.baseUrl ?? env("LENGRVIS_BACKEND_URL") ?? DEFAULT_BACKEND_URL;
+    if (this.options.baseUrl) {
+      return this.options.baseUrl;
+    }
+    return app.isPackaged ? DEFAULT_BACKEND_URL : env("LENGRVIS_BACKEND_URL") ?? DEFAULT_BACKEND_URL;
   }
 
   getDesktopApiToken(): string {
-    return this.desktopApiToken;
+    return this.controlTransport.getVerifiedDesktopApiToken();
   }
 
   getNativeConfirmationPublicKey(): string {
@@ -153,7 +168,25 @@ export class BackendProcessManager {
   }
 
   signNativeConfirmationPayload(payload: string): string {
-    return signEd25519(null, Buffer.from(payload, "utf-8"), this.nativeConfirmationPrivateKey).toString("base64url");
+    const sessionBoundPayload = this.approvalSessionGeneration.bindSigningPayload(payload);
+    return signEd25519(null, Buffer.from(sessionBoundPayload, "utf-8"), this.nativeConfirmationPrivateKey)
+      .toString("base64url");
+  }
+
+  initializeApprovalSessionGeneration(): void {
+    this.approvalSessionGeneration.initialize();
+  }
+
+  rotateApprovalSessionGeneration(): void {
+    this.approvalSessionGeneration.rotate();
+  }
+
+  activateApprovalSessionGeneration(): void {
+    this.approvalSessionGeneration.activate();
+  }
+
+  deactivateApprovalSessionGeneration(): void {
+    this.approvalSessionGeneration.deactivate();
   }
 
   start(): Promise<BackendStatus> {
@@ -183,7 +216,7 @@ export class BackendProcessManager {
     }
 
     const command = this.resolveBackendCommand();
-    const args = this.options.args ?? splitArgs(env("LENGRVIS_BACKEND_ARGS"));
+    const args = this.options.args ?? (app.isPackaged ? [] : splitArgs(env("LENGRVIS_BACKEND_ARGS")));
     await writeBackendLog(`start requested; command=${command ?? "<none>"} args=${JSON.stringify(args)} resourcesPath=${process.resourcesPath} appPath=${app.getAppPath()} isPackaged=${app.isPackaged} defaultApp=${String(process.defaultApp)}`);
 
     if (!command) {
@@ -194,22 +227,24 @@ export class BackendProcessManager {
     }
 
     this.status = this.makeStatus("starting", "正在启动后端进程");
+    this.controlTransport.invalidateIdentity();
 
     try {
       const bundledOllamaEnv = resolveBundledOllamaEnv(command);
       const child = spawn(command, args, {
-        cwd: this.options.cwd ?? env("LENGRVIS_BACKEND_CWD") ?? dirname(command),
+        cwd: this.options.cwd ?? (app.isPackaged ? dirname(command) : env("LENGRVIS_BACKEND_CWD") ?? dirname(command)),
         env: {
           ...process.env,
-          ...envWithAliases("LENGRVIS_CONFIG_DIR", this.backendConfigDir),
-          ...envWithAliases("LENGRVIS_DATA_DIR", this.backendDataDir),
-          ...envWithAliases("LENGRVIS_FULL_BACKEND", "1"),
-          ...(app.isPackaged ? envWithAliases("LENGRVIS_COMMERCIAL_RELEASE", "true") : {}),
-          ...(app.isPackaged ? envWithAliases("LENGRVIS_ACTIVATION_BASE_URL", DEFAULT_ACTIVATION_BASE_URL) : {}),
-          ...(app.isPackaged ? envWithAliases("LENGRVIS_LICENSE_PUBLIC_KEY", DEFAULT_LICENSE_PUBLIC_KEY) : {}),
-          ...envWithAliases("LENGRVIS_BACKEND_URL", this.getBaseUrl()),
-          ...envWithAliases("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken),
-          ...envWithAliases("LENGRVIS_NATIVE_CONFIRMATION_PUBLIC_KEY", this.nativeConfirmationPublicKey),
+          ...forcedEnv("LENGRVIS_CONFIG_DIR", this.backendConfigDir),
+          ...forcedEnv("LENGRVIS_DATA_DIR", this.backendDataDir),
+          ...forcedEnv("LENGRVIS_FULL_BACKEND", "1"),
+          ...(app.isPackaged ? packagedBackendEnvironment({
+            activationBaseUrl: DEFAULT_ACTIVATION_BASE_URL,
+            licensePublicKey: DEFAULT_LICENSE_PUBLIC_KEY
+          }) : {}),
+          ...forcedEnv("LENGRVIS_BACKEND_URL", this.getBaseUrl()),
+          ...forcedEnv("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken),
+          ...forcedEnv("LENGRVIS_NATIVE_CONFIRMATION_PUBLIC_KEY", this.nativeConfirmationPublicKey),
           ...bundledOllamaEnv
         },
         windowsHide: true
@@ -230,6 +265,7 @@ export class BackendProcessManager {
           return;
         }
         this.child = null;
+        this.controlTransport.invalidateIdentity();
         this.status = this.makeStatus(
           code === 0 ? "stopped" : "error",
           code === 0 ? "后端进程已停止" : `后端进程异常退出，代码 ${code}`
@@ -242,11 +278,13 @@ export class BackendProcessManager {
           return;
         }
         this.child = null;
+        this.controlTransport.invalidateIdentity();
         this.status = this.makeStatus("error", error.message);
       });
 
       return this.refreshStatus("starting", "Backend process started; waiting for health check");
     } catch (error) { // broad-exception-boundary
+      this.controlTransport.invalidateIdentity();
       const message = error instanceof Error ? error.message : "无法启动后端进程";
       this.status = this.makeStatus("error", message);
       return this.status;
@@ -270,11 +308,9 @@ export class BackendProcessManager {
     // Graceful drain before the hard kill: ask the backend to pause in-flight
     // runs (bounded wait) so they survive as resumable PAUSED rows instead of
     // crash-orphaned RUNNING zombies that startup recovery has to reconcile.
-    const drainError = await postRuntimeMode(
-      this.getBaseUrl(),
-      RUNTIME_BACKGROUND_ENDPOINT,
+    const drainError = await this.controlTransport.setRuntimeMode(
+      "background",
       "desktop_quit",
-      this.desktopApiToken,
       10_000
     );
     if (drainError) {
@@ -284,6 +320,7 @@ export class BackendProcessManager {
     if (this.child === child) {
       this.child = null;
     }
+    this.controlTransport.invalidateIdentity();
     return this.refreshStatus("stopped", "后端进程已停止");
   }
 
@@ -310,23 +347,27 @@ export class BackendProcessManager {
 
   async enterForeground(reason = "desktop_opened"): Promise<BackendStatus> {
     await this.start();
-    const runtimeModeError = await postRuntimeMode(this.getBaseUrl(), RUNTIME_FOREGROUND_ENDPOINT, reason, this.desktopApiToken);
+    const runtimeModeError = await this.controlTransport.setRuntimeMode("foreground", reason);
     const status = await this.getStatus();
     return runtimeModeError ? this.withRuntimeModeError(status, "foreground", runtimeModeError) : status;
   }
 
   async enterBackground(reason = "tray_background"): Promise<BackendStatus> {
     await this.start();
-    const runtimeModeError = await postRuntimeMode(this.getBaseUrl(), RUNTIME_BACKGROUND_ENDPOINT, reason, this.desktopApiToken);
+    const runtimeModeError = await this.controlTransport.setRuntimeMode("background", reason);
     const status = await this.getStatus();
     return runtimeModeError ? this.withRuntimeModeError(status, "background", runtimeModeError) : status;
+  }
+
+  async emergencyStop(): Promise<{ ok: boolean; [key: string]: unknown }> {
+    return this.controlTransport.emergencyStop();
   }
 
   private async connectToWindowsService(service: WindowsServiceProbe): Promise<BackendStatus> {
     const serviceLabel = service.serviceName ? `Windows Service：${service.serviceName}` : "Windows Service";
     this.managedWindowsServiceName = service.serviceName ?? this.managedWindowsServiceName;
     await writeBackendLog(`windows service running; service=${service.serviceName ?? "<unknown>"}; probing ${this.getBaseUrl()}`);
-    const health = await probeHealth(this.getBaseUrl());
+    const health = await this.probeHealth();
     this.status = health.ok
       ? this.makeStatus("running", `已连接到 ${serviceLabel}`, health)
       : this.makeStatus("error", `${serviceLabel} 正在运行，但健康检查失败`, health);
@@ -339,7 +380,7 @@ export class BackendProcessManager {
     await writeBackendLog(
       `windows service managed but not running; service=${service.serviceName ?? "<unknown>"} state=${service.stateName ?? "<unknown>"}`
     );
-    const health = await probeHealth(this.getBaseUrl());
+    const health = await this.probeHealth();
     this.status = health.ok
       ? this.makeStatus("running", `已连接到 ${serviceLabel}`, health)
       : this.makeStatus("starting", `${serviceLabel} ${formatServiceState(service)}，等待服务就绪`, health);
@@ -354,8 +395,7 @@ export class BackendProcessManager {
     fallbackState: BackendStatus["state"],
     fallbackMessage?: string
   ): Promise<BackendStatus> {
-    const health = await probeHealth(this.getBaseUrl());
-    const runtime = health.ok ? await probeRuntimeStatus(this.getBaseUrl()) : {};
+    const { health, runtime } = await this.controlTransport.probeStatus();
     const hasConfiguredCommand = Boolean(this.resolveBackendCommand());
 
     if (health.ok) {
@@ -383,6 +423,10 @@ export class BackendProcessManager {
     }
 
     return this.status;
+  }
+
+  private async probeHealth(): Promise<NonNullable<BackendStatus["health"]>> {
+    return this.controlTransport.probeHealth();
   }
 
   private makeStatus(
@@ -417,14 +461,18 @@ export class BackendProcessManager {
       return this.options.command;
     }
 
-    const configuredCommand = env("LENGRVIS_BACKEND_COMMAND");
-    if (configuredCommand) {
-      return configuredCommand;
-    }
-
     const packagedBackend = join(process.resourcesPath, "backend", process.platform === "win32" ? "backend.exe" : "backend");
     if (existsSync(packagedBackend)) {
       return packagedBackend;
+    }
+
+    if (app.isPackaged) {
+      return undefined;
+    }
+
+    const configuredCommand = env("LENGRVIS_BACKEND_COMMAND");
+    if (configuredCommand) {
+      return configuredCommand;
     }
 
     const developmentBackend = join(getCwd(), "dist", process.platform === "win32" ? "backend.exe" : "backend");
@@ -642,7 +690,6 @@ export function writeBackendLog(message: string): Promise<void> {
     .then(() => writeBackendLogEntry(entry));
   return backendLogWriteQueue;
 }
-
 async function writeBackendLogEntry(entry: string): Promise<void> {
   try {
     const logDir = app.getPath("userData");
@@ -725,96 +772,4 @@ function queryWindowsService(serviceName: string): Promise<WindowsServiceQueryRe
       }
     );
   });
-}
-
-async function probeHealth(baseUrl: string): Promise<NonNullable<BackendStatus["health"]>> {
-  const startedAt = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
-
-  try {
-    const response = await fetch(new URL(HEALTH_ENDPOINT, baseUrl), {
-      method: "GET",
-      signal: controller.signal
-    });
-
-    const data = await response.clone().json().catch(() => ({})) as Record<string, unknown>;
-    const mode = typeof data.mode === "string" ? data.mode : "";
-    const shellMode = typeof data.shellMode === "string" ? data.shellMode : "";
-    const fullBackendState = typeof data.fullBackendState === "string" ? data.fullBackendState : "";
-    const guardianReady = mode === "guardian" && shellMode === "foreground" && fullBackendState === "running";
-    const ok = response.ok && (mode !== "guardian" || guardianReady);
-    return {
-      ok,
-      latencyMs: Date.now() - startedAt
-    };
-  } catch {
-    return {
-      ok: false,
-      latencyMs: Date.now() - startedAt
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function probeRuntimeStatus(baseUrl: string): Promise<Partial<BackendStatus>> {
-  try {
-    const response = await fetch(new URL(RUNTIME_STATUS_ENDPOINT, baseUrl), {
-      method: "GET",
-      signal: AbortSignal.timeout(1500)
-    });
-    if (!response.ok) {
-      return {};
-    }
-    const data = await response.json() as Record<string, unknown>;
-    return {
-      shellMode: data.shellMode === "foreground" ? "foreground" : data.shellMode === "background" ? "background" : undefined,
-      guardianState: stringValue(data.guardianState),
-      fullBackendState: stringValue(data.fullBackendState),
-      fullBackendPort: typeof data.fullBackendPort === "number" ? data.fullBackendPort : undefined,
-      lastWakeReason: stringValue(data.lastWakeReason)
-    };
-  } catch {
-    return {};
-  }
-}
-
-async function postRuntimeMode(
-  baseUrl: string,
-  endpoint: string,
-  reason: string,
-  desktopApiToken: string,
-  timeoutMs = 35_000
-): Promise<Error | null> {
-  try {
-    const backendUrl = assertLoopbackBackendUrl(baseUrl, "Runtime mode desktop token request");
-    const response = await fetch(new URL(endpoint, backendUrl), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", [DESKTOP_API_TOKEN_HEADER]: desktopApiToken },
-      body: JSON.stringify({ reason }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!response.ok) {
-      throw new Error(`Runtime mode request failed: ${response.status} ${await runtimeModeErrorText(response)}`);
-    }
-    return null;
-  } catch (error) { // broad-exception-boundary
-    return error instanceof Error ? error : new Error("Runtime mode request failed");
-  }
-}
-
-async function runtimeModeErrorText(response: Response): Promise<string> {
-  try {
-    const data = await response.clone().json() as Record<string, unknown>;
-    const detail = stringValue(data.detail) ?? stringValue(data.message) ?? stringValue(data.error);
-    return detail ? `(${detail})` : response.statusText;
-  } catch {
-    const text = await response.text().catch(() => "");
-    return text.trim() || response.statusText;
-  }
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

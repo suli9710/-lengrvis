@@ -180,7 +180,7 @@ def _boundary_events_for_tasks(task_ids: list[str]) -> dict[str, list[dict]]:
 def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
     unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
     if not unique_task_ids:
-        return {"messages": {}, "reviews": {}, "audits": {}}
+        return {"messages": {}, "reviews": {}, "audits": {}, "tool_calls": {}}
     audits: dict[str, list[dict]] = {}
     if _audit_export_enabled():
         audits = _recent_records_by_task("audit_events", unique_task_ids)
@@ -188,6 +188,7 @@ def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[st
         "messages": _recent_records_by_task("agent_messages", unique_task_ids),
         "reviews": _recent_records_by_task("safety_reviews", unique_task_ids),
         "audits": audits,
+        "tool_calls": _recent_records_by_task("tool_calls", unique_task_ids),
     }
 
 
@@ -199,12 +200,14 @@ def _boundary_events_from_source_records(
     messages_by_task = source_records.get("messages", {})
     reviews_by_task = source_records.get("reviews", {})
     audits_by_task = source_records.get("audits", {})
+    tool_calls_by_task = source_records.get("tool_calls", {})
     return {
         task_id: _boundary_events(
             task_id,
             messages=messages_by_task.get(task_id, []),
             reviews=reviews_by_task.get(task_id, []),
             audits=audits_by_task.get(task_id, []),
+            tool_calls=tool_calls_by_task.get(task_id, []),
         )
         for task_id in unique_task_ids
     }
@@ -231,7 +234,7 @@ def _completion_evidence_for_tasks(
 def _recent_records_by_task(
     table: str, task_ids: list[str], *, limit_per_task: int = BOUNDARY_EVENT_SOURCE_LIMIT
 ) -> dict[str, list[dict]]:
-    if table not in {"agent_messages", "safety_reviews", "audit_events"}:
+    if table not in {"agent_messages", "safety_reviews", "audit_events", "tool_calls"}:
         raise ValueError(f"Unsupported boundary event table: {table}")
     if not task_ids:
         return {}
@@ -276,12 +279,16 @@ def _boundary_events(
     messages: list[dict] | None = None,
     reviews: list[dict] | None = None,
     audits: list[dict] | None = None,
+    tool_calls: list[dict] | None = None,
 ) -> list[dict]:
     messages = (
         messages if messages is not None else db.fetch_many_by_fields("agent_messages", {"task_id": task_id}, limit=500)
     )
     reviews = (
         reviews if reviews is not None else db.fetch_many_by_fields("safety_reviews", {"task_id": task_id}, limit=500)
+    )
+    tool_calls = (
+        tool_calls if tool_calls is not None else db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=500)
     )
     if not _audit_export_enabled():
         audits = []
@@ -364,6 +371,30 @@ def _boundary_events(
                     payload=review,
                 )
             )
+
+    for call in tool_calls:
+        if str(call.get("status") or "") != "outcome_unknown":
+            continue
+        events.append(
+            _boundary_event(
+                f"outcome-unknown-{call.get('id')}",
+                "outcome_unknown",
+                "Tool outcome requires review",
+                (
+                    "The action may or may not have completed. Automatic replay is blocked "
+                    "until the target state is inspected."
+                ),
+                str(call.get("outcome_unknown_at") or call.get("created_at") or ""),
+                step_id=call.get("step_id"),
+                severity="danger",
+                payload={
+                    "status": "outcome_unknown",
+                    "tool_name": call.get("tool_name"),
+                    "automatic_replay_blocked": True,
+                    "requires_user_review": True,
+                },
+            )
+        )
 
     for audit in audits:
         event_type = str(audit.get("event_type") or "")
@@ -582,9 +613,7 @@ def rollback(
     }
     task.metadata = {**task.metadata, "rollback": rollback_metadata}
     task.final_summary = _rollback_final_summary(rollback_metadata)
-    rollback_phase = (
-        TaskStatus.ROLLED_BACK if rollback_metadata["state"] == "succeeded" else TaskStatus.REPAIR_REQUIRED
-    )
+    rollback_phase = TaskStatus.ROLLED_BACK if rollback_metadata["state"] == "succeeded" else TaskStatus.REPAIR_REQUIRED
     safe_transition(task, rollback_phase, actor="TaskService", strict=True)
     outcome["task_status"] = rollback_phase.value
     return outcome

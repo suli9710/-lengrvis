@@ -118,7 +118,7 @@ export function normalizeTimestamp(value: unknown, fallback = new Date().toISOSt
 export function mapIntentSuggestion(suggestion: BackendIntentSuggestion): IntentSuggestion {
   return {
     id: suggestion.id,
-    title: suggestion.title,
+    title: zhBackendText(suggestion.title),
     prompt: zhBackendText(suggestion.prompt),
     confidence: Number(suggestion.confidence ?? 0),
     agentHint: suggestion.agent_hint,

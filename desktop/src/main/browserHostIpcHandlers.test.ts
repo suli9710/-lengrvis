@@ -130,16 +130,46 @@ describe("browserHostIpcHandlers", () => {
     expect(JSON.stringify(deniedResult)).not.toContain("secret-token");
   });
 
-  it("denies renderer takeover without invoking the host write method", async () => {
-    const { host, invoke } = registerForTest();
+  it("requires native confirmation, pauses, and then enables renderer takeover", async () => {
+    const order: string[] = [];
+    const host = createHost({
+      pause: vi.fn((sessionId) => {
+        order.push("pause");
+        return actionResult({ sessionId });
+      }),
+      takeover: vi.fn((sessionId) => {
+        order.push("takeover");
+        return actionResult({ sessionId });
+      })
+    });
+    const confirmNativeDesktopAction = vi.fn<BrowserHostActionConfirmation>(async () => {
+      order.push("confirm");
+    });
+    const { invoke } = registerForTest({ host, confirmNativeDesktopAction });
 
     const result = await invoke(IPC_CHANNELS.browserHostTakeover, "session_1");
 
-    expect(host.takeover).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      ok: false,
-      error: "BrowserHost takeover requires an approval grant."
-    });
+    expect(confirmNativeDesktopAction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ title: "Confirm browser takeover" })
+    );
+    expect(host.pause).toHaveBeenCalledWith("session_1");
+    expect(host.takeover).toHaveBeenCalledWith("session_1");
+    expect(order).toEqual(["confirm", "pause", "takeover"]);
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("requires native confirmation before renderer resume", async () => {
+    const { confirmNativeDesktopAction, host, invoke } = registerForTest();
+
+    const result = await invoke(IPC_CHANNELS.browserHostResume, "session_1");
+
+    expect(confirmNativeDesktopAction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ title: "Confirm browser resume" })
+    );
+    expect(host.resume).toHaveBeenCalledWith("session_1");
+    expect(result).toMatchObject({ ok: true });
   });
 
   it("exposes pure helpers for action gating and write denial", () => {

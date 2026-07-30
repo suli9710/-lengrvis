@@ -275,8 +275,17 @@ async function secureStoreDeleteItem(key: string): Promise<void> {
 }
 
 function isStorageBackendUnavailable(error: unknown): boolean {
+  // Only fall back to the in-memory store when the NATIVE storage module is
+  // genuinely absent (dev / Expo Go / a build without the module linked). A
+  // broad match (e.g. "not available"/"not supported"/"module not found") would
+  // also swallow real failures such as a locked keychain or an encryption error
+  // and silently downgrade token storage to process memory — bypassing the
+  // biometric/`requireAuthentication` protection and masking the fault. Those
+  // errors must propagate instead.
   const message = error instanceof Error ? error.message : String(error);
-  return /Native\s*module|NativeModule|NativeModuleError|RNCAsyncStorage|AsyncStorage.*null|Expo(?:nent)?SecureStore|SecureStore.*unavailable|Cannot find native module|TurboModuleRegistry.*not found|module.*not found|not available|not supported/i.test(message);
+  return /Cannot find native module|Native module ['"]?\w+['"]? is null|NativeModule[\w.]* is null|(?:RNCAsyncStorage|Expo(?:nent)?SecureStore)[\w.]* is null|TurboModuleRegistry[\s\S]*(?:could not be found|not found|is not registered)/i.test(
+    message
+  );
 }
 
 function restoredBaseUrlSecurity(parsed: StoredSessionMetadata) {

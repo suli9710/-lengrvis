@@ -127,3 +127,114 @@ def test_bootstrap_fails_when_integrity_proof_deleted_after_initial_bootstrap() 
     result = db.bootstrap_sensitive_record_integrity()
     assert result["ok"] is False
     assert any(item["table"] == "app_settings" for item in result["failures"])
+
+
+def test_deleted_permission_policy_row_is_detected_as_orphaned_proof() -> None:
+    store = PermissionStore("default")
+    store.add_rule(PermissionRule(id="deny_read", effect="deny", tools=["file.read_text"]))
+    with db.connect() as conn:
+        conn.execute("DELETE FROM permission_policies WHERE id = ?", (store.policy_id,))
+
+    result = db.sensitive_integrity_check()
+
+    assert result["ok"] is False
+    assert any(
+        failure["table"] == "permission_policies" and "record is missing" in failure["reason"]
+        for failure in result["failures"]
+    )
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="record is missing"):
+        store.get_policy()
+
+
+def test_dropped_permission_policy_table_fails_integrity_and_policy_read() -> None:
+    store = PermissionStore("default")
+    store.add_rule(PermissionRule(id="deny_read", effect="deny", tools=["file.read_text"]))
+    with db.connect() as conn:
+        conn.execute("DROP TABLE permission_policies")
+
+    result = db.sensitive_integrity_check()
+
+    assert result["ok"] is False
+    assert any(failure["table"] == "permission_policies" and failure["id"] == "*" for failure in result["failures"])
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="schema is unavailable"):
+        store.get_policy()
+
+
+def test_dropped_integrity_proof_table_blocks_reinitialization() -> None:
+    db.set_setting("allow_cloud_context", False)
+    with db.connect() as conn:
+        conn.execute("DROP TABLE sensitive_record_integrity")
+
+    db.reset_init_db_cache()
+    with pytest.raises(RuntimeError, match="sensitive_record_integrity"):
+        db.init_db(force=True)
+
+    with db.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sensitive_record_integrity'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_deleted_bootstrap_marker_never_reseals_tampered_records() -> None:
+    db.set_setting("allow_cloud_context", False)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE app_settings SET value = ? WHERE key = ?",
+            ("true", "allow_cloud_context"),
+        )
+        conn.execute(
+            "DELETE FROM sensitive_record_integrity WHERE table_name = 'app_settings' AND record_id = ?",
+            ("allow_cloud_context",),
+        )
+        conn.execute("DELETE FROM sensitive_record_integrity WHERE table_name = '__meta__' AND record_id = 'bootstrap'")
+
+    result = db.bootstrap_sensitive_record_integrity()
+
+    assert result["ok"] is False
+    assert any("bootstrap marker" in failure["reason"] for failure in result["failures"])
+    assert db.sensitive_integrity_check()["ok"] is False
+
+
+def test_deleted_permission_row_and_proof_is_detected_by_presence_ledger() -> None:
+    store = PermissionStore("default")
+    store.add_rule(PermissionRule(id="deny_read", effect="deny", tools=["file.read_text"]))
+    with db.connect() as conn:
+        conn.execute("DELETE FROM permission_policies WHERE id = ?", (store.policy_id,))
+        conn.execute(
+            "DELETE FROM sensitive_record_integrity WHERE table_name = 'permission_policies' AND record_id = ?",
+            (store.policy_id,),
+        )
+
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="record is missing"):
+        store.get_policy()
+    result = db.sensitive_integrity_check()
+    assert result["ok"] is False
+    assert any(failure["table"] == "permission_policies" for failure in result["failures"])
+
+
+def test_signed_but_malformed_permission_policy_is_semantic_integrity_failure() -> None:
+    store = PermissionStore("default")
+    store.add_rule(PermissionRule(id="deny_read", effect="deny", tools=["file.read_text"]))
+    malformed = "{not-json"
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE permission_policies SET data = ? WHERE id = ?",
+            (malformed, store.policy_id),
+        )
+        db.store_sensitive_record_integrity(
+            "permission_policies",
+            store.policy_id,
+            malformed,
+            conn=conn,
+        )
+
+    result = db.sensitive_integrity_check()
+
+    assert result["ok"] is False
+    assert any("payload is invalid" in failure["reason"] for failure in result["failures"])
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="payload is invalid"):
+        store.get_policy()

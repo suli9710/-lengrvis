@@ -1,15 +1,18 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { chromium } = require("@playwright/test");
 const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
-const previewUrl = "http://127.0.0.1:4173";
+const previewHost = "127.0.0.1";
+let previewUrl = "";
 const desktopRoot = path.resolve(__dirname, "..");
+const uiReviewEvidenceDir = path.resolve(desktopRoot, "..", ".tmp", "qa-evidence", "ui-review");
 const browserActivityPanelSource = path.join(desktopRoot, "src", "renderer", "components", "BrowserActivityPanel.tsx");
+const isolatedPageContexts = new WeakMap();
 
 const session = {
   id: "backend-only-session",
@@ -180,24 +183,6 @@ const quickTemplateButtonNames = {
   documentQa: /文档问答|鏂囨。闂瓟/
 };
 
-function releasePreviewPort() {
-  if (process.platform !== "win32") return;
-  try {
-    const output = execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "$connections = Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($processId in $connections) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }"
-      ],
-      { stdio: "pipe" }
-    );
-    if (String(output).trim()) process.stdout.write(output);
-  } catch {
-    // Port cleanup is best-effort; Vite strictPort will still fail loudly if another service remains.
-  }
-}
-
 function assertNoSecretPayload(value, label) {
   const text = JSON.stringify(value);
   assert.equal(text.includes("secret-token"), false, `${label} should not include raw token values`);
@@ -210,28 +195,60 @@ function assertBrowserHostFailureStopsBackendCommand() {
   const source = fs.readFileSync(browserActivityPanelSource, "utf8");
   assert.match(
     source,
-    /if \(!result\.ok\) \{\s*onErrorChange\(result\.error \?\? `\$\{label\} failed`\);\s*return;\s*\}\s*if \(backendCommand\)/s,
+    /if \(!result\.ok\) \{\s*onErrorChange\(`\$\{label\}失败，请稍后重试。`\);\s*return;\s*\}\s*if \(backendCommand\)/s,
     "BrowserActivityPanel must not call backend session commands after a failed BrowserHost command"
+  );
+  assert.doesNotMatch(
+    source,
+    /onErrorChange\(result\.error/,
+    "BrowserActivityPanel must not expose raw BrowserHost response errors"
   );
 }
 
-function startPreview() {
-  console.log("starting Vite preview on 127.0.0.1:4173");
-  releasePreviewPort();
+function startPreview(port) {
+  console.log(`starting Vite preview on ${previewHost}:${port}`);
   const viteBin = path.join(desktopRoot, "node_modules", "vite", "bin", "vite.js");
-  const child = spawn(process.execPath, [viteBin, "preview", "--host", "127.0.0.1", "--port", "4173", "--strictPort"], {
+  const child = spawn(process.execPath, [viteBin, "preview", "--host", previewHost, "--port", String(port), "--strictPort"], {
     cwd: desktopRoot,
     stdio: ["ignore", "pipe", "pipe"]
   });
   child.stdout.on("data", (data) => process.stdout.write(data));
   child.stderr.on("data", (data) => process.stderr.write(data));
+  child.once("exit", (code, signal) => {
+    if (!child.__expectedStop) {
+      console.error(`Vite preview exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
+    }
+  });
   return child;
 }
 
-async function waitForPreview() {
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, previewHost, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function configuredPreviewPort() {
+  const rawPort = process.env.LENGRVIS_BROWSER_ACTIVITY_PORT;
+  if (rawPort === undefined || rawPort.trim() === "") return null;
+  const port = Number(rawPort);
+  assert.ok(Number.isInteger(port) && port >= 1 && port <= 65_535, "LENGRVIS_BROWSER_ACTIVITY_PORT must be an integer from 1 to 65535");
+  return port;
+}
+
+async function waitForPreview(preview) {
   console.log("waiting for Vite preview");
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
+    if (preview.exitCode !== null || preview.signalCode !== null) {
+      throw new Error(`Vite preview exited before it became ready (code=${preview.exitCode ?? "null"}, signal=${preview.signalCode ?? "null"})`);
+    }
     try {
       const response = await fetch(previewUrl);
       if (response.ok) return;
@@ -245,7 +262,19 @@ async function waitForPreview() {
 
 async function createIsolatedPage(browser, options) {
   const context = await browser.newContext({ ...options, reducedMotion: "reduce" });
-  return context.newPage();
+  const page = await context.newPage();
+  isolatedPageContexts.set(page, context);
+  return page;
+}
+
+async function closeIsolatedPage(page) {
+  const context = isolatedPageContexts.get(page);
+  if (context) {
+    isolatedPageContexts.delete(page);
+    await context.close();
+    return;
+  }
+  if (!page.isClosed()) await page.close();
 }
 
 async function installDesktopBridgeMocks(page, options = {}) {
@@ -432,6 +461,7 @@ async function assertNoSeriousAccessibilityViolations(page, label) {
 async function installApiMocks(page, options = {}) {
   await installDesktopBridgeMocks(page, options);
   const allowedDirectories = options.allowedDirectories ?? ["C:\\Users\\Smoke\\Documents"];
+  const backendOffline = options.backendOffline === true;
   const counters = options.counters;
   const fileSearchMode = options.fileSearchMode ?? "error";
   const tasks = options.tasks ?? [];
@@ -452,7 +482,16 @@ async function installApiMocks(page, options = {}) {
       body: JSON.stringify(body)
     });
 
-    if (url.pathname === "/api/health") return json({ status: "ok" });
+    if (url.pathname === "/api/health") {
+      if (backendOffline) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "unavailable" })
+        });
+      }
+      return json({ status: "ok" });
+    }
     if (url.pathname === "/api/browser/sessions") return json({ ok: true, sessions: [session] });
     if (url.pathname === `/api/browser/session/${session.id}/events`) return json({ ok: true, events: [event] });
     if (url.pathname === "/api/browser/observe") return json({ ok: true, event });
@@ -1019,7 +1058,7 @@ async function assertFileSearchResultActions(browser) {
 
     assert.equal(counters.fileSearchRequests, 1, `${action} flow should perform one file search`);
     await assertNoHorizontalOverflow(page, `file search result ${action} action`);
-    await page.close();
+    await closeIsolatedPage(page);
   }
 }
 
@@ -1101,11 +1140,44 @@ async function returnToSearchTab(page) {
   await page.getByRole("button", { name: /^读取$/ }).first().waitFor({ timeout: 10_000 });
 }
 
+async function assertPrimaryRouteAccessibility(page) {
+  const routes = [
+    { label: "首页", heading: "首页", ready: () => page.getByTestId("office-template-check-computer") },
+    { label: "对话", heading: "对话", ready: () => page.locator(".conversation-view") },
+    { label: "进度", heading: "进度", ready: () => page.getByTestId("progress-more") },
+    { label: "设置", heading: "设置", ready: () => page.getByRole("heading", { level: 2, name: "设置", exact: true }) },
+    { label: "知识库", heading: "文档", ready: () => page.locator(".local-library-view") },
+    { label: "图库", heading: "图库", ready: () => page.locator(".local-library-view") },
+    { label: "文件工具", heading: "文件工具", ready: () => page.getByRole("heading", { level: 2, name: "文件工具", exact: true }) },
+    { label: "此电脑", heading: "此电脑", ready: () => page.getByTestId("system-update-card") },
+    { label: "技能", heading: "技能", ready: () => page.locator(".panel--skills") },
+    { label: "审批", heading: "审批", ready: () => page.getByRole("heading", { level: 2, name: "安全审核", exact: true }) },
+    { label: "记忆", heading: "记忆", ready: () => page.locator(".memory-panel") },
+    { label: "浏览器", heading: "浏览器监看", ready: () => page.locator(".panel--browser-activity") }
+  ];
+
+  for (const { label, heading, ready } of routes) {
+    await page.getByRole("button", { name: label, exact: true }).first().click();
+    await page.getByRole("heading", { level: 1, name: heading, exact: true }).waitFor({ timeout: 10_000 });
+    await ready().waitFor({ timeout: 10_000 });
+    await page.locator(".route-loading").waitFor({ state: "detached", timeout: 10_000 });
+    assert.equal(await page.locator(".route-load-failure").count(), 0, `${label} should not show the lazy-load recovery state`);
+    assert.equal(await page.locator("h1").count(), 1, `${label} should expose exactly one page heading`);
+    assert.equal(await page.locator("main").count(), 1, `${label} should expose exactly one main landmark`);
+    const invalidListChildren = page.locator("ul > :not(li):not(script):not(template), ol > :not(li):not(script):not(template)");
+    assert.equal(await invalidListChildren.count(), 0, `${label} should keep list content inside list items`);
+    await assertNoSeriousAccessibilityViolations(page, `${label} route`);
+  }
+}
+
 (async () => {
-  const preview = startPreview();
+  fs.mkdirSync(uiReviewEvidenceDir, { recursive: true });
+  const previewPort = configuredPreviewPort() ?? await getFreePort();
+  previewUrl = `http://${previewHost}:${previewPort}`;
+  const preview = startPreview(previewPort);
   let browser;
   try {
-    await waitForPreview();
+    await waitForPreview(preview);
     assertBrowserHostFailureStopsBackendCommand();
     console.log("launching Chromium");
     browser = await chromium.launch();
@@ -1124,7 +1196,7 @@ async function returnToSearchTab(page) {
       await assertNoHorizontalOverflow(page, `${viewport.label} home`);
       await assertNoSeriousAccessibilityViolations(page, `${viewport.label} home`);
       console.log(`viewport smoke passed: ${viewport.label} ${viewport.width}x${viewport.height}`);
-      await page.close();
+      await closeIsolatedPage(page);
     }
 
     console.log("checking task pilot lifecycle card");
@@ -1138,14 +1210,14 @@ async function returnToSearchTab(page) {
       await assertRootRendered(pilotPage);
       await assertTaskPilotCard(pilotPage);
       await assertTaskPilotApprovalAction(pilotPage);
-      await pilotPage.close();
+      await closeIsolatedPage(pilotPage);
 
       const rowPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(rowPage, { tasks: [pilotTask], approvals: [pilotApproval] });
       await rowPage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(rowPage);
       await assertRecentTaskRowAction(rowPage);
-      await rowPage.close();
+      await closeIsolatedPage(rowPage);
     }
 
     console.log("checking task timeline dialog accessibility");
@@ -1172,7 +1244,7 @@ async function returnToSearchTab(page) {
       const diagnostics = dialogPageErrors.length ? `\nRenderer errors:\n${dialogPageErrors.join("\n")}` : "";
       throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
     }
-    await dialogPage.close();
+    await closeIsolatedPage(dialogPage);
 
     console.log("checking legal consent dialog accessibility");
     const consentPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
@@ -1188,18 +1260,18 @@ async function returnToSearchTab(page) {
       const diagnostics = consentPageErrors.length ? `\nRenderer errors:\n${consentPageErrors.join("\n")}` : "";
       throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
     }
-    await consentPage.close();
+    await closeIsolatedPage(consentPage);
 
     const consentErrorPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
     await installApiMocks(consentErrorPage, { consentStatusError: "consent status unavailable" });
     await assertConsentStatusErrorAccessibility(consentErrorPage);
-    await consentErrorPage.close();
+    await closeIsolatedPage(consentErrorPage);
 
     console.log("checking activity center dialog accessibility");
     const activityCenterPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
     await installApiMocks(activityCenterPage);
     await assertActivityCenterDialogAccessibility(activityCenterPage);
-    await activityCenterPage.close();
+    await closeIsolatedPage(activityCenterPage);
 
     console.log("checking settings privacy accessibility");
     const settingsPrivacyPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
@@ -1215,7 +1287,38 @@ async function returnToSearchTab(page) {
       const diagnostics = settingsPrivacyPageErrors.length ? `\nRenderer errors:\n${settingsPrivacyPageErrors.join("\n")}` : "";
       throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
     }
-    await settingsPrivacyPage.close();
+    await closeIsolatedPage(settingsPrivacyPage);
+
+    console.log("checking primary route accessibility");
+    const routesPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    const routePageErrors = [];
+    routesPage.on("pageerror", (error) => routePageErrors.push(error.stack ?? error.message));
+    routesPage.on("console", (message) => {
+      if (message.type() === "error" && !message.text().includes("'frame-ancestors' is ignored when delivered via a <meta> element")) {
+        routePageErrors.push(message.text());
+      }
+    });
+    await installApiMocks(routesPage);
+    try {
+      await routesPage.goto(previewUrl, { waitUntil: "networkidle" });
+      await assertRootRendered(routesPage);
+      await assertPrimaryRouteAccessibility(routesPage);
+      assert.deepEqual(routePageErrors, [], "primary routes should not emit renderer errors");
+    } catch (error) {
+      const diagnostics = routePageErrors.length ? `\nRenderer errors:\n${routePageErrors.join("\n")}` : "";
+      throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
+    } finally {
+      await closeIsolatedPage(routesPage);
+    }
+
+    console.log("checking offline status accessibility");
+    const offlinePage = await createIsolatedPage(browser, { viewport: { width: 1024, height: 768 } });
+    await installApiMocks(offlinePage, { backendOffline: true });
+    await offlinePage.goto(previewUrl, { waitUntil: "networkidle" });
+    await offlinePage.getByText(/助手暂时连不上/).first().waitFor({ timeout: 10_000 });
+    await assertNoSeriousAccessibilityViolations(offlinePage, "offline home");
+    await offlinePage.screenshot({ path: path.join(uiReviewEvidenceDir, "offline-1024x768.png"), fullPage: true });
+    await closeIsolatedPage(offlinePage);
 
     console.log("checking placeholder-free entry points");
     for (const viewport of [
@@ -1228,8 +1331,12 @@ async function returnToSearchTab(page) {
       await homePage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(homePage);
       await assertNoPlaceholderContent(homePage, `${viewport.label} home`);
+      await homePage.screenshot({
+        path: path.join(uiReviewEvidenceDir, `home-${viewport.width}x${viewport.height}.png`),
+        fullPage: true
+      });
       await assertQuickPromptEntry(homePage, quickPromptCounters);
-      await homePage.close();
+      await closeIsolatedPage(homePage);
 
       const computerPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       const computerCounters = { systemInfoRequests: 0, taskLaunchRequests: 0 };
@@ -1238,7 +1345,7 @@ async function returnToSearchTab(page) {
       await assertRootRendered(computerPage);
       await assertNoPlaceholderContent(computerPage, `${viewport.label} home before computer check`);
       await assertComputerCheckEntry(computerPage, computerCounters);
-      await computerPage.close();
+      await closeIsolatedPage(computerPage);
 
       const documentPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(documentPage);
@@ -1247,13 +1354,13 @@ async function returnToSearchTab(page) {
       await assertNoPlaceholderContent(documentPage, `${viewport.label} home before document entry`);
       await assertDocumentQuickEntry(documentPage);
       await assertNoPlaceholderContent(documentPage, `${viewport.label} document quick entry`);
-      await documentPage.close();
+      await closeIsolatedPage(documentPage);
 
       const documentComparePage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       const documentCompareCounters = { documentCompareRequests: 0 };
       await installApiMocks(documentComparePage, { counters: documentCompareCounters });
       await assertDocumentCompareFlow(documentComparePage, documentCompareCounters);
-      await documentComparePage.close();
+      await closeIsolatedPage(documentComparePage);
     }
 
     console.log("checking file search failure state");
@@ -1262,26 +1369,26 @@ async function returnToSearchTab(page) {
     const missingScopePage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(missingScopePage, { allowedDirectories: [], counters: missingScopeCounters });
     await assertMissingScopeSearchIsLocal(missingScopePage, missingScopeCounters);
-    await missingScopePage.close();
+    await closeIsolatedPage(missingScopePage);
 
     console.log("checking file search missing-query guard");
     const missingQueryCounters = { fileSearchRequests: 0 };
     const missingQueryPage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(missingQueryPage, { counters: missingQueryCounters });
     await assertMissingQuerySearchIsLocal(missingQueryPage, missingQueryCounters);
-    await missingQueryPage.close();
+    await closeIsolatedPage(missingQueryPage);
 
     const filesPage = await createIsolatedPage(browser, { viewport: { width: 1366, height: 768 } });
     await installApiMocks(filesPage);
     await assertFileSearchFailureState(filesPage);
-    await filesPage.close();
+    await closeIsolatedPage(filesPage);
 
     console.log("checking file search empty state");
     const emptySearchCounters = { fileSearchRequests: 0 };
     const emptySearchPage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(emptySearchPage, { counters: emptySearchCounters, fileSearchMode: "empty" });
     await assertFileSearchEmptyState(emptySearchPage, emptySearchCounters);
-    await emptySearchPage.close();
+    await closeIsolatedPage(emptySearchPage);
 
     console.log("checking file search result actions on mobile");
     await assertFileSearchResultActions(browser);
@@ -1310,7 +1417,8 @@ async function returnToSearchTab(page) {
     assert.equal(requestCountAfter, requestCountBefore, "disabled host-only controls should not call Electron host actions");
 
     console.log("Browser Activity backend-only smoke passed");
-    await page.close();
+    await closeIsolatedPage(page);
+    assert.equal(browser.contexts().length, 0, "browser smoke must close every isolated context before backend-only checks");
 
     console.log("checking BrowserHost output redaction");
     const Module = require("node:module");
@@ -1561,8 +1669,8 @@ async function returnToSearchTab(page) {
     }
   } finally {
     if (browser) await browser.close();
+    preview.__expectedStop = true;
     await stopProcessTree(preview);
-    releasePreviewPort();
   }
 })().catch((error) => {
   console.error(error);

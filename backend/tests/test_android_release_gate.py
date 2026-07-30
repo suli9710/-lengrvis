@@ -119,7 +119,7 @@ def _write_android_sdk_tool_shims(
             [
                 'if ($args -contains "badging") {',
                 (
-                    '  Write-Output "package: name=\''
+                    "  Write-Output \"package: name='"
                     f"{package_name}' versionCode='{version_code}' versionName='{version_name}'"
                     '"'
                 ),
@@ -201,9 +201,7 @@ def test_strict_android_gate_requires_sealed_candidate_bound_reviewed_evidence(p
     reviewed_workflow = (project_root / ".github" / "workflows" / "release-reviewed-evidence.yml").read_text(
         encoding="utf-8"
     )
-    publish_workflow = (project_root / ".github" / "workflows" / "release-publish.yml").read_text(
-        encoding="utf-8"
-    )
+    publish_workflow = (project_root / ".github" / "workflows" / "release-publish.yml").read_text(encoding="utf-8")
 
     assert "verify_android_reviewed_evidence.py" in gate
     assert "--require-candidate-binding" in gate
@@ -263,6 +261,21 @@ def test_test_only_sdk_shims_can_parse_sealed_evidence_but_never_prove_release_r
         "ci_run_id": "98765",
         "ci_run_attempt": "1",
     }
+    artifact_manifest_entries = [
+        {
+            "kind": kind,
+            "label_redacted": label,
+            "sha256": digest_character * 64,
+            "size_bytes": size_bytes,
+        }
+        for kind, label, digest_character, size_bytes in (
+            ("adb_install_status", "adb-install.redacted.txt", "1", 101),
+            ("backend_log", "backend-session.redacted.log", "2", 202),
+            ("device_screenshot", "device-session.redacted.png", "3", 303),
+            ("device_video", "device-session.redacted.mp4", "4", 404),
+            ("mobile_log", "mobile-session.redacted.log", "5", 505),
+        )
+    ]
     draft = {
         "artifact_type": "android-real-device-remote-control-evidence",
         "real_device_result": "passed",
@@ -283,7 +296,11 @@ def test_test_only_sdk_shims_can_parse_sealed_evidence_but_never_prove_release_r
             "remote_input_wss_origin_redacted": "wss://[redacted-host]:9443/ws/remote/input",
         },
         "certificate": {"trust_path_label_redacted": "android-user-ca-redacted"},
-        "evidence_artifacts_redacted": ["android-remote-control-review.redacted.png"],
+        "evidence_artifact_manifest": {
+            "version": "sha256-manifest/v1",
+            "entries": artifact_manifest_entries,
+        },
+        "evidence_artifacts_redacted": [entry["label_redacted"] for entry in artifact_manifest_entries],
         "app": _reviewed_app_identity(artifact_sha, candidate),
         "claim_controls": {
             "apk_installed": True,
@@ -404,6 +421,8 @@ def test_test_only_sdk_shims_can_parse_sealed_evidence_but_never_prove_release_r
         "candidate_binding_valid": True,
         "artifact_identity_valid": True,
         "artifact_provenance_valid": True,
+        "artifact_manifest_valid": True,
+        "signing_key_fingerprint_bound": True,
     }
     assert packet["android_artifact"]["apk_signing"]["v2_verified"] is True
     assert packet["android_artifact"]["apk_signing"]["v3_verified"] is True
@@ -800,9 +819,7 @@ def test_android_native_version_name_matches_expo_config_and_is_checked_by_relea
     project_root: Path,
 ) -> None:
     app_config = json.loads((project_root / "mobile" / "app.json").read_text(encoding="utf-8"))
-    android_gradle = (project_root / "mobile" / "android" / "app" / "build.gradle").read_text(
-        encoding="utf-8"
-    )
+    android_gradle = (project_root / "mobile" / "android" / "app" / "build.gradle").read_text(encoding="utf-8")
     gate = (project_root / "scripts" / "verify_android_release_gate.ps1").read_text(encoding="utf-8")
 
     version = app_config["expo"]["version"]

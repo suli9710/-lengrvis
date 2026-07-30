@@ -8,6 +8,7 @@ KNOWN_SUPERVISOR_WORKER_AGENTS = frozenset(
         "SearchAgent",
         "AppAgent",
         "DocumentAgent",
+        "MemoryAgent",
     }
 )
 

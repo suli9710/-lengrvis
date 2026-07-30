@@ -1,5 +1,6 @@
 import type {
   DesktopMemoryRecallRequest,
+  DesktopMemoryReviewRequest,
   DesktopMemorySaveRequest,
   DesktopScheduleCreateRequest,
   DesktopScheduleEnableRequest
@@ -17,6 +18,7 @@ import {
 } from "./primitives";
 
 const RUN_MODES = new Set(["privacy", "efficiency", "hybrid"]);
+const MEMORY_CONFLICT_STATUSES = new Set(["none", "conflicting", "resolved", "superseded"]);
 
 export function validateMemorySaveRequest(value: unknown): DesktopMemorySaveRequest {
   const request = validatePlainBridgeBody(value, "memory save request");
@@ -41,6 +43,34 @@ export function validateMemoryRecallRequest(value: unknown): DesktopMemoryRecall
     query: validateBridgeStringValue(request.query, "memory recall query", 2_000, { allowEmpty: false, trim: true }),
     k: validateBridgePositiveInteger(request.k, "memory recall k", 5, 1, 50),
     tags: validateOptionalStringList(request.tags, "memory recall tags", 20, 64)
+  };
+}
+
+export function validateMemoryReviewRequest(value: unknown): DesktopMemoryReviewRequest {
+  const request = validatePlainBridgeBody(value, "memory review request");
+  rejectUnexpectedBridgeKeys(
+    request,
+    new Set(["memoryId", "memory_id", "reviewedBy", "reviewed_by", "conflictStatus", "conflict_status", "resolveConflict"]),
+    "memory review request"
+  );
+  const rawConflictStatus = request.conflictStatus ?? request.conflict_status;
+  const conflictStatus = rawConflictStatus === undefined || rawConflictStatus === null || rawConflictStatus === ""
+    ? undefined
+    : validateBridgeEnum<NonNullable<DesktopMemoryReviewRequest["conflictStatus"]>>(
+        rawConflictStatus,
+        "memory conflict status",
+        MEMORY_CONFLICT_STATUSES
+      );
+  const reviewedByValue = request.reviewedBy ?? request.reviewed_by;
+  return {
+    memoryId: validateBridgeIdentifier(request.memoryId ?? request.memory_id, "memory id"),
+    reviewedBy: reviewedByValue === undefined || reviewedByValue === null || reviewedByValue === ""
+      ? undefined
+      : validateBridgeStringValue(reviewedByValue, "memory reviewer", 128, { allowEmpty: false, trim: true }),
+    conflictStatus,
+    resolveConflict: request.resolveConflict === undefined
+      ? undefined
+      : validateBridgeBoolean(request.resolveConflict, "memory conflict resolution")
   };
 }
 

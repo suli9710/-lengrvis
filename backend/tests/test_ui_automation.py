@@ -100,10 +100,16 @@ class FakeNative:
         runtime_id: tuple[int, ...] = (1, 2, 3),
         enabled: bool = True,
         offscreen: bool = False,
+        class_name: str = "Button",
+        process_id: int = 42,
+        native_window_handle: int = 0,
     ) -> None:
         self.CurrentName = name
         self.CurrentAutomationId = automation_id
         self.CurrentControlType = control_type
+        self.CurrentClassName = class_name
+        self.CurrentProcessId = process_id
+        self.CurrentNativeWindowHandle = native_window_handle
         self.children = children or []
         self.runtime_id = runtime_id
         self.CurrentIsEnabled = enabled
@@ -147,12 +153,44 @@ class FakeCollection:
 class FakeAutomation:
     def __init__(self, root: FakeNative) -> None:
         self.root = root
+        parents: dict[int, FakeNative] = {}
+
+        def register_parent(parent: FakeNative) -> None:
+            for child in parent.children:
+                parents[id(child)] = parent
+                register_parent(child)
+
+        register_parent(root)
+        self.ControlViewWalker = types.SimpleNamespace(GetParentElement=lambda element: parents.get(id(element)))
 
     def GetRootElement(self):
         return self.root
 
     def CreateTrueCondition(self):
         return object()
+
+
+def _stub_process_identity(monkeypatch: pytest.MonkeyPatch, *, executable: str = "mail-client") -> None:
+    monkeypatch.setattr(
+        uia,
+        "_process_identity_fingerprint",
+        lambda process_id: {  # noqa: ARG005
+            "executable_hmac": f"ui-process-executable:{executable}",
+            "instance_hmac": "ui-process-instance:stable",
+        },
+    )
+
+
+def _window_with_child(child: FakeNative, *, name: str = "Application") -> FakeNative:
+    return FakeNative(
+        name=name,
+        automation_id="app-window",
+        control_type="Window",
+        class_name="AppWindow",
+        native_window_handle=9001,
+        runtime_id=(10, 20, 30),
+        children=[child],
+    )
 
 
 def _install_fake_comtypes(monkeypatch: pytest.MonkeyPatch, create_object) -> None:
@@ -351,7 +389,10 @@ async def test_element_object_action_still_rechecks_selector_uniqueness():
 
 def test_semantic_preview_binds_unique_target_resource_state(monkeypatch):
     native = FakeNative(runtime_id=(7, 8, 9))
-    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(), automation=FakeAutomation(_window_with_child(native))
+    )
+    _stub_process_identity(monkeypatch)
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
@@ -361,8 +402,106 @@ def test_semantic_preview_binds_unique_target_resource_state(monkeypatch):
     preview = ui_automation_tools.click({"automation_id": "send_button", "dry_run": True}, {})
 
     assert preview["ok"] is True
-    assert preview["_resource_state"][0]["kind"] == "ui_automation_element"
-    assert preview["_resource_state"][0]["fingerprint"]["runtime_id"] == [7, 8, 9]
+    resource_state = preview["_resource_state"][0]
+    assert resource_state["kind"] == "ui_automation_element"
+    assert resource_state["identity_version"] == "ui-automation-identity/v2"
+    assert resource_state["selector_hmac"].startswith("ui-selector:")
+    assert resource_state["fingerprint"]["identity_hmac"].startswith("ui-element:")
+    assert "send_button" not in str(resource_state)
+    assert "send" not in str(resource_state).casefold()
+    target_window = resource_state["target_window"]
+    assert target_window["executable_hmac"].startswith("ui-process-executable:")
+    assert target_window["parent_chain_hmac"].startswith("ui-parent-chain:")
+    assert target_window["parent_chain_depth"] == 1
+
+
+def test_process_identity_fingerprint_never_persists_executable_path(monkeypatch):
+    private_path = r"C:\Users\Alice\Private Workspace\mail.exe"
+
+    class FakeProcess:
+        def create_time(self) -> float:
+            return 1234.5
+
+        def exe(self) -> str:
+            return private_path
+
+    monkeypatch.setattr(uia.psutil, "Process", lambda process_id: FakeProcess())  # noqa: ARG005
+
+    identity = uia._process_identity_fingerprint(42)
+
+    assert identity is not None
+    assert identity["executable_hmac"].startswith("ui-process-executable:")
+    assert identity["instance_hmac"].startswith("ui-process-instance:")
+    assert "alice" not in str(identity).casefold()
+    assert "private workspace" not in str(identity).casefold()
+    assert "mail.exe" not in str(identity).casefold()
+
+
+def test_process_identity_fingerprint_fails_closed_on_pid_reuse(monkeypatch):
+    class ReusedProcess:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def create_time(self) -> float:
+            self.reads += 1
+            return 100.0 if self.reads == 1 else 200.0
+
+        def exe(self) -> str:
+            return r"C:\Apps\mail.exe"
+
+    monkeypatch.setattr(uia.psutil, "Process", lambda process_id: ReusedProcess())  # noqa: ARG005
+
+    assert uia._process_identity_fingerprint(42) is None
+
+
+@pytest.mark.parametrize("process_id", [None, 0, -1, "42"])
+def test_process_identity_fingerprint_rejects_invalid_pid(process_id):
+    assert uia._process_identity_fingerprint(process_id) is None
+
+
+@pytest.mark.parametrize("action", ["click", "type_text"])
+def test_semantic_write_preview_fails_closed_without_process_identity(monkeypatch, action: str):
+    button = FakeNative()
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(), automation=FakeAutomation(_window_with_child(button))
+    )
+    monkeypatch.setattr(uia, "_process_identity_fingerprint", lambda process_id: None)  # noqa: ARG005
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+    payload = {"automation_id": "send_button", "dry_run": True}
+    if action == "type_text":
+        payload["text"] = "hello"
+
+    preview = getattr(ui_automation_tools, action)(payload, {})
+
+    assert preview["ok"] is False
+    assert "could not be proven" in preview["error"]
+    assert "_resource_state" not in preview
+
+
+def test_semantic_write_preview_fails_closed_when_parent_chain_walk_fails(monkeypatch):
+    button = FakeNative()
+    automation = FakeAutomation(_window_with_child(button))
+    automation.ControlViewWalker.GetParentElement = lambda element: (_ for _ in ()).throw(  # noqa: ARG005
+        RuntimeError("stale COM parent")
+    )
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=automation)
+    _stub_process_identity(monkeypatch)
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+
+    preview = ui_automation_tools.click({"automation_id": "send_button", "dry_run": True}, {})
+
+    assert preview["ok"] is False
+    assert "could not be proven" in preview["error"]
+    assert "stale COM parent" not in str(preview)
+    assert "_resource_state" not in preview
 
 
 def test_runtime_id_lookup_failure_degrades_without_dropping_element():
@@ -414,7 +553,10 @@ def test_semantic_preview_rejects_ambiguous_target(monkeypatch):
 def test_direct_gui_approval_detects_target_replacement(monkeypatch):
     original = FakeNative(runtime_id=(1, 2, 3))
     replacement = FakeNative(runtime_id=(9, 9, 9))
-    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(original))
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(), automation=FakeAutomation(_window_with_child(original))
+    )
+    _stub_process_identity(monkeypatch)
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
@@ -428,8 +570,91 @@ def test_direct_gui_approval_detects_target_replacement(monkeypatch):
         tool_name="ui_automation.click",
         diff_preview=binding_preview(preview),
     )
-    target._automation = FakeAutomation(replacement)
+    target._automation = FakeAutomation(_window_with_child(replacement))
 
+    error = routes_ui_automation._approval_resource_state_error(
+        approval,
+        "ui_automation.click",
+        {**payload, "dry_run": False},
+        {"settings": None, "allowed_directories": []},
+    )
+
+    assert "no longer matches" in error
+
+
+def test_direct_gui_approval_detects_owning_window_account_change(monkeypatch):
+    button = FakeNative(runtime_id=(1, 2, 3))
+    window = FakeNative(
+        name="Inbox - alice@example.test",
+        automation_id="mail-window",
+        control_type="Window",
+        class_name="MailWindow",
+        native_window_handle=9001,
+        runtime_id=(10, 20, 30),
+        children=[button],
+    )
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(window))
+    _stub_process_identity(monkeypatch)
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+    payload = {"automation_id": "send_button", "dry_run": True}
+    preview = ui_automation_tools.click(payload, {})
+    resource_state = preview["_resource_state"][0]
+    assert resource_state["target_window"]["identity_hmac"].startswith("ui-window:")
+    assert "alice@example.test" not in str(resource_state)
+    approval = Approval(
+        task_id="task_gui_window_account_state",
+        message="Approve semantic click in the reviewed account window",
+        tool_name="ui_automation.click",
+        diff_preview=binding_preview(preview),
+    )
+
+    window.CurrentName = "Inbox - bob@example.test"
+    error = routes_ui_automation._approval_resource_state_error(
+        approval,
+        "ui_automation.click",
+        {**payload, "dry_run": False},
+        {"settings": None, "allowed_directories": []},
+    )
+
+    assert "no longer matches" in error
+
+
+def test_direct_gui_approval_detects_private_parent_chain_change(monkeypatch):
+    button = FakeNative(runtime_id=(1, 2, 3))
+    container = FakeNative(
+        name="Alice confidential workspace",
+        automation_id="workspace-alice",
+        control_type="Pane",
+        class_name="WorkspacePane",
+        runtime_id=(4, 5, 6),
+        children=[button],
+    )
+    window = _window_with_child(container)
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(window))
+    _stub_process_identity(monkeypatch)
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: target,  # noqa: ARG005
+    )
+    payload = {"automation_id": "send_button", "dry_run": True}
+    preview = ui_automation_tools.click(payload, {})
+    resource_state = preview["_resource_state"][0]
+    assert resource_state["target_window"]["parent_chain_depth"] == 2
+    assert "alice confidential" not in str(resource_state).casefold()
+    assert "workspace-alice" not in str(resource_state).casefold()
+    approval = Approval(
+        task_id="task_gui_parent_chain_state",
+        message="Approve semantic click in the reviewed workspace",
+        tool_name="ui_automation.click",
+        diff_preview=binding_preview(preview),
+    )
+
+    container.CurrentAutomationId = "workspace-bob"
     error = routes_ui_automation._approval_resource_state_error(
         approval,
         "ui_automation.click",
@@ -489,6 +714,102 @@ async def test_click_revalidates_runtime_identity_and_blocks_replaced_target():
     assert "changed before execution" in result["error"]
     assert original.invoked is False
     assert replacement.invoked is False
+
+
+@pytest.mark.asyncio
+async def test_click_revalidates_approved_window_account_at_action_boundary(monkeypatch):
+    button = FakeNative(runtime_id=(1, 2, 3))
+    window = FakeNative(
+        name="Inbox - alice@example.test",
+        automation_id="mail-window",
+        control_type="Window",
+        class_name="MailWindow",
+        native_window_handle=9001,
+        runtime_id=(10, 20, 30),
+        children=[button],
+    )
+    automation = FakeAutomation(window)
+    _stub_process_identity(monkeypatch)
+    preview_target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=automation)
+    reviewed = await preview_target.inspect_selector({"automation_id": "send_button"})
+    approval_context = {"_expected_resource_state": [reviewed["resource_state"]]}
+    mark_execution_approved(approval_context)
+    window.CurrentName = "Inbox - bob@example.test"
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(),
+        automation=automation,
+        approval_context=approval_context,
+    )
+
+    result = await target.click(
+        {"automation_id": "send_button"},
+        task_id="task_window_boundary",
+        approved=True,
+        approval_id="approval_window_boundary",
+    )
+
+    assert result["ok"] is False
+    assert "window or account context changed" in result["error"]
+    assert button.invoked is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click", "type_text"])
+@pytest.mark.parametrize("changed_identity", ["process", "parent_chain"])
+async def test_semantic_write_revalidates_identity_at_final_action_boundary(
+    monkeypatch,
+    action: str,
+    changed_identity: str,
+):
+    button = FakeNative(runtime_id=(1, 2, 3))
+    container = FakeNative(
+        name="Reviewed workspace",
+        automation_id="workspace-reviewed",
+        control_type="Pane",
+        class_name="WorkspacePane",
+        runtime_id=(4, 5, 6),
+        children=[button],
+    )
+    automation = FakeAutomation(_window_with_child(container))
+    identity_reads = 0
+
+    def process_identity(process_id):  # noqa: ANN001, ANN202, ARG001
+        nonlocal identity_reads
+        identity_reads += 1
+        if identity_reads == 3 and changed_identity == "parent_chain":
+            container.CurrentAutomationId = "workspace-replaced"
+        executable = "replaced" if identity_reads == 3 and changed_identity == "process" else "reviewed"
+        return {
+            "executable_hmac": f"ui-process-executable:{executable}",
+            "instance_hmac": "ui-process-instance:stable",
+        }
+
+    monkeypatch.setattr(uia, "_process_identity_fingerprint", process_identity)
+    preview_target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=automation)
+    reviewed = await preview_target.inspect_selector({"automation_id": "send_button"})
+    approval_context = {"_expected_resource_state": [reviewed["resource_state"]]}
+    mark_execution_approved(approval_context)
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(),
+        automation=automation,
+        approval_context=approval_context,
+    )
+
+    action_args = {
+        "task_id": "task_final_identity_boundary",
+        "approved": True,
+        "approval_id": "approval_final_identity_boundary",
+    }
+    if action == "click":
+        result = await target.click({"automation_id": "send_button"}, **action_args)
+    else:
+        result = await target.type_text({"automation_id": "send_button"}, "private text", **action_args)
+
+    assert identity_reads == 3
+    assert result["ok"] is False
+    assert "process, parent chain" in result["error"]
+    assert button.invoked is False
+    assert button.value == ""
 
 
 @pytest.mark.asyncio

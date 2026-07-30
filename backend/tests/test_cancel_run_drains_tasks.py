@@ -114,3 +114,6 @@ async def test_cancel_run_cancels_registered_parallel_step_tasks() -> None:
 
     results = await asyncio.wait_for(execution, timeout=2)
     assert len(results) == 2
+    assert {step.id for step, _outcome in results} == {"slow_a", "slow_b"}
+    assert {outcome.kind for _step, outcome in results} == {"cancelled"}
+    assert task.status == TaskStatus.EXECUTION

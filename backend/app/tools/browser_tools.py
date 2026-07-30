@@ -33,6 +33,98 @@ EXTRA_SENSITIVE_SELECTOR_TOKENS = {
     "credential",
 }
 
+
+def _input_schema(name: str) -> dict[str, Any]:
+    url = {
+        "type": "string",
+        "description": "HTTP(S) URL of the page to access.",
+    }
+    session_id = {
+        "type": "string",
+        "description": "Optional managed browser session identifier.",
+    }
+    dry_run = {
+        "type": "boolean",
+        "description": "Preview the browser write without executing it (default true).",
+    }
+    session_scope = {
+        "type": "object",
+        "description": "Task/account-bound browser session scope; values cannot be broadened after start.",
+        "properties": {
+            "task_id": {"type": "string"},
+            "account_id": {"type": "string"},
+            "allowed_origins": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact HTTP(S) origins permitted for this session.",
+            },
+            "allowed_actions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Browser action kinds permitted for this session.",
+            },
+        },
+    }
+    schemas: dict[str, dict[str, Any]] = {
+        "browser.session_start": {
+            "type": "object",
+            "properties": {
+                "url": url,
+                "mode": {"type": "string"},
+                **session_scope["properties"],
+            },
+            "required": [],
+        },
+        "browser.read_page": {
+            "type": "object",
+            "properties": {
+                "url": url,
+                "session_id": session_id,
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional maximum number of page-text characters to return.",
+                },
+            },
+            "required": ["url"],
+        },
+        "browser.fill_form": {
+            "type": "object",
+            "properties": {
+                "url": url,
+                "session_id": session_id,
+                "fields": {
+                    "type": "object",
+                    "description": "Mapping of non-sensitive field selectors or names to values.",
+                    "additionalProperties": True,
+                },
+                "dry_run": dry_run,
+            },
+            "required": ["url", "fields"],
+        },
+        "browser.submit_form": {
+            "type": "object",
+            "properties": {
+                "url": url,
+                "session_id": session_id,
+                "task_id": {"type": "string"},
+                "account_id": {
+                    "type": "string",
+                    "description": "Explicit website/account identity bound to the approved submission.",
+                },
+                **session_scope["properties"],
+                "selector": {
+                    "type": "string",
+                    "description": "Optional CSS selector for the form (default: form).",
+                },
+                "dry_run": dry_run,
+            },
+            "required": ["url"],
+        },
+    }
+    return schemas.get(name, {})
+
+
 _CUA_BROWSER_ENVIRONMENT = "browser"
 DEFAULT_CUA_RUN_TIMEOUT_SECONDS = 60.0
 _BROWSER_ACTIVITY_RUNTIME: BrowserActivityRuntime | None = None
@@ -458,7 +550,6 @@ def cua_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  #
     return _run_cua_tool(cua_run_async(args, context))
 
 
-
 def replay_export(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return get_browser_activity_runtime().replay_export(args, context)
 
@@ -593,10 +684,32 @@ def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         return {"ok": True, "dry_run": True, "diff_preview": [{"action": "submit", "selector": "***", "url": safe_url}]}
     if not _has_approval(args):
         return _approval_error("submit_form")
+    task_id = str(args.get("task_id") or context.get("task_id") or "").strip()
+    account_id = str(
+        args.get("account_id")
+        or context.get("account_id")
+        or context.get("principal_id")
+        or context.get("user_id")
+        or ""
+    ).strip()
+    if not task_id:
+        return {"ok": False, "error": "browser.submit_form requires a task_id-bound approval."}
+    if not account_id:
+        return {
+            "ok": False,
+            "error": "browser.submit_form requires an explicit account_id; use human takeover to select the account.",
+        }
+    from app.services.browser_activity_runtime import _url_origin as _runtime_url_origin
+
+    allowed_origins = args.get("allowed_origins") or [_runtime_url_origin(url)]
+    allowed_actions = args.get("allowed_actions") or ["submit"]
     result = get_browser_activity_runtime().act(
         {
             "session_id": args.get("session_id"),
-            "task_id": args.get("task_id") or context.get("task_id"),
+            "task_id": task_id,
+            "account_id": account_id,
+            "allowed_origins": allowed_origins,
+            "allowed_actions": allowed_actions,
             "step_id": args.get("step_id") or context.get("step_id"),
             "action": {"kind": "submit", "url": url, "selector": selector},
             "dry_run": False,
@@ -687,7 +800,7 @@ def register(registry) -> None:
                 name=name,
                 description=tool_description(name),
                 search_hint=tool_search_hint(name),
-                input_schema={},
+                input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,
                 agent_owner="BrowserAgent",

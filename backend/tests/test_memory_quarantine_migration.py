@@ -73,7 +73,7 @@ def test_memory_quarantine_migration_backfills_legacy_and_malformed_rows() -> No
     )
 
     try:
-        assert db_migrations.apply_schema_migrations(conn) == [1, 2, 3, 4, 5, 6]
+        assert db_migrations.apply_schema_migrations(conn) == [1, 2, 3, 4, 5, 6, 7, 8]
         normalized = {
             row["memory_id"]: row
             for row in conn.execute("SELECT * FROM memory_quarantine ORDER BY memory_id").fetchall()
@@ -107,10 +107,10 @@ def test_memory_quarantine_migration_backfills_legacy_and_malformed_rows() -> No
         assert namespaces["mem_user"]["version"] == 3
         assert namespaces["mem_user"]["conflict_status"] == "resolved"
         assert namespaces["mem_malformed"]["principal_id"] == "local-user"
-        assert [(row["version"], row["name"]) for row in migrations][-1] == (
-            6,
-            "memory_active_successor_guard",
-        )
+        assert [(row["version"], row["name"]) for row in migrations][-2:] == [
+            (7, "sensitive_record_integrity_foundation"),
+            (8, "sensitive_integrity_bootstrap_anchor"),
+        ]
 
         state_index = conn.execute('PRAGMA index_info("idx_memory_quarantine_state_expiry")').fetchall()
         assert [row["name"] for row in state_index] == ["state", "expires_at", "memory_id"]
@@ -153,13 +153,10 @@ def test_memory_quarantine_migration_backfills_legacy_and_malformed_rows() -> No
             and row["on_delete"] == "SET NULL"
             for row in namespace_foreign_keys
         )
-        active_successor_info = conn.execute(
-            'PRAGMA table_info("memory_active_successors")'
-        ).fetchall()
+        active_successor_info = conn.execute('PRAGMA table_info("memory_active_successors")').fetchall()
         assert [row["name"] for row in active_successor_info if row["pk"]] == ["parent_memory_id"]
         assert {
-            row["name"]
-            for row in conn.execute('PRAGMA index_info("sqlite_autoindex_memory_active_successors_2")')
+            row["name"] for row in conn.execute('PRAGMA index_info("sqlite_autoindex_memory_active_successors_2")')
         } == {"successor_memory_id"}
     finally:
         conn.close()

@@ -33,6 +33,13 @@ $blockedPathspecs = @(
     "desktop/tmp-office-review/",
     "UsersSuliAppDataLocalTempLengrvis-Code-review",
     "UsersSuliAppDataLocalTempLengrvis-Code-review/",
+    # Archives are opaque to gitleaks: a committed source snapshot could carry
+    # secrets past every scanner, so block them at the hygiene gate too.
+    "*.zip",
+    "*.7z",
+    "*.tar",
+    "*.tar.gz",
+    "*.tgz",
     # Secrets, local databases, and bytecode caches must never be tracked.
     "*.secret",
     "*.key",

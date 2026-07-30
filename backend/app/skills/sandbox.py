@@ -12,11 +12,13 @@ import httpx
 
 from app.config import get_env
 from app.core.process_tree import run_process_tree
+from app.core.windows_job import WindowsJobIsolationError, WindowsJobLimits
 from app.security.execution_isolation import arbitrary_execution_denial
 from app.skills.schemas import SkillExecution, SkillExecutionType
 
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 128 * 1024
+WINDOWS_SKILL_JOB_LIMITS = WindowsJobLimits()
 UNSAFE_LOCAL_SKILL_EXECUTION_ENV = "LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION"
 SENSITIVE_ENV_HINTS = ("api", "auth", "cookie", "credential", "key", "password", "secret", "token")
 WINDOWS_SCRIPT_EXTENSIONS = {".bat", ".cmd", ".ps1"}
@@ -149,7 +151,14 @@ class SkillSandbox:
                 timeout=execution.timeout_seconds,
                 shell=False,
                 hide_window=True,
+                windows_job_limits=WINDOWS_SKILL_JOB_LIMITS if os.name == "nt" else None,
+                require_windows_isolation=os.name == "nt",
             )
+        except WindowsJobIsolationError:
+            return {
+                "error": "Windows OS sandbox could not be established; skill execution was not started.",
+                "policy": "windows_os_sandbox_unavailable",
+            }
         except subprocess.TimeoutExpired:
             return {
                 "error": f"Skill handler timed out after {execution.timeout_seconds:g}s.",
@@ -279,7 +288,9 @@ def _local_skill_execution_disabled_error(execution: SkillExecution) -> dict[str
     return {
         "error": (
             f"Local {execution.type.value} skill execution is disabled by default because these handlers can "
-            "access local machine resources without an OS sandbox. Enable only trusted development skills with "
+            "access local machine resources. Windows development runs use a bounded Job Object, but full "
+            "AppContainer/restricted-token/network-broker attestation is still required for release profiles. "
+            "Enable only trusted development skills with "
             f"{UNSAFE_LOCAL_SKILL_EXECUTION_ENV}=1 or AppSettings.allow_unsafe_local_skill_execution=True."
         ),
         "policy": "local_skill_execution_disabled",

@@ -287,6 +287,32 @@ def validate(
             owner_signature = _current_evidence_summary_value(evidence_text, "Owner signature")
             if not owner_signature or owner_signature == "PENDING_RELEASE_OWNER_SIGNATURE":
                 errors.append("Current release evidence owner signature is pending or missing.")
+            owner_signature_verification = _current_evidence_summary_value(
+                evidence_text, "Owner signature verification"
+            )
+            if owner_signature_verification != "verified":
+                errors.append(
+                    "Current release evidence owner signature must be cryptographically verified; "
+                    f"got {owner_signature_verification or 'missing'}."
+                )
+            owner_signature_payload_sha256 = _current_evidence_summary_value(
+                evidence_text, "Owner signature payload SHA-256"
+            )
+            if not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", owner_signature_payload_sha256 or ""
+            ):
+                errors.append(
+                    "Current release evidence owner signature payload SHA-256 is missing or invalid."
+                )
+            owner_signature_key_fingerprint = _current_evidence_summary_value(
+                evidence_text, "Owner signature key fingerprint"
+            )
+            if not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", owner_signature_key_fingerprint or ""
+            ):
+                errors.append(
+                    "Current release evidence owner signature key fingerprint is missing or invalid."
+                )
             for command in REQUIRED_CURRENT_EVIDENCE_COMMANDS:
                 if not _current_evidence_lists_command(evidence_text, command):
                     errors.append(

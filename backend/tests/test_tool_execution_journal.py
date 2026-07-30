@@ -8,11 +8,12 @@ import pytest
 
 from app.core import db
 from app.core.content_provenance import create_content_envelope
-from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, Task, ToolCall, ToolResult
+from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, Task, ToolCall, ToolResult, now_iso
 from app.orchestration.direct_tool_execution import (
     execute_direct_tool_journaled,
     execute_direct_tool_journaled_async,
 )
+from app.orchestration.resource_state import ReadBeforeWriteError
 from app.orchestration.task_phase import TaskPhase
 from app.orchestration.tool_execution_journal import (
     build_tool_execution_key,
@@ -478,9 +479,71 @@ def _direct_approval(task: Task) -> Approval:
         status=ApprovalStatus.APPROVED,
         tool_name="test.direct_write",
         risk_level=RiskLevel.R2_REVERSIBLE_MODIFY.value,
+        consumed_at=now_iso(),
     )
     db.upsert_model("approvals", approval, status=approval.status)
     return approval
+
+
+def test_direct_execution_rejects_unconsumed_approval_without_calling_executor():
+    task = Task(user_goal="do not bypass approval claim")
+    db.upsert_model("tasks", task)
+    approval = _direct_approval(task)
+    approval.consumed_at = None
+    db.upsert_model("approvals", approval, status=approval.status)
+    calls: list[dict] = []
+
+    with pytest.raises(ValueError, match="atomically consumed"):
+        execute_direct_tool_journaled(
+            _direct_tool(lambda args, context: calls.append(dict(args)) or {"ok": True}),
+            {"value": "blocked"},
+            {},
+            approval_id=approval.id,
+        )
+
+    assert calls == []
+    assert db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10) == []
+
+
+def test_direct_execution_rejects_missing_task_without_recreating_it_or_calling_executor():
+    task = Task(user_goal="do not recreate missing execution provenance")
+    db.upsert_model("tasks", task)
+    approval = _direct_approval(task)
+    with db.connect() as conn:
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task.id,))
+    calls: list[dict] = []
+
+    with pytest.raises(ValueError, match="original task record"):
+        execute_direct_tool_journaled(
+            _direct_tool(lambda args, context: calls.append(dict(args)) or {"ok": True}),
+            {"value": "blocked"},
+            {},
+            approval_id=approval.id,
+        )
+
+    assert calls == []
+    assert db.fetch_one("tasks", task.id) is None
+    assert db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10) == []
+
+
+def test_direct_execution_rejects_tool_binding_mismatch_without_calling_executor():
+    task = Task(user_goal="do not cross approval tool bindings")
+    db.upsert_model("tasks", task)
+    approval = _direct_approval(task)
+    approval.tool_name = "test.other_write"
+    db.upsert_model("approvals", approval, status=approval.status)
+    calls: list[dict] = []
+
+    with pytest.raises(ValueError, match="different tool"):
+        execute_direct_tool_journaled(
+            _direct_tool(lambda args, context: calls.append(dict(args)) or {"ok": True}),
+            {"value": "blocked"},
+            {},
+            approval_id=approval.id,
+        )
+
+    assert calls == []
+    assert db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10) == []
 
 
 def test_direct_execution_commits_result_and_reuses_it_without_reexecution():
@@ -551,13 +614,14 @@ def test_direct_async_execution_commits_result():
     assert stored_call.status == "committed"
 
 
-def test_direct_execution_exception_commits_redacted_failure():
+def test_direct_execution_exception_marks_write_outcome_unknown_and_redacts_failure():
     task = Task(user_goal="direct failed write")
     db.upsert_model("tasks", task)
     approval = _direct_approval(task)
+    local_path = r"\\fileserver\Private Share\Secret Project\write-result.json"
 
     def fail(args, context):  # noqa: ANN001, ANN202, ARG001
-        raise RuntimeError("write failed with token=secret-token-1234567890")
+        raise RuntimeError(f"write failed at {local_path} with token=secret-token-1234567890")
 
     result = execute_direct_tool_journaled(
         _direct_tool(fail),
@@ -568,18 +632,26 @@ def test_direct_execution_exception_commits_redacted_failure():
 
     assert result["ok"] is False
     assert result["error_type"] == "RuntimeError"
+    assert local_path not in result["error"]
+    assert "Private Share" not in result["error"]
+    assert "Secret Project" not in result["error"]
+    assert "[REDACTED_LOCAL_PATH]" in result["error"]
     assert "secret-token-1234567890" not in result["error"]
     assert "[REDACTED]" in result["error"]
+    assert result["status"] == "outcome_unknown"
+    assert result["outcome_unknown"] is True
+    assert result["automatic_replay_blocked"] is True
     stored_call = ToolCall.model_validate(db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0])
     stored_result = ToolResult.model_validate(
         db.fetch_many("tool_results", "tool_call_id = ?", (stored_call.id,), limit=1)[0]
     )
-    assert stored_call.status == "committed"
+    assert stored_call.status == "outcome_unknown"
+    assert stored_call.outcome_unknown_at
     assert stored_result.ok is False
     assert stored_result.error == result["error"]
 
 
-def test_direct_async_execution_exception_commits_redacted_failure():
+def test_direct_async_execution_exception_marks_write_outcome_unknown():
     task = Task(user_goal="direct async failed write")
     db.upsert_model("tasks", task)
     approval = _direct_approval(task)
@@ -601,13 +673,40 @@ def test_direct_async_execution_exception_commits_redacted_failure():
     assert result["error_type"] == "RuntimeError"
     assert "secret-token-1234567890" not in result["error"]
     assert "[REDACTED]" in result["error"]
+    assert result["status"] == "outcome_unknown"
+    assert result["outcome_unknown"] is True
     stored_call = ToolCall.model_validate(db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=1)[0])
     stored_result = ToolResult.model_validate(
         db.fetch_many("tool_results", "tool_call_id = ?", (stored_call.id,), limit=1)[0]
     )
-    assert stored_call.status == "committed"
+    assert stored_call.status == "outcome_unknown"
+    assert stored_call.outcome_unknown_at
     assert stored_result.ok is False
     assert stored_result.error == result["error"]
+
+
+def test_direct_typed_pre_effect_failure_remains_known_and_reusable():
+    task = Task(user_goal="direct write blocked before effect")
+    db.upsert_model("tasks", task)
+    approval = _direct_approval(task)
+    calls = 0
+
+    def fail_before_effect(args, context):  # noqa: ANN001, ANN202, ARG001
+        nonlocal calls
+        calls += 1
+        raise ReadBeforeWriteError("Read the target before writing.")
+
+    tool = _direct_tool(fail_before_effect)
+    args = {"value": "blocked"}
+    first = execute_direct_tool_journaled(tool, args, {}, approval_id=approval.id)
+    second = execute_direct_tool_journaled(tool, args, {}, approval_id=approval.id)
+
+    assert first["ok"] is False
+    assert "outcome_unknown" not in first
+    assert second == first
+    assert calls == 1
+    stored_call = ToolCall.model_validate(db.fetch_one("tool_calls", first["tool_call_id"]))
+    assert stored_call.status == "committed"
 
 
 def test_direct_execution_process_interrupt_recovers_as_outcome_unknown():

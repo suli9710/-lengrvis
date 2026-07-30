@@ -1,4 +1,4 @@
-"""MCP integration package: HTTP-only minimal client + ToolDefinition adapter."""
+"""Preview MCP Streamable HTTP/stdio lifecycle client and ToolDefinition adapter."""
 
 from app.mcp.client import MCPClient, MCPServerConfig
 from app.mcp.registry import MCPRegistry, get_mcp_registry

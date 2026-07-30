@@ -96,6 +96,7 @@ def test_desktop_reauthorization_rebinds_to_current_key(monkeypatch: pytest.Monk
         ("family", "family has been revoked"),
         ("credential", "credential has been revoked"),
         ("epoch", "session has been revoked"),
+        ("generation", "family generation has changed"),
         ("family_expired", "family has expired"),
     ],
 )
@@ -128,6 +129,11 @@ def test_mobile_identity_change_expires_unconsumed_approval(mutation: str, reaso
                 "UPDATE device_credentials SET status = 'revoked' WHERE id = ?",
                 (claims["credential_id"],),
             )
+        elif mutation == "generation":
+            conn.execute(
+                "UPDATE token_families SET current_generation = current_generation + 1 WHERE id = ?",
+                (claims["family_id"],),
+            )
         else:
             expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
             conn.execute("UPDATE token_families SET expires_at = ? WHERE id = ?", (expired_at, claims["family_id"]))
@@ -158,8 +164,29 @@ def test_mobile_decision_persists_device_bound_auth_context(monkeypatch: pytest.
     assert decided.auth_context["channel"] == "mobile"
     assert decided.auth_context["device_id"] == device_id
     assert decided.auth_context["token_family_id"] == claims["family_id"]
+    assert decided.auth_context["family_generation"] == claims["family_generation"]
     assert decided.auth_context["credential_id"] == claims["credential_id"]
     assert claimed is not None
+
+
+def test_mobile_approval_without_family_generation_fails_closed_outside_test_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device_id, claims = _mobile_session()
+    auth_context = mobile_pairing_service.mobile_approval_auth_context(claims)
+    auth_context.pop("family_generation")
+    monkeypatch.setenv("LENGRVIS_TEST", "0")
+    approval = _approved(
+        auth_context,
+        now_iso(),
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[TOKEN_SCOPE],
+    )
+
+    assert db.claim_approval_for_execution(approval.id, now_iso()) is None
+    stored = db.fetch_one("approvals", approval.id)
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert "family generation is invalid" in stored["expired_reason"].lower()
 
 
 @pytest.mark.parametrize(
@@ -200,10 +227,14 @@ def test_legacy_approved_record_fails_closed_outside_test_mode(monkeypatch: pyte
 def test_public_approval_payload_omits_auth_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, "desktop-key-a")
     authorized_at, auth_context = _desktop_authorization()
+    auth_context["approval_session_generation_fingerprint"] = "c" * 64
     approval = _approved(auth_context, authorized_at)
 
     payload = safe_approval_payload(approval)
+    event_payload = safe_approval_event(approval)
 
     assert payload["authorized_at"] == authorized_at
     assert "auth_context" not in payload
-    assert "auth_context" not in safe_approval_event(approval)
+    assert "auth_context" not in event_payload
+    assert auth_context["approval_session_generation_fingerprint"] not in json.dumps(payload, sort_keys=True)
+    assert auth_context["approval_session_generation_fingerprint"] not in json.dumps(event_payload, sort_keys=True)

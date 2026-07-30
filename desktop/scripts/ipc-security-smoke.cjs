@@ -173,6 +173,8 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("app://local/index.html"), true);
+  assert.equal(isTrustedRendererUrl("app://local/assets/app.js"), false);
+  assert.equal(isTrustedRendererUrl("app://user@local/index.html"), false);
   assert.equal(isTrustedRendererUrl("app://evil/index.html"), false);
   assert.equal(isTrustedRendererUrl("https://evil.example/index.html"), false);
   assert.equal(isSafeExternalUrl("https://example.com/docs"), true);
@@ -209,12 +211,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(isSafeExternalUrl("mailto:support@example.com?subject=Hi%0D%0ABcc:evil@example.com"), false);
 
   const rendererRoot = path.resolve(__dirname, "../dist/renderer/index.html");
-  assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), true);
+  assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), false);
   mockIsPackaged = true;
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html"), false);
   assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html"), false);
   assert.equal(isTrustedRendererUrl("app://local/index.html"), true);
-  assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), true);
+  assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), false);
   mockIsPackaged = false;
   assert.doesNotThrow(() => assertTrustedRenderer(eventFor("http://127.0.0.1:5173/index.html")));
   assert.throws(
@@ -1715,10 +1717,24 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.ok(actionHandler, "browser host action handler must be registered");
 
   takeoverCalls = 0;
-  const deniedTakeover = await Promise.resolve(takeoverHandler(eventFor("http://127.0.0.1:5173/browser"), "session-1"));
-  assert.equal(deniedTakeover.ok, false, "renderer takeover should be denied without approval grant");
-  assert.match(deniedTakeover.error, /approval grant/);
-  assert.equal(takeoverCalls, 0, "renderer takeover denial must not call the host takeover method");
+  messageBoxCalls = [];
+  messageBoxResponses = [1];
+  await assert.rejects(
+    async () => takeoverHandler(eventFor("http://127.0.0.1:5173/browser"), "session-1"),
+    /not confirmed/
+  );
+  assert.equal(messageBoxCalls.length, 1, "renderer takeover should require native confirmation");
+  assert.equal(takeoverCalls, 0, "denied renderer takeover must not call the host takeover method");
+
+  messageBoxCalls = [];
+  const pauseCallsBeforeTakeover = hostCallCounts.pause;
+  const approvedTakeover = await Promise.resolve(
+    takeoverHandler(eventFor("http://127.0.0.1:5173/browser"), "session-1")
+  );
+  assert.equal(approvedTakeover.ok, true, "native-confirmed renderer takeover should be allowed once");
+  assert.equal(messageBoxCalls.length, 1, "approved renderer takeover should ask exactly once");
+  assert.equal(hostCallCounts.pause, pauseCallsBeforeTakeover + 1, "approved renderer takeover must pause the agent first");
+  assert.equal(takeoverCalls, 1, "approved renderer takeover should call the host takeover method once");
 
   const deniedRendererInputActions = [
     { name: "click", action: { kind: "click", selector: "#submit", approved: true, approval_id: "forged-approval" } },

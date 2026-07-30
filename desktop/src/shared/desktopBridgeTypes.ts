@@ -83,6 +83,16 @@ export interface DesktopMemoryRecallRequest {
   tags?: string[];
 }
 
+export type DesktopMemoryConflictStatus = "none" | "conflicting" | "resolved" | "superseded";
+
+export interface DesktopMemoryReviewRequest {
+  memoryId: string;
+  reviewedBy?: string;
+  conflictStatus?: DesktopMemoryConflictStatus;
+  /** Convenience flag used by the renderer when resolving a conflict. */
+  resolveConflict?: boolean;
+}
+
 export interface DesktopScheduleCreateRequest {
   cron: string;
   goal: string;
@@ -225,6 +235,7 @@ export interface BackendStatus {
   runtimeModeError?: string;
   health?: {
     ok: boolean;
+    identityVerified?: boolean;
     latencyMs?: number;
   };
 }

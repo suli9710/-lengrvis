@@ -132,6 +132,7 @@ _SENSITIVE_ENV_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"PRIVATE_KEY", re.IGNORECASE),
 )
 
+
 @dataclass(slots=True)
 class LengrvisCodeRuntime:
     source_root: Path = VENDORED_LENGRVIS_CODE_ROOT
@@ -604,7 +605,28 @@ def build_lengrvis_code_env(
             "OPENAI_SMALL_FAST_MODEL": model,
         }
     )
+    # Harden git the same way developer_tools._safe_command_env does. The
+    # allowlisted read-only git tools (Bash(git diff/log/show:*)) accept any
+    # flags, so a model could otherwise write ~/.gitconfig via `git diff
+    # --output=` and then trigger code execution via `git log -p --ext-diff` or
+    # a config-defined pager. Ignoring the global/system config and disabling
+    # external diff/pager neutralizes that escalation for this subprocess.
+    env.update(_GIT_HARDENED_ENV)
     return env
+
+
+# Neutralize attacker-controllable git config/pager/external-diff for the
+# developer subprocess (see build_lengrvis_code_env).
+_GIT_HARDENED_ENV: dict[str, str] = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_EXTERNAL_DIFF": "",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_PAGER": "cat",
+    "PAGER": "cat",
+    "GIT_TERMINAL_PROMPT": "0",
+}
 
 
 def default_allowed_tools(*, writes_enabled: bool = False) -> tuple[str, ...]:
@@ -629,14 +651,33 @@ def validate_allowed_tools(allowed_tools: Sequence[str], *, allow_write_tools: b
 
 
 def _is_forbidden_allowed_tool(tool: str, *, allow_write_tools: bool) -> bool:
-    tool_name = tool.split("(", 1)[0]
-    if tool_name == "Agent" or tool in {"Bash", "Bash(*)"}:
+    tool_name = tool.split("(", 1)[0].strip()
+    # The vendored CLI normalizes legacy aliases (e.g. Task -> Agent) before
+    # matching, so a blacklist keyed on the canonical name only is bypassable by
+    # passing the alias. Normalize here too and reject the whole alias family.
+    canonical = _FORBIDDEN_TOOL_ALIASES.get(tool_name.casefold(), tool_name)
+    if canonical == "Agent" or tool in {"Bash", "Bash(*)"}:
+        return True
+    # MCP tools grant open-ended capability and must never be smuggled into the
+    # developer allowlist.
+    if tool_name.casefold().startswith("mcp__"):
         return True
     if tool_name in WRITE_CAPABLE_ALLOWED_TOOLS:
         return not allow_write_tools
     if tool.startswith("Bash("):
         return not _is_allowed_bash_tool(tool)
     return False
+
+
+# Legacy tool aliases the vendored CLI folds into a canonical name at match
+# time. Keyed by casefolded alias -> canonical name.
+_FORBIDDEN_TOOL_ALIASES: dict[str, str] = {
+    "task": "Agent",
+    "agent": "Agent",
+    "killshell": "Agent",
+    "bashoutputtool": "Agent",
+    "agentoutputtool": "Agent",
+}
 
 
 def build_lengrvis_code_command(

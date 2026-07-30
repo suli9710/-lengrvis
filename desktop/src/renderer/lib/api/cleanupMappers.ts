@@ -5,29 +5,13 @@ import type {
   BackendCleanupPlan,
   BackendCleanupScanRequest
 } from "./cleanupBackendTypes";
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
-  return Number.isFinite(number) ? number : undefined;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item)) : [];
-}
-
-function arrayOfObjects(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
-    : [];
-}
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
+import {
+  arrayOfObjects,
+  numberOrUndefined,
+  optionalString,
+  recordOrUndefined,
+  stringArray
+} from "./mapperPrimitives";
 
 export function cleanupScanRequestFor(body: CleanupScanRequest): BackendCleanupScanRequest {
   return {

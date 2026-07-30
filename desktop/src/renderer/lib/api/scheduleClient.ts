@@ -3,6 +3,7 @@ import type {
   ApiResponse,
   DesktopRunMode
 } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type { BackendScheduledTask } from "./scheduleBackendTypes";
 
 export interface ScheduleInput {
@@ -20,7 +21,9 @@ export function listSchedulesEndpoint(
   request: ScheduleEndpointRequest
 ): Promise<ApiResponse<BackendScheduledTask[]>> {
   if (window.lengrvis?.schedules) {
-    return window.lengrvis.schedules.list() as Promise<ApiResponse<BackendScheduledTask[]>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.schedules.list() as Promise<ApiResponse<BackendScheduledTask[]>>
+    );
   }
   return request<BackendScheduledTask[]>({ endpoint: "/api/schedules" });
 }
@@ -30,7 +33,9 @@ export function createScheduleEndpoint(
   input: ScheduleInput
 ): Promise<ApiResponse<BackendScheduledTask>> {
   if (window.lengrvis?.schedules) {
-    return window.lengrvis.schedules.create(input) as Promise<ApiResponse<BackendScheduledTask>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.schedules.create(input) as Promise<ApiResponse<BackendScheduledTask>>
+    );
   }
   return request<BackendScheduledTask, ScheduleInput>({
     endpoint: "/api/schedules",
@@ -44,7 +49,9 @@ export function deleteScheduleEndpoint(
   scheduleId: string
 ): Promise<ApiResponse<{ ok: boolean; id: string }>> {
   if (window.lengrvis?.schedules) {
-    return window.lengrvis.schedules.delete(scheduleId) as Promise<ApiResponse<{ ok: boolean; id: string }>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.schedules.delete(scheduleId) as Promise<ApiResponse<{ ok: boolean; id: string }>>
+    );
   }
   return request({
     endpoint: `/api/schedules/${scheduleId}`,
@@ -58,7 +65,9 @@ export function enableScheduleEndpoint(
   enabled: boolean
 ): Promise<ApiResponse<BackendScheduledTask>> {
   if (window.lengrvis?.schedules) {
-    return window.lengrvis.schedules.enable({ scheduleId, enabled }) as Promise<ApiResponse<BackendScheduledTask>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.schedules.enable({ scheduleId, enabled }) as Promise<ApiResponse<BackendScheduledTask>>
+    );
   }
   return request<BackendScheduledTask, { enabled: boolean }>({
     endpoint: `/api/schedules/${scheduleId}/enable`,

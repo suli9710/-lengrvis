@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.api import (
     routes_agents,
@@ -46,8 +46,9 @@ from app.observability import (
     register_observability_middleware,
 )
 from app.security.cors import configure_cors
-from app.security.desktop_api import assert_no_production_test_escape_hatches
+from app.security.desktop_api import assert_no_production_test_escape_hatches, desktop_health_challenge_proof
 from app.security.execution_isolation import assert_release_execution_configuration
+from app.security.lan import is_loopback_host
 from app.security.middleware import register_security_middleware
 
 
@@ -77,11 +78,19 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     @app.get("/api/health")
-    def health():
+    def health(request: Request, desktop_challenge: str = ""):
         # These routes are intentionally token-exempt so launchers, mobile LAN
         # discovery, and load balancers can probe liveness. Keep the response
-        # constant and anonymous for loopback clients as well as LAN clients.
-        return {"status": "ok"}
+        # constant and anonymous unless a loopback desktop asks for a bounded
+        # challenge proof. The proof authenticates the local backend without
+        # sending the desktop token to an unrelated process occupying the port.
+        payload = {"status": "ok"}
+        client_host = request.client.host if request.client else ""
+        if desktop_challenge and is_loopback_host(client_host):
+            proof = desktop_health_challenge_proof(desktop_challenge)
+            if proof:
+                payload["desktop_proof"] = proof
+        return payload
 
     @app.get("/api/health/diagnostics")
     def health_diagnostics():
@@ -142,5 +151,6 @@ def create_app() -> FastAPI:
     register_observability_middleware(app)
 
     return app
+
 
 app = LazyASGIApp(create_app, title="Lengrvis Agent EXE Backend", version="0.1.2")

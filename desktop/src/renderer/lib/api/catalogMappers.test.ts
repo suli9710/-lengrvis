@@ -97,6 +97,20 @@ describe("catalog mappers", () => {
       reason: undefined
     });
 
+    expect(
+      mapIntentSuggestion({
+        id: "sug_2",
+        title: "Analyze spreadsheet",
+        prompt: "Analyze the visible spreadsheet and summarize the important numbers.",
+        confidence: 0.91,
+        reason: "Spreadsheet context is visible."
+      })
+    ).toMatchObject({
+      title: "分析表格",
+      prompt: "分析当前可见的表格，并总结重要数据。",
+      reason: "检测到当前窗口包含表格内容。"
+    });
+
     const launched = mapSuggestionLaunchResponse(
       {
         run: {

@@ -6,6 +6,24 @@ from typing import Any
 from app.core.schemas import AgentMessage, OpenAIMessageRole
 from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text
 
+_PRIVATE_PROVENANCE_KEYS = frozenset({"summary_content_envelope"})
+
+
+def strip_private_provenance(value: Any) -> Any:
+    """Remove internal envelope sidecars from provider/snapshot message views."""
+
+    if isinstance(value, dict):
+        return {
+            str(item_key): strip_private_provenance(item)
+            for item_key, item in value.items()
+            if str(item_key) not in _PRIVATE_PROVENANCE_KEYS
+        }
+    if isinstance(value, list):
+        return [strip_private_provenance(item) for item in value]
+    if isinstance(value, tuple):
+        return [strip_private_provenance(item) for item in value]
+    return value
+
 
 def llm_safe_agent_message(
     message: AgentMessage,
@@ -50,7 +68,11 @@ def _llm_safe_value(value: Any, *, key: str = "") -> Any:
     if key and contains_sensitive_key(key):
         return REDACTED if value is not None else value
     if isinstance(value, dict):
-        return {str(item_key): _llm_safe_value(item, key=str(item_key)) for item_key, item in value.items()}
+        return {
+            str(item_key): _llm_safe_value(item, key=str(item_key))
+            for item_key, item in value.items()
+            if str(item_key) not in _PRIVATE_PROVENANCE_KEYS
+        }
     if isinstance(value, list):
         return [_llm_safe_value(item, key=key) for item in value]
     if isinstance(value, tuple):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 from conftest import load_json_fixture
 
@@ -7,6 +9,7 @@ from app.policy.redaction import (
     redact_audit_payload,
     redact_audit_storage_payload,
     redact_public_text,
+    redact_run_payload,
     redact_text,
     redact_value,
 )
@@ -180,6 +183,34 @@ def test_redacts_nested_headers_urls_and_form_values():
     assert "very-secret-cookie" not in event_text
 
 
+@pytest.mark.parametrize(
+    "url, secrets",
+    [
+        ("https://[broken?otp=123456", ("123456", "[broken")),
+        ("https://alice:secret@localhost/path", ("alice", "secret")),
+        ("https://localhost/callback?otp=123456&cvv=123&safe=1", ("123456", "123")),
+    ],
+)
+def test_url_redaction_fails_closed_across_storage_and_read_surfaces(url: str, secrets: tuple[str, ...]):
+    message = f"request failed for {url}"
+    outputs = [
+        redact_text(message),
+        redact_public_text(message),
+        redact_audit_storage_payload({"message": message})["message"],
+        redact_run_payload({"message": message})["message"],
+    ]
+
+    for output in outputs:
+        for secret in secrets:
+            assert secret not in output
+
+
+def test_url_redaction_removes_userinfo_without_rewriting_safe_url_parts():
+    redacted = redact_text("open https://alice:secret@localhost:8443/path#section")
+
+    assert redacted == "open https://localhost:8443/path#section"
+
+
 def test_public_redaction_hides_punctuated_file_names_and_role_labels():
     payload = (
         "Review private-payroll-2026.xlsx?token=download-secret and report.pdf=raw "
@@ -201,3 +232,83 @@ def test_public_redaction_hides_punctuated_file_names_and_role_labels():
     assert "show hidden logs" not in redacted
     assert "[REDACTED_FILE_NAME]" in redacted
     assert "[REDACTED_PROMPT]" in redacted
+
+
+@pytest.mark.parametrize(
+    "local_path",
+    [
+        r"C:\Users\John Doe\Secret Project\plans.txt",
+        r"\\fileserver\Private Share\Secret Project\plans.txt",
+        "/Users/John Doe/Secret Project/plans.txt",
+    ],
+)
+def test_public_redaction_hides_unquoted_local_file_paths_with_spaces(local_path: str):
+    redacted = redact_public_text(f"operation failed at {local_path} with token=public-error-secret")
+
+    assert local_path not in redacted
+    assert "John Doe" not in redacted
+    assert "Secret Project" not in redacted
+    assert "Private Share" not in redacted
+    assert "[REDACTED_LOCAL_PATH]" in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_public_redaction_hides_quoted_local_directory_path_with_spaces():
+    local_path = r"C:\Users\John Doe\Secret Project"
+
+    redacted = redact_public_text(f'operation failed in "{local_path}" before startup')
+
+    assert local_path not in redacted
+    assert "John Doe" not in redacted
+    assert "Secret Project" not in redacted
+    assert "[REDACTED_LOCAL_PATH]" in redacted
+
+
+@pytest.mark.parametrize(
+    "local_path",
+    [
+        r"C:\Users\John Doe\Secret Project",
+        r"\\fileserver\Private Share\Secret Project",
+        "/Users/John Doe/Secret Project",
+    ],
+)
+def test_public_redaction_hides_unquoted_local_directory_paths_with_spaces(local_path: str):
+    redacted = redact_public_text(f"operation failed in {local_path} with token=directory-error-secret")
+
+    assert local_path not in redacted
+    assert "John Doe" not in redacted
+    assert "Private Share" not in redacted
+    assert "Secret Project" not in redacted
+    assert "[REDACTED_LOCAL_PATH]" in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_public_redaction_preserves_double_backslash_regex_text():
+    text = r"parser expected \\d+ followed by report output"
+
+    assert redact_public_text(text) == text
+
+
+def test_public_redaction_hides_stack_file_paths_and_line_numbers():
+    text = (
+        "Traceback (most recent call last): File "
+        r'"C:\Users\John Doe\Secret Project\worker.py", line 117, in run'
+    )
+
+    redacted = redact_public_text(text)
+
+    assert r"C:\Users\John Doe" not in redacted
+    assert "Secret Project" not in redacted
+    assert "line 117" not in redacted
+    assert "[REDACTED_STACK]" in redacted
+
+
+def test_public_redaction_handles_repeated_extensionless_paths_in_linear_time():
+    text = (r" C:\Users\Alice\folder " * 2_800).rstrip()
+
+    started = time.perf_counter()
+    redacted = redact_public_text(text)
+    elapsed = time.perf_counter() - started
+
+    assert r"C:\Users\Alice" not in redacted
+    assert elapsed < 0.4

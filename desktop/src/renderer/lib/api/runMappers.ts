@@ -3,22 +3,9 @@ import type { AgentConversation, Plan, TaskBoundaryEvent, TaskEvent } from "../.
 import type { BackendPlan, BackendRunCreateResponse, BackendRunEvent, BackendRunState, BackendRunTimeline, BackendSuggestionLaunchResponse } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
+import { arrayOfObjects, optionalString, recordOrUndefined } from "./mapperPrimitives";
 import { mapOptionalTaskResultQuality } from "./resultQualityMappers";
 import { zhAgentName, zhBackendTaskStatus, zhBackendText, zhToolName } from "../zh";
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function arrayOfObjects(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
-    : [];
-}
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
 
 function emptyPlan(): Plan {
   return {

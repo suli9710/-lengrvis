@@ -14,6 +14,7 @@ from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized, resolve_task_path
 from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
+from app.tools import file_tool_schemas as _file_tool_schemas
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe as _ensure_mutation_path_safe,
 )
@@ -30,6 +31,9 @@ from app.tools.managed_backups import create_managed_backup
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
+
+_cleanup_plan_schema = _file_tool_schemas._cleanup_plan_schema
+_input_schema = _file_tool_schemas.input_schema
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
 READ_TEXT_MAX_CHARS = 120000
@@ -346,8 +350,18 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
+    # If the destination already exists we are about to overwrite it. Back it up
+    # first so the original content is recoverable; recording only
+    # trash_created_file here would send the *copy* to the recycle bin on
+    # rollback and leave the overwritten original unrecoverable.
+    dst_existed = dst.exists()
+    dst_backup = create_managed_backup(dst) if dst_existed else None
     _safe_copy_file(src, dst, allowed, context)
-    return {"changed_paths": [str(dst)], "rollback_info": {"trash_created_file": str(dst)}}
+    if dst_backup is not None:
+        rollback_info: dict[str, Any] = {"backup": dst_backup}
+    else:
+        rollback_info = {"trash_created_file": str(dst)}
+    return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
 def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -361,8 +375,14 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
+    dst_backup = create_managed_backup(dst) if dst.exists() and dst != src else None
     _safe_move_file(src, dst, allowed, context)
-    return {"changed_paths": [str(dst)], "rollback_info": {"move_back": {"from": str(dst), "to": str(src)}}}
+    rollback_info = {"move_back": {"from": str(dst), "to": str(src)}}
+    if dst_backup is not None:
+        # Overwrote an existing destination: after moving dst back to src, also
+        # restore the destination's original content.
+        rollback_info["dst_backup"] = dst_backup
+    return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
 def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -377,8 +397,12 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
+    dst_backup = create_managed_backup(dst) if dst.exists() and dst != src else None
     _safe_move_file(src, dst, allowed, context)
-    return {"changed_paths": [str(dst)], "rollback_info": {"rename_back": {"from": str(dst), "to": str(src)}}}
+    rollback_info = {"rename_back": {"from": str(dst), "to": str(src)}}
+    if dst_backup is not None:
+        rollback_info["dst_backup"] = dst_backup
+    return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
 def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -552,196 +576,6 @@ def _text_preview(value: str) -> str:
     if len(value) <= EDIT_PREVIEW_CONTEXT_CHARS:
         return value
     return value[:EDIT_PREVIEW_CONTEXT_CHARS]
-
-
-def _input_schema(name: str) -> dict[str, Any]:
-    schemas: dict[str, dict[str, Any]] = {
-        "file.search_by_name": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "additionalProperties": False,
-        },
-        "file.search_full_text": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer"},
-                "max_scanned": {"type": "integer"},
-                "max_file_bytes": {"type": "integer"},
-                "max_chars_per_file": {"type": "integer"},
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-        "file.semantic_search": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-        "file.list_directory": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.get_metadata": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.hash_file": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.read_text": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.find_duplicates": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "limit": {"type": "integer"},
-                "max_scanned": {"type": "integer"},
-                "max_file_bytes": {"type": "integer"},
-            },
-            "additionalProperties": False,
-        },
-        "file.cleanup_scan": _cleanup_plan_schema(read_only=True),
-        "file.cleanup_plan": _cleanup_plan_schema(read_only=True),
-        "file.dedupe_plan": _cleanup_plan_schema(read_only=True),
-        "file.cleanup_execute": {
-            "type": "object",
-            "properties": {
-                "roots": {"type": "array", "items": {"type": "string"}},
-                "plan_id": {"type": "string"},
-                "content_hash": {"type": "string"},
-                "selected_item_ids": {"type": "array", "items": {"type": "string"}},
-                "dry_run": {"type": "boolean"},
-                "approved": {"type": "boolean"},
-                "approval_id": {"type": "string"},
-                "threshold_mb": {"type": "number"},
-                "older_than_days": {"type": "integer"},
-                "limit": {"type": "integer"},
-            },
-            "required": ["roots", "plan_id", "content_hash", "selected_item_ids"],
-            "additionalProperties": False,
-        },
-        "file.cleanup_rollback": {
-            "type": "object",
-            "properties": {
-                "rollback_info": {"type": "object"},
-                "dry_run": {"type": "boolean"},
-                "approved": {"type": "boolean"},
-                "approval_id": {"type": "string"},
-            },
-            "required": ["rollback_info"],
-            "additionalProperties": False,
-        },
-        "file.preview_batch_operation": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "operation": {"type": "string"},
-                "target_folder": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-        "file.create_folder": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.copy": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "destination": {"type": "string"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["source", "destination"],
-            "additionalProperties": False,
-        },
-        "file.move": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "destination": {"type": "string"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["source", "destination"],
-            "additionalProperties": False,
-        },
-        "file.rename": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "new_name": {"type": "string"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["source", "new_name"],
-            "additionalProperties": False,
-        },
-        "file.trash": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "file.write_text": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "text": {"type": "string"}, "dry_run": {"type": "boolean"}},
-            "required": ["path", "text"],
-            "additionalProperties": False,
-        },
-        "file.edit_text": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "old_string": {"type": "string"},
-                "new_string": {"type": "string"},
-                "replace_all": {"type": "boolean"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["path", "old_string", "new_string"],
-            "additionalProperties": False,
-        },
-        "file.generate_markdown_report": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    }
-    return schemas.get(name, {"type": "object", "properties": {}, "additionalProperties": False})
-
-
-def _cleanup_plan_schema(*, read_only: bool) -> dict[str, Any]:
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "roots": {"type": "array", "items": {"type": "string"}},
-            "threshold_mb": {"type": "number"},
-            "older_than_days": {"type": "integer"},
-            "limit": {"type": "integer"},
-        },
-        "additionalProperties": False,
-    }
-    if not read_only:
-        schema["properties"]["dry_run"] = {"type": "boolean"}
-    return schema
 
 
 def register(registry) -> None:

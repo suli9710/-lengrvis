@@ -19,9 +19,12 @@ export function VoiceInputButton({ api, disabled = false, onTranscript, onError 
   const [availability, setAvailability] = useState<VoiceAvailability>("unknown");
   const [unavailableDetail, setUnavailableDetail] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const recorderRef = useRef<PcmRecorder | null>(null);
   const stopTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const startGenerationRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,6 +37,10 @@ export function VoiceInputButton({ api, disabled = false, onTranscript, onError 
         setAvailability("unavailable");
         setUnavailableDetail("无法读取语音识别状态");
       }
+    }).catch(() => {
+      if (cancelled) return;
+      setAvailability("unavailable");
+      setUnavailableDetail("无法读取语音识别状态");
     });
     return () => {
       cancelled = true;
@@ -50,45 +57,58 @@ export function VoiceInputButton({ api, disabled = false, onTranscript, onError 
     setIsRecording(false);
     if (!recorder) return;
 
-    const pcm = await recorder.stop();
-    if (!pcm.byteLength) {
-      onError?.("没有录到声音，请重试。");
-      return;
-    }
-
-    setIsTranscribing(true);
     try {
+      const pcm = await recorder.stop();
+      if (!pcm.byteLength) {
+        onError?.("没有录到声音，请重试。");
+        return;
+      }
+
+      if (mountedRef.current) setIsTranscribing(true);
       const response = await api.transcribeVoice({
         audioBase64: arrayBufferToBase64(pcm),
         sampleRate: recorder.sampleRate
       });
       if (response.ok && response.data) {
         if (response.data.transcript) {
-          onTranscript(response.data.transcript);
+          if (mountedRef.current) onTranscript(response.data.transcript);
         } else {
-          onError?.("没有识别出内容，请靠近麦克风再试一次。");
+          if (mountedRef.current) onError?.("没有识别出内容，请靠近麦克风再试一次。");
         }
       } else {
-        onError?.(response.error?.message ?? "语音识别失败，请稍后重试。");
+        if (mountedRef.current) onError?.(response.error?.message ?? "语音识别失败，请稍后重试。");
       }
+    } catch {
+      if (mountedRef.current) onError?.("语音识别连接失败，请稍后重试。");
     } finally {
-      setIsTranscribing(false);
+      if (mountedRef.current) setIsTranscribing(false);
     }
   }, [api, onError, onTranscript]);
 
   const startRecording = useCallback(async () => {
-    if (isRecording || isTranscribing) return;
+    if (isRecording || isStarting || isTranscribing) return;
+    const generation = startGenerationRef.current + 1;
+    startGenerationRef.current = generation;
+    setIsStarting(true);
     try {
       const recorder = await PcmRecorder.start();
+      if (!mountedRef.current || startGenerationRef.current !== generation) {
+        recorder.dispose();
+        return;
+      }
       recorderRef.current = recorder;
       setIsRecording(true);
       stopTimerRef.current = window.setTimeout(() => void stopRecording(), MAX_RECORDING_MS);
     } catch {
-      onError?.("无法访问麦克风，请检查系统麦克风权限。");
+      if (mountedRef.current) onError?.("无法访问麦克风，请检查系统麦克风权限。");
+    } finally {
+      if (mountedRef.current && startGenerationRef.current === generation) setIsStarting(false);
     }
-  }, [isRecording, isTranscribing, onError, stopRecording]);
+  }, [isRecording, isStarting, isTranscribing, onError, stopRecording]);
 
   useEffect(() => () => {
+    mountedRef.current = false;
+    startGenerationRef.current += 1;
     recorderRef.current?.dispose();
     recorderRef.current = null;
     if (stopTimerRef.current !== null) window.clearTimeout(stopTimerRef.current);
@@ -112,7 +132,7 @@ export function VoiceInputButton({ api, disabled = false, onTranscript, onError 
     <button
       type="button"
       className={isRecording ? "icon-button composer__voice composer__voice--recording" : "icon-button composer__voice"}
-      disabled={disabled || availability === "unknown" || isTranscribing}
+      disabled={disabled || availability === "unknown" || isStarting || isTranscribing}
       onClick={() => (isRecording ? void stopRecording() : void startRecording())}
       title={isRecording ? "停止录音并识别" : isTranscribing ? "正在识别…" : "按住说话前先点击开始录音"}
       aria-label={isRecording ? "停止录音并识别" : "开始语音输入"}
@@ -124,28 +144,50 @@ export function VoiceInputButton({ api, disabled = false, onTranscript, onError 
 }
 
 /** Captures microphone audio and downsamples it to 16 kHz mono PCM16. */
-class PcmRecorder {
+export class PcmRecorder {
   readonly sampleRate = TARGET_SAMPLE_RATE;
   private chunks: Float32Array[] = [];
   private constructor(
     private readonly stream: MediaStream,
     private readonly context: AudioContext,
     private readonly source: MediaStreamAudioSourceNode,
-    private readonly processor: ScriptProcessorNode
+    private readonly processor: ScriptProcessorNode,
+    private readonly silentSink: GainNode
   ) {}
 
   static async start(): Promise<PcmRecorder> {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
-    const context = new AudioContext();
-    const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(4096, 1, 1);
-    const recorder = new PcmRecorder(stream, context, source, processor);
-    processor.onaudioprocess = (event) => {
-      recorder.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-    };
-    source.connect(processor);
-    processor.connect(context.destination);
-    return recorder;
+    let stream: MediaStream | null = null;
+    let context: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let processor: ScriptProcessorNode | null = null;
+    let silentSink: GainNode | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+      context = new AudioContext();
+      source = context.createMediaStreamSource(stream);
+      processor = context.createScriptProcessor(4096, 1, 1);
+      silentSink = context.createGain();
+      silentSink.gain.value = 0;
+      const recorder = new PcmRecorder(stream, context, source, processor, silentSink);
+      processor.onaudioprocess = (event) => {
+        recorder.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
+      source.connect(processor);
+      processor.connect(silentSink);
+      silentSink.connect(context.destination);
+      return recorder;
+    } catch (error) { // broad-exception-boundary
+      try {
+        source?.disconnect();
+        processor?.disconnect();
+        silentSink?.disconnect();
+      } catch {
+        // Partial Web Audio graphs are best-effort during initialization failure.
+      }
+      stream?.getTracks().forEach((track) => track.stop());
+      if (context) await context.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async stop(): Promise<ArrayBuffer> {
@@ -167,6 +209,7 @@ class PcmRecorder {
     try {
       this.source.disconnect();
       this.processor.disconnect();
+      this.silentSink.disconnect();
     } catch {
       // already disconnected
     }

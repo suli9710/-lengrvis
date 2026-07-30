@@ -15,8 +15,10 @@ from typing import Any
 
 from evidence_contracts import (
     EVIDENCE_SIGNATURE_ENV,
+    EVIDENCE_SIGNATURE_PAYLOAD_V2,
     canonical_evidence_payload_hash,
     candidate_binding_from_environment,
+    is_sha256_hex,
     load_json,
     print_result,
     validate_evidence_signature_secret,
@@ -39,9 +41,11 @@ def seal_payload(payload: dict[str, Any], *, secret: str, signing_key_fingerprin
         raise ValueError("evidence must be an object when present")
     evidence["payload_sha256"] = ""
     evidence["signature"] = ""
-    evidence["signing_key_fingerprint"] = (
-        signing_key_fingerprint.strip() or sha256(secret.encode("utf-8")).hexdigest()[:16]
-    )
+    evidence["signature_payload_version"] = EVIDENCE_SIGNATURE_PAYLOAD_V2
+    fingerprint = signing_key_fingerprint.strip() or sha256(secret.encode("utf-8")).hexdigest()
+    if not is_sha256_hex(fingerprint):
+        raise ValueError("signing_key_fingerprint must be a full SHA256 hex digest")
+    evidence["signing_key_fingerprint"] = fingerprint.lower()
     payload_hash = canonical_evidence_payload_hash(sealed)
     evidence["payload_sha256"] = payload_hash
     evidence["signature"] = hmac.new(secret.encode("utf-8"), payload_hash.encode("utf-8"), sha256).hexdigest()

@@ -19,6 +19,11 @@ from fastapi import HTTPException
 
 from app.config import env_flag, get_base_settings, get_env
 from app.core import db
+from app.security.approval_session import (
+    ApprovalSessionGenerationError,
+    challenge_approval_session_fingerprint,
+    session_bound_signing_payload,
+)
 
 NATIVE_CONFIRMATION_SECRET_ENV = "LENGRVIS_NATIVE_CONFIRMATION_SECRET"  # noqa: S105
 NATIVE_CONFIRMATION_PUBLIC_KEY_ENV = "LENGRVIS_NATIVE_CONFIRMATION_PUBLIC_KEY"
@@ -43,6 +48,7 @@ class NativeConfirmationChallenge:
     endpoint: str
     approval_id: str
     preview_hmac: str
+    session_generation_fingerprint: str
     expires_at_epoch: int
 
     @property
@@ -170,6 +176,10 @@ def create_native_confirmation_challenge(
     normalized_approval_id = str(approval_id or "").strip()
     if not normalized_approval_id:
         raise HTTPException(status_code=422, detail="Approval id is required.")
+    try:
+        session_generation_fingerprint = challenge_approval_session_fingerprint()
+    except ApprovalSessionGenerationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     _evict_expired_challenges(now=now)
     challenge = NativeConfirmationChallenge(
         confirmation_id=secrets.token_urlsafe(24),
@@ -177,6 +187,7 @@ def create_native_confirmation_challenge(
         endpoint=normalized_endpoint,
         approval_id=normalized_approval_id,
         preview_hmac=str(preview_hmac or "").strip(),
+        session_generation_fingerprint=session_generation_fingerprint,
         expires_at_epoch=int(now or time.time()) + NATIVE_CONFIRMATION_CHALLENGE_TTL_SECONDS,
     )
     _store_challenge(challenge)
@@ -292,18 +303,27 @@ def _require_signed_challenge(
     if challenge.preview_hmac != str(preview_hmac or "").strip():
         raise HTTPException(status_code=403, detail="Native confirmation preview changed.")
     try:
+        signing_payload, session_generation_fingerprint = session_bound_signing_payload(
+            challenge.signing_payload,
+            challenge.session_generation_fingerprint,
+        )
         decoded_signature = _b64url_decode(signature)
         parsed_key = _load_public_key(public_key)
-        parsed_key.verify(decoded_signature, challenge.signing_payload.encode("utf-8"))
+        parsed_key.verify(decoded_signature, signing_payload.encode("utf-8"))
+    except ApprovalSessionGenerationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (InvalidSignature, ValueError) as exc:
         raise HTTPException(status_code=403, detail="Native confirmation proof is invalid.") from exc
-    return {
+    result = {
         "desktop_native_confirmed": True,
         "confirmation_id": confirmation_id,
         "confirmed_at_epoch": int(time.time()),
         "challenge_expires_at_epoch": expires_at,
         "public_key_fingerprint": native_confirmation_public_key_fingerprint(),
     }
+    if session_generation_fingerprint:
+        result["approval_session_generation_fingerprint"] = session_generation_fingerprint
+    return result
 
 
 def _require_legacy_hmac_confirmation(
@@ -380,8 +400,9 @@ def _store_challenge(challenge: NativeConfirmationChallenge) -> None:
         conn.execute(
             """
             INSERT INTO native_confirmation_challenges(
-                confirmation_id, action, endpoint, approval_id, preview_hmac, expires_at_epoch
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                confirmation_id, action, endpoint, approval_id, preview_hmac,
+                session_generation_fingerprint, expires_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 challenge.confirmation_id,
@@ -389,6 +410,7 @@ def _store_challenge(challenge: NativeConfirmationChallenge) -> None:
                 challenge.endpoint,
                 challenge.approval_id,
                 challenge.preview_hmac,
+                challenge.session_generation_fingerprint,
                 challenge.expires_at_epoch,
             ),
         )
@@ -407,7 +429,7 @@ def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge |
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT action, endpoint, approval_id, preview_hmac, expires_at_epoch
+            SELECT action, endpoint, approval_id, preview_hmac, session_generation_fingerprint, expires_at_epoch
             FROM native_confirmation_challenges
             WHERE confirmation_id = ?
             """,
@@ -427,7 +449,8 @@ def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge |
             endpoint=str(row[1]),
             approval_id=str(row[2]),
             preview_hmac=str(row[3]),
-            expires_at_epoch=int(row[4]),
+            session_generation_fingerprint=str(row[4]),
+            expires_at_epoch=int(row[5]),
         )
 
 
@@ -471,6 +494,7 @@ def _ensure_challenge_table(conn: sqlite3.Connection) -> None:
             endpoint TEXT NOT NULL DEFAULT '',
             approval_id TEXT NOT NULL,
             preview_hmac TEXT NOT NULL,
+            session_generation_fingerprint TEXT NOT NULL DEFAULT '',
             expires_at_epoch INTEGER NOT NULL
         )
         """
@@ -478,6 +502,11 @@ def _ensure_challenge_table(conn: sqlite3.Connection) -> None:
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(native_confirmation_challenges)").fetchall()}
     if "endpoint" not in columns:
         conn.execute("ALTER TABLE native_confirmation_challenges ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
+    if "session_generation_fingerprint" not in columns:
+        conn.execute(
+            "ALTER TABLE native_confirmation_challenges "
+            "ADD COLUMN session_generation_fingerprint TEXT NOT NULL DEFAULT ''"
+        )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_native_confirmation_challenges_expires

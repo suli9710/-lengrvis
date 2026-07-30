@@ -94,8 +94,17 @@ def run_process_tree(
     hide_window: bool = False,
     cancel_event: threading.Event | None = None,
     cancel_poll_interval: float = 0.05,
+    windows_job_limits: Any | None = None,
+    require_windows_isolation: bool = False,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    isolation_requested = require_windows_isolation or windows_job_limits is not None
+    if isolation_requested and os.name != "nt":
+        # Reject before spawning. Killing a process after Popen is not a
+        # security boundary because user code may already have executed.
+        from app.core.windows_job import WindowsJobIsolationError
+
+        raise WindowsJobIsolationError("Windows Job Object isolation is unavailable on this host")
     if input is not None:
         kwargs["stdin"] = subprocess.PIPE
     if capture_output:
@@ -103,8 +112,33 @@ def run_process_tree(
             raise ValueError("stdout and stderr may not be used with capture_output.")
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    kwargs.update(process_tree_popen_kwargs(hide_window=hide_window))
+    popen_kwargs = process_tree_popen_kwargs(hide_window=hide_window)
+    if os.name == "nt":
+        creation_flags = int(kwargs.get("creationflags", 0) or 0) | int(popen_kwargs["creationflags"])
+        if isolation_requested:
+            creation_flags |= int(getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+        kwargs["creationflags"] = creation_flags
+    else:
+        kwargs.update(popen_kwargs)
     process = subprocess.Popen(command, **kwargs)  # noqa: S603 - callers perform command validation.
+    job_handle: int | None = None
+    if isolation_requested:
+        from app.core.windows_job import (
+            WindowsJobIsolationError,
+            attach_process_to_job,
+            close_job_handle,
+            resume_suspended_process,
+        )
+
+        try:
+            job_handle = attach_process_to_job(process, windows_job_limits)
+            resume_suspended_process(process)
+        except WindowsJobIsolationError:
+            if job_handle:
+                close_job_handle(job_handle)
+                job_handle = None
+            kill_process_tree(process)
+            raise
     try:
         stdout, stderr = _communicate_cancellable(
             process,
@@ -123,6 +157,11 @@ def run_process_tree(
             output=stdout,
             stderr=stderr,
         ) from None
+    finally:
+        if job_handle:
+            from app.core.windows_job import close_job_handle
+
+            close_job_handle(job_handle)
 
     completed = subprocess.CompletedProcess(command, process.poll(), stdout, stderr)
     if check:

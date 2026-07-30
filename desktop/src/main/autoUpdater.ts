@@ -43,6 +43,7 @@ interface ElectronAppUpdater {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   allowDowngrade: boolean;
+  verifyUpdateCodeSignature?: boolean;
   on(event: string, listener: (...args: unknown[]) => void): void;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
@@ -71,8 +72,12 @@ function loadUpdater(): ElectronAppUpdater | null {
     // 延迟加载：dev/未安装依赖时不拖垮主进程启动。
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { autoUpdater } = require("electron-updater") as { autoUpdater: ElectronAppUpdater };
-    // 打包构建默认校验更新包签名（verifyUpdateCodeSignature: true）；
-    // 未签名本地 dist 不会通过签名校验，因此不静默下载安装。
+    // 显式开启更新包签名校验，不依赖库的默认值。注意：electron-updater 在
+    // Windows 上仅当【已安装的应用本身已签名】时才校验下载包的 Authenticode
+    // 签名——若发布产物未签名（见 electron-builder.yml），该校验会被有效跳过。
+    // 因此发布必须走签名配置（electron-builder.signed.js）才能真正阻断被篡改的更新。
+    autoUpdater.verifyUpdateCodeSignature = true;
+    // autoDownload=false：即便有可用更新也不静默下载安装，需用户确认。
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.allowDowngrade = false;

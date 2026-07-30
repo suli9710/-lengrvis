@@ -38,6 +38,7 @@ def _init_test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: 
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     db.init_db()
+    db.bootstrap_sensitive_record_integrity()
 
 
 def _settings_context():
@@ -959,7 +960,7 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
         preview_hmac=preview_hmac(preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
-        tool_version="2",
+        tool_version="3",
         diff_preview=preview,
     )
     payload["approval_id"] = approval.id
@@ -1035,7 +1036,7 @@ def test_ui_automation_api_expires_approval_when_target_state_changes(monkeypatc
         preview_hmac=preview_hmac(preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
-        tool_version="2",
+        tool_version="3",
         diff_preview=preview,
     )
     payload["approval_id"] = approval.id

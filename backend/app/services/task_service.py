@@ -14,11 +14,13 @@ from app.core import db
 from app.core.audit import record
 from app.core.errors import AppError, StateTransitionError
 from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, RunEngine, RunPhase, Task, TaskStatus
+from app.observability.tracing import span
 from app.orchestration.engine_router import route_engine
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
+from app.policy.redaction import redact_public_text, redact_value
 from app.services.task_pool import get_pool
 
 
@@ -173,6 +175,22 @@ async def _delegate_task(
 
 
 async def _run_task_through_orchestrator(task: Task) -> Task:
+    with span(
+        "task.execute",
+        {"task.id": task.id, "task.status": task.status.value, "task.execution_stage": task.execution_stage.value},
+    ) as task_span:
+        try:
+            result = await _run_task_through_orchestrator_impl(task)
+            task_span.set_attribute("task.result_status", result.status.value)
+            if result.status in TERMINAL_TASK_PHASES and result.status == TaskPhase.FAILED:
+                task_span.set_status("error")
+            return result
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: trace status must reflect any task failure.
+            task_span.set_status("error")
+            raise
+
+
+async def _run_task_through_orchestrator_impl(task: Task) -> Task:
     try:
         orchestrator = orchestrator_registry.get_or_create_for_task(task.id, OrchestratorAgent)
         task = get_task(task.id)
@@ -182,7 +200,12 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
         # was taken. Reload before persisting a failure so a late exception
         # cannot turn a user-requested pause/cancel back into FAILED.
         _persist_resume_failure_if_active(task.id, exc)
-        record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
+        record(
+            "task.background_failed",
+            "OrchestratorAgent",
+            {"error": _safe_task_failure_detail(exc)},
+            task_id=task.id,
+        )
         raise
 
 
@@ -241,6 +264,41 @@ async def cancel_task(task_id: str, *, strict: bool | None = None) -> Task:
     cancelled = safe_transition(task, TaskStatus.CANCELLED, actor="TaskService", strict=strict)
     _record_task_cancel_completed(task_id, started)
     return cancelled
+
+
+async def emergency_stop_all_tasks() -> dict[str, Any]:
+    """Cancel every non-terminal task and fan out to all execution owners.
+
+    This is intentionally a narrow, fail-closed control-plane operation used by
+    the desktop emergency-stop shortcut.  It does not delete tasks or alter
+    completed history; every active task goes through the same cancellation
+    path as an explicit user cancel so browser sessions, task-pool workers,
+    engine runs, and pending approvals are all reconciled consistently.
+    """
+    active_ids = [task.id for task in list_tasks() if task.status not in TERMINAL_TASK_PHASES]
+    results = await asyncio.gather(
+        *(cancel_task(task_id, strict=False) for task_id in active_ids),
+        return_exceptions=True,
+    )
+    cancelled: list[str] = []
+    failed: list[dict[str, str]] = []
+    for task_id, result in zip(active_ids, results, strict=True):
+        if isinstance(result, BaseException):
+            failed.append({"task_id": task_id, "error": _safe_task_failure_detail(result)})
+        else:
+            cancelled.append(result.id)
+    record(
+        "task.emergency_stop_completed",
+        "TaskService",
+        {"requested": len(active_ids), "cancelled": len(cancelled), "failed": len(failed)},
+        task_id=None,
+    )
+    return {
+        "ok": not failed,
+        "requested": len(active_ids),
+        "cancelled_task_ids": cancelled,
+        "failed_tasks": failed,
+    }
 
 
 def _record_task_cancel_completed(task_id: str, started: float) -> None:
@@ -311,8 +369,7 @@ def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
     # two independent executors could otherwise perform the same step twice.
     bound_runs = db.fetch_many("runs", "task_id = ?", (task.id,), limit=100)
     has_nonterminal_bound_run = any(
-        RunPhase(item.get("phase", RunPhase.PENDING.value)) not in run_service.TERMINAL_PHASES
-        for item in bound_runs
+        RunPhase(item.get("phase", RunPhase.PENDING.value)) not in run_service.TERMINAL_PHASES for item in bound_runs
     )
     if has_nonterminal_bound_run:
         run_service.resume_runs_for_task(task.id)
@@ -325,29 +382,56 @@ def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
 
 
 async def _resume_task_through_orchestrator(task: Task) -> Task:
+    with span(
+        "task.resume",
+        {"task.id": task.id, "task.status": task.status.value, "task.execution_stage": task.execution_stage.value},
+    ) as task_span:
+        try:
+            result = await _resume_task_through_orchestrator_impl(task)
+            task_span.set_attribute("task.result_status", result.status.value)
+            if result.status == TaskPhase.FAILED:
+                task_span.set_status("error")
+            return result
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: trace status must reflect any resume failure.
+            task_span.set_status("error")
+            raise
+
+
+async def _resume_task_through_orchestrator_impl(task: Task) -> Task:
     try:
         await _run_existing_plan(task)
         return task
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         _persist_resume_failure_if_active(task.id, exc)
-        record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
+        record(
+            "task.resume_failed",
+            "OrchestratorAgent",
+            {"error": _safe_task_failure_detail(exc)},
+            task_id=task.id,
+        )
         raise
 
 
 def _persist_resume_failure_if_active(task_id: str, exc: Exception) -> Task:
     latest = get_task(task_id)
+    safe_error = _safe_task_failure_detail(exc)
     if latest.status in TERMINAL_TASK_PHASES or (
         latest.status == TaskPhase.EXECUTION and latest.execution_stage == ExecutionStage.PAUSED
     ):
         record(
             "task.late_resume_failure_ignored",
             "TaskService",
-            {"persisted_status": latest.status.value, "error": str(exc)},
+            {"persisted_status": latest.status.value, "error": safe_error},
             task_id=task_id,
         )
         return latest
-    latest.final_summary = f"Task resume failed: {exc}"
+    latest.final_summary = f"Task resume failed: {safe_error}"
     return safe_transition(latest, TaskStatus.FAILED, actor="TaskService", strict=True)
+
+
+def _safe_task_failure_detail(exc: BaseException) -> str:
+    safe = redact_public_text(str(redact_value(str(exc or "")) or "")).strip()
+    return safe or exc.__class__.__name__
 
 
 async def _run_existing_plan(task: Task) -> None:

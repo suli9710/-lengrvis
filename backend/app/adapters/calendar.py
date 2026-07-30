@@ -70,7 +70,21 @@ def _validate_event_payload(payload: dict[str, Any]) -> str:
         return "Calendar event 'start' is required."
     if not payload.get("end"):
         return "Calendar event 'end' is required."
+    # Single-line ICS fields must not contain CR/LF: a newline could inject
+    # additional ICS properties or split the event. (description is multi-line
+    # and left to the ICS writer to escape.)
+    for field in ("title", "location", "start", "end", "timezone"):
+        if _contains_crlf(payload.get(field)):
+            return f"Calendar event '{field}' must not contain line breaks."
+    attendees = payload.get("attendees")
+    attendee_items = [attendees] if isinstance(attendees, str) else (attendees or [])
+    if any(_contains_crlf(item) for item in attendee_items):
+        return "Calendar event 'attendees' must not contain line breaks."
     return ""
+
+
+def _contains_crlf(value: Any) -> bool:
+    return isinstance(value, str) and ("\r" in value or "\n" in value)
 
 
 def _build_event(payload: dict[str, Any]) -> dict[str, Any]:

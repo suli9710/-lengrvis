@@ -340,13 +340,14 @@ $gates = @(
     },
     [ordered]@{
         id = "backend"
-        job = "Backend pytest + golden task gate"
-        scope = "Backend pytest suite and golden task regression gate"
+        job = "Backend pytest + golden task + MCP conformance gate"
+        scope = "Backend pytest suite, golden task regression, and official MCP lifecycle/tools/SSE resume conformance"
         commands = @(
             "python -m pip install --require-hashes -r requirements-dev-lock.txt",
             "python -m playwright install chromium",
             "python -m pytest backend/tests -q --maxfail=1",
-            "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1"
+            "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1",
+            "npm run mcp:conformance"
         )
     },
     [ordered]@{
@@ -456,6 +457,49 @@ else {
     "manual_signature_recorded_review_required"
 }
 
+$ownerSignatureVerificationStatus = if ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE") {
+    "pending"
+}
+else {
+    "not_verified"
+}
+$ownerSignaturePayloadSha256 = "PENDING"
+$ownerSignatureKeyFingerprint = "PENDING"
+$ownerSignatureVerificationError = ""
+$ownerSignatureVerificationRelativePath = "build/release-owner-signature-verification.json"
+$ownerSignatureVerificationPath = Join-Path $resolvedRoot $ownerSignatureVerificationRelativePath
+if ($StrictReleaseSignoff) {
+    $verificationScript = Join-Path $PSScriptRoot "release_owner_signature.py"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $ownerSignatureVerificationPath) -Force | Out-Null
+    & python $verificationScript --output $ownerSignatureVerificationPath
+    if ($LASTEXITCODE -ne 0) {
+        $ownerSignatureVerificationError = "Cryptographic release-owner signature verification failed."
+    }
+    elseif (-not (Test-Path -LiteralPath $ownerSignatureVerificationPath -PathType Leaf)) {
+        $ownerSignatureVerificationError = "Cryptographic release-owner signature evidence was not produced."
+    }
+    else {
+        try {
+            $ownerSignatureVerification = Get-Content -LiteralPath $ownerSignatureVerificationPath -Raw | ConvertFrom-Json
+            if ($ownerSignatureVerification.verified -ne $true) {
+                throw "verification evidence did not record verified=true"
+            }
+            $ownerSignaturePayloadSha256 = ([string]$ownerSignatureVerification.payload_sha256).Trim()
+            $ownerSignatureKeyFingerprint = ([string]$ownerSignatureVerification.public_key_fingerprint).Trim()
+            if ($ownerSignaturePayloadSha256 -notmatch '^sha256:[0-9a-f]{64}$') {
+                throw "payload digest is invalid"
+            }
+            if ($ownerSignatureKeyFingerprint -notmatch '^sha256:[0-9a-f]{64}$') {
+                throw "public-key fingerprint is invalid"
+            }
+            $ownerSignatureVerificationStatus = "verified"
+        }
+        catch {
+            $ownerSignatureVerificationError = "Cryptographic release-owner signature evidence is invalid."
+        }
+    }
+}
+
 $strictReleaseEvidenceErrors = New-Object System.Collections.Generic.List[string]
 if ($StrictReleaseSignoff) {
     if ($ciStatus -ne "machine_gates_passed") {
@@ -466,6 +510,15 @@ if ($StrictReleaseSignoff) {
     }
     if ($OwnerSignature -eq "PENDING_RELEASE_OWNER_SIGNATURE" -or [string]::IsNullOrWhiteSpace($OwnerSignature)) {
         $strictReleaseEvidenceErrors.Add("Owner signature must be recorded for strict RC evidence.")
+    }
+    if ($ownerSignatureVerificationStatus -ne "verified") {
+        $message = if ([string]::IsNullOrWhiteSpace($ownerSignatureVerificationError)) {
+            "Owner signature must be cryptographically verified for strict RC evidence."
+        }
+        else {
+            $ownerSignatureVerificationError
+        }
+        $strictReleaseEvidenceErrors.Add($message)
     }
     $acceptedManualStatuses = @(
         "rc_signoff_recorded",
@@ -510,6 +563,10 @@ $lines.Add("- Worktree dirty file count: $worktreeDirtyCount")
 $lines.Add("- Manual sign-off status: $manualStatus")
 $lines.Add("- Release owner: $ReleaseOwner")
 $lines.Add("- Owner signature: $OwnerSignature")
+$lines.Add("- Owner signature verification: $ownerSignatureVerificationStatus")
+$lines.Add("- Owner signature payload SHA-256: $ownerSignaturePayloadSha256")
+$lines.Add("- Owner signature key fingerprint: $ownerSignatureKeyFingerprint")
+$lines.Add("- Owner signature evidence: $ownerSignatureVerificationRelativePath")
 $lines.Add("- Workflow: $(Get-FirstNonEmpty @($env:GITHUB_WORKFLOW, 'local/manual') 'local/manual')")
 $lines.Add("- Run id: $(Get-FirstNonEmpty @($env:GITHUB_RUN_ID, 'local/manual') 'local/manual')")
 $lines.Add("- Run attempt: $(Get-FirstNonEmpty @($env:GITHUB_RUN_ATTEMPT, 'local/manual') 'local/manual')")
@@ -554,6 +611,10 @@ $lines.Add("## Owner Signature")
 $lines.Add("")
 $lines.Add("- Owner: $ReleaseOwner")
 $lines.Add("- Signature: $OwnerSignature")
+$lines.Add("- Verification: $ownerSignatureVerificationStatus")
+$lines.Add("- Payload SHA-256: $ownerSignaturePayloadSha256")
+$lines.Add("- Public-key fingerprint: $ownerSignatureKeyFingerprint")
+$lines.Add("- Verification evidence: $ownerSignatureVerificationRelativePath")
 $lines.Add("- Signed at UTC: $(if ($OwnerSignature -eq 'PENDING_RELEASE_OWNER_SIGNATURE') { 'PENDING' } else { $GeneratedAtUtc })")
 $lines.Add("")
 

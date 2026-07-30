@@ -31,6 +31,7 @@ import {
   readableError,
   recentReadableChatMessages,
   requiresLocalLlmHealth,
+  approvalAuthorizationIsFresh,
   selectedPendingApproval,
   type RealtimeBadMessageNotice
 } from "./appViewModel";
@@ -118,7 +119,7 @@ export function App() {
   });
 
   const pendingApprovals = useMemo(
-    () => approvalRequests.filter((approval) => approval.status === "pending"),
+    () => approvalRequests.filter((approval) => approval.status === "pending" && approvalAuthorizationIsFresh(approval)),
     [approvalRequests]
   );
   const pendingApproval = useMemo(
@@ -272,22 +273,38 @@ export function App() {
     if (result.ok && result.data) {
       setSettings(result.data);
       setMode(result.data.mode);
-      if (requiresLocalLlmHealth(result.data.mode)) {
-        const health = await api.getLocalLlmHealth();
-        if (health.ok && health.data) setLocalLlmHealth(health.data);
-      } else {
+      const needsLocalHealth = requiresLocalLlmHealth(result.data.mode);
+      const [localHealthResult, llmResult, costResult] = await Promise.allSettled([
+        needsLocalHealth ? api.getLocalLlmHealth() : Promise.resolve(null),
+        api.getLlmHealth(),
+        api.getLlmCostSummary()
+      ]);
+      if (!needsLocalHealth) {
         setLocalLlmHealth(null);
+      } else if (
+        localHealthResult.status === "fulfilled" &&
+        localHealthResult.value?.ok &&
+        localHealthResult.value.data
+      ) {
+        setLocalLlmHealth(localHealthResult.value.data);
       }
-      const llm = await api.getLlmHealth();
-      if (llm.ok && llm.data) setLlmHealth(llm.data);
-      const cost = await api.getLlmCostSummary();
-      if (cost.ok && cost.data) setLlmCostSummary(cost.data);
+      if (llmResult.status === "fulfilled" && llmResult.value.ok && llmResult.value.data) {
+        setLlmHealth(llmResult.value.data);
+      }
+      if (costResult.status === "fulfilled" && costResult.value.ok && costResult.value.data) {
+        setLlmCostSummary(costResult.value.data);
+      }
     }
   };
 
   const openWindowsSettings = async (uri: string) => {
-    const result = await api.openWindowsSettings(uri);
-    if (!result.ok) {
+    try {
+      const result = await api.openWindowsSettings(uri);
+      if (result.ok && result.data?.ok !== false && result.data?.opened !== false) {
+        return;
+      }
+      throw new Error("open_settings_failed");
+    } catch { // broad-exception-boundary
       setAuditEntries((current) => [
         {
           id: `settings-${crypto.randomUUID()}`,
@@ -299,8 +316,10 @@ export function App() {
         },
         ...current
       ]);
+      throw new Error("无法打开 Windows 设置，请稍后重试。");
+    } finally {
+      void refreshWorkspace().catch(() => undefined); // best-effort-refresh
     }
-    void refreshWorkspace();
   };
 
   const refreshSystemInfo = async (): Promise<SystemInfo | null> => {
@@ -323,8 +342,10 @@ export function App() {
         : null;
     if (nextSystemInfo) setSystemInfo(nextSystemInfo);
     if (requiresLocalLlmHealth(mode)) {
-      const localLlmResult = await api.getLocalLlmHealth();
-      if (localLlmResult.ok && localLlmResult.data) setLocalLlmHealth(localLlmResult.data);
+      const [localLlmResult] = await Promise.allSettled([api.getLocalLlmHealth()]);
+      if (localLlmResult.status === "fulfilled" && localLlmResult.value.ok && localLlmResult.value.data) {
+        setLocalLlmHealth(localLlmResult.value.data);
+      }
     } else {
       setLocalLlmHealth(null);
     }
@@ -356,27 +377,41 @@ export function App() {
     decision: "approved" | "denied",
     note?: string
   ) => {
-    const result = await api.submitApprovalDecision({ approvalId, decision, note });
-    if (result.ok && result.data) {
-      setApprovalRequests((current) => {
-        return current.map((approval) => (approval.id === approvalId ? result.data as ApprovalRequest : approval));
-      });
-      setApprovalError(null);
-      if (approvalSelectionContext === "queue") {
-        const nextPendingCount = pendingApprovals.filter((approval) => approval.id !== approvalId).length;
-        setApprovalQueueCursor((current) => Math.min(current, Math.max(nextPendingCount - 1, 0)));
-        if (nextPendingCount === 0) {
+    try {
+      const result = await api.submitApprovalDecision({ approvalId, decision, note });
+      if (result.ok && result.data) {
+        setApprovalRequests((current) => {
+          return current.map((approval) => (approval.id === approvalId ? result.data as ApprovalRequest : approval));
+        });
+        setApprovalError(null);
+        if (approvalSelectionContext === "queue") {
+          const nextPendingCount = pendingApprovals.filter((approval) => approval.id !== approvalId).length;
+          setApprovalQueueCursor((current) => Math.min(current, Math.max(nextPendingCount - 1, 0)));
+          if (nextPendingCount === 0) {
+            setIsApprovalOpen(false);
+          }
+        } else {
           setIsApprovalOpen(false);
         }
-      } else {
-        setIsApprovalOpen(false);
+        return;
       }
-      return;
+      setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试");
+    } catch (error) { // broad-exception-boundary
+      setApprovalError(readableError(error, "审批提交失败，请刷新后重试"));
     }
-    setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试");
-    const approvalsResult = await api.listPendingApprovals();
-    if (approvalsResult.ok && approvalsResult.data) {
-      setApprovalRequests(approvalsResult.data);
+    await refreshPendingApprovals();
+  };
+
+  const refreshPendingApprovals = async () => {
+    try {
+      const approvalsResult = await api.listPendingApprovals();
+      if (approvalsResult.ok && approvalsResult.data) {
+        setApprovalRequests(approvalsResult.data);
+      } else {
+        setApprovalError(approvalsResult.error?.message ?? "无法刷新审批队列，请稍后重试");
+      }
+    } catch (error) { // broad-exception-boundary
+      setApprovalError(readableError(error, "无法刷新审批队列，请稍后重试"));
     }
   };
 
@@ -470,9 +505,17 @@ export function App() {
         return;
       }
       setApprovalError("这个任务当前没有可确认的审批，请刷新后再试。");
-      void api.listPendingApprovals().then((approvalsResult) => {
-        if (approvalsResult.ok && approvalsResult.data) setApprovalRequests(approvalsResult.data);
-      });
+      void api.listPendingApprovals()
+        .then((approvalsResult) => {
+          if (approvalsResult.ok && approvalsResult.data) {
+            setApprovalRequests(approvalsResult.data);
+          } else {
+            setApprovalError(approvalsResult.error?.message ?? "无法刷新审批队列，请稍后重试。");
+          }
+        })
+        .catch((error: unknown) => {
+          setApprovalError(readableError(error, "无法刷新审批队列，请稍后重试。"));
+        });
       return;
     }
     if (action === "open") {

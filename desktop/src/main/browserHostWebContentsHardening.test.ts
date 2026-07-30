@@ -94,6 +94,48 @@ describe("browserHostWebContentsHardening", () => {
     expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
+  it("redacts every query value and fragment before reporting a blocked download", () => {
+    const onDownloadBlocked = vi.fn();
+    blockBrowserHostDownload(
+      { preventDefault: vi.fn() },
+      {
+        cancel: vi.fn(),
+        getURL: () =>
+          "https://user:password@example.test/report.csv?download=1&sig=secret&refresh_token=refresh&id_token=id&code=oauth&X-Goog-Credential=credential&X-Goog-Signature=signature#session=fragment"
+      },
+      onDownloadBlocked
+    );
+    const url = onDownloadBlocked.mock.calls[0][0].url as string;
+
+    expect(url).toContain("download=%5Bredacted%5D");
+    expect(url).not.toContain("user:password");
+    expect(url).not.toContain("download=1");
+    expect(url).not.toContain("=secret");
+    expect(url).not.toContain("=refresh");
+    expect(url).not.toContain("=oauth");
+    expect(url).not.toContain("=credential");
+    expect(url).not.toContain("=signature");
+    expect(url).not.toContain("=fragment");
+    expect(url.match(/%5Bredacted%5D|\[redacted\]/g)?.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("does not fall back to an unsanitized URL when the cancelled item is unavailable", () => {
+    const onDownloadBlocked = vi.fn();
+
+    blockBrowserHostDownload(
+      { preventDefault: vi.fn() },
+      {
+        cancel: vi.fn(),
+        getURL: () => {
+          throw new Error("item already disposed");
+        }
+      },
+      onDownloadBlocked
+    );
+
+    expect(onDownloadBlocked).toHaveBeenCalledWith({ url: "" });
+  });
+
   it("fails request interception closed for local file URLs", async () => {
     const callback = vi.fn();
 

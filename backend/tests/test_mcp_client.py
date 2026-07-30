@@ -10,10 +10,13 @@ import asyncio
 import http.server
 import json
 import socketserver
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from app.config import AppSettings
@@ -47,7 +50,19 @@ def _make_handler():
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
             method = payload.get("method")
             response: dict
-            if method == "tools/list":
+            if method == "initialize":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {"tools": {}, "resources": {}},
+                        "serverInfo": {"name": "mock", "version": "1.0"},
+                    },
+                }
+            elif method == "notifications/initialized":
+                response = {}
+            elif method == "tools/list":
                 response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"tools": _MOCK_TOOLS}}
             elif method == "tools/call":
                 params = payload.get("params") or {}
@@ -76,6 +91,8 @@ def _make_handler():
             body = json.dumps(response).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            if method == "initialize":
+                self.send_header("MCP-Session-Id", "test-session")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -112,6 +129,49 @@ def test_mcp_client_lists_tools(mcp_server):
     assert echo_tool["input_schema"]["type"] == "object"
 
 
+def test_mcp_client_collects_paginated_tool_discovery(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="paged", url="https://mcp.example/mcp", strict_lifecycle=False))
+    requests: list[dict[str, Any]] = []
+
+    async def fake_rpc(payload: dict[str, Any]) -> dict[str, Any]:
+        requests.append(payload)
+        cursor = (payload.get("params") or {}).get("cursor")
+        if cursor is None:
+            return {
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {"tools": [{"name": "first", "inputSchema": {"type": "object"}}], "nextCursor": "p2"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": payload["id"],
+            "result": {"tools": [{"name": "second", "inputSchema": {"type": "object"}}]},
+        }
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    tools = asyncio.run(client.list_tools())
+
+    assert [tool["name"] for tool in tools] == ["first", "second"]
+    assert [(request.get("params") or {}).get("cursor") for request in requests] == [None, "p2"]
+
+
+def test_mcp_client_rejects_repeated_pagination_cursor(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="loop", url="https://mcp.example/mcp", strict_lifecycle=False))
+
+    async def fake_rpc(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": payload["id"],
+            "result": {"tools": [], "nextCursor": "same"},
+        }
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    assert asyncio.run(client.list_tools()) == []
+    assert "repeated" in client.status()["error"] or "repeated" in client._tools_cache_error
+
+
 def test_mcp_client_calls_tool(mcp_server):
     config = MCPServerConfig(name="demo", url=mcp_server)
     client = MCPClient(config)
@@ -120,8 +180,124 @@ def test_mcp_client_calls_tool(mcp_server):
     assert result["result"]["sum"] == 5
 
 
+def test_mcp_client_performs_lifecycle_and_propagates_negotiated_headers(monkeypatch):
+    requests: list[dict[str, Any]] = []
+    deletes: list[dict[str, Any]] = []
+    responses = [
+        httpx.Response(
+            200,
+            headers={"Content-Type": "application/json", "MCP-Session-Id": "session-123"},
+            json={
+                "jsonrpc": "2.0",
+                "id": "placeholder",
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "strict", "version": "1"},
+                },
+            },
+        ),
+        httpx.Response(202),
+        httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": "placeholder", "result": {"tools": []}},
+        ),
+    ]
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, json, headers, extensions):  # noqa: A002, ARG002
+            requests.append({"method": json.get("method"), "id": json.get("id"), "headers": dict(headers)})
+            response = responses.pop(0)
+            if response.content:
+                payload = response.json()
+                payload["id"] = json.get("id")
+                response = httpx.Response(response.status_code, headers=response.headers, json=payload)
+            return response
+
+        async def delete(self, url, *, headers, extensions):  # noqa: ARG002
+            deletes.append({"url": url, "headers": dict(headers)})
+            return httpx.Response(204)
+
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
+    monkeypatch.setattr("app.mcp.client.httpx.AsyncClient", FakeAsyncClient)
+    client = MCPClient(MCPServerConfig(name="strict", url="https://mcp.example/mcp"))
+
+    assert asyncio.run(client.list_tools()) == []
+    assert [request["method"] for request in requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+    ]
+    assert "MCP-Protocol-Version" not in requests[0]["headers"]
+    assert requests[1]["headers"]["MCP-Protocol-Version"] == "2025-11-25"
+    assert requests[1]["headers"]["MCP-Session-Id"] == "session-123"
+    assert requests[2]["headers"]["MCP-Session-Id"] == "session-123"
+    assert "application/json" in requests[2]["headers"]["Accept"]
+    assert "text/event-stream" in requests[2]["headers"]["Accept"]
+    assert client.status()["state"] == "ready"
+    asyncio.run(client.close())
+    assert deletes[0]["headers"]["MCP-Session-Id"] == "session-123"
+    assert deletes[0]["headers"]["MCP-Protocol-Version"] == "2025-11-25"
+    assert client.status()["state"] == "configured"
+
+
+def test_mcp_client_rejects_mismatched_jsonrpc_response_id(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="strict", url="https://mcp.example/mcp", strict_lifecycle=False))
+
+    async def fake_post(_payload):
+        return {"jsonrpc": "2.0", "id": "wrong-id", "result": {"tools": _MOCK_TOOLS}}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    assert asyncio.run(client.list_tools()) == []
+    assert "id did not match" in client._tools_cache_error  # noqa: SLF001
+
+
+def test_mcp_client_validates_structured_content_against_output_schema(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="strict", url="https://mcp.example/mcp", strict_lifecycle=False))
+    client._tools_cache = [  # noqa: SLF001
+        {
+            "name": "lookup",
+            "description": "Lookup",
+            "input_schema": {"type": "object"},
+            "output_schema": {
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "required": ["count"],
+                "additionalProperties": False,
+            },
+        }
+    ]
+
+    async def fake_post(payload):
+        return {
+            "jsonrpc": "2.0",
+            "id": payload["id"],
+            "result": {"structuredContent": {"count": "not-an-integer"}},
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    result = asyncio.run(client.call_tool("lookup", {}))
+
+    assert result["ok"] is False
+    assert "outputSchema" in result["error"]
+
+
 def test_mcp_client_retries_tools_list_after_transient_error(monkeypatch):
-    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp", strict_lifecycle=False)
     client = MCPClient(config)
     tools_list_calls = 0
 
@@ -147,7 +323,7 @@ def test_mcp_client_retries_tools_list_after_transient_error(monkeypatch):
 
 
 def test_mcp_client_rejects_arguments_that_do_not_match_discovered_schema():
-    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp", strict_lifecycle=False)
     client = MCPClient(config)
     client._tools_cache = [  # noqa: SLF001 - cache priming keeps the test network-free.
         {
@@ -169,7 +345,7 @@ def test_mcp_client_rejects_arguments_that_do_not_match_discovered_schema():
 
 
 def test_mcp_client_rejects_falsy_non_object_arguments_without_coercion(monkeypatch):
-    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp", strict_lifecycle=False)
     client = MCPClient(config)
     client._tools_cache = [  # noqa: SLF001 - cache priming keeps the test network-free.
         {
@@ -214,6 +390,33 @@ def test_mcp_registry_adapts_to_tool_definitions(mcp_server):
         assert definition.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         assert definition.trust_tier == "third_party"
         assert definition.fast_path_eligible is False
+
+
+def test_mcp_registry_parses_string_booleans_without_truthiness_bypass():
+    registry = MCPRegistry()
+    registry.load_from_settings(
+        AppSettings(
+            provider_name="mock",
+            mcp_servers=[
+                {"name": "disabled", "url": "https://disabled.example/mcp", "enabled": "false"},
+                {
+                    "name": "legacy",
+                    "url": "https://legacy.example/mcp",
+                    "enabled": "true",
+                    "strictLifecycle": "false",
+                },
+                {
+                    "name": "invalid-strict",
+                    "url": "https://strict.example/mcp",
+                    "strict_lifecycle": "not-a-boolean",
+                },
+            ],
+        )
+    )
+
+    assert "disabled" not in registry.clients
+    assert registry.clients["legacy"].config.strict_lifecycle is False
+    assert registry.clients["invalid-strict"].config.strict_lifecycle is True
 
 
 def test_mcp_release_profile_requires_owner_policy():
@@ -335,3 +538,308 @@ def test_mcp_client_transport_error_returns_inline_error(monkeypatch):
     result = asyncio.run(client.call_tool("echo", {"text": "hi"}))
     assert result["ok"] is False
     assert "transport" in result["error"].lower()
+
+
+def test_mcp_stdio_transport_lifecycle_progress_and_environment_boundary(monkeypatch):
+    fixture = Path(__file__).parent / "fixtures" / "mcp_stdio_server.py"
+    monkeypatch.setenv("MCP_INHERITED", "delegated")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-stdio-child")
+    client = MCPClient(
+        MCPServerConfig(
+            name="stdio",
+            url="",
+            transport="stdio",
+            command=sys.executable,
+            args=["-u", str(fixture)],
+            env={"MCP_FIXED": "configured"},
+            inherit_env=["MCP_INHERITED"],
+        )
+    )
+    progress: list[dict[str, Any]] = []
+
+    async def exercise() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        tools = await client.list_tools()
+        result = await client.call_tool("inspect_env", {}, progress_callback=progress.append)
+        await client.close()
+        return tools, result
+
+    tools, result = asyncio.run(exercise())
+
+    assert [tool["name"] for tool in tools] == ["inspect_env"]
+    assert [item["progress"] for item in progress] == [1.0, 2.0]
+    assert result["ok"] is True
+    assert result["result"]["structuredContent"] == {
+        "fixed": "configured",
+        "inherited": "delegated",
+        "openai_key_present": False,
+    }
+    assert client.status()["state"] == "configured"
+
+
+def test_mcp_stdio_transport_is_fail_closed_in_release_profile(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
+    client = MCPClient(
+        MCPServerConfig(
+            name="stdio",
+            url="",
+            transport="stdio",
+            command=sys.executable,
+            args=["-c", "raise SystemExit('must not run')"],
+        )
+    )
+
+    assert asyncio.run(client.list_tools()) == []
+    assert "release" in client.status()["error"].casefold()
+
+
+def test_mcp_progress_ignores_wrong_token_and_non_monotonic_updates(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="progress", url="https://mcp.example/mcp", strict_lifecycle=False))
+    client._tools_cache = [  # noqa: SLF001
+        {"name": "work", "description": "work", "input_schema": {"type": "object"}}
+    ]
+    updates: list[dict[str, Any]] = []
+
+    async def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        token = payload["params"]["_meta"]["progressToken"]
+        await client._handle_notification(  # noqa: SLF001
+            {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": token, "progress": 1}}
+        )
+        await client._handle_notification(  # noqa: SLF001
+            {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": token, "progress": 1}}
+        )
+        await client._handle_notification(  # noqa: SLF001
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": "wrong-token", "progress": 2},
+            }
+        )
+        await client._handle_notification(  # noqa: SLF001
+            {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": token, "progress": 2}}
+        )
+        return {"jsonrpc": "2.0", "id": payload["id"], "result": {}}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    result = asyncio.run(client.call_tool("work", {}, progress_callback=updates.append))
+
+    assert result["ok"] is True
+    assert [item["progress"] for item in updates] == [1.0, 2.0]
+
+
+def test_mcp_http_progress_is_delivered_before_final_response(monkeypatch):
+    final_sent = threading.Event()
+    release_final = threading.Event()
+
+    class StreamingHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            token = payload["params"]["_meta"]["progressToken"]
+            progress = {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": token, "progress": 1, "total": 1},
+            }
+            response = {"jsonrpc": "2.0", "id": payload["id"], "result": {}}
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(progress)}\n\n".encode())
+            self.wfile.flush()
+            release_final.wait(timeout=2)
+            final_sent.set()
+            self.wfile.write(f"data: {json.dumps(response)}\n\n".encode())
+            self.wfile.flush()
+
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
+    server = socketserver.TCPServer(("127.0.0.1", 0), StreamingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = MCPClient(
+        MCPServerConfig(
+            name="progress",
+            url=f"http://127.0.0.1:{server.server_address[1]}/mcp",
+            strict_lifecycle=False,
+        )
+    )
+    client._tools_cache = [  # noqa: SLF001
+        {"name": "work", "description": "work", "input_schema": {"type": "object"}}
+    ]
+    observed_before_final: list[bool] = []
+
+    def on_progress(_update: dict[str, Any]) -> None:
+        observed_before_final.append(not final_sent.is_set())
+        release_final.set()
+
+    try:
+        result = asyncio.run(client.call_tool("work", {}, progress_callback=on_progress))
+    finally:
+        release_final.set()
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result["ok"] is True
+    assert observed_before_final == [True]
+
+
+def test_mcp_http_sse_reconnect_respects_retry_and_last_event_id(monkeypatch):
+    state: dict[str, Any] = {
+        "pending_id": "",
+        "stream_closed_at": 0.0,
+        "get_connected_at": 0.0,
+        "last_event_id": "",
+    }
+
+    class RetryHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            method = payload.get("method")
+            if method == "notifications/initialized":
+                self.send_response(202)
+                self.end_headers()
+                return
+            if method == "initialize":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "retry", "version": "1"},
+                        },
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("MCP-Session-Id", "retry-session")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if method == "tools/list":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "reconnect",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": False,
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if method == "tools/call":
+                state["pending_id"] = payload["id"]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(b"id: event-1\nretry: 20\ndata:\n\n")
+                self.wfile.flush()
+                state["stream_closed_at"] = time.monotonic()
+                return
+            self.send_response(400)
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802
+            state["get_connected_at"] = time.monotonic()
+            state["last_event_id"] = self.headers.get("Last-Event-ID", "")
+            result = {
+                "jsonrpc": "2.0",
+                "id": state["pending_id"],
+                "result": {"content": [{"type": "text", "text": "resumed"}]},
+            }
+            body = (f"id: event-2\ndata: {json.dumps(result)}\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
+    server = socketserver.TCPServer(("127.0.0.1", 0), RetryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = MCPClient(
+            MCPServerConfig(
+                name="retry",
+                url=f"http://127.0.0.1:{server.server_address[1]}/mcp",
+            ),
+            timeout=2,
+        )
+        result = asyncio.run(client.call_tool("reconnect", {}))
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result["ok"] is True
+    assert result["result"]["content"][0]["text"] == "resumed"
+    assert state["last_event_id"] == "event-1"
+    # Keep the unit test tolerant of coarse/loaded Windows timers; the official
+    # sse-retry conformance scenario separately checks the 500 ms retry timing
+    # with its protocol-defined early/late tolerance.
+    assert state["get_connected_at"] - state["stream_closed_at"] >= 0.005
+
+
+def test_mcp_cancellation_references_only_the_active_request(monkeypatch):
+    client = MCPClient(MCPServerConfig(name="cancel", url="https://mcp.example/mcp", strict_lifecycle=False))
+    client._tools_cache = [  # noqa: SLF001
+        {"name": "work", "description": "work", "input_schema": {"type": "object"}}
+    ]
+    started = asyncio.Event()
+    sent: list[dict[str, Any]] = []
+
+    async def fake_post(payload: dict[str, Any]) -> dict[str, Any]:
+        sent.append(payload)
+        if payload.get("method") == "notifications/cancelled":
+            return {}
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled request unexpectedly completed")
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    async def exercise() -> dict[str, Any]:
+        cancel = asyncio.Event()
+        task = asyncio.create_task(client.call_tool("work", {}, cancel_event=cancel))
+        await started.wait()
+        cancel.set()
+        return await asyncio.wait_for(task, timeout=1)
+
+    result = asyncio.run(exercise())
+
+    tool_request = next(payload for payload in sent if payload.get("method") == "tools/call")
+    cancellation = next(payload for payload in sent if payload.get("method") == "notifications/cancelled")
+    assert cancellation.get("id") is None
+    assert cancellation["params"]["requestId"] == tool_request["id"]
+    assert result["ok"] is False
+    assert result["cancelled"] is True

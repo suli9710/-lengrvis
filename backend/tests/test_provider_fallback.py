@@ -30,6 +30,10 @@ def test_appsettings_default_disables_mock_fallback():
     assert AppSettings().allow_mock_fallback is False
 
 
+def test_appsettings_defaults_to_disabling_response_storage():
+    assert AppSettings().disable_response_storage is True
+
+
 def test_appsettings_defaults_to_lengzhehao_cloud_base_url():
     assert AppSettings().base_url == DEFAULT_CLOUD_BASE_URL
     assert DEFAULT_CLOUD_BASE_URL == "https://lengzhehao.com/v1"
@@ -42,6 +46,24 @@ def test_appsettings_from_sources_default_disables_mock_fallback(monkeypatch, tm
     monkeypatch.delenv("LENGRVIS_ALLOW_MOCK_FALLBACK", raising=False)
 
     assert AppSettings.from_sources().allow_mock_fallback is False
+
+
+def test_appsettings_from_sources_defaults_to_disabling_response_storage(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing-config.yaml"))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("LENGRVIS_DISABLE_RESPONSE_STORAGE", raising=False)
+
+    assert AppSettings.from_sources().disable_response_storage is True
+
+
+def test_appsettings_from_sources_allows_explicit_response_storage_opt_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing-config.yaml"))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DISABLE_RESPONSE_STORAGE", "false")
+
+    assert AppSettings.from_sources().disable_response_storage is False
 
 
 def test_appsettings_from_sources_defaults_to_lengzhehao_cloud_base_url(monkeypatch, tmp_path):

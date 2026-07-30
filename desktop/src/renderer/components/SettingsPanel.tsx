@@ -152,14 +152,15 @@ export function SettingsPanel({
       ]);
       const nextHealth = response.ok && response.data
         ? response.data
-        : {
-            available: false,
-            selectedBackend: null,
-            probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
-            error: response.error?.message ?? "无法检查本地 AI。"
-          };
+        : unavailableLocalLlmHealth(response.error?.message ?? "无法检查本地 AI。");
       setDetectedLocalLlmHealth(nextHealth);
       setLocalModelSetupPlan(setupPlanResponse?.ok && setupPlanResponse.data ? setupPlanResponse.data : null);
+      onLocalLlmHealthChange?.(nextHealth);
+      return nextHealth;
+    } catch (error) { // broad-exception-boundary: IPC failures become a recoverable health result.
+      const nextHealth = unavailableLocalLlmHealth(readableError(error, "无法检查本地 AI。"));
+      setDetectedLocalLlmHealth(nextHealth);
+      setLocalModelSetupPlan(null);
       onLocalLlmHealthChange?.(nextHealth);
       return nextHealth;
     } finally {
@@ -180,16 +181,17 @@ export function SettingsPanel({
         setDetectedLocalLlmHealth(response.data);
         onLocalLlmHealthChange?.(response.data);
       } else {
-        const fallbackHealth: LocalLLMHealth = {
-          available: false,
-          selectedBackend: null,
-          probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
-          error: response.error?.message ?? "无法检查本地 AI。"
-        };
+        const fallbackHealth = unavailableLocalLlmHealth(response.error?.message ?? "无法检查本地 AI。");
         setDetectedLocalLlmHealth(fallbackHealth);
         onLocalLlmHealthChange?.(fallbackHealth);
       }
       setLocalModelSetupPlan(setupPlanResponse?.ok && setupPlanResponse.data ? setupPlanResponse.data : null);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      const fallbackHealth = unavailableLocalLlmHealth(readableError(error, "无法检查本地 AI。"));
+      setDetectedLocalLlmHealth(fallbackHealth);
+      setLocalModelSetupPlan(null);
+      onLocalLlmHealthChange?.(fallbackHealth);
     }).finally(() => {
       if (!cancelled) setIsCheckingLocalLlm(false);
     });
@@ -218,6 +220,19 @@ export function SettingsPanel({
         });
         setHardwareStatusError(response.error?.message ?? "无法检查硬件加速。");
       }
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      const message = readableError(error, "无法检查硬件加速。");
+      setHardwareStatus({
+        available: false,
+        kind: "onnx",
+        modelPath: draft.onnxModelPath,
+        executionProvider: "",
+        availableProviders: [],
+        generationRuntime: "",
+        error: message
+      });
+      setHardwareStatusError(message);
     }).finally(() => {
       if (!cancelled) setIsCheckingHardware(false);
     });
@@ -274,9 +289,15 @@ export function SettingsPanel({
   };
 
   const refreshPairedDevices = useCallback(async () => {
-    const response = await api.listMobileDevices();
-    if (response.ok && response.data) {
-      setPairedDevices(response.data.devices);
+    try {
+      const response = await api.listMobileDevices();
+      if (response.ok && response.data) {
+        setPairedDevices(response.data.devices);
+      } else {
+        setPairingError(response.error?.message ?? "无法读取已配对手机。");
+      }
+    } catch (error) { // broad-exception-boundary: renderer IPC rejection must stay recoverable.
+      setPairingError(readableError(error, "无法读取已配对手机。"));
     }
   }, [api]);
 
@@ -338,12 +359,16 @@ export function SettingsPanel({
   };
 
   const refreshPermissionPolicy = useCallback(async () => {
-    const response = await api.request<BackendPermissionPolicy>({ endpoint: "/api/settings/permission-policy" });
-    if (response.ok && response.data) {
-      setPermissionPolicy(mapPermissionPolicy(response.data));
-      setPermissionStatus("");
-    } else {
-      setPermissionStatus(response.error?.message ?? "无法加载权限策略");
+    try {
+      const response = await api.request<BackendPermissionPolicy>({ endpoint: "/api/settings/permission-policy" });
+      if (response.ok && response.data) {
+        setPermissionPolicy(mapPermissionPolicy(response.data));
+        setPermissionStatus("");
+      } else {
+        setPermissionStatus(response.error?.message ?? "无法加载权限策略");
+      }
+    } catch (error) { // broad-exception-boundary: renderer IPC rejection must stay recoverable.
+      setPermissionStatus(readableError(error, "无法加载权限策略"));
     }
   }, [api]);
 
@@ -380,16 +405,20 @@ export function SettingsPanel({
 
   const deletePermissionRule = async (ruleId: string) => {
     setPermissionStatus("");
-    const confirmation = await api.confirmPermissionRuleDelete(ruleId);
-    const confirmationNonce = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
-      ? confirmation.data.nonce
-      : undefined;
-    const response = await api.deletePermissionRule(ruleId, confirmationNonce);
-    if (response.ok && response.data) {
-      setPermissionPolicy(mapPermissionPolicy(response.data.policy));
-      setPermissionStatus("权限规则已删除。");
-    } else {
-      setPermissionStatus(response.error?.message ?? "无法删除权限规则");
+    try {
+      const confirmation = await api.confirmPermissionRuleDelete(ruleId);
+      const confirmationNonce = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
+        ? confirmation.data.nonce
+        : undefined;
+      const response = await api.deletePermissionRule(ruleId, confirmationNonce);
+      if (response.ok && response.data) {
+        setPermissionPolicy(mapPermissionPolicy(response.data.policy));
+        setPermissionStatus("权限规则已删除。");
+      } else {
+        setPermissionStatus(response.error?.message ?? "无法删除权限规则");
+      }
+    } catch (error) { // broad-exception-boundary
+      setPermissionStatus(readableError(error, "无法删除权限规则"));
     }
   };
 
@@ -573,4 +602,13 @@ export function SettingsPanel({
       </div>
     </Panel>
   );
+}
+
+function unavailableLocalLlmHealth(error: string): LocalLLMHealth {
+  return {
+    available: false,
+    selectedBackend: null,
+    probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
+    error
+  };
 }

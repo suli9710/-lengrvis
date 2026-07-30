@@ -31,8 +31,9 @@ from app.security.desktop_api import (
     DESKTOP_API_WS_PROTOCOL_PREFIX,
     close_unauthorized_desktop_websocket,
     desktop_api_token_headers,
+    desktop_health_challenge_proof,
 )
-from app.security.lan import is_mobile_token_websocket_path, is_secure_mobile_transport
+from app.security.lan import is_loopback_host, is_mobile_token_websocket_path, is_secure_mobile_transport
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     mobile_token_from_websocket,
@@ -138,8 +139,14 @@ def _record_desktop_wakeup_native_confirmation(
 
 @router.get("/health")
 @router.get("/api/health")
-async def health() -> dict[str, Any]:
-    return {"status": "ok", "mode": "guardian", **await runtime.status()}
+async def health(request: Request, desktop_challenge: str = "") -> dict[str, Any]:
+    payload = {"status": "ok", "mode": "guardian", **await runtime.status()}
+    client_host = request.client.host if request.client else ""
+    if desktop_challenge and is_loopback_host(client_host):
+        proof = desktop_health_challenge_proof(desktop_challenge)
+        if proof:
+            payload["desktop_proof"] = proof
+    return payload
 
 
 @router.get("/api/runtime/status")

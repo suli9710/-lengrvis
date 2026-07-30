@@ -34,6 +34,7 @@ from app.orchestration.os_reflection import (
 from app.orchestration.plan_snapshot import snapshot_step, write_back_step
 from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -48,6 +49,7 @@ _CURRENT_RUN_ORCHESTRATOR: ContextVar[OrchestratorAgent | None] = ContextVar(
     "os_engine_current_run_orchestrator",
     default=None,
 )
+
 
 class OSExecutionEngine(ExecutionEngine):
     """Turn-based OS/app/browser execution engine.
@@ -134,13 +136,20 @@ class OSExecutionEngine(ExecutionEngine):
             work.cancel()
         if run_tasks:
             await asyncio.gather(*run_tasks, return_exceptions=True)
+        # Terminal guard (TOCTOU): run_service schedules cancel_run in the
+        # background while the run is still RUNNING; an in-flight turn may finish
+        # first and mark the run/task terminal. Do not overwrite an already
+        # terminal run phase or task status with CANCELLED.
+        if state.phase in TERMINAL_RUN_PHASES:
+            orchestrator_registry.release_run(run_id)
+            return state
         if task_id:
             clear_task_read_states(task_id)
             task_data = db.fetch_one("tasks", task_id)
             if task_data:
-                orchestrator._set_status(
-                    Task.model_validate(task_data), TaskStatus.CANCELLED, final_summary="Run cancelled."
-                )
+                task = Task.model_validate(task_data)
+                if task.status not in TERMINAL_TASK_PHASES:
+                    orchestrator._set_status(task, TaskStatus.CANCELLED, final_summary="Run cancelled.")
         cancelled = state.model_copy(
             update={"phase": RunPhase.CANCELLED, "transition_reason": "os run cancelled"},
             deep=True,
@@ -667,8 +676,14 @@ class OSExecutionEngine(ExecutionEngine):
                     step, isolated, observation = work.pop(task_work)
                     try:
                         raw_outcome = task_work.result()
-                    except asyncio.CancelledError as exc:
-                        raw_outcome = exc
+                    except asyncio.CancelledError:
+                        # External cancellation must not be normalized to FAILED:
+                        # that would overwrite the run's CANCELLED status with a
+                        # fabricated step failure. Keep a result entry so callers
+                        # can account for every drained step without retrying it
+                        # or mistaking cancellation for successful completion.
+                        results.append((step, StepExecutionOutcome("cancelled")))
+                        continue
                     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: step failures are normalized below.
                         raw_outcome = exc
                     if not isinstance(raw_outcome, BaseException):
@@ -698,6 +713,7 @@ class OSExecutionEngine(ExecutionEngine):
                 for task_work, raw_outcome in zip(remaining, raw_outcomes, strict=False):
                     step, isolated, observation = work.pop(task_work)
                     if isinstance(raw_outcome, asyncio.CancelledError):
+                        results.append((step, StepExecutionOutcome("cancelled")))
                         continue
                     if not isinstance(raw_outcome, BaseException):
                         write_back_step(step, isolated)
@@ -735,9 +751,7 @@ class OSExecutionEngine(ExecutionEngine):
         recovered: list[tuple[PlanStep, StepExecutionOutcome]] = []
         for step, outcome in results:
             if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
-                recovery_context = self._context_with_dependency_provenance(
-                    context, step, observations_by_step
-                )
+                recovery_context = self._context_with_dependency_provenance(context, step, observations_by_step)
                 outcome = await self._orchestrator().recovery_handler.recover_failed_step(
                     task,
                     plan,

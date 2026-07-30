@@ -38,10 +38,12 @@ export function ApprovalDialog({
 }: ApprovalDialogProps) {
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
 
   useEffect(() => {
     setNote("");
+    setSubmissionError(null);
     setExpiryClock(Date.now());
   }, [approval?.id]);
 
@@ -64,13 +66,20 @@ export function ApprovalDialog({
   const expiresAt = Date.parse(approval.expiresAt ?? "");
   const authorizationExpired = !Number.isFinite(expiresAt) || expiresAt <= expiryClock;
   const canDecide = approval.status === "pending" && !authorizationExpired;
+  // High/critical actions must not be blind-approved: surface the concrete
+  // tool/effects/resources/dry-run engineering boundary by default instead of
+  // hiding it behind a collapsed <details>.
+  const isHighRisk = approval.riskLevel === "high" || approval.riskLevel === "critical";
 
   const decide = async (decision: "approved" | "denied") => {
     if (!canDecide) return;
     setIsSubmitting(true);
+    setSubmissionError(null);
     try {
       await onDecision(approval.id, decision, note.trim() || undefined);
       setNote("");
+    } catch (error) { // broad-exception-boundary
+      setSubmissionError(error instanceof Error && error.message.trim() ? error.message : "审批提交失败，请刷新后重试");
     } finally {
       setIsSubmitting(false);
     }
@@ -119,9 +128,11 @@ export function ApprovalDialog({
             />
           ) : null}
           <ApprovalSafetyChecklist summary={buildSafetyChecklist(approval, cleanupPlan, cleanupGroups)} />
-          <details className="approval-tech-details">
+          <details className="approval-tech-details" open={isHighRisk}>
             <summary className="approval-tech-details__summary">
-              查看技术细节（工具、参数与运行时边界）
+              {isHighRisk
+                ? "高风险操作 — 请核对工具、参数与运行时边界"
+                : "查看技术细节（工具、参数与运行时边界）"}
             </summary>
             <ApprovalEngineeringBoundary approval={approval} />
           </details>
@@ -154,7 +165,7 @@ export function ApprovalDialog({
           <label className="field">
             <span>审批备注</span>
             <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} />
-            {error ? <p className="field-error" role="alert">{error}</p> : null}
+            {error || submissionError ? <p className="field-error" role="alert">{error || submissionError}</p> : null}
           </label>
         </div>
         <footer className="modal__footer">

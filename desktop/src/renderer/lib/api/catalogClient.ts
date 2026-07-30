@@ -31,6 +31,7 @@ import {
   mapSuggestionLaunchResponse,
   mapTaskState
 } from "./mappers";
+import { ipcRequestFailedResponse } from "./apiRequestSession";
 import { mapResponse } from "./transport";
 
 export type CatalogEndpointRequest = <TResponse, TBody = unknown>(
@@ -101,17 +102,24 @@ export async function launchPerceptionSuggestionEndpoint(
     prompt: body.prompt,
     mode: body.mode ?? "efficiency"
   };
-  const response = window.lengrvis?.perception
-    ? await window.lengrvis.perception.launchSuggestion({
+  let response: ApiResponse<BackendSuggestionLaunchResponse>;
+  if (window.lengrvis?.perception) {
+    try {
+      response = await window.lengrvis.perception.launchSuggestion({
         suggestionId: body.suggestionId,
         mode: body.mode ?? "efficiency"
-      }) as ApiResponse<BackendSuggestionLaunchResponse>
-    : await request<BackendSuggestionLaunchResponse, BackendSuggestionLaunchRequest>({
+      }) as ApiResponse<BackendSuggestionLaunchResponse>;
+    } catch {
+      return ipcRequestFailedResponse<PerceptionSuggestionLaunchResponse>();
+    }
+  } else {
+    response = await request<BackendSuggestionLaunchResponse, BackendSuggestionLaunchRequest>({
         endpoint: `/api/perception/suggestions/${encodeURIComponent(body.suggestionId)}/launch`,
         method: "POST",
         body: requestBody,
         timeoutMs: 10_000
       });
+  }
 
   return mapResponse(response, (data) => mapSuggestionLaunchResponse(data, body.prompt ?? body.suggestionId));
 }
@@ -129,9 +137,9 @@ export function importSkillEndpoint(
   path: string
 ): Promise<ApiResponse<SkillImportResult>> {
   if (window.lengrvis?.skills) {
-    return window.lengrvis.skills.importPackage(path).then((response) =>
-      mapResponse(response as ApiResponse<BackendSkillImportResult>, mapSkillImportResult)
-    );
+    return window.lengrvis.skills.importPackage(path)
+      .then((response) => mapResponse(response as ApiResponse<BackendSkillImportResult>, mapSkillImportResult))
+      .catch(() => ipcRequestFailedResponse<SkillImportResult>());
   }
   return request<BackendSkillImportResult, { path: string }>({
     endpoint: "/api/skills/import",
@@ -151,9 +159,9 @@ export function refreshSkillsEndpoint(
   });
 
   if (window.lengrvis?.skills) {
-    return window.lengrvis.skills.refresh().then((response) =>
-      mapResponse(response as ApiResponse<BackendSkillRefresh>, mapRefresh)
-    );
+    return window.lengrvis.skills.refresh()
+      .then((response) => mapResponse(response as ApiResponse<BackendSkillRefresh>, mapRefresh))
+      .catch(() => ipcRequestFailedResponse<{ ok: boolean; toolCount: number; skillCount: number }>());
   }
   return request<BackendSkillRefresh>({ endpoint: "/api/skills/refresh", method: "POST" }).then((response) =>
     mapResponse(response, mapRefresh)

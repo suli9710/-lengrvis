@@ -131,15 +131,14 @@ export function ChatPanel({
             <article
               className="intent-suggestion"
               key={suggestion.id}
-              title={suggestion.reason}
             >
               <div className="intent-suggestion__head">
                 <Sparkles size={14} aria-hidden="true" />
                 <strong>{suggestion.title || suggestion.prompt}</strong>
-                <span>{formatConfidence(suggestion.confidence)}</span>
+                <span>{formatSuggestionStrength(suggestion.confidence)}</span>
               </div>
               <p>{suggestion.prompt}</p>
-              {suggestion.reason ? <small>{suggestion.reason}</small> : null}
+              <small>匹配原因：{suggestion.reason || "根据当前可见窗口与任务上下文匹配"}</small>
               <div className="intent-suggestion__actions">
                 <button
                   className="button button--primary button--small"
@@ -401,9 +400,12 @@ function friendlyAgentName(value: string): string {
     .trim();
 }
 
-function formatConfidence(value: number): string {
-  const normalized = value > 1 ? value : value * 100;
-  return `${Math.round(normalized)}%`;
+function formatSuggestionStrength(value: number): string {
+  const score = Number.isFinite(value) ? value : 0;
+  const normalized = Math.max(0, Math.min(1, score > 1 ? score / 100 : score));
+  if (normalized >= 0.9) return "建议强度：高";
+  if (normalized >= 0.8) return "建议强度：中";
+  return "建议强度：低";
 }
 
 function formatTime(value: string): string {

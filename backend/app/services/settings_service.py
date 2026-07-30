@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from app.core import db
@@ -17,6 +18,17 @@ from app.security.execution_isolation import release_execution_configuration_iss
 from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
 
 SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
+_MCP_SECRET_KEY_TOKENS = ("authorization", "password", "secret", "token", "credential")
+_MCP_SAFE_ENV_REFERENCE_KEYS = frozenset(
+    {
+        "authorization_env",
+        "client_secret_env",
+        "credential_env",
+        "password_env",
+        "token_env",
+    }
+)
+_MCP_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # License-derived fields that must never be persisted via the settings API.
 # ``plan`` is resolved at read time from ``LENGRVIS_PLAN`` / license tokens via
@@ -37,6 +49,14 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
         raise AppError(
             "secret_settings_must_use_external_config",
             f"Sensitive settings ({names}) must be configured through environment variables or external config.",
+            status_code=400,
+        )
+    nested_mcp_secrets = _mcp_persisted_secret_fields(payload.get("mcp_servers"))
+    if nested_mcp_secrets:
+        names = ", ".join(nested_mcp_secrets)
+        raise AppError(
+            "secret_settings_must_use_external_config",
+            f"Sensitive MCP settings ({names}) must use environment references or external config.",
             status_code=400,
         )
     # Silently strip license-derived fields: they are resolved from env/license
@@ -242,15 +262,32 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
             if not isinstance(item, dict):
                 continue
             url = str(item.get("url") or "").strip()
+            command = str(item.get("command") or "").strip()
             name = str(item.get("name") or item.get("id") or "mcp").strip()
-            if not url or not name:
+            if (not url and not command) or not name:
                 continue
             normalized.append(
                 {
                     "name": name,
                     "url": url,
-                    "transport": str(item.get("transport", "http")),
-                    "enabled": bool(item.get("enabled", True)),
+                    "command": command,
+                    "args": _mcp_string_list(item.get("args")),
+                    "transport": str(item.get("transport") or ("stdio" if command and not url else "http")).strip(),
+                    "enabled": _mcp_bool(item.get("enabled", True), default=True),
+                    "auth": _sanitize_mcp_auth_metadata(item.get("auth")),
+                    "inherit_env": _mcp_env_names(item.get("inherit_env") or item.get("inheritEnv")),
+                    "owner": str(item.get("owner") or "").strip(),
+                    "policy_id": str(item.get("policy_id") or item.get("policyId") or "").strip(),
+                    "allowed_tools": _mcp_string_list(item.get("allowed_tools") or item.get("allowedTools")),
+                    "protocol_version": str(
+                        item.get("protocol_version") or item.get("protocolVersion") or "2025-11-25"
+                    ).strip(),
+                    "strict_lifecycle": _mcp_bool(
+                        item.get("strict_lifecycle", item.get("strictLifecycle", True)),
+                        default=True,
+                    ),
+                    "client_name": str(item.get("client_name") or item.get("clientName") or "Lengrvis").strip(),
+                    "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.2").strip(),
                 }
             )
         return normalized
@@ -280,6 +317,79 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
             return value
         return str(value).lower() in {"1", "true", "yes", "on"}
     return value
+
+
+def _mcp_persisted_secret_fields(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    found: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        if item.get("env"):
+            found.add(f"mcp_servers[{index}].env")
+        if item.get("headers"):
+            found.add(f"mcp_servers[{index}].headers")
+        auth = item.get("auth")
+        if not isinstance(auth, dict):
+            continue
+        for key, secret_value in auth.items():
+            normalized = str(key).replace("-", "_").casefold()
+            if normalized in _MCP_SAFE_ENV_REFERENCE_KEYS:
+                continue
+            if secret_value and any(token in normalized for token in _MCP_SECRET_KEY_TOKENS):
+                found.add(f"mcp_servers[{index}].auth.{key}")
+    return sorted(found)
+
+
+def _sanitize_mcp_auth_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).replace("-", "_").strip()
+        normalized = key.casefold()
+        if normalized in _MCP_SAFE_ENV_REFERENCE_KEYS:
+            env_name = str(raw_value or "").strip()
+            if _MCP_ENV_NAME_RE.fullmatch(env_name):
+                result[key] = env_name
+        elif normalized in {"required"}:
+            result[key] = _mcp_bool(raw_value, default=False)
+        elif normalized in {
+            "audience",
+            "client_id",
+            "resource",
+            "scope",
+            "token_endpoint_auth_method",
+            "type",
+        }:
+            result[key] = str(raw_value or "").strip()
+        elif normalized in {"scopes"}:
+            result[key] = _mcp_string_list(raw_value)
+    return result
+
+
+def _mcp_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _mcp_env_names(value: Any) -> list[str]:
+    return [name for name in _mcp_string_list(value) if _MCP_ENV_NAME_RE.fullmatch(name)]
+
+
+def _mcp_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _coerce_int_setting(key: str, value: Any, *, minimum: int) -> int:

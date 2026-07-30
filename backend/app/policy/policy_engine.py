@@ -59,6 +59,10 @@ from app.policy.policy_rules import (
     FAST_PATH_FORBIDDEN_EFFECTS,
     FAST_PATH_TRUST_TIERS,
     FORBIDDEN_TERMS,
+    GOAL_MISSING_TRUSTED_BIOMETRIC_STEP_UP_SIGNALS,
+    GOAL_REVOKED_MOBILE_DEVICE_ACCESS_SIGNALS,
+    GOAL_UNSANDBOXED_GENERATED_CODE_SIGNALS,
+    GOAL_UNTRUSTED_AUTHORIZATION_MEMORY_SIGNALS,
     MCP_PREFIXES,
     SENSITIVE_FIELD_NAMES,
     UI_AUTOMATION_WRITE_TOOLS,
@@ -111,6 +115,54 @@ class PolicyEngine:
         # forbidden material is denied even when it also mentions words like
         # "approval" or "read-only" (prompt-injection hardening).
         inspected_text = goal.lower()
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_UNTRUSTED_AUTHORIZATION_MEMORY_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["Untrusted content cannot grant persistent authorization or modify authorization memory."],
+                safe_alternative="Denied: I can ignore the untrusted authorization claim without storing it in memory.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_MISSING_TRUSTED_BIOMETRIC_STEP_UP_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["High-impact approval requires a trusted biometric step-up."],
+                safe_alternative="Denied: complete a trusted biometric step-up before approving a high-impact action.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_UNSANDBOXED_GENERATED_CODE_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["Generated code execution is forbidden without an OS sandbox or broker."],
+                safe_alternative="Denied: I can inspect the code without executing it.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_REVOKED_MOBILE_DEVICE_ACCESS_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["A revoked mobile device cannot continue accessing tasks or approvals."],
+                safe_alternative="Denied: pair and authorize a trusted device before accessing the task.",
+            )
         hits = self._forbidden_hits(inspected_text)
         if hits:
             return SafetyReview(
@@ -917,6 +969,10 @@ class PolicyEngine:
             json.dumps(item, ensure_ascii=False, default=str) if not isinstance(item, str) else item for item in items
         ).lower()
 
+    @staticmethod
+    def _matches_goal_security_boundary(text: str, signals: tuple[str, ...]) -> bool:
+        return all(re.search(signal, text, flags=re.IGNORECASE | re.DOTALL) for signal in signals)
+
     def _forbidden_hits(self, text: str) -> list[str]:
         hits: list[str] = []
         for term in FORBIDDEN_TERMS:
@@ -985,8 +1041,8 @@ class PolicyEngine:
                 context=context,
                 policy_engine=self,
             )
-        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-            return _PermissionCheckDenied(str(exc))
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: policy adapter failures deny without exposing internals.
+            return _PermissionCheckDenied()
 
     def _review_cleanup_tool_call(
         self,
@@ -1113,8 +1169,4 @@ class PolicyEngine:
 class _PermissionCheckDenied:
     allowed = False
     matched_rule_id = "permission_policy_unavailable"
-
-    def __init__(self, error: str = "") -> None:
-        self.reason = "Permission policy unavailable; fail-closed."
-        if error:
-            self.reason = f"{self.reason} {error}"
+    reason = "Permission policy unavailable; fail-closed."
