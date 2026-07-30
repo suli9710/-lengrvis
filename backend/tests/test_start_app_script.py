@@ -2384,6 +2384,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:claims-launch-verify",
         "evidence:commercial-operations-verify",
         "evidence:commercial-operations-seal",
+        "evidence:keypair",
         "evidence:commercial-loop",
     }
     forbidden_name_pattern = re.compile(

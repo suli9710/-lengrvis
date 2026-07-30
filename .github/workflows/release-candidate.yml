@@ -97,7 +97,6 @@ jobs:
       - name: Build release artifacts
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -SkipTests
 
       - name: Verify signed Windows release configuration

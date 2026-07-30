@@ -4,18 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import hmac
 import os
 import re
 import sys
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
     CandidateBinding,
-    EVIDENCE_SIGNATURE_ENV,
-    EVIDENCE_SIGNATURE_PAYLOAD_V2,
     candidate_binding_from_environment,
     get_path,
     is_sha256_hex,
@@ -27,7 +23,6 @@ from evidence_contracts import (
     require_sha256_hex,
     validate_candidate_binding,
     validate_evidence_signature,
-    validate_evidence_signature_secret,
 )
 
 ARTIFACT_TYPE = "android-real-device-remote-control-evidence"
@@ -35,7 +30,15 @@ DEFAULT_EVIDENCE = "build/android-real-device-evidence-reviewed.json"
 ENV_VAR = "LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH"
 ANDROID_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$")
 PROVENANCE_TYPE = "reviewed-build-record/v1"
-PLACEHOLDER_VALUES = {"todo", "tbd", "pending", "unknown", "uncollected", "placeholder", "n/a"}
+PLACEHOLDER_VALUES = {
+    "todo",
+    "tbd",
+    "pending",
+    "unknown",
+    "uncollected",
+    "placeholder",
+    "n/a",
+}
 ARTIFACT_MANIFEST_VERSION = "sha256-manifest/v1"
 REQUIRED_ARTIFACT_KINDS = frozenset(
     {
@@ -49,7 +52,9 @@ REQUIRED_ARTIFACT_KINDS = frozenset(
 ALLOWED_ARTIFACT_KINDS = REQUIRED_ARTIFACT_KINDS | frozenset(
     {"certificate_record", "command_log", "proxy_trace", "review_note"}
 )
-ARTIFACT_MANIFEST_ENTRY_KEYS = frozenset({"kind", "label_redacted", "sha256", "size_bytes"})
+ARTIFACT_MANIFEST_ENTRY_KEYS = frozenset(
+    {"kind", "label_redacted", "sha256", "size_bytes"}
+)
 MAX_ARTIFACT_MANIFEST_ENTRIES = 64
 
 
@@ -65,7 +70,9 @@ def _validate_artifact_manifest(payload: dict[str, Any]) -> list[str]:
             + ", ".join(unknown_manifest_keys)
         )
     if manifest.get("version") != ARTIFACT_MANIFEST_VERSION:
-        errors.append(f"evidence_artifact_manifest.version must be {ARTIFACT_MANIFEST_VERSION}")
+        errors.append(
+            f"evidence_artifact_manifest.version must be {ARTIFACT_MANIFEST_VERSION}"
+        )
     entries = manifest.get("entries")
     if not isinstance(entries, list):
         return [*errors, "evidence_artifact_manifest.entries must be an array"]
@@ -87,7 +94,9 @@ def _validate_artifact_manifest(payload: dict[str, Any]) -> list[str]:
             continue
         unknown_keys = sorted(set(entry) - ARTIFACT_MANIFEST_ENTRY_KEYS)
         if unknown_keys:
-            errors.append(f"{path} contains unsupported fields: {', '.join(unknown_keys)}")
+            errors.append(
+                f"{path} contains unsupported fields: {', '.join(unknown_keys)}"
+            )
 
         kind = str(entry.get("kind") or "").strip()
         if kind not in ALLOWED_ARTIFACT_KINDS:
@@ -111,7 +120,11 @@ def _validate_artifact_manifest(payload: dict[str, Any]) -> list[str]:
         else:
             digests.append(str(entry["sha256"]).strip().lower())
         size_bytes = entry.get("size_bytes")
-        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 1:
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 1
+        ):
             errors.append(f"{path}.size_bytes must be a positive integer")
 
     if len(labels) != len({label.casefold() for label in labels}):
@@ -126,41 +139,16 @@ def _validate_artifact_manifest(payload: dict[str, Any]) -> list[str]:
         )
 
     redacted_labels = payload.get("evidence_artifacts_redacted")
-    if not isinstance(redacted_labels, list) or any(not isinstance(item, str) for item in redacted_labels):
+    if not isinstance(redacted_labels, list) or any(
+        not isinstance(item, str) for item in redacted_labels
+    ):
         errors.append("evidence_artifacts_redacted must be an array of labels")
-    elif len(redacted_labels) != len(set(redacted_labels)) or set(redacted_labels) != set(labels):
+    elif len(redacted_labels) != len(set(redacted_labels)) or set(
+        redacted_labels
+    ) != set(labels):
         errors.append(
             "evidence_artifacts_redacted must exactly match the unique labels in evidence_artifact_manifest"
         )
-    return errors
-
-
-def _validate_signature_payload_version(payload: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    if get_path(payload, "evidence.signature_payload_version") != EVIDENCE_SIGNATURE_PAYLOAD_V2:
-        errors.append(
-            "evidence.signature_payload_version must bind the signing key fingerprint using "
-            f"{EVIDENCE_SIGNATURE_PAYLOAD_V2}"
-        )
-    if not is_sha256_hex(get_path(payload, "evidence.signing_key_fingerprint")):
-        errors.append("evidence.signing_key_fingerprint must be a full SHA256 hex digest")
-    else:
-        try:
-            secret = validate_evidence_signature_secret(
-                str(os.getenv(EVIDENCE_SIGNATURE_ENV) or "")
-            )
-        except ValueError:
-            # validate_evidence_signature reports the canonical secret error.
-            pass
-        else:
-            fingerprint = str(
-                get_path(payload, "evidence.signing_key_fingerprint") or ""
-            ).strip().lower()
-            expected_fingerprint = sha256(secret.encode("utf-8")).hexdigest()
-            if not hmac.compare_digest(fingerprint, expected_fingerprint):
-                errors.append(
-                    "evidence.signing_key_fingerprint does not match the configured signing key"
-                )
     return errors
 
 
@@ -172,10 +160,18 @@ def _validate_artifact_identity(payload: dict[str, Any]) -> list[str]:
     require_nonempty(payload, "app.version_name", errors)
 
     package_name = get_path(payload, "app.package_name")
-    if isinstance(package_name, str) and package_name.strip() and not ANDROID_PACKAGE_RE.fullmatch(package_name.strip()):
+    if (
+        isinstance(package_name, str)
+        and package_name.strip()
+        and not ANDROID_PACKAGE_RE.fullmatch(package_name.strip())
+    ):
         errors.append("app.package_name must be a valid Android application id")
     version_code = get_path(payload, "app.version_code")
-    if isinstance(version_code, bool) or not isinstance(version_code, int) or version_code < 1:
+    if (
+        isinstance(version_code, bool)
+        or not isinstance(version_code, int)
+        or version_code < 1
+    ):
         errors.append("app.version_code must be a positive integer")
     if str(get_path(payload, "app.build_profile") or "").strip() != "preview":
         errors.append("app.build_profile must be preview")
@@ -208,7 +204,11 @@ def _validate_artifact_provenance(payload: dict[str, Any]) -> list[str]:
     if built_at and not (built_at.endswith("Z") or built_at.endswith("+00:00")):
         errors.append("app.provenance.built_at_utc must use UTC")
     version_code = get_path(payload, "app.provenance.version_code")
-    if isinstance(version_code, bool) or not isinstance(version_code, int) or version_code < 1:
+    if (
+        isinstance(version_code, bool)
+        or not isinstance(version_code, int)
+        or version_code < 1
+    ):
         errors.append("app.provenance.version_code must be a positive integer")
 
     bindings = (
@@ -265,24 +265,24 @@ def validate_payload_with_contract(
     identity_errors = _validate_artifact_identity(payload)
     provenance_errors = _validate_artifact_provenance(payload)
     artifact_manifest_errors = _validate_artifact_manifest(payload)
-    signature_payload_errors = _validate_signature_payload_version(payload)
     errors.extend(identity_errors)
     errors.extend(provenance_errors)
     errors.extend(artifact_manifest_errors)
-    errors.extend(signature_payload_errors)
 
     signature = validate_evidence_signature(payload, errors)
     binding_error_start = len(errors)
     if expected_candidate_binding is not None:
         validate_candidate_binding(payload, expected_candidate_binding, errors)
-    candidate_binding_valid = expected_candidate_binding is not None and len(errors) == binding_error_start
+    candidate_binding_valid = (
+        expected_candidate_binding is not None and len(errors) == binding_error_start
+    )
     return errors, {
         **signature,
         "candidate_binding_valid": candidate_binding_valid,
         "artifact_identity_valid": not identity_errors,
         "artifact_provenance_valid": not provenance_errors,
         "artifact_manifest_valid": not artifact_manifest_errors,
-        "signing_key_fingerprint_bound": not signature_payload_errors
+        "signing_key_fingerprint_bound": signature["valid_key_binding"]
         and signature["valid_hash"]
         and signature["valid_signature"],
     }
@@ -298,12 +298,15 @@ def main() -> int:
     payload, errors = load_json(evidence_path)
     expected_candidate_binding: CandidateBinding | None = None
     if args.require_candidate_binding:
-        expected_candidate_binding, binding_errors = candidate_binding_from_environment()
+        expected_candidate_binding, binding_errors = (
+            candidate_binding_from_environment()
+        )
         errors.extend(binding_errors)
 
     contract: dict[str, bool] = {
         "valid_hash": False,
         "valid_signature": False,
+        "valid_key_binding": False,
         "candidate_binding_valid": False,
         "artifact_identity_valid": False,
         "artifact_provenance_valid": False,

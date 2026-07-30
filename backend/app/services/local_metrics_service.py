@@ -22,7 +22,7 @@ from typing import Any
 
 from app.core import db
 
-TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "rolled_back", "repair_required"}
+TERMINAL_TASK_STATUSES = {"completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"}
 SUCCESS_TASK_STATUSES = {"completed", "rolled_back"}
 
 # finish_reason values that indicate a normal completion across providers.

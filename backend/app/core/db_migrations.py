@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core import db_migration_sql as migration_sql
+from app.core.db_migration_task_denied import task_denied_phase_backfill
 from app.core.db_migration_validation import (
     IndexShape,
 )
@@ -294,7 +295,7 @@ def _memory_quarantine_foundation(conn: sqlite3.Connection) -> None:
 def _backfill_memory_quarantine(conn: sqlite3.Connection) -> None:
     rows = conn.execute("SELECT id, data, created_at FROM memories ORDER BY id").fetchall()
     for row in rows:
-        payload = _safe_memory_payload(row[1])
+        payload = _safe_json_payload(row[1])
         source = _nonempty_text(payload.get("source")) or "unknown"
         state_value = _nonempty_text(payload.get("state")).casefold()
         if state_value not in {"quarantined", "active", "revoked"}:
@@ -343,7 +344,7 @@ def _backfill_memory_quarantine(conn: sqlite3.Connection) -> None:
         )
 
 
-def _safe_memory_payload(value: Any) -> dict[str, Any]:
+def _safe_json_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, str) or not value.strip():
         return {}
     try:
@@ -437,7 +438,7 @@ def _backfill_memory_namespace(conn: sqlite3.Connection) -> None:
     memory_ids = {str(row[0]) for row in conn.execute("SELECT id FROM memories").fetchall()}
     rows = conn.execute("SELECT id, data, created_at FROM memories ORDER BY id").fetchall()
     for row in rows:
-        payload = _safe_memory_payload(row[1])
+        payload = _safe_json_payload(row[1])
         principal_id = _nonempty_text(payload.get("principal_id")) or "local-user"
         workspace_id = _nonempty_text(payload.get("workspace_id")) or "default"
         domain_scope = _nonempty_text(payload.get("domain_scope")) or "general"
@@ -782,6 +783,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
         _sensitive_integrity_bootstrap_anchor,
         _validate_sensitive_integrity_bootstrap_anchor,
     ),
+    SchemaMigration(9, "task_denied_phase_backfill", task_denied_phase_backfill),
 )
 
 

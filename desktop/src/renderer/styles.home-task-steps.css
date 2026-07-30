@@ -140,13 +140,15 @@
   color: var(--green);
 }
 
-.task-row__dot--paused {
+.task-row__dot--paused,
+.task-row__dot--cancelled {
   background: var(--muted-soft);
   color: var(--muted);
 }
 
 .task-row__dot--blocked,
-.task-row__dot--failed {
+.task-row__dot--failed,
+.task-row__dot--denied {
   background: var(--red-soft);
   color: var(--red);
 }
@@ -183,4 +185,3 @@
   white-space: nowrap;
   justify-self: end;
 }
-

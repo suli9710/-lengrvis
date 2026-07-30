@@ -202,6 +202,7 @@ def test_strict_android_gate_requires_sealed_candidate_bound_reviewed_evidence(p
         encoding="utf-8"
     )
     publish_workflow = (project_root / ".github" / "workflows" / "release-publish.yml").read_text(encoding="utf-8")
+    candidate_workflow = (project_root / ".github" / "workflows" / "release-candidate.yml").read_text(encoding="utf-8")
 
     assert "verify_android_reviewed_evidence.py" in gate
     assert "--require-candidate-binding" in gate
@@ -228,6 +229,11 @@ def test_strict_android_gate_requires_sealed_candidate_bound_reviewed_evidence(p
     assert "LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256" in reviewed_workflow
     assert "-ExpectedSignerCertificateSha256" in reviewed_workflow
     assert "LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256" in publish_workflow
+    assert "LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY" in reviewed_workflow
+    assert "LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY" in publish_workflow
+    for workflow in (candidate_workflow, reviewed_workflow, publish_workflow):
+        assert "LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY" not in workflow
+        assert "LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET" not in workflow
     for variable in (
         "LENGRVIS_ANDROID_BUILD_TOOLS_VERSION",
         "LENGRVIS_ANDROID_APKSIGNER_SHA256",
@@ -350,7 +356,8 @@ def test_test_only_sdk_shims_can_parse_sealed_evidence_but_never_prove_release_r
     env = os.environ.copy()
     env.update(
         {
-            "LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET": "test-strict-android-evidence-secret",
+            "LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY": ("ed25519:x3U7zbLaWsyVcab-Pj54poMm9ypKbnkIuQHRXidX07w"),
+            "LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY": ("ed25519:hfUGqnZ1cdK0uy_TvWPLi8k-wRkMHsd7DPWGGhdLmJE"),
             "LENGRVIS_RELEASE_CANDIDATE_COMMIT": candidate["commit"],
             "LENGRVIS_RELEASE_BUILD_IDENTIFIER": candidate["build_identifier"],
             "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY": candidate["repository"],

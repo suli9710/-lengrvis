@@ -66,6 +66,7 @@ def test_schema_migration_creates_versioned_automation_tables() -> None:
         (6, "memory_active_successor_guard"),
         (7, "sensitive_record_integrity_foundation"),
         (8, "sensitive_integrity_bootstrap_anchor"),
+        (9, "task_denied_phase_backfill"),
     ]
 
 

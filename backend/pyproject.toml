@@ -69,8 +69,8 @@ testpaths = ["tests"]
 addopts = "-ra -W ignore::starlette.exceptions.StarletteDeprecationWarning"
 markers = [
   "slow: tests that are intentionally slower or rely on subprocess/thread timeout behavior or full local diagnostic/evaluation flows; exclude with -m 'not slow' in short runner budgets and run explicitly for full sign-off.",
-  "desktop_api_token_optional: opt-in bypass for desktop API token guard in TestClient tests.",
-  "requires_desktop_api_token: enforce desktop API token guard; excludes desktop_api_token_optional marker.",
+  "desktop_api_token_optional: explicit opt-in to the test-only desktop API token bypass for browser-mode behavior.",
+  "desktop_api_auth_contract: keep the desktop API token guard enabled without injecting the default TestClient credential.",
 ]
 
 [tool.ruff]

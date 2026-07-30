@@ -37,7 +37,6 @@ from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
 from app.policy.redaction import redact_run_payload, redact_value
-from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
     active_run_ids,
     leftover_active_tasks,
@@ -1326,6 +1325,8 @@ def _phase_for_task(task: Any) -> RunPhase:
         return RunPhase.COMPLETED
     if task.status in {TaskPhase.FAILED, TaskPhase.REPAIR_REQUIRED}:
         return RunPhase.FAILED
+    if task.status == TaskPhase.DENIED:
+        return RunPhase.DENIED
     if task.status == TaskPhase.CANCELLED:
         return RunPhase.CANCELLED
     if task.execution_stage.value == "paused":
@@ -1334,23 +1335,8 @@ def _phase_for_task(task: Any) -> RunPhase:
 
 
 def _phase_for_task_plan(task: Any, plan: Plan | None) -> RunPhase:
-    phase = _phase_for_task(task)
-    if phase != RunPhase.CANCELLED:
-        return phase
-    summary = (getattr(task, "final_summary", "") or "").casefold()
-    if "cancel" in summary or "rejected" in summary:
-        return RunPhase.CANCELLED
-    if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
-        return RunPhase.DENIED
-    if plan is None:
-        return RunPhase.CANCELLED
-    if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
-        return RunPhase.DENIED
-    if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):
-        return RunPhase.DENIED
-    if any(str(step.status) == "denied" for step in plan.steps):
-        return RunPhase.DENIED
-    return RunPhase.CANCELLED
+    del plan
+    return _phase_for_task(task)
 
 
 # Public re-exports for callers/tests (patchable via _schedule_background in tests).

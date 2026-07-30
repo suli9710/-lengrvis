@@ -1486,6 +1486,46 @@ def test_get_run_syncs_cancelled_task_with_cancelled_event(monkeypatch, tmp_path
     assert cancelled_events[0].payload["reason"] == "task_status_sync"
 
 
+def test_get_run_syncs_denied_task_with_denied_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(
+        user_goal="blocked by safety",
+        mode="efficiency",
+        status=TaskPhase.DENIED,
+        final_summary="Denied: policy blocked this task.",
+    )
+    db.upsert_model("tasks", task)
+    run = run_service.Run(
+        id="osrun_stale_denied_read",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_stale_denied_read",
+            "engine": "os",
+            "phase": "running",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("runs", run)
+
+    synced = run_service.get_run(run.id)
+    run_service.get_run(run.id)
+
+    events = run_service.list_run_events(run.id)
+    denied_events = [event for event in events if event.name == "run.denied"]
+    assert synced.phase == run_service.RunPhase.DENIED
+    assert synced.state["phase"] == "denied"
+    assert len(denied_events) == 1
+    assert denied_events[0].payload["reason"] == "task_status_sync"
+
+
 def test_pause_run_expires_pending_approval_and_denies_waiting_step(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()

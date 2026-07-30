@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hmac
+import base64
 import importlib.util
 import json
 import sys
@@ -12,7 +12,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-TEST_EVIDENCE_SECRET = sha256(b"android-reviewed-evidence-test-key").hexdigest()
 STRICT_CANDIDATE = {
     "commit": "c" * 40,
     "build_identifier": f"rc-45678-3-{'c' * 40}",
@@ -40,20 +39,25 @@ def _load_script(name: str):
 evidence_contracts = _load_script("evidence_contracts.py")
 android_reviewed = _load_script("verify_android_reviewed_evidence.py")
 android_seal = _load_script("seal_android_real_device_evidence.py")
+TEST_EVIDENCE_PRIVATE_KEY = "ed25519:" + base64.urlsafe_b64encode(
+    sha256(b"android-reviewed-evidence-test-key").digest()
+).decode("ascii").rstrip("=")
+TEST_EVIDENCE_PUBLIC_KEY = evidence_contracts.evidence_public_key_text(
+    evidence_contracts.load_evidence_private_key(TEST_EVIDENCE_PRIVATE_KEY)
+)
+
+
+@pytest.fixture(autouse=True)
+def _configure_reviewed_evidence_public_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    monkeypatch.delenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, raising=False)
 
 
 def _signed(payload: dict) -> dict:
-    body = deepcopy(payload)
-    body["evidence"] = {
-        "payload_sha256": "",
-        "signature": "",
-        "signature_payload_version": evidence_contracts.EVIDENCE_SIGNATURE_PAYLOAD_V2,
-        "signing_key_fingerprint": sha256(TEST_EVIDENCE_SECRET.encode()).hexdigest(),
-    }
-    payload_hash = evidence_contracts.canonical_evidence_payload_hash(body)
-    body["evidence"]["payload_sha256"] = payload_hash
-    body["evidence"]["signature"] = hmac.new(TEST_EVIDENCE_SECRET.encode(), payload_hash.encode(), sha256).hexdigest()
-    return body
+    return evidence_contracts.seal_evidence_payload_signature(
+        payload,
+        private_key_text=TEST_EVIDENCE_PRIVATE_KEY,
+    )
 
 
 def _artifact_manifest() -> dict:
@@ -125,7 +129,7 @@ def _binding():
 
 
 def test_signed_android_reviewed_evidence_accepts_the_matching_candidate(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
 
     errors, contract = android_reviewed.validate_payload_with_contract(
         _reviewed_android_payload(),
@@ -136,6 +140,7 @@ def test_signed_android_reviewed_evidence_accepts_the_matching_candidate(monkeyp
     assert contract == {
         "valid_hash": True,
         "valid_signature": True,
+        "valid_key_binding": True,
         "candidate_binding_valid": True,
         "artifact_identity_valid": True,
         "artifact_provenance_valid": True,
@@ -178,7 +183,7 @@ def test_android_reviewed_evidence_rejects_unbound_artifact_identity_or_provenan
     replacement: object,
     expected_error: str,
 ) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _reviewed_android_payload()
     target = payload
     for key in path[:-1]:
@@ -214,7 +219,7 @@ def test_android_reviewed_evidence_rejects_a_signed_replay_for_another_candidate
     replacement: str,
     error_code: str,
 ) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _reviewed_android_payload()
     payload["candidate"][field] = replacement
     payload = _signed(payload)
@@ -228,7 +233,7 @@ def test_android_reviewed_evidence_rejects_a_signed_replay_for_another_candidate
 
 
 def test_android_reviewed_evidence_rejects_unsigned_or_tampered_evidence(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     unsigned = _reviewed_android_payload()
     unsigned.pop("evidence")
     assert any("signature block" in error for error in android_reviewed.validate_payload(unsigned))
@@ -242,7 +247,7 @@ def test_android_reviewed_evidence_rejects_unsigned_or_tampered_evidence(monkeyp
 
 
 def test_android_reviewed_evidence_binds_signing_key_fingerprint(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _reviewed_android_payload()
     payload["evidence"]["signing_key_fingerprint"] = "replacement-key-label"
 
@@ -256,23 +261,22 @@ def test_android_reviewed_evidence_binds_signing_key_fingerprint(monkeypatch) ->
 
 
 def test_android_reviewed_evidence_rejects_a_resigned_false_key_fingerprint(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _reviewed_android_payload()
     payload["evidence"]["signing_key_fingerprint"] = "f" * 64
     payload_hash = evidence_contracts.canonical_evidence_payload_hash(payload)
     payload["evidence"]["payload_sha256"] = payload_hash
-    payload["evidence"]["signature"] = hmac.new(
-        TEST_EVIDENCE_SECRET.encode("utf-8"),
-        payload_hash.encode("utf-8"),
-        sha256,
-    ).hexdigest()
+    signature = evidence_contracts.load_evidence_private_key(TEST_EVIDENCE_PRIVATE_KEY).sign(
+        evidence_contracts.EVIDENCE_SIGNATURE_DOMAIN + bytes.fromhex(payload_hash)
+    )
+    payload["evidence"]["signature"] = "ed25519:" + base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
 
     errors, contract = android_reviewed.validate_payload_with_contract(
         payload,
         expected_candidate_binding=_binding(),
     )
 
-    assert any("does not match the configured signing key" in error for error in errors)
+    assert any("does not match the configured public key" in error for error in errors)
     assert contract["signing_key_fingerprint_bound"] is False
 
 
@@ -312,7 +316,7 @@ def test_android_reviewed_evidence_rejects_unbound_artifact_manifest(
     mutate,
     expected_error: str,
 ) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _reviewed_android_payload()
     payload.pop("evidence")
     mutate(payload)
@@ -328,7 +332,8 @@ def test_android_reviewed_evidence_rejects_unbound_artifact_manifest(
 
 
 def test_android_real_device_sealer_emits_candidate_bound_evidence(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, TEST_EVIDENCE_PRIVATE_KEY)
     monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_COMMIT", STRICT_CANDIDATE["commit"])
     monkeypatch.setenv("LENGRVIS_RELEASE_BUILD_IDENTIFIER", STRICT_CANDIDATE["build_identifier"])
     monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", STRICT_CANDIDATE["repository"])
@@ -349,7 +354,7 @@ def test_android_real_device_sealer_emits_candidate_bound_evidence(tmp_path: Pat
     assert errors == []
     assert sealed is not None
     assert output_path.exists()
-    assert sealed["evidence"]["signature_payload_version"] == (evidence_contracts.EVIDENCE_SIGNATURE_PAYLOAD_V2)
+    assert sealed["evidence"]["signature_payload_version"] == (evidence_contracts.EVIDENCE_SIGNATURE_PAYLOAD_VERSION)
     assert (
         android_reviewed.validate_payload(
             sealed,
@@ -360,30 +365,26 @@ def test_android_real_device_sealer_emits_candidate_bound_evidence(tmp_path: Pat
 
 
 def test_android_real_device_sealer_rejects_a_template(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     template = _reviewed_android_payload()
     template["template_status"] = "manual_real_device_evidence_required"
 
     with pytest.raises(ValueError, match="template evidence"):
-        android_seal.seal_payload(template, secret=TEST_EVIDENCE_SECRET)
-
-
-def test_android_real_device_sealer_rejects_a_non_sha256_key_fingerprint() -> None:
-    with pytest.raises(ValueError, match="full SHA256"):
-        android_seal.seal_payload(
-            _reviewed_android_payload(),
-            secret=TEST_EVIDENCE_SECRET,
-            signing_key_fingerprint="release-key-label",
-        )
+        android_seal.seal_payload(template, private_key_text=TEST_EVIDENCE_PRIVATE_KEY)
 
 
 @pytest.mark.parametrize(
-    ("secret", "message"),
+    ("private_key", "message"),
     [
-        ("short", "at least 32"),
-        ("a" * 64, "insufficient character diversity"),
+        ("short", "ed25519: prefix"),
+        ("ed25519:YQ", "invalid Ed25519 length"),
     ],
 )
-def test_android_real_device_sealer_rejects_weak_hmac_secrets(secret: str, message: str) -> None:
+def test_android_real_device_sealer_rejects_invalid_private_keys(private_key: str, message: str) -> None:
+    payload = _reviewed_android_payload()
+    payload.pop("evidence")
     with pytest.raises(ValueError, match=message):
-        android_seal.seal_payload(_reviewed_android_payload(), secret=secret)
+        android_seal.seal_payload(
+            payload,
+            private_key_text=private_key,
+        )

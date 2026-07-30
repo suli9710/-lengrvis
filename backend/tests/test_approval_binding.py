@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 from native_confirmation_helpers import TEST_NATIVE_CONFIRMATION_SECRET, native_confirmation_headers
 
 from app.agents.orchestrator_agent import OrchestratorAgent
-from app.automation.intent_capsule import user_goal_digest
 from app.api import routes_approvals, routes_runtime
+from app.automation.intent_capsule import user_goal_digest
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
@@ -224,7 +224,10 @@ def test_approval_for_execution_preserves_mobile_claim_denial_reason():
     assert exc_info.value.detail == "Remote input approval is missing a grant binding."
 
 
-@pytest.mark.parametrize("terminal_status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED])
+@pytest.mark.parametrize(
+    "terminal_status",
+    [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.DENIED, TaskStatus.CANCELLED],
+)
 def test_approved_step_cannot_execute_after_task_leaves_approval_state(terminal_status):
     orchestrator, task, plan, _step, approval, calls = _setup_bound_approval()
     task.status = terminal_status

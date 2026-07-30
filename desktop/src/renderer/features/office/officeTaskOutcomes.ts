@@ -95,7 +95,7 @@ function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
 
   const executableCount = task.cleanupPlan.items.filter((item) => item.disposition === "permanent_delete" || item.disposition === "trash").length;
   const candidateSummary = `${task.cleanupPlan.items.length} 个候选项`;
-  if (task.state === "failed" || task.state === "repair_required" || isSafeFailureEvidence(task)) {
+  if (task.state === "failed" || task.state === "denied" || task.state === "repair_required" || isSafeFailureEvidence(task)) {
     return {
       id: "cleanup",
       eyebrow: "清理计划",
@@ -104,6 +104,17 @@ function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
       detail: "这次没有形成可核验的清理预览；不会删除或移动文件。",
       action: "下一步：查看原因，重新选择范围后再试",
       tone: "blocked"
+    };
+  }
+  if (task.state === "cancelled") {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      statusLabel: "已取消",
+      title: "清理任务已取消",
+      detail: "任务已由用户停止；不会继续删除或移动文件。",
+      action: "下一步：需要时重新选择范围",
+      tone: "warning"
     };
   }
   if (task.state === "running" || task.state === "queued") {
@@ -211,15 +222,27 @@ function taskOutcomeCard({
     };
   }
 
-  if (task.state === "failed" || isSafeFailureEvidence(task)) {
+  if (task.state === "failed" || task.state === "denied" || isSafeFailureEvidence(task)) {
     return {
       id,
       eyebrow,
       statusLabel: taskOutcomeStatusLabel(task),
-      title: "任务未完成",
-      detail: failedDetail,
-      action: "下一步：查看原因后重试",
+      title: task.state === "denied" ? "任务已被拒绝" : "任务未完成",
+      detail: task.state === "denied" ? "安全或权限边界阻止了任务形成结果。" : failedDetail,
+      action: task.state === "denied" ? "下一步：查看边界并调整目标或权限" : "下一步：查看原因后重试",
       tone: "blocked"
+    };
+  }
+
+  if (task.state === "cancelled") {
+    return {
+      id,
+      eyebrow,
+      statusLabel: "已取消",
+      title: "任务已取消",
+      detail: "任务由用户停止，没有形成新的完成结果。",
+      action: "下一步：需要时调整目标后重新开始",
+      tone: "warning"
     };
   }
 
@@ -275,6 +298,8 @@ function taskOutcomeStatusLabel(task: TaskEvent): string {
   if (task.state === "blocked") return "等待你确认";
   if (isSafeFailureEvidence(task)) return "安全停止，需处理";
   if (task.state === "failed") return "未完成，需处理";
+  if (task.state === "denied") return "已拒绝，需调整";
+  if (task.state === "cancelled") return "已取消";
   if (task.state === "repair_required") return "回滚需修复";
   if (task.state === "rolled_back") return "变更已回滚";
   if (task.state === "paused") return "已暂停，可接回";

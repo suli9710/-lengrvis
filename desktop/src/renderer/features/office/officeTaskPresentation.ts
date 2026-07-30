@@ -135,7 +135,7 @@ function buildTaskWorkspaceItems(
       label: "当前动作",
       value: latestTask ? taskDisplayState(latestTask) : selectedSkill ? "待启动" : "空闲",
       detail: latestTask ? taskDisplayTitle(latestTask, "最近任务") : selectedSkill?.wizard.nextStep || "等待第一个目标或任务模板",
-      tone: latestTask?.state === "failed" ? "blocked" : latestTask || selectedSkill ? "ready" : "warning"
+      tone: latestTask?.state === "failed" || latestTask?.state === "denied" ? "blocked" : latestTask || selectedSkill ? "ready" : "warning"
     },
     taskResultWorkspaceItem(latestTask, selectedSkill),
     {
@@ -191,12 +191,21 @@ function taskResultWorkspaceItem(task: TaskEvent | undefined, selectedSkill: Off
     };
   }
 
-  if (task.state === "failed" || task.state === "repair_required") {
+  if (task.state === "failed" || task.state === "denied" || task.state === "repair_required") {
     return {
       label: "结果状态",
-      value: "未完成，需处理",
-      detail: "这次没有完成结果；先查看原因，再决定是否重试",
+      value: task.state === "denied" ? "已拒绝，需调整" : "未完成，需处理",
+      detail: task.state === "denied" ? "安全或权限边界阻止了任务；先查看原因，再调整目标或权限" : "这次没有完成结果；先查看原因，再决定是否重试",
       tone: "blocked"
+    };
+  }
+
+  if (task.state === "cancelled") {
+    return {
+      label: "结果状态",
+      value: "已取消",
+      detail: "任务由用户停止，没有形成新的完成结果",
+      tone: "warning"
     };
   }
 

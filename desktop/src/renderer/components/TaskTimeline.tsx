@@ -45,6 +45,7 @@ import { AccessibleDialog } from "./AccessibleDialog";
 import { Badge, Panel } from "./Panel";
 import { TaskExplainDialog } from "./TaskExplainDialog";
 import { TechnicalDetails } from "./TechnicalDetails";
+import { timelineUserStatusCopy, toneForState, workspaceAction } from "./taskTimelinePresentation";
 
 interface TaskTimelineProps {
   tasks: TaskEvent[];
@@ -439,7 +440,13 @@ function taskMatchesFocus(task: TaskEvent, focusedTaskId?: string | null): boole
 
 function TimelineUserStatus({ task }: { task: TaskEvent }) {
   const copy = timelineUserStatusCopy(task);
-  const role = task.state === "failed" || task.state === "repair_required" || task.state === "blocked" ? "alert" : "status";
+  const role =
+    task.state === "failed" ||
+    task.state === "denied" ||
+    task.state === "repair_required" ||
+    task.state === "blocked"
+      ? "alert"
+      : "status";
   return (
     <div className={`timeline-user-status timeline-user-status--${copy.tone}`} role={role}>
       <span>
@@ -452,36 +459,6 @@ function TimelineUserStatus({ task }: { task: TaskEvent }) {
       </span>
     </div>
   );
-}
-
-function timelineUserStatusCopy(task: TaskEvent): {
-  stageLabel: string;
-  stage: string;
-  nextStep: string;
-  tone: "neutral" | "active" | "success" | "warning" | "danger";
-} {
-  if (task.state === "running") {
-    return { stageLabel: "当前阶段", stage: "正在执行任务", nextStep: "完成后核对结果与证据", tone: "active" };
-  }
-  if (task.state === "blocked") {
-    return { stageLabel: "当前阶段", stage: "等待你的确认", nextStep: "查看审批内容，再决定是否继续", tone: "warning" };
-  }
-  if (task.state === "completed") {
-    return { stageLabel: "结果", stage: "任务已完成", nextStep: "核对结果，必要时查看证据或回滚预案", tone: "success" };
-  }
-  if (task.state === "failed") {
-    return { stageLabel: "发生了什么", stage: "任务未完成，并已安全停止", nextStep: "重试任务，或打开技术详情查看脱敏原因", tone: "danger" };
-  }
-  if (task.state === "rolled_back") {
-    return { stageLabel: "结果", stage: "任务变更已回滚并核验", nextStep: "可查看回滚记录确认各项后态", tone: "success" };
-  }
-  if (task.state === "repair_required") {
-    return { stageLabel: "发生了什么", stage: "回滚未完整完成", nextStep: "查看回滚结果并完成剩余修复", tone: "danger" };
-  }
-  if (task.state === "paused") {
-    return { stageLabel: "当前阶段", stage: "任务已暂停", nextStep: "恢复任务或调整目标", tone: "neutral" };
-  }
-  return { stageLabel: "当前阶段", stage: "等待开始", nextStep: "系统会在执行前检查范围和权限", tone: "neutral" };
 }
 
 function TimelineTechnicalDetails({
@@ -737,7 +714,12 @@ function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: 
     {
       label: "当前动作",
       value: workspaceAction(task),
-      tone: task.state === "failed" ? "blocked" : task.state === "queued" ? "warning" : "ready"
+      tone:
+        task.state === "failed" || task.state === "denied"
+          ? "blocked"
+          : task.state === "queued" || task.state === "cancelled"
+            ? "warning"
+            : "ready"
     },
     {
       label: "工具权限",
@@ -755,15 +737,6 @@ function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: 
       tone: hasRollback ? "ready" : "warning"
     }
   ];
-}
-
-function workspaceAction(task: TaskEvent): string {
-  if (task.state === "queued") return "等待执行";
-  if (task.state === "running") return "正在执行";
-  if (task.state === "blocked") return "等待审批";
-  if (task.state === "paused") return "已暂停";
-  if (task.state === "completed") return "已完成";
-  return "需要复核";
 }
 
 function workspaceTool(task: TaskEvent): string {
@@ -858,28 +831,9 @@ function iconForState(state: TaskState) {
     return <CheckCircle2 size={16} aria-hidden="true" />;
   }
 
-  if (state === "failed" || state === "blocked" || state === "repair_required") {
+  if (state === "failed" || state === "denied" || state === "cancelled" || state === "blocked" || state === "repair_required") {
     return <XCircle size={16} aria-hidden="true" />;
   }
 
   return <Clock size={16} aria-hidden="true" />;
-}
-
-function toneForState(state: TaskState): "neutral" | "success" | "warning" | "danger" | "info" {
-  switch (state) {
-    case "completed":
-    case "rolled_back":
-      return "success";
-    case "blocked":
-      return "warning";
-    case "paused":
-      return "neutral";
-    case "failed":
-    case "repair_required":
-      return "danger";
-    case "running":
-      return "info";
-    default:
-      return "neutral";
-  }
 }

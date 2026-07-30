@@ -270,7 +270,7 @@ export function OfficeScene({
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .find((task) => {
         const before = previous[task.id];
-        return before && before !== task.state && ["completed", "failed", "rolled_back", "repair_required"].includes(task.state);
+        return before && before !== task.state && ["completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"].includes(task.state);
       });
 
     previousTaskStatesRef.current = Object.fromEntries(recentTasks.map((task) => [task.id, task.state]));
@@ -278,7 +278,7 @@ export function OfficeScene({
     const transitionedAgentId = transitioned ? officeAgentIdForTask(transitioned) || workingAgentId : workingAgentId;
     if (transitioned?.state === "completed" || transitioned?.state === "rolled_back") {
       triggerAgentFeedback(transitionedAgentId, "completed");
-    } else if (transitioned?.state === "failed" || transitioned?.state === "repair_required") {
+    } else if (transitioned?.state === "failed" || transitioned?.state === "denied" || transitioned?.state === "repair_required") {
       triggerAgentFeedback(transitionedAgentId, "failed", true);
     } else if (recentTasks.some((task) => task.state === "running" || task.state === "queued")) {
       setAgentFeedback((current) => current?.kind === "failed" ? null : current);

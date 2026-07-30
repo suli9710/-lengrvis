@@ -29,6 +29,9 @@ os.environ.setdefault("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
 os.environ.setdefault("LENGRVIS_NATIVE_CONFIRMATION_SECRET", "test-native-confirmation-secret")
 
 
+TEST_DESKTOP_API_TOKEN = "pytest-desktop-api-token"  # noqa: S105 - deterministic test credential.
+
+
 # test_start_app_script.py exercises Windows-only PowerShell launch behavior and
 # only passes on Windows runners. Skip collecting it on non-Windows platforms.
 collect_ignore_glob: list[str] = []
@@ -122,15 +125,60 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             substring in normalized for substring in CROSS_PLATFORM_CI_SKIP_NODEID_SUBSTRINGS
         ):
             item.add_marker(cross_platform_skip)
-        if not item.get_closest_marker("requires_desktop_api_token"):
-            item.add_marker(pytest.mark.desktop_api_token_optional)
+
+
+@pytest.fixture
+def desktop_api_headers() -> dict[str, str]:
+    """Authentication headers for requests that override the client defaults."""
+    from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
+
+    return {DESKTOP_API_TOKEN_HEADER: TEST_DESKTOP_API_TOKEN}
 
 
 @pytest.fixture(autouse=True)
-def desktop_api_token_optional_for_testclient(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def desktop_api_auth_for_testclient(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the desktop guard enabled while authenticating local ASGI clients.
+
+    Most API tests care about the routed behavior rather than authentication.
+    Giving their in-process clients a deterministic credential exercises the
+    real token comparison without repeating headers at every call site.
+    Authentication contract tests opt out of this client default, while the
+    browser-only test escape hatch remains an explicit marker.
+    """
     monkeypatch.setenv("LENGRVIS_TEST", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", TEST_DESKTOP_API_TOKEN)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     if request.node.get_closest_marker("desktop_api_token_optional"):
         monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+        return
+    if request.node.get_closest_marker("desktop_api_auth_contract"):
+        return
+
+    import httpx
+    from starlette.testclient import TestClient
+
+    from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
+
+    original_test_client_init = TestClient.__init__
+
+    def authenticated_test_client_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        headers = dict(kwargs.get("headers") or {})
+        headers.setdefault(DESKTOP_API_TOKEN_HEADER, TEST_DESKTOP_API_TOKEN)
+        kwargs["headers"] = headers
+        original_test_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(TestClient, "__init__", authenticated_test_client_init)
+
+    original_async_client_init = httpx.AsyncClient.__init__
+
+    def authenticated_async_client_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        if isinstance(kwargs.get("transport"), httpx.ASGITransport):
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault(DESKTOP_API_TOKEN_HEADER, TEST_DESKTOP_API_TOKEN)
+            kwargs["headers"] = headers
+        original_async_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", authenticated_async_client_init)
 
 
 @pytest.fixture(autouse=True)

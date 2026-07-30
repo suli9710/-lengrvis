@@ -27,7 +27,7 @@ jobs:
     environment: production
     env:
       GH_TOKEN: ${{ github.token }}
-      LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
+      LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY: ${{ vars.LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY }}
       LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
       LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
       LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ inputs.candidate_run_attempt }}
@@ -183,6 +183,11 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Install locked evidence-verifier dependencies
+        run: python -m pip install --require-hashes -r requirements-dev-lock.txt
 
       - name: Verify reviewed evidence against the immutable candidate
         shell: pwsh

@@ -33,6 +33,8 @@ export function taskDisplayState(task: TaskEvent): string {
   if (task.state === "blocked") return "待审批";
   if (task.state === "paused") return "已暂停";
   if (task.state === "failed") return "未完成";
+  if (task.state === "denied") return "已拒绝";
+  if (task.state === "cancelled") return "已取消";
   return "等待中";
 }
 

@@ -571,11 +571,10 @@ def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_
         assert websocket.receive_json()["type"] == "connected"
 
 
+@pytest.mark.desktop_api_token_optional
 def test_loopback_client_keeps_desktop_api_access(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LENGRVIS_TEST", "1")
-    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 

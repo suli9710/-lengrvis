@@ -4,10 +4,10 @@ import { zhBackendTaskStatus } from "../lib/zh";
 import { taskExplainStatusTone } from "./TaskExplainDialog";
 
 describe("taskExplainStatusTone", () => {
-  it("uses danger for terminal failures", () => {
+  it("distinguishes safety failures from user cancellation", () => {
     expect(taskExplainStatusTone("failed")).toBe("danger");
     expect(taskExplainStatusTone("denied")).toBe("danger");
-    expect(taskExplainStatusTone("cancelled")).toBe("danger");
+    expect(taskExplainStatusTone("cancelled")).toBe("neutral");
     expect(taskExplainStatusTone("repair_required")).toBe("danger");
   });
 
@@ -35,6 +35,7 @@ describe("taskExplainStatusTone", () => {
       "final_review",
       "completed",
       "failed",
+      "denied",
       "cancelled",
       "rolled_back",
       "repair_required"
@@ -48,6 +49,7 @@ describe("taskExplainStatusTone", () => {
       "核验结果中",
       "已完成",
       "失败",
+      "已拒绝",
       "已取消",
       "已回滚",
       "回滚后需要修复"

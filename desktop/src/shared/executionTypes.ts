@@ -20,6 +20,8 @@ export type TaskState =
   | "paused"
   | "completed"
   | "failed"
+  | "denied"
+  | "cancelled"
   | "rolled_back"
   | "repair_required";
 

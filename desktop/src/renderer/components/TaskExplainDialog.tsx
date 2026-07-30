@@ -152,8 +152,9 @@ export function taskExplainStatusTone(
     case "failed":
     case "repair_required":
     case "denied":
-    case "cancelled":
       return "danger";
+    case "cancelled":
+      return "neutral";
     case "blocked":
     case "paused":
     case "awaiting_approval":

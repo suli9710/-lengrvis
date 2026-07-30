@@ -108,8 +108,10 @@ async def _delegate_system_diagnostics_run(message: str, mode: str) -> ChatRespo
 def _task_phase_from_run_phase(phase: RunPhase) -> TaskPhase:
     if phase == RunPhase.COMPLETED:
         return TaskPhase.COMPLETED
-    if phase in {RunPhase.FAILED, RunPhase.DENIED}:
+    if phase == RunPhase.FAILED:
         return TaskPhase.FAILED
+    if phase == RunPhase.DENIED:
+        return TaskPhase.DENIED
     if phase == RunPhase.CANCELLED:
         return TaskPhase.CANCELLED
     if phase in {RunPhase.RUNNING, RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED}:

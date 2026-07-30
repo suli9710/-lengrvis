@@ -438,7 +438,11 @@ function getWorkbenchState({
   const activeTask = visibleTasks.find((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
   const latestTask = visibleTasks[0];
   const latestMessage = messages[messages.length - 1];
-  const hasError = latestTask?.state === "failed" || latestTask?.state === "repair_required" || latestMessage?.status === "failed";
+  const hasError =
+    latestTask?.state === "failed" ||
+    latestTask?.state === "denied" ||
+    latestTask?.state === "repair_required" ||
+    latestMessage?.status === "failed";
 
   if (connectionState === "offline" && !activeTask) {
     return {

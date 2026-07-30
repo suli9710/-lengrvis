@@ -101,6 +101,19 @@ def test_task_metrics_normalize_legacy_failed_rollback_records() -> None:
     assert metrics["by_status"] == {"repair_required": 1, "rolled_back": 1}
 
 
+def test_task_metrics_count_denied_and_cancelled_as_distinct_terminal_outcomes() -> None:
+    rows = [
+        {"data": json.dumps({"status": "denied"})},
+        {"data": json.dumps({"status": "cancelled"})},
+    ]
+
+    metrics = _task_metrics(rows)
+
+    assert metrics["terminal"] == 2
+    assert metrics["succeeded"] == 0
+    assert metrics["by_status"] == {"cancelled": 1, "denied": 1}
+
+
 def test_collect_local_metrics_empty_db(monkeypatch, tmp_path):
     _setup_env(monkeypatch, tmp_path)
 

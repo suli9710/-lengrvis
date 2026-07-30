@@ -605,6 +605,7 @@ def _mobile_task_status_label(status: str) -> str:
         "rolled_back": "已回滚",
         "repair_required": "需要修复",
         "failed": "失败",
+        "denied": "已拒绝",
         "cancelled": "已取消",
     }.get(status, status or "未知状态")
 
@@ -624,6 +625,7 @@ def _mobile_task_status_detail(status: str) -> str:
         "rolled_back": "任务变更已恢复并完成核验。",
         "repair_required": "回滚未完整恢复，请回到电脑端完成修复。",
         "failed": "任务执行失败，请回到电脑端查看详情。",
+        "denied": "任务已被安全或权限边界拒绝，请回到电脑端查看详情。",
         "cancelled": "任务已取消。",
     }.get(status, "任务状态已同步。")
 

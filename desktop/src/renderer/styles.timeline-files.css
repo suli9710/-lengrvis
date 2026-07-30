@@ -74,12 +74,14 @@
 
 .timeline__marker--blocked,
 .timeline__marker--failed,
+.timeline__marker--denied,
 .step-row__index--blocked {
   color: var(--red);
   background: var(--red-soft);
 }
 
-.timeline__marker--paused {
+.timeline__marker--paused,
+.timeline__marker--cancelled {
   color: var(--muted);
   background: var(--muted-soft);
 }

@@ -608,6 +608,8 @@ def _developer_terminal_run_phase(task: Task) -> RunPhase | None:
         return RunPhase.COMPLETED
     if task.status in {TaskPhase.FAILED, TaskPhase.REPAIR_REQUIRED}:
         return RunPhase.FAILED
+    if task.status == TaskPhase.DENIED:
+        return RunPhase.DENIED
     if task.status == TaskPhase.CANCELLED:
         return RunPhase.CANCELLED
     return None

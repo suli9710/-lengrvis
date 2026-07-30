@@ -21,7 +21,9 @@ export function mapTaskState(status: string): TaskEvent["state"] {
   if (status === "completed") return "completed";
   if (status === "rolled_back") return "rolled_back";
   if (status === "repair_required") return "repair_required";
-  if (status === "failed" || status === "denied" || status === "cancelled") return "failed";
+  if (status === "failed") return "failed";
+  if (status === "denied") return "denied";
+  if (status === "cancelled") return "cancelled";
   if (status === "paused") return "paused";
   if (status === "waiting_user_approval" || status === "awaiting_approval") return "blocked";
   return "running";

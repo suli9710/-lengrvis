@@ -295,7 +295,7 @@ async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
     task = await orchestrator.handle_user_goal("run forbidden tool", "privacy")
     plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
 
-    assert task.status == TaskPhase.CANCELLED
+    assert task.status == TaskPhase.DENIED
     assert plan.steps[0].status == StepStatus.DENIED
     assert "denied" in task.final_summary.lower()
 

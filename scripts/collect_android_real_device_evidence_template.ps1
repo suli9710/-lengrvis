@@ -274,7 +274,7 @@ $packet = [ordered]@{
     evidence = [ordered]@{
         payload_sha256 = ""
         signature = ""
-        signature_payload_version = "reviewed-evidence-hmac-sha256/v2"
+        signature_payload_version = "reviewed-evidence-ed25519/v3"
         signing_key_fingerprint = ""
     }
     evidence_artifact_manifest = [ordered]@{

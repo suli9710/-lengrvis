@@ -1846,7 +1846,7 @@ def test_runtime_denies_approval_when_tool_lacks_dry_run_after_dynamic_risk():
     assert calls == []
     assert step.status == StepStatus.DENIED
     refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
-    assert refreshed.status == TaskStatus.CANCELLED
+    assert refreshed.status == TaskStatus.DENIED
     events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
     assert any(event["event_type"] == "tool.approval_requires_dry_run" for event in events)
 

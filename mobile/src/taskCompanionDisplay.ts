@@ -1,7 +1,7 @@
 import type { MobileTask, MobileTaskAction } from "./api/client";
 import { safeCompactText, safeDisplayText } from "./safeDisplay";
 
-const TERMINAL_TASK_STATUSES = ["completed", "failed", "cancelled", "denied"];
+const TERMINAL_TASK_STATUSES = ["completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"];
 
 export function taskDisplayTitle(task: MobileTask): string {
   return safeCompactText(task.title, "电脑任务");
@@ -32,7 +32,10 @@ export function taskCredibilityText(task: MobileTask): string {
   if (task.completion_evidence?.level === "task_created") return "仅收到任务记录，还没有结果。";
   if (task.status === "completed") return "已结束；手机未收到可核验证据。";
   if (task.status === "failed") return "未完成；不要把当前摘要当作结果。";
-  if (task.status === "cancelled" || task.status === "denied") return "已停止；没有新的结果。";
+  if (task.status === "denied") return "已被安全或权限边界拒绝；没有新的结果。";
+  if (task.status === "cancelled") return "已由用户取消；没有新的结果。";
+  if (task.status === "rolled_back") return "变更已回滚；请在电脑端核对恢复记录。";
+  if (task.status === "repair_required") return "回滚未完整恢复；需要在电脑端继续处理。";
   return "进行中；当前内容只是进度，不是最终结果。";
 }
 
@@ -42,7 +45,10 @@ export function taskNextStepText(task: MobileTask): string {
   if (hasVerifiedCompletedResult(task)) return "回电脑端核对结果和来源，再决定是否签收。";
   if (task.status === "completed") return "回电脑端补看结果来源；未核验前不要当作完成。";
   if (task.status === "failed") return "查看电脑端错误后再重试。";
-  if (task.status === "cancelled" || task.status === "denied") return "已停止；需要时发起新任务。";
+  if (task.status === "denied") return "回电脑端查看阻断边界，修改目标或权限后再发起任务。";
+  if (task.status === "cancelled") return "任务已取消；需要时发起新任务。";
+  if (task.status === "rolled_back") return "回电脑端核对回滚记录和资源后态。";
+  if (task.status === "repair_required") return "回电脑端完成剩余修复，不要把当前状态当作已恢复。";
   if (taskActionAllowed(task, "pause")) return "可以先观察；不放心就暂停。";
   return "等待电脑端更新，暂时不用操作。";
 }
@@ -96,8 +102,11 @@ function taskStatusLabel(status: string): string {
   if (status === "final_review") return "复核中";
   if (status === "paused") return "已暂停";
   if (status === "completed") return "已完成";
-  if (status === "cancelled" || status === "denied") return "已取消";
+  if (status === "denied") return "已拒绝";
+  if (status === "cancelled") return "已取消";
   if (status === "failed") return "失败";
+  if (status === "rolled_back") return "已回滚";
+  if (status === "repair_required") return "需要修复";
   return safeCompactText(status, "未知");
 }
 
@@ -110,7 +119,10 @@ function statusFallback(status: string): string {
   if (status === "final_review") return "电脑端正在复核结果。";
   if (status === "paused") return "任务已暂停，电脑端不会继续下一步。";
   if (status === "completed") return "任务已结束，请核对结果。";
-  if (status === "cancelled" || status === "denied") return "任务已停止。";
+  if (status === "denied") return "任务已被安全或权限边界拒绝，请在电脑端查看原因。";
+  if (status === "cancelled") return "任务已取消。";
   if (status === "failed") return "任务未完成。";
+  if (status === "rolled_back") return "任务变更已回滚，请核对恢复记录。";
+  if (status === "repair_required") return "回滚未完整恢复，请在电脑端继续修复。";
   return "等待电脑端更新状态。";
 }

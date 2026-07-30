@@ -143,8 +143,27 @@ def test_set_status_writes_terminal_summary_atomically(monkeypatch: pytest.Monke
     OrchestratorAgent()._set_status(task, TaskStatus.DENIED, final_summary="Denied: policy blocked this task.")
 
     assert writes
-    assert writes[0].status == TaskPhase.CANCELLED
+    assert writes[0].status == TaskPhase.DENIED
     assert writes[0].final_summary == "Denied: policy blocked this task."
+
+
+def test_denial_and_user_cancellation_persist_as_distinct_terminal_phases():
+    denied = _make_task(TaskStatus.PLANNING)
+    cancelled = _make_task(TaskStatus.PLANNING)
+
+    safe_transition(denied, TaskStatus.DENIED, actor="SafetyReviewAgent", strict=True)
+    safe_transition(cancelled, TaskStatus.CANCELLED, actor="TaskService", strict=True)
+
+    denied_row = db.fetch_one("tasks", denied.id)
+    cancelled_row = db.fetch_one("tasks", cancelled.id)
+    assert denied_row["status"] == "denied"
+    assert denied_row["phase"] == "denied"
+    assert cancelled_row["status"] == "cancelled"
+    assert cancelled_row["phase"] == "cancelled"
+
+    client = TestClient(create_app())
+    assert client.get(f"/api/tasks/{denied.id}").json()["status"] == "denied"
+    assert client.get(f"/api/tasks/{cancelled.id}").json()["status"] == "cancelled"
 
 
 def test_same_status_transition_syncs_phase():
@@ -280,9 +299,13 @@ def test_partial_rollback_transitions_task_to_repair_required(monkeypatch: pytes
 
 
 def _public_key_b64(private_key: Ed25519PrivateKey) -> str:
-    return base64.urlsafe_b64encode(
-        private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
+    return (
+        base64.urlsafe_b64encode(
+            private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
         )
-    ).decode("ascii").rstrip("=")
+        .decode("ascii")
+        .rstrip("=")
+    )

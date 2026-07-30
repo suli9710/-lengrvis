@@ -343,6 +343,8 @@ def task_status_summary(task: Task | None, completion_evidence: dict[str, Any]) 
         return "Rollback is incomplete; review the remaining repair actions."
     if status == "failed":
         return "Failed; review the evidence trail before retrying."
+    if status == "denied":
+        return "Denied by a safety or permission boundary before completion."
     if status == "cancelled":
         return "Cancelled before completion."
     if status == "execution":
@@ -370,6 +372,8 @@ def task_next_step(task: Task | None, counts: dict[str, int], completion_evidenc
         return "Review the rollback details and complete the remaining repair actions."
     if status == "failed":
         return "Review the failed evidence trail, fix the cause, then retry only if the goal is still safe."
+    if status == "denied":
+        return "Review the blocking boundary and revise the goal or permissions before starting a new task."
     if status == "cancelled":
         return "Start a new task or revise the goal; this run did not reach a verified result."
     if status in {"created", "planning", "plan_review", "consultation", "final_review"}:

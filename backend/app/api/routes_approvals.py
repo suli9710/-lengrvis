@@ -427,8 +427,10 @@ def _approval_execution_error(approval: Approval) -> str:
         task = Task.model_validate(task_data)
         if task.status == TaskStatus.FAILED:
             return task.final_summary or "Approved operation failed during execution."
-        if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED}:
-            return task.final_summary or "Approved operation did not complete execution."
+        if task.status == TaskStatus.DENIED:
+            return task.final_summary or "Approved operation was denied by a safety or permission boundary."
+        if task.status == TaskStatus.CANCELLED:
+            return task.final_summary or "Approved operation was cancelled before execution completed."
     plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)
     if plans:
         plan = Plan.model_validate(plans[0])

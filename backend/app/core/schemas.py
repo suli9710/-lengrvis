@@ -97,7 +97,7 @@ LEGACY_TASK_STATUS_MAP: dict[str, tuple[TaskPhase, ExecutionStage]] = {
     "reviewing_next_step": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
     "final_review": (TaskPhase.FINAL_REVIEW, ExecutionStage.IDLE),
     "completed": (TaskPhase.COMPLETED, ExecutionStage.IDLE),
-    "denied": (TaskPhase.CANCELLED, ExecutionStage.IDLE),
+    "denied": (TaskPhase.DENIED, ExecutionStage.IDLE),
     "failed": (TaskPhase.FAILED, ExecutionStage.IDLE),
     "paused": (TaskPhase.EXECUTION, ExecutionStage.PAUSED),
     "cancelled": (TaskPhase.CANCELLED, ExecutionStage.IDLE),
@@ -128,7 +128,7 @@ class TaskStatus:
     REVIEWING_NEXT_STEP = "reviewing_next_step"
     FINAL_REVIEW = TaskPhase.FINAL_REVIEW
     COMPLETED = TaskPhase.COMPLETED
-    DENIED = TaskPhase.CANCELLED
+    DENIED = TaskPhase.DENIED
     FAILED = TaskPhase.FAILED
     PAUSED = "paused"
     CANCELLED = TaskPhase.CANCELLED

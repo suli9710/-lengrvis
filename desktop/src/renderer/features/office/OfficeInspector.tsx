@@ -197,7 +197,7 @@ export function OfficeInspector({
                     <CheckCircle2 size={14} aria-hidden="true" />
                   ) : task.state === "blocked" ? (
                     <ShieldCheck size={14} aria-hidden="true" />
-                  ) : task.state === "failed" ? (
+                  ) : task.state === "failed" || task.state === "denied" ? (
                     <ShieldCheck size={14} aria-hidden="true" />
                   ) : (
                     <Clock size={14} aria-hidden="true" />

@@ -1,6 +1,6 @@
 # Lengrvis 全量代码审查报告
 
-> **更新（2026-07-26 修复轮，共 4 批）**：Critical C1、C2、全部 High（H1–H9）、17 项 Medium 与一批 Low 已修复并补回归测试/验证；1 项 Medium（M24 能力吊销 fail-closed）判定为需专门设计的后续项。验证覆盖 backend（含 677 项广测、多轮模块复测）、desktop（全量 vitest 418 项 + typecheck）、mobile（typecheck + 新增 instrumented 测试）、CI workflow YAML 校验与 repo hygiene 门禁。各批修复详情见文末四节「修复记录」。剩余未处理项见各节末尾。
+> **更新（截至 2026-07-31，共 6 批）**：报告中确认的 Critical、全部 High、代码级剩余 Medium 及一批 Low 已完成修复与回归验证。最终验证覆盖 Backend 全量 `3931 passed, 12 skipped`、Desktop `96 files / 422 tests` + typecheck/production build、Mobile typecheck/状态 companion smoke、发布证据 143 项、依赖锁、Ruff、repo hygiene、maintainability、secret scan 与 threat-model 门禁。各批详情见文末六节「修复记录」；仅剩需要真实人员配置的 CODEOWNERS 治理项及外部设备/人工发布证据。
 >
 > 审查日期：2026-07-26
 > 范围：整个代码库（backend / desktop / mobile / scripts / CI / 根目录配置），共约 1472 个 git 跟踪文件（655 Python + 286 TS + 101 TSX + 6 Kotlin + 69 PowerShell + 9 workflow）。
@@ -326,3 +326,28 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 - `TaskStatus.DENIED` 与 `CANCELLED` 仍共享持久状态，需独立 `TaskPhase.DENIED` 与兼容迁移。
 - Reviewed evidence 仍以对称 HMAC 封存/验证，需迁移到 reviewer 私钥与发布侧公钥的非对称签名。
 - CODEOWNERS 单一 owner 属治理与人员配置问题，无法仅靠代码修复。
+
+---
+
+## 修复记录 · 批 6（2026-07-31）
+
+| 编号 | 修复 | 主要改动 | 回归测试 |
+|---|---|---|---|
+| C2 | pytest 桌面鉴权默认 guard-on | 删除全量隐式 `desktop_api_token_optional`；普通 TestClient/ASGI client 注入固定测试凭证并真实经过 token 比对；无凭证/错凭证契约用独立 marker，浏览器旁路仅在明确测试上 opt-in | 使用 TestClient/ASGITransport 的广测 1169 项；聊天、配对码、诊断导出 missing/wrong token 401 契约 |
+| M37 | `DENIED` 与 `CANCELLED` 持久语义分离 | 新增独立 `TaskPhase.DENIED`、状态机/Run/Task/API/指标映射与 SQLite v9 保守迁移；迁移仅重建有明确拒绝证据的旧记录，并只对齐最新 cancelled run；运行时删除摘要/计划猜测 | DENIED 专项、迁移、状态机、Run API、审批与 TaskPool 广测；最终 Backend 全量通过 |
+| M38 | Reviewed evidence 对称 HMAC 单点 | 迁移为 `reviewed-evidence-ed25519/v3`；reviewer 私钥只用于封存，candidate/review/publish 验证侧仅持公钥；算法版本、公钥 SHA-256 指纹、候选 CI identity 与 artifact hash 纳入 canonical payload；新增拒绝覆盖的 keypair 生成器 | 发布 evidence、Android strict gate、release workflow/profile 共 143 项通过；旧 HMAC/缺公钥/错 key binding fail-closed |
+| UI | 拒绝、取消、回滚状态贯通 | Desktop `TaskState` 保留 denied/cancelled，时间线、Office、聊天终态、状态色与技术解释分别呈现；Mobile Companion 区分拒绝/取消，并补齐 rolled_back/repair_required 终态 | Desktop `96 files / 422 tests` + typecheck/build；Mobile typecheck + task-companion smoke |
+| Maintainability | 状态迁移与时间线拆分 | DENIED 数据迁移抽到 `db_migration_task_denied.py`，时间线文案/色调抽到 `taskTimelinePresentation.ts`；未增加门禁豁免 | maintainability gate 通过：P95 778，`db_migrations.py` 847 行，`TaskTimeline.tsx` 840 行 |
+
+### 批 6 验证
+
+- Backend 全量：`3931 passed, 12 skipped`（9 分 51 秒）。
+- 发布/证据专项：`143 passed`；Ed25519 公私钥拆权 workflow 契约通过。
+- Desktop：typecheck、`96 files / 422 tests`、production renderer build 与 bundle budget 全通过。
+- Mobile：typecheck 与 task-companion behavior smoke 通过。
+- Ruff/format、依赖哈希锁、repo hygiene、maintainability（P95 778）、secret scan、agentic threat model、workflow YAML 契约均通过。
+
+### 剩余治理与外部证据
+
+- `.github/CODEOWNERS` 仍为单一 owner；这是人员与审批治理配置，不能在未知真实 reviewer 身份时由代码审查擅自改写。
+- Clean-machine、Android 真机、人工结果质量与 release-owner sign-off 等 P0 evidence 仍应由真实候选构建和人工/设备流程完成；不能用本地自动化测试冒充。
