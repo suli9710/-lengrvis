@@ -296,8 +296,8 @@ class DeveloperExecutionEngine(ExecutionEngine):
             return result.model_copy(update={"state": self.store.put(result.state)}, deep=True)
 
         result = lengrvis_code_summary_to_turn_result(state, summary)
-        if writes_enabled and summary.permission_denials:
-            result = _await_write_approval(result, summary)
+        if writes_enabled and _is_backend_approval_summary(summary):
+            result = _await_backend_write_approval(result, summary)
         elif writes_enabled:
             # Run write verification on ANY terminal outcome, not only COMPLETED:
             # a run that already wrote files but then failed/timed out must still
@@ -306,6 +306,8 @@ class DeveloperExecutionEngine(ExecutionEngine):
             # FAILED when out-of-bounds writes are actually detected, so this is
             # safe for an already-FAILED run.
             result = _apply_write_verification(result, summary, settings=self.settings, writes_enabled=writes_enabled)
+            if summary.permission_denials:
+                result = _fail_internal_permission_denial(result, summary)
         step_status = _plan_step_status(result.state.phase)
         result.state.current_plan = _mark_plan_steps_status(
             result.state.current_plan, step_status, step_id="lengrvis_code_run"
@@ -590,6 +592,7 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
         result={
             "is_error": True,
             "result": f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run requires backend approval.",
+            "backend_approval_required": True,
             "permission_denials": [
                 {
                     "tool_name": DEVELOPER_TOOL_NAME,
@@ -996,18 +999,51 @@ def _prompt_from_goal(goal: str, *, writes_enabled: bool = False) -> str:
     )
 
 
-def _await_write_approval(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
+def _fail_internal_permission_denial(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
     from app.integrations.lengrvis_code import LENGRVIS_CODE_DISPLAY_NAME
 
     payload = dict(result.outputs.get("lengrvis_code") or {})
+    payload.pop("awaiting_write_approval", None)
+    payload["permission_denied"] = True
+    public_denials = _public_lengrvis_code_value(summary.permission_denials)
+    updated = result.state.model_copy(
+        update={
+            "phase": RunPhase.FAILED,
+            "transition_reason": (
+                f"{LENGRVIS_CODE_DISPLAY_NAME} denied {len(summary.permission_denials)} internal tool request(s). "
+                "No additional approval can broaden this run's fixed tool and workspace boundary."
+            ),
+            "current_plan": {
+                **result.state.current_plan,
+                "internal_permission_denials": public_denials,
+            },
+        },
+        deep=True,
+    )
+    return result.model_copy(
+        update={
+            "state": updated,
+            "finished": True,
+            "message": updated.transition_reason,
+            "outputs": {**result.outputs, "lengrvis_code": payload},
+        },
+        deep=True,
+    )
+
+
+def _is_backend_approval_summary(summary: Any) -> bool:
+    result = getattr(summary, "result", None)
+    return isinstance(result, dict) and result.get("backend_approval_required") is True
+
+
+def _await_backend_write_approval(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
+    payload = dict(result.outputs.get("lengrvis_code") or {})
+    payload.pop("permission_denied", None)
     payload["awaiting_write_approval"] = True
     updated = result.state.model_copy(
         update={
             "phase": RunPhase.AWAITING_APPROVAL,
-            "transition_reason": (
-                f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit blocked pending user approval "
-                f"({len(summary.permission_denials)} denial(s))."
-            ),
+            "transition_reason": f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run is waiting for backend approval.",
             "current_plan": {
                 **result.state.current_plan,
                 "pending_write_approvals": _public_lengrvis_code_value(summary.permission_denials),

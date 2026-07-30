@@ -180,7 +180,7 @@ async def test_developer_engine_applies_write_verification_on_success(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_developer_engine_permission_denial_enters_awaiting_approval(tmp_path, monkeypatch) -> None:
+async def test_developer_engine_internal_permission_denial_fails_after_backend_approval(tmp_path, monkeypatch) -> None:
     from app.config import AppSettings
     from app.orchestration.developer_engine import DeveloperExecutionEngine
     from app.orchestration.execution_engine import InMemoryRunStore
@@ -216,15 +216,29 @@ async def test_developer_engine_permission_denial_enters_awaiting_approval(tmp_p
         use_lengrvis_code=True,
     )
     state = await engine.start_run("fix failing pytest", "efficiency", "developer")
-    result = await engine.run_turn(state)
+    awaiting = await engine.run_turn(state)
+    assert awaiting.state.phase == RunPhase.AWAITING_APPROVAL
 
-    assert result.state.phase == RunPhase.AWAITING_APPROVAL
-    assert result.outputs["lengrvis_code"]["awaiting_write_approval"] is True
-    assert result.state.current_plan["pending_write_approvals"]
+    from app.core import db
+    from app.core.schemas import Approval
+    from app.services.mobile_pairing_service import approve_approval
+
+    approval = Approval.model_validate(db.fetch_many("approvals", "task_id = ?", (state.task_id,), limit=1)[0])
+    approve_approval(approval.id)
+    result = await engine.run_turn(awaiting.state)
+
+    assert result.state.phase == RunPhase.FAILED
+    assert result.outputs["lengrvis_code"]["permission_denied"] is True
+    assert "awaiting_write_approval" not in result.outputs["lengrvis_code"]
+    assert result.state.current_plan["internal_permission_denials"]
+    assert "write_verification" in result.outputs
+    approvals = db.fetch_many("approvals", "task_id = ?", (state.task_id,), limit=10)
+    assert len(approvals) == 1
+    assert approvals[0]["consumed_at"]
 
 
-def test_await_write_approval_redacts_permission_denials() -> None:
-    from app.orchestration.developer_engine import _await_write_approval
+def test_internal_permission_denial_failure_redacts_details() -> None:
+    from app.orchestration.developer_engine import _fail_internal_permission_denial
     from app.orchestration.execution_models import EngineTurnResult, RunPhase, RunState
 
     raw_path = "C:/Users/Suli/private/project/secret.py"
@@ -243,14 +257,14 @@ def test_await_write_approval_redacts_permission_denials() -> None:
         ]
     )
 
-    updated = _await_write_approval(result, summary)
+    updated = _fail_internal_permission_denial(result, summary)
 
-    assert updated.state.phase == RunPhase.AWAITING_APPROVAL
+    assert updated.state.phase == RunPhase.FAILED
     serialized_plan = json.dumps(updated.state.current_plan, sort_keys=True)
     assert raw_path not in serialized_plan
     assert raw_secret not in serialized_plan
     assert "[REDACTED_LOCAL_PATH]" in serialized_plan
-    assert updated.state.current_plan["pending_write_approvals"][0]["api_key"] == "***"
+    assert updated.state.current_plan["internal_permission_denials"][0]["api_key"] == "***"
 
 
 def test_run_write_verification_without_writes_is_ok(tmp_path) -> None:

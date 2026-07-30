@@ -157,7 +157,7 @@ def _summary_payload(summary: LengrvisCodeEventSummaryLike) -> dict[str, Any]:
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
     if summary.permission_denials:
-        payload["awaiting_write_approval"] = True
+        payload["awaiting_write_approval" if _backend_approval_required(summary) else "permission_denied"] = True
     if summary.launch_error:
         payload["launch_error"] = _public_lengrvis_code_text(summary.launch_error)
     if summary.stderr:
@@ -584,8 +584,12 @@ def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeEventS
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
     if summary.permission_denials:
-        payload["awaiting_write_approval"] = True
+        payload["awaiting_write_approval" if _backend_approval_required(summary) else "permission_denied"] = True
     return payload
+
+
+def _backend_approval_required(summary: LengrvisCodeEventSummaryLike) -> bool:
+    return isinstance(summary.result, dict) and summary.result.get("backend_approval_required") is True
 
 
 def _assistant_tool_names(event: Mapping[str, Any]) -> list[str]:

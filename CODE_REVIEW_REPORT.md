@@ -299,3 +299,30 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 - 其余 Medium：`schemas.py` DENIED==CANCELLED 同值（需新增 TaskPhase 或 denial 标记，涉及持久层语义）、evidence 对称 HMAC 单点（建议改非对称签名）、单一 CODEOWNER（治理决策）。
 - 其余 Low/Info：`lint.yml` 上下文插值改 `env:`、`format()` 假密钥写法、`_ADMIN_PLANS` 三方不一致、`routes_chat.py` WS 去重集合无上限、`ipcInflight` Map 不回收、`consentManager` 非原子写、`remote_tools` 非常量时间比较、mobile 单条 pin 撤销入口缺失等。
 - H3 `git --output` 纯文件写残留、C2 pytest 默认全量反转仍为推荐后续项。
+
+---
+
+## 修复记录 · 批 5（2026-07-31）
+
+| 编号 | 修复 | 主要改动 | 回归测试 |
+|---|---|---|---|
+| M24 | 能力吊销文件删除后 fail-closed | 首次成功读取默认吊销文件后，将 presence 锚点写入带 HMAC 完整性与 presence 账本保护的 `app_settings`；后续文件删除、锚点缺失/篡改/不可验证均禁用受保护能力；全新安装缺文件仍合法且不创建 DB | `test_capability_manifest.py`：删除、锚点篡改、首次缺失，19 项通过 |
+| H3 | Developer git `--output` 写盘残留 | 所有 Developer 子进程强制传 `--disallowedTools`；deny 规则先于 allow 规则拦截 `git --output` 的普通、参数后置与拆分写法，并禁止 `xargs git` 隐藏实参；write-enabled 同样生效 | Lengrvis Code 配置/runner/API 契约测试；受影响总计 266 项通过 |
+| H6 | 并行失败恢复作废兄弟审批 | 并行失败先缓存在批次状态，待全部运行步骤完成后再串行 recovery；一旦已有等待审批/终止结果就不修改计划版本；`any_waiting` 优先于 revision；显式需审批 step 禁止进入并行批次 | `test_parallel_context_isolation.py`：失败先完成、审批后完成时 recovery 不抢跑；parallel review 契约 |
+| P1 | Developer 内部 permission denial 死循环 | 区分真实 backend Approval 与 CLI 内部权限拒绝；后者明确终止为 FAILED，不再伪造“等待审批”，且仍执行 write verification；拒绝详情保持脱敏 | `test_developer_write_guard.py`：消费唯一 backend approval 后内部拒绝终止、无第二张伪审批；runner payload 契约 |
+| M34 | 浏览器截图明文落盘 | Playwright 截图改为内存 bytes；最终来源校验在 capture 前完成；校验通过后复用加密 task-recording BLOB 存储并返回受控 API artifact URL，失败路径不创建 PNG | `test_browser_activity_runtime.py`：密文存储/可授权解密、跨域重定向在 capture 前阻断，63 项通过 |
+| Low | 长连接与桌面状态持久化加固 | WebSocket message-id 去重改有界窗口；远程输入 HMAC 改 `compare_digest`；IPC abort group 用引用计数 lease 在正常完成后释放；consent 改原子 JSON 替换；lint workflow 的 GitHub context 改走 `env` | Backend WebSocket/remote 专项 9 项；Desktop 95 files / 421 tests；生产 build 通过 |
+
+### 批 5 验证
+
+- Backend 全量：`3905 passed, 12 skipped`。
+- Desktop：typecheck、`95 files / 421 tests`、production build 与 renderer bundle budget 全通过。
+- 受影响模块复测：266 项；安全模块抽取后再测 123 项。
+- Changed-file Ruff/format、repo hygiene、maintainability gate（P95 778）、secret scan、workflow YAML、`git diff --check` 全通过。
+
+### 仍未处理
+
+- pytest 鉴权默认模型仍为 opt-out（C2 完整反转）。
+- `TaskStatus.DENIED` 与 `CANCELLED` 仍共享持久状态，需独立 `TaskPhase.DENIED` 与兼容迁移。
+- Reviewed evidence 仍以对称 HMAC 封存/验证，需迁移到 reviewer 私钥与发布侧公钥的非对称签名。
+- CODEOWNERS 单一 owner 属治理与人员配置问题，无法仅靠代码修复。

@@ -8,7 +8,6 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
@@ -207,16 +206,9 @@ class LocalBrowserActivityAdapter:
     def _screenshot(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
-        out_dir = Path(
-            getattr(_settings(context), "browser_screenshot_dir", "")
-            or Path.cwd() / ".lengrvis_data" / "browser_screenshots"
-        )
-        out_dir.mkdir(parents=True, exist_ok=True)
-        # Unpredictable filename: a URL-derived name (sha256(url)) let any local
-        # process that knows the URL compute the path and read a screenshot of a
-        # potentially sensitive page. A random token breaks that predictability.
+        task_id = str(context.get("task_id") or "").strip()
+        step_id = str(context.get("step_id") or "").strip()
         filename = f"shot-{secrets.token_hex(16)}.png"
-        out_path = out_dir / filename
         route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
@@ -230,7 +222,12 @@ class LocalBrowserActivityAdapter:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
-                page.screenshot(path=str(out_path), full_page=bool(action.get("full_page", True)))
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
+                image = page.screenshot(full_page=bool(action.get("full_page", True)))
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 title = page.title()
                 final_url = _validate_final_url(
@@ -239,6 +236,18 @@ class LocalBrowserActivityAdapter:
                     allowed_origins=_browser_allowed_origins(context),
                 )
                 browser.close()
+            if not task_id or not step_id:
+                return {"ok": False, "error": "Browser screenshot requires task and step context."}
+            from app.services.browser_screenshot_store import persist_browser_screenshot
+
+            artifact = persist_browser_screenshot(
+                bytes(image),
+                task_id=task_id,
+                step_id=step_id,
+                file_name=filename,
+                width=int(action.get("width", 1280)),
+                height=int(action.get("height", 800)),
+            )
         except _playwright_action_error_types() as exc:
             route_guard_error = _playwright_route_guard_error(route_guard)
             if route_guard_error:
@@ -247,7 +256,14 @@ class LocalBrowserActivityAdapter:
         finally:
             if route_guard is not None:
                 route_guard.close()
-        return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
+        return {
+            "ok": True,
+            "url": final_url,
+            "title": title,
+            "path": "",
+            "screenshot_url": artifact["artifact_url"],
+            "recording_id": artifact["recording_id"],
+        }
 
     def _wait(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         raise_if_tool_aborted(context)
@@ -671,6 +687,8 @@ class BrowserActivityRuntime:
         try:
             adapter_context = dict(context)
             adapter_context["_browser_allowed_origins"] = tuple(session.allowed_origins)
+            adapter_context["task_id"] = session.task_id or context.get("task_id")
+            adapter_context["step_id"] = step_id or context.get("step_id")
             result = self.adapter.perform(session, action, adapter_context)
             self._validate_result_scope(session, action, result)
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary

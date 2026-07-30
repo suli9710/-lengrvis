@@ -35,6 +35,7 @@ class _ScheduleState:
     by_id: dict[str, PlanStep]
     running: dict[asyncio.Task, _RunningStep] = field(default_factory=dict)
     observations: dict[str, ToolResult] = field(default_factory=dict)
+    deferred_recoveries: list[tuple[PlanStep, ToolResult | None]] = field(default_factory=list)
     any_waiting: bool = False
     revision_requested: bool = False
     stop_requested: bool = False
@@ -230,24 +231,40 @@ class StepSchedulerHandler:
             if outcome.result is not None:
                 state.observations[step.id] = outcome.result
             if outcome.kind == "failed":
-                dependency_observation = self._dependency_observation(step, state.observations)
-                recovery_context = self._context_with_dependency_provenance(context, step, state.observations)
-                outcome = await orchestrator.recovery_handler.recover_failed_step(
-                    task,
-                    plan,
-                    step,
-                    outcome.result,
-                    recovery_context,
-                    dependency_observation,
-                    threaded_tools=True,
-                )
-                if outcome.result is not None:
-                    state.observations[step.id] = outcome.result
-            self._apply_outcome_flags(outcome, state)
+                state.deferred_recoveries.append((step, outcome.result))
+            else:
+                self._apply_outcome_flags(outcome, state)
             if state.stop_requested:
                 break
+        if not state.running and not state.stop_requested:
+            await self._recover_finished_failures(task, plan, context, state)
         if state.stop_requested and state.running:
             await self._drain_running_after_stop(task, state)
+
+    async def _recover_finished_failures(
+        self,
+        task: Task,
+        plan: Plan,
+        context: dict[str, Any],
+        state: _ScheduleState,
+    ) -> None:
+        orchestrator = self.orchestrator
+        while state.deferred_recoveries and not state.stop_requested:
+            step, result = state.deferred_recoveries.pop(0)
+            dependency_observation = self._dependency_observation(step, state.observations)
+            recovery_context = self._context_with_dependency_provenance(context, step, state.observations)
+            outcome = await orchestrator.recovery_handler.recover_failed_step(
+                task,
+                plan,
+                step,
+                result,
+                recovery_context,
+                dependency_observation,
+                threaded_tools=False,
+            )
+            if outcome.result is not None:
+                state.observations[step.id] = outcome.result
+            self._apply_outcome_flags(outcome, state)
 
     async def _drain_running_after_stop(self, task: Task, state: _ScheduleState) -> None:
         orchestrator = self.orchestrator
@@ -326,12 +343,12 @@ class StepSchedulerHandler:
             clear_task_read_states(task.id)
             record("task.finished_or_waiting", orchestrator.name, {"status": task.status}, task_id=task.id)
             return
-        if state.revision_requested:
-            target = TaskStatus.PAUSED
-            summary = "A subagent requested plan revision; automatic replanning was not repeated for this step."
-        elif state.any_waiting:
+        if state.any_waiting:
             target = TaskStatus.WAITING_USER_APPROVAL
             summary = "Plan generated and waiting for approval on modifying steps."
+        elif state.revision_requested:
+            target = TaskStatus.PAUSED
+            summary = "A subagent requested plan revision; automatic replanning was not repeated for this step."
         elif any(step.status == StepStatus.DENIED for step in plan.steps):
             target = TaskStatus.DENIED
             summary = "Task denied by safety review before tool execution."

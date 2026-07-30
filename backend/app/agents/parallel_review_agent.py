@@ -30,6 +30,8 @@ class ParallelReviewAgent(BaseAgent):
             risk = getattr(tool, "risk_level", step.risk_level)
             if _risk_order(risk) > _risk_order(max_level):
                 max_level = risk
+            if step.requires_approval:
+                reasons.append(f"Step {step.id} requires user approval and must run serially.")
             if not tool.is_concurrency_safe(step.args):
                 reasons.append(f"Step {step.id} tool {tool.name} is not marked concurrency safe.")
             effects = {str(effect).casefold() for effect in getattr(tool, "effects", []) or []}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hmac
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -180,9 +181,8 @@ def _approval_matches_remote_input(approval: dict[str, Any], tool_name: str, arg
     expected_hmac = str(approval.get("args_binding_hmac") or "")
     if not task_id or not step_id or not expected_hmac:
         return False
-    return expected_hmac == args_binding_hmac(
-        tool_name, _approval_bound_args(tool_name, args), task_id=task_id, step_id=step_id
-    )
+    actual_hmac = args_binding_hmac(tool_name, _approval_bound_args(tool_name, args), task_id=task_id, step_id=step_id)
+    return hmac.compare_digest(expected_hmac, actual_hmac)
 
 
 def _approval_bound_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:

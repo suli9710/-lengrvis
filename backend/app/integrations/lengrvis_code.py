@@ -86,6 +86,15 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(npm test:*)",
     "Bash(pnpm test:*)",
 )
+# The vendored CLI evaluates deny rules before allow rules. Block Git's
+# file-output option even when quoting splits the option spelling, and reject
+# xargs wrappers whose effective arguments are not visible to the permission
+# matcher. This remains mandatory for write-enabled runs because Bash writes do
+# not emit Write/Edit events for the workspace write guard to validate.
+DEVELOPER_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash(*git *--o*u*t*p*u*t*)",
+    "Bash(xargs git:*)",
+)
 FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
 WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit", "NotebookEdit")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
@@ -720,6 +729,8 @@ def build_lengrvis_code_command(
         str(workspace),
         "--permission-mode",
         active.permission_mode,
+        "--disallowedTools",
+        ",".join(DEVELOPER_DISALLOWED_TOOLS),
         "--allowedTools",
         ",".join(allowed_tools),
         prompt,

@@ -22,6 +22,7 @@ from app.security.capability_manifest import (
     build_capability_manifest,
     canonical_content_hash,
     canonical_json_bytes,
+    load_revocation_config,
     mcp_server_capability_payload,
     permission_policy_capability_payload,
     prompt_capability_payload,
@@ -175,6 +176,66 @@ def test_invalid_explicit_revocation_file_disables_protected_capabilities(
 
     with pytest.raises(CapabilityRevocationConfigError):
         prompts.load_prompt("guarded.md")
+
+
+def test_default_revocation_file_deletion_fails_closed_after_first_valid_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+    revocations = tmp_path / "capability-revocations.json"
+    revocations.write_text(
+        json.dumps({"revocations": [{"kind": "tool", "id": "test.echo"}]}),
+        encoding="utf-8",
+    )
+
+    initial = load_revocation_config(settings=settings)
+    revocations.unlink()
+    deleted = load_revocation_config(settings=settings)
+
+    assert initial.valid is True
+    assert initial.targets[0].capability_id == "test.echo"
+    assert deleted.valid is False
+    assert deleted.sources == ("file_presence_anchor", "file")
+    assert deleted.errors == ({"source": "file", "code": "missing_after_observed"},)
+    with pytest.raises(CapabilityRevocationConfigError):
+        assert_capability_allowed("tool", "test.echo")
+
+
+def test_revocation_presence_anchor_tampering_fails_closed(tmp_path: Path) -> None:
+    from app.core import db
+
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+    revocations = tmp_path / "capability-revocations.json"
+    revocations.write_text(json.dumps({"revocations": []}), encoding="utf-8")
+    assert load_revocation_config(settings=settings).valid is True
+
+    with db.using_data_dir(tmp_path), db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = ?
+            WHERE key LIKE 'security.capability_revocation_file_presence.v1.%'
+            """,
+            (json.dumps({"version": 1, "required": False}),),
+        )
+
+    tampered = load_revocation_config(settings=settings)
+
+    assert tampered.valid is False
+    assert {error["code"] for error in tampered.errors} == {"anchor_unreadable"}
+    assert "file_presence_anchor" in tampered.sources
+
+
+def test_fresh_install_without_default_revocation_file_remains_valid(tmp_path: Path) -> None:
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+
+    config = load_revocation_config(settings=settings)
+
+    assert config.valid is True
+    assert config.sources == ()
+    assert not (tmp_path / "lengrvis.db").exists()
 
 
 def test_revoked_permission_policy_fails_closed_at_evaluation_boundary(monkeypatch: pytest.MonkeyPatch) -> None:

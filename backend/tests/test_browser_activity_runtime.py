@@ -720,6 +720,97 @@ def test_local_adapter_observe_does_not_swallow_unexpected_playwright_bugs(monke
         LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page"}, _context())
 
 
+def test_local_adapter_screenshot_validates_origin_then_persists_encrypted_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.security.sensitive_data_crypto import is_encrypted_payload
+    from app.services.task_recording_service import read_recording_image
+
+    _stub_public_dns(monkeypatch)
+    png = b"\x89PNG\r\n\x1a\nprivate-browser-frame"
+
+    class Page:
+        url = "https://example.test/screen"
+
+        def goto(self, url: str, **_kwargs) -> None:  # noqa: ANN003
+            self.url = url
+
+        def screenshot(self, **_kwargs) -> bytes:  # noqa: ANN003
+            return png
+
+        def title(self) -> str:
+            return "Example"
+
+    browser = _GuardedFakeBrowser(blocked_on="")
+    page = Page()
+    _install_fake_playwright(monkeypatch, lambda: _GuardedFakeSyncPlaywright(browser), error_type=RuntimeError)
+    monkeypatch.setattr(
+        browser_activity_runtime,
+        "_new_guarded_playwright_page",
+        lambda _browser, **_options: (page, _PlaywrightRouteGuard()),
+    )
+    context = _context()
+    context.update({"task_id": "task-screenshot", "step_id": "step-screenshot"})
+    context["settings"] = context["settings"].model_copy(
+        update={"data_dir": str(tmp_path), "browser_screenshot_dir": str(tmp_path / "plaintext")}
+    )
+
+    result = LocalBrowserActivityAdapter()._screenshot(
+        {"url": "https://example.test/screen", "width": 640, "height": 480},
+        context,
+    )
+
+    assert result["ok"] is True
+    assert result["path"] == ""
+    assert result["screenshot_url"].startswith("/api/tasks/task-screenshot/recordings/shot-")
+    assert not (tmp_path / "plaintext").exists()
+    with db.connect() as conn:
+        row = conn.execute("SELECT image, data FROM task_recordings WHERE id = ?", (result["recording_id"],)).fetchone()
+    assert row is not None
+    assert is_encrypted_payload(bytes(row["image"]))
+    assert png not in bytes(row["image"])
+    restored, media_type = read_recording_image("task-screenshot", result["screenshot_url"].rsplit("/", 1)[-1])
+    assert restored == png
+    assert media_type == "image/png"
+
+
+def test_local_adapter_screenshot_rejects_cross_origin_redirect_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_public_dns(monkeypatch)
+    captures: list[str] = []
+
+    class Page:
+        url = "https://other.example.test/screen"
+
+        def goto(self, _url: str, **_kwargs) -> None:  # noqa: ANN003
+            self.url = "https://other.example.test/screen"
+
+        def screenshot(self, **_kwargs) -> bytes:  # noqa: ANN003
+            captures.append(self.url)
+            return b"not-reached"
+
+        def title(self) -> str:
+            return "Other"
+
+    browser = _GuardedFakeBrowser(blocked_on="")
+    _install_fake_playwright(monkeypatch, lambda: _GuardedFakeSyncPlaywright(browser), error_type=RuntimeError)
+    monkeypatch.setattr(
+        browser_activity_runtime,
+        "_new_guarded_playwright_page",
+        lambda _browser, **_options: (Page(), _PlaywrightRouteGuard()),
+    )
+    context = _context()
+    context.update({"task_id": "task-screenshot", "step_id": "step-screenshot"})
+
+    result = LocalBrowserActivityAdapter()._screenshot({"url": "https://example.test/screen"}, context)
+
+    assert result["ok"] is False
+    assert "same-origin" in result["error"]
+    assert captures == []
+
+
 @pytest.mark.parametrize(
     ("method_name", "action", "error_fragment"),
     [

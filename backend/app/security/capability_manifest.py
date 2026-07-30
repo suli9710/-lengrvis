@@ -15,6 +15,10 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from app.config import AppSettings, get_env
 from app.config_paths import DEFAULT_DATA_DIR
 from app.core.errors import SecurityError
+from app.security.capability_revocation_anchor import (
+    persist_revocation_file_presence_anchor,
+    read_revocation_file_presence_anchor,
+)
 
 if TYPE_CHECKING:
     from app.tools.schemas import ToolDefinition
@@ -385,9 +389,23 @@ def load_revocation_config(*, settings: AppSettings | None = None) -> Revocation
         _parse_revocation_source(raw_env, source="environment", targets=targets, errors=errors)
 
     file_path, explicit = _revocation_file_path(settings)
+    file_was_observed, anchor_error = read_revocation_file_presence_anchor(file_path, settings=settings)
+    if file_was_observed or anchor_error:
+        sources.append("file_presence_anchor")
+    if anchor_error:
+        errors.append({"source": "file_presence_anchor", "code": anchor_error})
     if file_path.exists() or explicit:
         sources.append("file")
+        file_error_count = len(errors)
         _load_revocation_file(file_path, targets=targets, errors=errors)
+        if file_path.exists() and len(errors) == file_error_count:
+            persist_error = persist_revocation_file_presence_anchor(file_path, settings=settings)
+            if persist_error:
+                sources.append("file_presence_anchor")
+                errors.append({"source": "file_presence_anchor", "code": persist_error})
+    elif file_was_observed:
+        sources.append("file")
+        errors.append({"source": "file", "code": "missing_after_observed"})
 
     unique: dict[tuple[str, str, str, str], RevocationTarget] = {}
     for target in targets:

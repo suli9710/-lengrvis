@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -46,6 +47,7 @@ async def notification_messages(websocket: WebSocket):
 
 _HEARTBEAT_SECONDS = 25.0
 _BUS_REBIND_POLL_SECONDS = 1.0
+_SENT_MESSAGE_ID_LIMIT = 2048
 
 
 async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
@@ -55,12 +57,13 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
     task_bus = orchestrator_registry.bus_for_task(task_id, fallback=bus)
     queue = task_bus.subscribe(task_id)
     sent_message_ids: set[str] = set()
+    sent_message_order: deque[str] = deque()
     loop = asyncio.get_running_loop()
     last_heartbeat = loop.time()
     try:
         await websocket.send_json({"type": "connected", "task_id": task_id})
         for message in sorted(task_bus.get_messages(task_id), key=lambda item: (item.created_at, item.id)):
-            sent_message_ids.add(message.id)
+            _remember_sent_message_id(sent_message_ids, sent_message_order, message.id)
             await websocket.send_json(_agent_message_event(task_id, message))
 
         while True:
@@ -68,7 +71,7 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
                 message = await asyncio.wait_for(queue.get(), timeout=_BUS_REBIND_POLL_SECONDS)
                 if message.id in sent_message_ids:
                     continue
-                sent_message_ids.add(message.id)
+                _remember_sent_message_id(sent_message_ids, sent_message_order, message.id)
                 await websocket.send_json(_agent_message_event(task_id, message))
             except TimeoutError:
                 # Clients can connect before the orchestrator binds its own bus
@@ -82,7 +85,7 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
                     for message in sorted(task_bus.get_messages(task_id), key=lambda item: (item.created_at, item.id)):
                         if message.id in sent_message_ids:
                             continue
-                        sent_message_ids.add(message.id)
+                        _remember_sent_message_id(sent_message_ids, sent_message_order, message.id)
                         await websocket.send_json(_agent_message_event(task_id, message))
                 if loop.time() - last_heartbeat >= _HEARTBEAT_SECONDS:
                     last_heartbeat = loop.time()
@@ -91,6 +94,15 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
         return
     finally:
         task_bus.unsubscribe(task_id, queue)
+
+
+def _remember_sent_message_id(sent_ids: set[str], sent_order: deque[str], message_id: str) -> None:
+    if message_id in sent_ids:
+        return
+    while len(sent_order) >= _SENT_MESSAGE_ID_LIMIT:
+        sent_ids.discard(sent_order.popleft())
+    sent_ids.add(message_id)
+    sent_order.append(message_id)
 
 
 def _agent_message_event(task_id: str, message: AgentMessage) -> dict:

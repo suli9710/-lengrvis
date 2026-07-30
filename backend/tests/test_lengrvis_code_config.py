@@ -7,6 +7,7 @@ import pytest
 from app.config import AppSettings
 from app.orchestration.lengrvis_code_config import (
     BLOCKED_ENV_KEYS,
+    DEVELOPER_DISALLOWED_TOOLS,
     LengrvisCodeConfig,
     assert_safe_lengrvis_code_invocation,
     build_lengrvis_code_command,
@@ -123,6 +124,8 @@ def test_command_uses_stream_json_allowed_tools_and_never_skip_permissions(tmp_p
     assert "--permission-mode" in command
     assert command[command.index("--permission-mode") + 1] == "default"
     assert "--allowedTools" in command
+    assert command.index("--disallowedTools") < command.index("--allowedTools")
+    assert command[command.index("--disallowedTools") + 1] == ",".join(DEVELOPER_DISALLOWED_TOOLS)
     allowed_tools = command[command.index("--allowedTools") + 1]
     assert "Read,Grep,Glob" in allowed_tools
     assert "Edit" not in allowed_tools
@@ -182,6 +185,7 @@ def test_explicit_allow_write_tools_allows_write_tool_command(tmp_path) -> None:
     )
 
     assert command[command.index("--allowedTools") + 1] == "Read,NotebookEdit"
+    assert command[command.index("--disallowedTools") + 1] == ",".join(DEVELOPER_DISALLOWED_TOOLS)
     assert_safe_lengrvis_code_invocation(command, build_env={}, allow_write_tools=True)
 
 
