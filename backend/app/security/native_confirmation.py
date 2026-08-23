@@ -287,7 +287,7 @@ def _require_signed_challenge(
         expires_at = int(timestamp)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Native confirmation timestamp is invalid.") from exc
-    challenge = _pop_stored_challenge(confirmation_id)
+    challenge = _load_stored_challenge(confirmation_id)
     if challenge is None:
         raise HTTPException(status_code=403, detail="Native confirmation challenge is invalid or already used.")
     if int(time.time()) > challenge.expires_at_epoch:
@@ -314,6 +314,8 @@ def _require_signed_challenge(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (InvalidSignature, ValueError) as exc:
         raise HTTPException(status_code=403, detail="Native confirmation proof is invalid.") from exc
+    if not _consume_stored_challenge(challenge):
+        raise HTTPException(status_code=403, detail="Native confirmation challenge is invalid or already used.")
     result = {
         "desktop_native_confirmed": True,
         "confirmation_id": confirmation_id,
@@ -416,17 +418,15 @@ def _store_challenge(challenge: NativeConfirmationChallenge) -> None:
         )
 
 
-def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge | None:
+def _load_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge | None:
     normalized_id = str(confirmation_id or "").strip()
     if not normalized_id:
         return None
-    _evict_expired_challenges()
     path = _challenge_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path, isolation_level=None) as conn:
         conn.execute("PRAGMA busy_timeout = 5000")
         _ensure_challenge_table(conn)
-        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT action, endpoint, approval_id, preview_hmac, session_generation_fingerprint, expires_at_epoch
@@ -435,23 +435,44 @@ def _pop_stored_challenge(confirmation_id: str) -> NativeConfirmationChallenge |
             """,
             (normalized_id,),
         ).fetchone()
-        if row is None:
+    if row is None:
+        return None
+    return NativeConfirmationChallenge(
+        confirmation_id=normalized_id,
+        action=str(row[0]),
+        endpoint=str(row[1]),
+        approval_id=str(row[2]),
+        preview_hmac=str(row[3]),
+        session_generation_fingerprint=str(row[4]),
+        expires_at_epoch=int(row[5]),
+    )
+
+
+def _consume_stored_challenge(challenge: NativeConfirmationChallenge) -> bool:
+    """Atomically consume the validated, unexpired challenge exactly once."""
+    normalized_id = str(challenge.confirmation_id or "").strip()
+    if not normalized_id:
+        return False
+    path = _challenge_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path, isolation_level=None) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        _ensure_challenge_table(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        deleted = conn.execute(
+            """
+            DELETE FROM native_confirmation_challenges
+            WHERE confirmation_id = ?
+              AND expires_at_epoch = ?
+              AND expires_at_epoch >= CAST(strftime('%s', 'now') AS INTEGER)
+            """,
+            (normalized_id, challenge.expires_at_epoch),
+        )
+        if deleted.rowcount != 1:
             conn.rollback()
-            return None
-        conn.execute(
-            "DELETE FROM native_confirmation_challenges WHERE confirmation_id = ?",
-            (normalized_id,),
-        )
+            return False
         conn.commit()
-        return NativeConfirmationChallenge(
-            confirmation_id=normalized_id,
-            action=str(row[0]),
-            endpoint=str(row[1]),
-            approval_id=str(row[2]),
-            preview_hmac=str(row[3]),
-            session_generation_fingerprint=str(row[4]),
-            expires_at_epoch=int(row[5]),
-        )
+        return True
 
 
 def _evict_expired_challenges(*, now: int | None = None) -> None:

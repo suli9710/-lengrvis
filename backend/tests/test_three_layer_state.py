@@ -106,6 +106,10 @@ class TestTaskPhaseTransitions:
             (TaskPhase.FINAL_REVIEW, TaskPhase.DENIED),
             (TaskPhase.FINAL_REVIEW, TaskPhase.CANCELLED),
             (TaskPhase.COMPLETED, TaskPhase.DENIED),
+            (TaskPhase.DENIED, TaskPhase.ROLLED_BACK),
+            (TaskPhase.DENIED, TaskPhase.REPAIR_REQUIRED),
+            (TaskPhase.CANCELLED, TaskPhase.REPAIR_REQUIRED),
+            (TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED),
         ],
     )
     def test_valid_phase_transition(self, source: TaskPhase, target: TaskPhase):
@@ -130,9 +134,10 @@ class TestTaskPhaseTransitions:
         with pytest.raises(StateTransitionError):
             phase_transition(source, target)
 
-    def test_terminal_phases_have_no_transitions(self):
-        for terminal in (TaskPhase.DENIED, TaskPhase.CANCELLED, TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED):
-            assert TASK_PHASE_TRANSITIONS[terminal] == set()
+    def test_terminal_phases_only_allow_explicit_recovery_transitions(self):
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.CANCELLED] == {TaskPhase.REPAIR_REQUIRED}
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.ROLLED_BACK] == {TaskPhase.REPAIR_REQUIRED}
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.REPAIR_REQUIRED] == {TaskPhase.DENIED}
 
         assert TASK_PHASE_TRANSITIONS[TaskPhase.COMPLETED] == {
             TaskPhase.DENIED,
@@ -140,6 +145,11 @@ class TestTaskPhaseTransitions:
             TaskPhase.REPAIR_REQUIRED,
         }
         assert TASK_PHASE_TRANSITIONS[TaskPhase.FAILED] == {
+            TaskPhase.DENIED,
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.DENIED] == {
             TaskPhase.ROLLED_BACK,
             TaskPhase.REPAIR_REQUIRED,
         }

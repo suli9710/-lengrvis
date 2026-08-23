@@ -10,10 +10,23 @@ from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import now_iso
+from app.core.schemas import Approval, now_iso
 from app.llm.registry import get_effective_settings
-from app.policy.approval_binding import args_binding_hmac
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    permission_policy_version,
+    preview_hmac,
+    settings_fingerprint,
+)
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
+)
 from app.policy.execution_marker import execution_is_marked_approved
+from app.policy.permissions import PermissionStore
+from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
 from app.services.remote_desktop_service import capture_screen
@@ -134,16 +147,36 @@ def _approval_allows_live_execution(args: dict[str, Any], context: dict[str, Any
         approval = db.fetch_one("approvals", approval_id)
         if not approval:
             return False
-        return _approval_matches_live_execution(approval, tool_name, args, allow_consumed=True)
+        return not _remote_approval_execution_error(
+            approval,
+            tool_name,
+            args,
+            context,
+            allow_consumed=True,
+        )
     approval = db.fetch_one("approvals", approval_id)
     if not approval:
         return False
-    if not _approval_matches_live_execution(approval, tool_name, args, allow_consumed=False):
+    approval_error = _remote_approval_execution_error(
+        approval,
+        tool_name,
+        args,
+        context,
+        allow_consumed=False,
+    )
+    if approval_error:
+        db.expire_approval_if_unconsumed(approval_id, now_iso(), approval_error)
         return False
     claimed = db.claim_approval_for_execution(approval_id, now_iso())
     if not claimed:
         return False
-    return _approval_matches_live_execution(claimed, tool_name, args, allow_consumed=True)
+    return not _remote_approval_execution_error(
+        claimed,
+        tool_name,
+        args,
+        context,
+        allow_consumed=True,
+    )
 
 
 def _approval_matches_live_execution(
@@ -159,6 +192,67 @@ def _approval_matches_live_execution(
     if consumed and not allow_consumed:
         return False
     return _approval_matches_remote_input(approval, tool_name, args) and _approval_remote_input_grant_active(approval)
+
+
+def _remote_approval_execution_error(
+    approval_data: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    allow_consumed: bool,
+) -> str:
+    if not _approval_matches_live_execution(approval_data, tool_name, args, allow_consumed=allow_consumed):
+        return "Remote input approval no longer matches this execution."
+    try:
+        approval = Approval.model_validate(approval_data)
+    except (TypeError, ValueError):
+        return "Remote input approval record is invalid."
+    try:
+        from app.tools.registry import registry
+
+        tool = registry.get(tool_name)
+    except KeyError:
+        return "Remote input tool definition is unavailable."
+    settings = context.get("settings") or get_effective_settings()
+    allowed_directories = list(context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or [])
+    required_bindings = {
+        "preview": approval.preview_hmac,
+        "settings": approval.settings_fingerprint,
+        "permission policy": approval.permission_policy_version,
+        "tool version": approval.tool_version,
+    }
+    missing = [name for name, value in required_bindings.items() if not str(value or "").strip()]
+    if missing:
+        return f"Remote input approval lacks binding metadata: {', '.join(missing)}."
+    if not hmac.compare_digest(approval.preview_hmac, preview_hmac(approval.diff_preview)):
+        return "Remote input approval preview was modified after review."
+    current_settings = settings_fingerprint(settings, allowed_directories=allowed_directories)
+    if not hmac.compare_digest(approval.settings_fingerprint, current_settings):
+        return "Remote input runtime settings changed after approval preview."
+    current_policy = permission_policy_version(PermissionStore().updated_at())
+    if not hmac.compare_digest(approval.permission_policy_version, current_policy):
+        return "Remote input permission policy changed after approval preview."
+    if approval.tool_version != str(getattr(tool, "tool_version", "1") or "1"):
+        return "Remote input tool version changed after approval preview."
+    review = PolicyEngine(settings).review_tool_call(
+        approval.task_id,
+        approval.step_id,
+        tool_name,
+        _approval_bound_args(tool_name, args),
+        tool.risk_level,
+        context=risk_revalidation_context(context, task_id=approval.task_id),
+        tool_definition=tool,
+    )
+    risk_binding = approval_risk_binding(approval)
+    binding_error = effective_risk_binding_error(
+        risk_binding,
+        current_declared_risk=review.declared_risk_level or tool.risk_level,
+        approval_risk_level=approval.risk_level,
+    )
+    if binding_error:
+        return binding_error
+    return refreshed_effective_risk_error(risk_binding, review)
 
 
 def _approval_error(action: str) -> dict[str, Any]:

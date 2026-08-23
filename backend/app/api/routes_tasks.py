@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -51,11 +50,15 @@ from app.api.task_public_views import (
 )
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.core import db
-from app.core.errors import StateTransitionError
+from app.core.errors import AppError, StateTransitionError
 from app.core.schemas import Task, TaskStatus
 from app.llm.registry import get_effective_settings
-from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_rollback_workflow import (
+    RollbackSource,
+    TaskRollbackRequest,
+    execute_task_rollback,
+)
 from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_ID_HEADER,
     NATIVE_CONFIRMATION_SIGNATURE_HEADER,
@@ -571,7 +574,7 @@ async def cancel(task_id: str):
 
 
 @router.post("/tasks/{task_id}/rollback")
-def rollback(
+async def rollback(
     task_id: str,
     confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
     timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
@@ -581,6 +584,7 @@ def rollback(
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
+    preview_hmac = _rollback_preview_hmac(task_id)
     native_confirmation = require_native_confirmation(
         action=ROLLBACK_NATIVE_ACTION,
         endpoint=_rollback_endpoint(task_id),
@@ -588,34 +592,23 @@ def rollback(
         confirmation_id=confirmation_id,
         timestamp=timestamp,
         signature=signature,
-        preview_hmac=_rollback_preview_hmac(task_id),
+        preview_hmac=preview_hmac,
     )
-    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
-        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
-    db.require_sensitive_integrity_ok()
-    outcome = rollback_tools.execute_rollback(task_id)
+    _require_rollback_available(task)
+    run = await execute_task_rollback(
+        TaskRollbackRequest(
+            task_id=task_id,
+            source=RollbackSource.NATIVE_CONFIRMATION,
+            confirmation_id=str(native_confirmation.get("confirmation_id") or ""),
+            expected_inventory_hmac=preview_hmac,
+            actor="TaskService",
+        )
+    )
+    outcome = run.outcome
     outcome["native_confirmation"] = {
         "confirmation_id": native_confirmation.get("confirmation_id"),
         "desktop_native_confirmed": True,
     }
-    rollback_metadata = {
-        key: outcome[key]
-        for key in (
-            "state",
-            "attempted",
-            "succeeded",
-            "verified",
-            "verification_failed",
-            "failed",
-            "manual_required",
-            "unrecoverable",
-        )
-    }
-    task.metadata = {**task.metadata, "rollback": rollback_metadata}
-    task.final_summary = _rollback_final_summary(rollback_metadata)
-    rollback_phase = TaskStatus.ROLLED_BACK if rollback_metadata["state"] == "succeeded" else TaskStatus.REPAIR_REQUIRED
-    safe_transition(task, rollback_phase, actor="TaskService", strict=True)
-    outcome["task_status"] = rollback_phase.value
     return outcome
 
 
@@ -625,8 +618,7 @@ def rollback_native_confirmation_challenge(task_id: str, request: Request):
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
-    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
-        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
+    _require_rollback_available(task)
     enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
     db.require_sensitive_integrity_ok()
     return create_native_confirmation_challenge(
@@ -647,26 +639,22 @@ def rollback_preview(task_id: str):
 
 
 def _rollback_preview_hmac(task_id: str) -> str:
-    return sha256(_canonical_json(rollback_tools.build_rollback_plan(task_id)).encode("utf-8")).hexdigest()
+    return _rollback_inventory_hmac(task_id)
 
 
-def _rollback_final_summary(summary: dict[str, Any]) -> str:
-    state = str(summary.get("state") or "failed")
-    attempted = int(summary.get("attempted") or 0)
-    succeeded = int(summary.get("succeeded") or 0)
-    if state == "succeeded":
-        return f"Rollback completed successfully: {succeeded} of {attempted} actions restored."
-    if state == "manual_required":
-        return "Rollback requires manual repair: one or more actions must be restored by the user."
-    if state == "unrecoverable":
-        return "Rollback could not fully restore the task because one or more actions are unrecoverable."
-    if state == "partial":
-        return f"Rollback was only partially completed: {succeeded} of {attempted} actions restored."
-    return "Rollback failed before any action could be restored."
+def _rollback_inventory_hmac(task_id: str) -> str:
+    return rollback_tools.rollback_snapshot_hmac(rollback_tools.load_rollback_snapshot(task_id))
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _require_rollback_available(task: Task) -> None:
+    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.DENIED}:
+        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
+    if task.status == TaskPhase.DENIED and rollback_tools.build_rollback_plan(task.id).get("count", 0) < 1:
+        raise AppError(
+            code="rollback_unavailable",
+            message="Denied task has no committed changes available to roll back.",
+            status_code=409,
+        )
 
 
 def _client_scope(request: Request) -> str:

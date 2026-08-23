@@ -467,7 +467,7 @@ $strictEvidenceContract = [ordered]@{
     )
     evidence_labels = "At least one reviewed redacted screenshot/video/log label in evidence_artifacts_redacted."
     sensitive_values = "No raw tokens, pairing codes, hosts/IPs, device ids, grant ids, or private paths in shareable labels."
-    reviewed_evidence_signature = "A sealed HMAC evidence block is required for all full Android release gates."
+    reviewed_evidence_signature = "A sealed Ed25519 reviewed-evidence block is required for all full Android release gates."
     artifact_manifest = "The sealed evidence must bind redacted screenshot/video, backend/mobile logs, and adb install-status artifacts by SHA-256 and byte size."
     signing_key_fingerprint = "The reviewed-evidence signature payload must cryptographically bind its signing-key fingerprint label."
     candidate_binding = "Strict RC runs require the sealed evidence candidate identity to match the explicit checked-out candidate."
@@ -1603,7 +1603,7 @@ else {
                     $reviewedEvidenceContract.signing_key_fingerprint_bound = Test-BooleanTrue (Get-PropertyValue $contract "signing_key_fingerprint_bound")
                 }
                 if ($verifierExitCode -ne 0 -or $null -eq $verifierResult -or -not (Test-BooleanTrue (Get-PropertyValue $verifierResult "ok"))) {
-                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must be sealed with a valid release-evidence HMAC contract."
+                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must be sealed with a valid Ed25519 reviewed-evidence contract."
                 }
                 elseif ($RequireCandidateBinding -and -not $reviewedEvidenceContract.candidate_binding_valid) {
                     Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must match the strict release candidate identity."

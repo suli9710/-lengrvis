@@ -97,6 +97,14 @@ def test_denied_phase_migration_is_conservative_and_aligns_runs() -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE run_events (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         """
     )
     _insert_legacy_task(conn, "raw-denied", status="denied", summary="")
@@ -119,6 +127,54 @@ def test_denied_phase_migration_is_conservative_and_aligns_runs() -> None:
         status="cancelled",
         summary="Approval was rejected by the user.",
     )
+    _insert_legacy_task(
+        conn,
+        "mixed-history",
+        status="cancelled",
+        summary="Cancelled by user.",
+    )
+    _insert_legacy_task(
+        conn,
+        "repair-previous-v9",
+        status="denied",
+        summary="Cancelled by user.",
+    )
+    _insert_legacy_task(
+        conn,
+        "repair-previous-v9-no-event",
+        status="denied",
+        summary="Cancelled by user.",
+    )
+    _insert_legacy_task(
+        conn,
+        "event-cancel-wins",
+        status="denied",
+        summary="SafetyReviewAgent stopped the task before executing a tool call.",
+    )
+    _insert_legacy_task(
+        conn,
+        "event-denied-wins",
+        status="cancelled",
+        summary="Cancelled by user.",
+    )
+    _insert_legacy_task(
+        conn,
+        "active-latest",
+        status="cancelled",
+        summary="SafetyReviewAgent stopped the task before executing a tool call.",
+    )
+    _insert_legacy_task(
+        conn,
+        "later-completion-event",
+        status="cancelled",
+        summary="SafetyReviewAgent stopped the task before executing a tool call.",
+    )
+    _insert_legacy_task(
+        conn,
+        "later-failure-event",
+        status="denied",
+        summary="Cancelled by user.",
+    )
     _insert_legacy_run(
         conn,
         "run-raw-older-cancel",
@@ -131,15 +187,56 @@ def test_denied_phase_migration_is_conservative_and_aligns_runs() -> None:
     _insert_legacy_run(conn, "run-proof", "run-denied", "denied")
     _insert_legacy_run(conn, "run-user", "user-cancelled", "cancelled")
     _insert_legacy_run(conn, "run-rejected", "approval-rejected", "cancelled")
+    _insert_legacy_run(
+        conn,
+        "run-mixed-old-denial",
+        "mixed-history",
+        "denied",
+        updated_at="2025-01-01T00:00:00Z",
+    )
+    _insert_legacy_event(conn, "run-mixed-old-denial", "run.denied")
+    _insert_legacy_run(conn, "run-mixed-new-cancel", "mixed-history", "cancelled")
+    _insert_legacy_event(conn, "run-mixed-new-cancel", "run.cancelled")
+    _insert_legacy_run(conn, "run-previous-v9", "repair-previous-v9", "denied")
+    _insert_legacy_event(conn, "run-previous-v9", "run.cancelled")
+    _insert_legacy_event(conn, "run-previous-v9", "run.denied", sequence=2)
+    _insert_legacy_run(conn, "run-previous-v9-no-event", "repair-previous-v9-no-event", "denied")
+    _insert_legacy_run(conn, "run-event-cancel-wins", "event-cancel-wins", "denied")
+    _insert_legacy_event(conn, "run-event-cancel-wins", "run.cancelled")
+    _insert_legacy_run(conn, "run-event-denied-wins", "event-denied-wins", "cancelled")
+    _insert_legacy_event(conn, "run-event-denied-wins", "run.denied")
+    _insert_legacy_run(conn, "run-active-latest", "active-latest", "running")
+    _insert_legacy_event(conn, "run-active-latest", "run.denied")
+    _insert_legacy_run(conn, "run-later-completed", "later-completion-event", "cancelled")
+    _insert_legacy_event(conn, "run-later-completed", "run.denied")
+    _insert_legacy_event(conn, "run-later-completed", "run.completed", sequence=2)
+    _insert_legacy_run(conn, "run-later-failed", "later-failure-event", "denied")
+    _insert_legacy_event(conn, "run-later-failed", "run.cancelled")
+    _insert_legacy_event(conn, "run-later-failed", "run.failed", sequence=2)
 
+    task_denied_phase_backfill(conn)
     task_denied_phase_backfill(conn)
 
     tasks = {
         row["id"]: json.loads(row["data"]) for row in conn.execute("SELECT id, data FROM tasks ORDER BY id").fetchall()
     }
     runs = {
-        row["id"]: (row["phase"], json.loads(row["data"])["phase"])
+        row["id"]: (
+            row["phase"],
+            json.loads(row["data"])["phase"],
+            json.loads(row["data"])["state"]["phase"],
+        )
         for row in conn.execute("SELECT id, phase, data FROM runs ORDER BY id").fetchall()
+    }
+    events = {
+        run_id: [
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM run_events WHERE run_id = ? ORDER BY sequence",
+                (run_id,),
+            ).fetchall()
+        ]
+        for run_id in runs
     }
     conn.close()
 
@@ -149,12 +246,44 @@ def test_denied_phase_migration_is_conservative_and_aligns_runs() -> None:
         assert tasks[task_id]["execution_stage"] == "idle"
     assert tasks["user-cancelled"]["status"] == "cancelled"
     assert tasks["approval-rejected"]["status"] == "cancelled"
-    assert runs["run-raw"] == ("denied", "denied")
-    assert runs["run-summary"] == ("denied", "denied")
-    assert runs["run-proof"] == ("denied", "denied")
-    assert runs["run-raw-older-cancel"] == ("cancelled", "cancelled")
-    assert runs["run-user"] == ("cancelled", "cancelled")
-    assert runs["run-rejected"] == ("cancelled", "cancelled")
+    assert tasks["mixed-history"]["status"] == "cancelled"
+    assert tasks["repair-previous-v9"]["status"] == "denied"
+    assert tasks["repair-previous-v9-no-event"]["status"] == "cancelled"
+    assert tasks["event-cancel-wins"]["status"] == "cancelled"
+    assert tasks["event-denied-wins"]["status"] == "denied"
+    assert tasks["active-latest"]["status"] == "cancelled"
+    assert tasks["active-latest"]["execution_stage"] == "step_running"
+    assert tasks["later-completion-event"]["status"] == "cancelled"
+    assert tasks["later-completion-event"]["execution_stage"] == "step_running"
+    assert tasks["later-failure-event"]["status"] == "denied"
+    assert tasks["later-failure-event"]["execution_stage"] == "step_running"
+    assert runs["run-raw"] == ("denied", "denied", "denied")
+    assert runs["run-summary"] == ("denied", "denied", "denied")
+    assert runs["run-proof"] == ("denied", "denied", "denied")
+    assert runs["run-raw-older-cancel"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-user"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-rejected"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-mixed-old-denial"] == ("denied", "denied", "denied")
+    assert runs["run-mixed-new-cancel"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-previous-v9"] == ("denied", "denied", "denied")
+    assert runs["run-previous-v9-no-event"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-event-cancel-wins"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-event-denied-wins"] == ("denied", "denied", "denied")
+    assert runs["run-active-latest"] == ("running", "running", "running")
+    assert runs["run-later-completed"] == ("cancelled", "cancelled", "cancelled")
+    assert runs["run-later-failed"] == ("denied", "denied", "denied")
+    assert events["run-raw"] == ["run.denied"]
+    assert events["run-summary"] == ["run.denied"]
+    assert events["run-proof"] == ["run.denied"]
+    assert events["run-mixed-old-denial"] == ["run.denied"]
+    assert events["run-mixed-new-cancel"] == ["run.cancelled"]
+    assert events["run-previous-v9"] == ["run.cancelled", "run.denied"]
+    assert events["run-previous-v9-no-event"] == ["run.cancelled"]
+    assert events["run-event-cancel-wins"] == ["run.cancelled"]
+    assert events["run-event-denied-wins"] == ["run.denied"]
+    assert events["run-active-latest"] == ["run.denied"]
+    assert events["run-later-completed"] == ["run.denied", "run.completed"]
+    assert events["run-later-failed"] == ["run.cancelled", "run.failed"]
 
 
 def _insert_legacy_task(conn: sqlite3.Connection, task_id: str, *, status: str, summary: str) -> None:
@@ -180,11 +309,41 @@ def _insert_legacy_run(
     *,
     updated_at: str = "9999-12-31T23:59:59Z",
 ) -> None:
-    payload = {"id": run_id, "message": "legacy run", "task_id": task_id, "phase": phase}
+    payload = {
+        "id": run_id,
+        "message": "legacy run",
+        "task_id": task_id,
+        "phase": phase,
+        "state": {"phase": phase},
+    }
     conn.execute(
         """
         INSERT INTO runs (id, task_id, engine, phase, data, created_at, updated_at)
         VALUES (?, ?, 'os', ?, ?, 'now', ?)
         """,
         (run_id, task_id, phase, json.dumps(payload), updated_at),
+    )
+
+
+def _insert_legacy_event(
+    conn: sqlite3.Connection,
+    run_id: str,
+    name: str,
+    *,
+    sequence: int = 1,
+) -> None:
+    payload = {
+        "id": f"event-{run_id}-{name}-{sequence}",
+        "run_id": run_id,
+        "name": name,
+        "sequence": sequence,
+        "payload": {"reason": "legacy"},
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+    conn.execute(
+        """
+        INSERT INTO run_events (id, run_id, name, sequence, data, created_at)
+        VALUES (?, ?, ?, ?, ?, '2025-01-01T00:00:00Z')
+        """,
+        (payload["id"], run_id, name, sequence, json.dumps(payload)),
     )

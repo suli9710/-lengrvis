@@ -78,12 +78,18 @@ def test_browser_host_bridge_allows_only_read_only_actions() -> None:
     assert not worker.is_alive()
     response = response_queue.get_nowait()
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    assert {key: payload[key] for key in ("ok", "session", "event", "error")} == {
         "ok": True,
         "session": {"id": "session-1"},
         "event": {"type": "action.observe"},
         "error": None,
     }
+    assert payload["full_result_review_completed"] is True
+    assert payload["post_tool_review_id"].startswith("review_")
+    assert payload["post_tool_review_verdict"] == "allow"
+    assert payload["direct_result_journaled"] is False
+    assert payload["automatic_replay_available"] is False
 
 
 def test_browser_host_bridge_rejects_remote_write_actions() -> None:

@@ -12,11 +12,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
 
+from app.agents.orchestrator_agent import OrchestratorAgent
 from app.api import routes_remote
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus
 from app.llm.registry import get_effective_settings
-from app.policy.approval_binding import args_binding_hmac
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.policy.risk import RiskLevel
@@ -217,6 +218,9 @@ def _live_remote_click_approval(x: int = 1, y: int = 2) -> Approval:
     task_id = f"task_{device_id}"
     step_id = "step_1"
     tool_name = "remote.click"
+    settings = get_effective_settings()
+    tool = register_all_tools(settings=settings, load_skills=False).get(tool_name)
+    preview = {"ok": True, "dry_run": True, "diff_preview": [{"action": "click", "x": x, "y": y}]}
     approval = Approval(
         task_id=task_id,
         step_id=step_id,
@@ -225,6 +229,23 @@ def _live_remote_click_approval(x: int = 1, y: int = 2) -> Approval:
         status=ApprovalStatus.APPROVED,
         source="remote_input",
         tool_name=tool_name,
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        diff_preview=preview,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(
+            settings,
+            allowed_directories=settings.allowed_directories,
+        ),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version=str(tool.tool_version or "1"),
+        engineering_boundary={
+            "risk_provenance": {
+                "version": "effective-risk/v1",
+                "declared_risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+                "effective_risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+                "review_id": "review_00000000000000000000000000000000",
+            }
+        },
         source_device_id=device_id,
         source_grant_id=grant["grant_id"],
         required_mobile_scopes=[mobile_jwt.REMOTE_INPUT_SCOPE],
@@ -363,6 +384,115 @@ def test_remote_tools_direct_path_rejects_double_execution(monkeypatch: pytest.M
     assert second["ok"] is False
     assert "approval_id" in second["error"]
     assert calls == [(1, 2)]
+
+
+def test_remote_tools_direct_path_expires_legacy_approval_without_risk_binding(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    approval.engineering_boundary.pop("risk_provenance", None)
+    db.upsert_model("approvals", approval, status=approval.status)
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+    assert "effective risk binding" in stored["expired_reason"].lower()
+
+
+def test_remote_tools_direct_path_expires_when_policy_denies_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    PermissionStore().save_policy(
+        PermissionPolicy(rules=[PermissionRule(name="deny remote click", effect="deny", tools=["remote.click"])])
+    )
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+
+
+def test_remote_tools_direct_path_expires_when_dynamic_risk_increases(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {
+        "settings": get_effective_settings(),
+        "allowed_directories": [],
+        "recent_failure_count": 3,
+    }
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+    assert "current safety review denies" in stored["expired_reason"].lower()
+
+
+def test_remote_tools_direct_path_revalidates_risk_after_claim(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    original_claim = db.claim_approval_for_execution
+
+    def claim_then_raise_risk(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        enabled["recent_failure_count"] = 3
+        return claimed
+
+    monkeypatch.setattr(
+        "app.tools.remote_tools.db.claim_approval_for_execution",
+        claim_then_raise_risk,
+    )
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["consumed_at"] is not None
 
 
 def test_remote_disabled_by_default():
@@ -999,6 +1129,36 @@ def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
     events = db.fetch_many("audit_events", limit=20)
     assert any(event["event_type"] == "remote.input.received" for event in events)
     assert any(event["event_type"] == "remote.input.approval_requested" for event in events)
+    approval = Approval.model_validate(db.fetch_one("approvals", result["approval_id"]))
+    provenance = approval.engineering_boundary["risk_provenance"]
+    assert provenance["version"] == "effective-risk/v1"
+    assert approval.risk_level == provenance["effective_risk_level"]
+    assert approval.engineering_boundary["intent"]["task_id"] == approval.task_id
+
+
+def test_remote_input_route_approval_executes_through_standard_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+    device_id = "mobile_standard_risk_binding"
+    mobile_pairing_service._upsert_mobile_device(device_id=device_id, device_name="Bound Phone")
+    grant = mobile_pairing_service.create_remote_input_grant(device_id)
+    _seed_remote_frame(device_id=device_id, grant_id=grant["grant_id"])
+    result = routes_remote.handle_remote_input_event(
+        {"type": "click", "x": 100, "y": 200},
+        claims={"device_id": device_id, "grant_id": grant["grant_id"]},
+    )
+    approval = Approval.model_validate(db.fetch_one("approvals", result["approval_id"]))
+    approval.status = ApprovalStatus.APPROVED
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    asyncio.run(OrchestratorAgent().execute_approved_step(approval))
+
+    stored = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert stored.consumed_at
+    assert calls == [(100, 200)]
 
 
 def test_remote_key_input_rejects_unsafe_key_before_approval(monkeypatch: pytest.MonkeyPatch):

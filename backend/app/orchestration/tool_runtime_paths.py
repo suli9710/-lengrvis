@@ -52,6 +52,7 @@ AUTHORIZED_PATH_ARG_KEYS = {
     "workspace_path",
     "working_directory",
 }
+FILESYSTEM_WRITE_BARRIER_KEY = "filesystem-write:*"
 
 
 def authorized_path_error(tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> str:
@@ -156,7 +157,13 @@ def write_lock_keys(tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
     keys: set[str] = set()
     if tool.concurrency_key:
         keys.add(f"tool:{tool.concurrency_key.casefold()}")
-    for value in candidate_write_paths(args):
+    filesystem_write = _is_filesystem_write_tool(tool)
+    if filesystem_write:
+        keys.add(FILESYSTEM_WRITE_BARRIER_KEY)
+    path_candidates = candidate_write_paths(args)
+    if filesystem_write and tool.requires_authorized_path:
+        path_candidates.extend(value for _name, value in candidate_authorized_paths(args))
+    for value in path_candidates:
         path = normalize_lock_path(value)
         if not path:
             continue
@@ -169,6 +176,18 @@ def write_lock_keys(tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
     if not keys:
         keys.add(f"tool:{tool.name.casefold()}")
     return sorted(keys)
+
+
+def _is_filesystem_write_tool(tool: ToolDefinition) -> bool:
+    if not is_write_tool(tool):
+        return False
+    capabilities = {str(value).casefold() for value in getattr(tool, "capabilities", [])}
+    resource_kinds = {str(value).casefold() for value in getattr(tool, "resource_kinds", [])}
+    return bool(
+        tool.requires_authorized_path
+        or "filesystem" in capabilities
+        or resource_kinds.intersection({"directory", "document", "file", "workspace"})
+    )
 
 
 def needs_completion_barrier(tool: ToolDefinition, args: dict[str, Any]) -> bool:

@@ -156,7 +156,7 @@ The orchestrator prints and optionally writes a JSON verdict:
    for debug, test-only, backup, cleartext, and exported-component safety.
    The sealed reviewed evidence must also contain `app.provenance` binding the
    candidate source, reviewed builder invocation and timestamp, APK digest,
-   package/version, and signer digest. A valid reviewed-evidence HMAC alone is not
+   package/version, and signer digest. A valid reviewed-evidence Ed25519 signature alone is not
    APK code-signing verification.
 5. The JSON verdict should be attached to the RC handoff and the release evidence
    packet.

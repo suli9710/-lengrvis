@@ -784,6 +784,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
         _validate_sensitive_integrity_bootstrap_anchor,
     ),
     SchemaMigration(9, "task_denied_phase_backfill", task_denied_phase_backfill),
+    SchemaMigration(10, "task_denied_phase_reconcile", task_denied_phase_backfill),
 )
 
 

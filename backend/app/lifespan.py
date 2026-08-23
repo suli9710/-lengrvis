@@ -80,10 +80,21 @@ async def guardian_lifespan(app: FastAPI):
 
 
 def _prepare_run_runtime() -> None:
+    from app.core.db_task_rollback import recover_interrupted_task_rollbacks
     from app.orchestration.tool_execution_journal import recover_interrupted_tool_executions
     from app.services.run_service import enter_foreground_runtime, recover_interrupted_runs
 
     enter_foreground_runtime()
+    try:
+        interrupted_rollbacks = recover_interrupted_task_rollbacks()
+        if interrupted_rollbacks:
+            record(
+                "lifespan.task_rollbacks_recovered",
+                "lifespan",
+                {"repair_required_task_ids": interrupted_rollbacks},
+            )
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
+        record("lifespan.task_rollback_recovery_failed", "lifespan", {"error": str(exc)})
     try:
         unknown_tool_calls = recover_interrupted_tool_executions()
         if unknown_tool_calls:

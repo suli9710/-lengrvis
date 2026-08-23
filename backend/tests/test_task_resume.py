@@ -11,7 +11,19 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.content_provenance import collect_content_envelopes, create_content_envelope
 from app.core.errors import AppError, StateTransitionError
-from app.core.schemas import Plan, PlanStep, Run, RunEngine, RunPhase, StepStatus, Task, ToolCall, ToolResult
+from app.core.schemas import (
+    AgentMessage,
+    MessageType,
+    Plan,
+    PlanStep,
+    Run,
+    RunEngine,
+    RunPhase,
+    StepStatus,
+    Task,
+    ToolCall,
+    ToolResult,
+)
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.orchestrator_registry import orchestrator_registry
@@ -148,6 +160,9 @@ def test_existing_plan_resume_restores_multi_parent_provenance_from_journal(
             tool_call_id=call.id,
             ok=True,
             output={"parent": step.id},
+            runtime_review_completed=True,
+            runtime_review_id=f"review_{index:032x}",
+            runtime_review_verdict="allow",
             content_envelope=create_content_envelope(
                 step.id,
                 source_kind="tool_result",
@@ -157,6 +172,25 @@ def test_existing_plan_resume_restores_multi_parent_provenance_from_journal(
         )
         db.upsert_model("tool_calls", call)
         db.upsert_model("tool_results", result)
+        proposal_call = call.model_copy(update={"status": "prepared", "committed_at": ""})
+        db.upsert_model(
+            "agent_messages",
+            AgentMessage(
+                task_id=task.id,
+                step_id=step.id,
+                from_agent="OrchestratorAgent",
+                message_type=MessageType.PROPOSAL,
+                content=f"Calling {call.tool_name}.",
+                structured_payload=proposal_call.model_dump(mode="json"),
+                tool_calls=[
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.tool_name, "arguments": dict(call.args)},
+                    }
+                ],
+            ),
+        )
 
     orchestrator = OrchestratorAgent()
     captured_contexts: list[dict[str, Any]] = []

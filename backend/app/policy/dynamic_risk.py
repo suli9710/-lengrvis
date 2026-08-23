@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -57,6 +58,9 @@ class DynamicRiskAssessor:
     late_night_start_hour = 22
     late_night_end_hour = 5
 
+    def __init__(self, *, now_provider: Callable[[], datetime] | None = None) -> None:
+        self.now_provider = now_provider
+
     def assess(
         self,
         tool_name: str,
@@ -64,6 +68,8 @@ class DynamicRiskAssessor:
         base_risk: RiskLevel,
         context: dict[str, Any] | None = None,
         task_id: str = "",
+        *,
+        now: datetime | None = None,
     ) -> DynamicRiskAssessment:
         context = context or {}
         if base_risk == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
@@ -96,9 +102,18 @@ class DynamicRiskAssessor:
         elif path_factor == "user_documents":
             reasons.append("Target path appears to be in user-owned documents or desktop storage.")
 
-        now = _context_datetime(context)
-        factors["hour"] = now.hour if now else None
-        if now and self._is_late_night(now):
+        # PolicyEngine passes one server-owned snapshot so risk and its cache
+        # provenance cannot straddle a time boundary. Direct assessor callers
+        # retain provider/context compatibility for deterministic tests.
+        assessed_at = (
+            now
+            if now is not None
+            else self.now_provider()
+            if self.now_provider is not None
+            else _context_datetime(context)
+        )
+        factors["hour"] = assessed_at.hour if assessed_at else None
+        if assessed_at and self._is_late_night(assessed_at):
             score += 1
             reasons.append("Deep-night operation increases review risk.")
 

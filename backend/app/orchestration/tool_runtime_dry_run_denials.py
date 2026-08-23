@@ -75,7 +75,12 @@ def deny_post_preview_review(
     post_preview_review: Any,
     runtime: TaskRuntimeContext,
 ) -> RuntimeExecutionResult:
-    preview_result = _withheld_tool_result(preview_result, post_preview_review, runtime)
+    preview_result = _withheld_tool_result(
+        preview_result,
+        post_preview_review,
+        runtime,
+        tool_name=step.tool_name,
+    )
     set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
     orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_preview_review.safe_alternative)
     return RuntimeExecutionResult("fatal_denied", preview_result)

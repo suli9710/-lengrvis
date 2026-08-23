@@ -354,10 +354,20 @@ class Task(BaseModel):
         status_text = str(raw_status.value if isinstance(raw_status, StrEnum) else raw_status or "").strip()
         phase_text = str(raw_phase.value if isinstance(raw_phase, StrEnum) else raw_phase or "").strip()
 
-        rollback = (normalized.get("metadata") or {}).get("rollback")
+        metadata = normalized.get("metadata") or {}
+        rollback = metadata.get("rollback")
         if status_text == TaskPhase.FAILED.value and isinstance(rollback, dict) and rollback:
+            rollback_claim = metadata.get("rollback_claim")
+            confirmation_source = (
+                str(rollback_claim.get("confirmation_source") or "").strip().casefold()
+                if isinstance(rollback_claim, dict)
+                else ""
+            )
             rollback_phase = (
-                TaskPhase.ROLLED_BACK
+                TaskPhase.FAILED
+                if confirmation_source == "runtime_recovery"
+                and str(rollback.get("state") or "").strip().lower() == "succeeded"
+                else TaskPhase.ROLLED_BACK
                 if str(rollback.get("state") or "").strip().lower() == "succeeded"
                 else TaskPhase.REPAIR_REQUIRED
             )
@@ -483,6 +493,7 @@ class SafetyReview(BaseModel):
     target_type: str
     verdict: SafetyVerdict
     risk_level: RiskLevel
+    declared_risk_level: RiskLevel | None = None
     reasons: list[str] = Field(default_factory=list)
     required_changes: list[str] = Field(default_factory=list)
     user_confirmation_message: str = ""
@@ -497,6 +508,10 @@ class ToolCall(BaseModel):
     tool_name: str
     args: dict[str, Any] = Field(default_factory=dict)
     risk_level: RiskLevel
+    declared_risk_level: RiskLevel | None = None
+    risk_review_id: str = ""
+    risk_binding_version: str = ""
+    execution_intent_key: str = ""
     execution_key: str = Field(default_factory=lambda: new_id("exec"))
     plan_revision: int = 0
     approval_id: str = ""
@@ -518,6 +533,9 @@ class ToolResult(BaseModel):
     rollback_info: dict[str, Any] = Field(default_factory=dict)
     observation: str = ""
     content_envelope: ContentEnvelope | None = None
+    runtime_review_id: str = ""
+    runtime_review_verdict: str = ""
+    runtime_review_completed: bool = False
     created_at: str = Field(default_factory=now_iso)
     _output_provenance: Any = PrivateAttr(default=None)
 

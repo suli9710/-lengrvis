@@ -432,7 +432,7 @@ policy_version, expires_at, nonce
 
 ### P1-7 验证 Android 发布证书，并治理 LAN TLS pin 生命周期
 
-当前严格 Android gate 在 `scripts/verify_android_release_gate.ps1:759` 计算 hash、验证 APK ZIP 头和结构，但未调用 `apksigner verify --verbose --print-certs` 验证签名 scheme、证书身份和发布证书 digest。脚本中的 `valid_signature` 指 reviewed-evidence HMAC，不等同于 APK 代码签名验证。
+当前严格 Android gate 已调用 `apksigner verify --verbose --print-certs` 验证 v2/v3 scheme、单一 signer、证书身份和发布证书 digest。脚本中的 `valid_signature` 指 reviewed-evidence Ed25519 签名，仍不等同于 APK 代码签名验证。
 
 同时，`mobile/android/app/src/main/java/com/lengrvis/approval/LengrvisLanTrust.kt:32` 会把新指纹追加到 host 数组；现有接口只能清空全部 trust，缺少单个 host/pin 的过期、替换和定向撤销。证书轮换后，旧证书可能长期继续被接受。
 
@@ -613,7 +613,7 @@ handler 仅支持 GET/HEAD，并同时检查原始 scheme/authority/path 与 WHA
 | BrowserHost 下载拒绝 | 闭环 | `will-download` 同时 `preventDefault()` 与 `cancel()`；阻止事件隐藏 userinfo、全部 query value 和 fragment，取消后无 URL 时不回退明文会话地址 | 若引入显式 broker，仍需独立授权、扫描与路径/落盘策略 |
 | 移动短 token / refresh family | 核心撤销闭环，PoP 仍开放 | 30 分钟 access token、family generation、旋转 refresh、复用检测、family/device revoke；旧 access 与未消费审批在 refresh 后立即失效；前后台锁定清内存并强制生物保护存储读取/refresh；R3/执行/权限/凭据审批在可信 PoP 缺失时 fail closed | 无 Android Keystore challenge signature/DPoP；refresh token 仍可脱离设备重放；物理锁屏/生物认证证据待签收 |
 | TLS pin 生命周期 | 基本闭环 | 单 active/next、24 小时重叠、30 天期限、定向撤销、损坏状态 fail closed；system/self-signed/复用路径统一 exact origin/port 与证书有效期，IDN/IPv6 采用同一 canonicalizer | Android Keystore/DPoP 与物理真机、真实候选附件仍未完成 |
-| Android APK 发布身份 | 代码闭环 | `apksigner --verbose --print-certs`、v2/v3、单 signer、证书 digest、candidate binding；reviewed evidence 强制 SHA-256 附件 manifest 与真实 HMAC key fingerprint | 真实候选 signer、APK、物理真机和经审核附件尚未形成同一候选证据 |
+| Android APK 发布身份 | 代码闭环 | `apksigner --verbose --print-certs`、v2/v3、单 signer、证书 digest、candidate binding；reviewed evidence 强制 SHA-256 附件 manifest 与真实 Ed25519 public-key fingerprint | 真实候选 signer、APK、物理真机和经审核附件尚未形成同一候选证据 |
 | 敏感数据加密与 retention | retention/erase 核心闭环 | task recording 使用 DPAPI-wrapped AES-GCM；分级 task/memory retention、权威 conflict/quarantine 状态、孤儿敏感记录清理、原子擦除、secure_delete/WAL truncate/VACUUM | tasks/chat/memory/plan/tool/approval 正文仍主要依赖 ACL 明文存储 |
 | 候选供应链证明 | 代码闭环 | 候选 SHA-256 manifest、CycloneDX SBOM、SLSA provenance 与 SBOM attestation；publish 逐 artifact 验证本地双 bundle、predicate、signer workflow、source digest，并核对签名 SBOM 后发布 | 尚未取得真实 GitHub RC run 在线验签证据；可复现构建和 runtime capability attestation 未完成 |
 | 真实 LLM / clean-machine / 真机 / 外部测试 | 评测系统闭环、发布证据未闭环 | Android API 35 模拟器 connected instrumentation 6/6；真实 provider 全量 130 项已运行；五层 scorecard、稳定失败分类/error code/脱敏 diagnostic、缺证据纳入分母、任何评测失败 fail closed；第一方动态安全复测 14/14 | 真实 LLM quality gate 未通过；仍缺物理真机 reviewed evidence、clean-machine reviewed evidence、第三方渗透复测和 owner sign-off |

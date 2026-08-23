@@ -977,6 +977,10 @@ def _document_resource_state(path: Path) -> list[dict[str, Any]]:
     return resource_states([path])
 
 
+def _document_rollback_info(backup: Any, path: Path) -> dict[str, Any]:
+    return {"backup": backup, "_post_resource_state": _document_resource_state(path)}
+
+
 def _replace_in_paragraph_preserve_runs(paragraph: Any, needle: str, replacement: str, *, dry_run: bool) -> int:
     if needle not in paragraph.text:
         return 0
@@ -1075,7 +1079,7 @@ def edit_pptx(
         "match_count": match_count,
         "changed_paths": [str(path_obj)],
         "diff_preview": diff_preview,
-        "rollback_info": {"backup": backup},
+        "rollback_info": _document_rollback_info(backup, path_obj),
     }
 
 
@@ -1142,7 +1146,7 @@ def apply_redaction(
         "findings": findings,
         "changed_paths": [str(path_obj)],
         "diff_preview": diff_preview,
-        "rollback_info": {"backup": backup},
+        "rollback_info": _document_rollback_info(backup, path_obj),
     }
 
 
@@ -1194,7 +1198,7 @@ def edit_docx(
         "match_count": match_count,
         "changed_paths": [str(path_obj)],
         "diff_preview": diff_preview,
-        "rollback_info": {"backup": backup},
+        "rollback_info": _document_rollback_info(backup, path_obj),
     }
 
 
@@ -1250,7 +1254,7 @@ def edit_xlsx(
         "cell": cell_ref,
         "changed_paths": [str(path_obj)],
         "diff_preview": diff_preview,
-        "rollback_info": {"backup": backup},
+        "rollback_info": _document_rollback_info(backup, path_obj),
     }
 
 

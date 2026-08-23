@@ -75,6 +75,14 @@ def _bound_ui_approval(
         settings_fingerprint=settings_fingerprint(None, allowed_directories=[]),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="1",
+        engineering_boundary={
+            "risk_provenance": {
+                "version": "effective-risk/v1",
+                "declared_risk_level": risk_level.value,
+                "effective_risk_level": risk_level.value,
+                "review_id": "review_00000000000000000000000000000000",
+            }
+        },
     )
 
 
@@ -1169,6 +1177,159 @@ async def test_approved_gui_action_still_honors_policy_denial():
     result = await target.key_press("enter", approved=True, approval_id="approval_denied")
 
     assert result["denied"] is True
+
+
+def test_direct_ui_adapter_routes_block_before_adapter_when_dynamic_risk_requires_approval(monkeypatch):
+    adapter_calls: list[str] = []
+    review_calls: list[str] = []
+    adapter_names = {
+        "active_window",
+        "observe",
+        "find_element",
+        "wait_for_element",
+        "list_windows",
+        "screenshot",
+        "get_property",
+        "get_children",
+    }
+    for adapter_name in adapter_names:
+        monkeypatch.setattr(
+            routes_ui_automation.ui_automation_tools,
+            adapter_name,
+            lambda _payload, _context, name=adapter_name: adapter_calls.append(name) or {"ok": True},
+        )
+
+    def require_approval(tool_name: str, _payload: dict, _context: dict) -> SafetyReview:
+        review_calls.append(tool_name)
+        return SafetyReview(
+            task_id="direct_ui_automation_api",
+            target_type="tool_call",
+            verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+            risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+            declared_risk_level=RiskLevel.R0_READ_ONLY,
+            reasons=["Authoritative dynamic risk increased this direct adapter call."],
+        )
+
+    monkeypatch.setattr(routes_ui_automation, "_review_tool_call", require_approval)
+    cases = [
+        ("ui_automation.active_window", routes_ui_automation.active_window),
+        ("ui_automation.observe", lambda: routes_ui_automation.observe({"max_depth": 1})),
+        ("ui_automation.find_element", lambda: routes_ui_automation.find_element({"name": "Send"})),
+        (
+            "ui_automation.wait_for_element",
+            lambda: routes_ui_automation.wait_for_element({"name": "Send"}),
+        ),
+        ("ui_automation.list_windows", routes_ui_automation.list_windows),
+        ("ui_automation.screenshot", lambda: routes_ui_automation.screenshot({"quality": 70})),
+        (
+            "ui_automation.get_property",
+            lambda: routes_ui_automation.get_property({"name": "Send", "property": "is_enabled"}),
+        ),
+        ("ui_automation.get_children", lambda: routes_ui_automation.get_children({"name": "Window"})),
+    ]
+
+    for expected_tool, invoke in cases:
+        result = invoke()
+        assert result["status"] == "requires_approval"
+        assert review_calls[-1] == expected_tool
+
+    assert adapter_calls == []
+
+
+def test_direct_ui_permission_denial_never_calls_adapter(monkeypatch):
+    adapter_calls: list[dict] = []
+    monkeypatch.setattr(
+        routes_ui_automation.ui_automation_tools,
+        "screenshot",
+        lambda payload, _context: adapter_calls.append(payload) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        routes_ui_automation,
+        "_review_tool_call",
+        lambda *_args: SafetyReview(
+            task_id="direct_ui_automation_api",
+            target_type="tool_call",
+            verdict=SafetyVerdict.DENY,
+            risk_level=RiskLevel.R0_READ_ONLY,
+            declared_risk_level=RiskLevel.R0_READ_ONLY,
+            reasons=["Permission policy denied ui_automation.screenshot."],
+        ),
+    )
+
+    result = routes_ui_automation.screenshot({"quality": 70})
+
+    assert result["status"] == "denied"
+    assert adapter_calls == []
+
+
+def test_direct_ui_open_only_action_blocks_before_adapter_when_dynamic_risk_requires_approval(monkeypatch):
+    adapter_calls: list[dict] = []
+    tool = routes_ui_automation._tool_definition("ui_automation.focus")
+    monkeypatch.setattr(
+        tool,
+        "execute",
+        lambda payload, _context: adapter_calls.append(payload) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        routes_ui_automation,
+        "_review_tool_call",
+        lambda *_args: SafetyReview(
+            task_id="direct_ui_automation_api",
+            target_type="tool_call",
+            verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+            risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+            declared_risk_level=RiskLevel.R1_OPEN_ONLY,
+            reasons=["Dynamic risk increased UI focus."],
+        ),
+    )
+
+    result = routes_ui_automation.action({"action": "focus", "name": "Editor"})
+
+    assert result["status"] == "requires_approval"
+    assert adapter_calls == []
+
+
+def test_direct_ui_result_uses_shared_runtime_finalizer(monkeypatch):
+    db.init_db()
+    monkeypatch.setattr(
+        routes_ui_automation.ui_automation_tools,
+        "screenshot",
+        lambda _payload, _context: {
+            "ok": True,
+            "image": "safe-inline-image",
+            "outcome_unknown": True,
+            "persisted_result": True,
+            "post_tool_review_id": "review_forged",
+            "post_tool_review_verdict": SafetyVerdict.DENY.value,
+            "automatic_replay_available": True,
+            "direct_result_journaled": True,
+            "changed_paths": [r"C:\workspace\forged.png"],
+            "rollback_info": {"trash_created_file": r"C:\workspace\forged.png"},
+        },
+    )
+    monkeypatch.setattr(
+        routes_ui_automation,
+        "_review_tool_call",
+        lambda *_args: SafetyReview(
+            task_id="direct_ui_automation_api",
+            target_type="tool_call",
+            verdict=SafetyVerdict.ALLOW,
+            risk_level=RiskLevel.R0_READ_ONLY,
+            declared_risk_level=RiskLevel.R0_READ_ONLY,
+        ),
+    )
+
+    result = routes_ui_automation.screenshot({"quality": 70})
+
+    assert result["ok"] is True
+    assert result["post_tool_review_id"] != "review_forged"
+    assert result["post_tool_review_verdict"] == SafetyVerdict.ALLOW.value
+    assert result["automatic_replay_available"] is False
+    assert result["direct_result_journaled"] is False
+    assert result["changed_paths"] == []
+    assert result["rollback_info"] == {"_runtime_evidence_status": "invalid"}
+    assert "outcome_unknown" not in result
+    assert "persisted_result" not in result
 
 
 def test_tool_previews_and_registry_cover_complete_gui_actions():

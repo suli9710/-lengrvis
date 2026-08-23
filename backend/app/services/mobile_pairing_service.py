@@ -10,7 +10,6 @@ from fastapi import HTTPException
 
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
-from app.config_sources import env_flag
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
@@ -30,7 +29,6 @@ from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
     issue_mobile_token,
-    mobile_token_scopes,
     new_device_id,
 )
 from app.services import mobile_pairing_access as _access_helpers
@@ -40,6 +38,7 @@ from app.services import mobile_pairing_push as _push_helpers
 from app.services import mobile_pairing_records as _record_helpers
 from app.services import mobile_pairing_remote_input as _remote_input_helpers
 from app.services import mobile_pairing_transport as _transport_helpers
+from app.services.mobile_approval_auth_context import mobile_approval_auth_context
 
 _approval_allowed_device_ids = _access_helpers._approval_allowed_device_ids
 _approval_required_mobile_scopes = _access_helpers._approval_required_mobile_scopes
@@ -821,39 +820,6 @@ def _decide_approval(
     approval = Approval.model_validate(data)
     publish_approval_decided(approval)
     return approval
-
-
-def mobile_approval_auth_context(claims: dict[str, Any]) -> dict[str, Any]:
-    try:
-        token_epoch = int(claims.get("token_epoch") or 0)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=401, detail="Mobile token epoch is invalid") from exc
-    raw_family_generation = claims.get("family_generation")
-    if raw_family_generation is None and env_flag("LENGRVIS_TEST"):
-        family_generation = None
-    elif (
-        isinstance(raw_family_generation, bool)
-        or not isinstance(raw_family_generation, int)
-        or raw_family_generation < 0
-    ):
-        raise HTTPException(status_code=401, detail="Mobile token family generation is invalid")
-    else:
-        family_generation = raw_family_generation
-    context = {
-        "channel": "mobile",
-        "device_id": _text(claims.get("device_id")),
-        "token_family_id": _text(claims.get("family_id")),
-        "credential_id": _text(claims.get("credential_id")),
-        "token_epoch": token_epoch,
-        "scopes": sorted(mobile_token_scopes(claims)),
-        "token_id": _text(claims.get("jti")),
-        "step_up_verified_at": int((claims.get("step_up") or {}).get("verified_at") or 0)
-        if isinstance(claims.get("step_up"), dict)
-        else 0,
-    }
-    if family_generation is not None:
-        context["family_generation"] = family_generation
-    return context
 
 
 def _expire_stale_approval_records() -> None:

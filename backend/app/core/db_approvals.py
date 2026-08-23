@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -136,7 +137,7 @@ def _mobile_authorization_error(
         (family_id,),
     ).fetchone()
     credential = conn.execute(
-        "SELECT device_id, status FROM device_credentials WHERE id = ?",
+        "SELECT device_id, status, data FROM device_credentials WHERE id = ?",
         (credential_id,),
     ).fetchone()
     if not device_row or not family or not credential:
@@ -170,6 +171,76 @@ def _mobile_authorization_error(
     family_expires_at = _parse_timestamp(family["expires_at"])
     if family_expires_at is None or family_expires_at <= consumed_at:
         return "Mobile token family has expired."
+    if _mobile_approval_requires_biometric_step_up(approval):
+        biometric_error = _mobile_biometric_authorization_error(credential, auth_context, consumed_at)
+        if biometric_error:
+            return biometric_error
+    return ""
+
+
+def _mobile_approval_requires_biometric_step_up(approval: dict[str, Any]) -> bool:
+    boundary = approval.get("engineering_boundary")
+    boundary = boundary if isinstance(boundary, dict) else {}
+    provenance = boundary.get("risk_provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    boundary_tool = boundary.get("tool")
+    boundary_tool = boundary_tool if isinstance(boundary_tool, dict) else {}
+    risks = {
+        str(approval.get("risk_level") or "").strip().casefold(),
+        str(provenance.get("effective_risk_level") or "").strip().casefold(),
+        str(boundary_tool.get("risk_level") or "").strip().casefold(),
+    }
+    return bool(
+        approval.get("mobile_step_up_required") is True
+        or boundary.get("mobile_step_up_required") is True
+        or boundary_tool.get("destructive") is True
+        or any(risk.startswith("r3") or risk.startswith("r4") for risk in risks)
+    )
+
+
+def _mobile_biometric_authorization_error(credential, auth_context: dict[str, Any], at: datetime) -> str:
+    method = str(auth_context.get("step_up_method") or "").strip().casefold()
+    methods = auth_context.get("authentication_methods")
+    if (
+        method != "biometric"
+        or not isinstance(methods, list)
+        or not all(isinstance(item, str) and item.strip() for item in methods)
+        or "biometric" not in {item.strip().casefold() for item in methods}
+    ):
+        return "High-impact mobile approval requires a biometric authentication method."
+    try:
+        verified_at = datetime.fromtimestamp(int(auth_context.get("step_up_verified_at")), UTC)
+        expires_at = datetime.fromtimestamp(int(auth_context.get("step_up_expires_at")), UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "Mobile biometric step-up timestamps are invalid."
+    if verified_at > at or expires_at <= verified_at:
+        return "Mobile biometric step-up timestamps are invalid."
+    from app.security.mobile_jwt import MOBILE_STEP_UP_TTL_SECONDS
+
+    if (expires_at - verified_at).total_seconds() > MOBILE_STEP_UP_TTL_SECONDS:
+        return "Mobile biometric step-up lifetime exceeds the trusted maximum."
+    if (at - verified_at).total_seconds() > MOBILE_STEP_UP_TTL_SECONDS:
+        return "Mobile biometric step-up is no longer fresh."
+    if expires_at <= at:
+        return "Mobile biometric step-up has expired."
+    proof_thumbprint = str(auth_context.get("proof_thumbprint") or "").strip()
+    try:
+        credential_data = json.loads(credential["data"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "Mobile device credential state is invalid."
+    if not isinstance(credential_data, dict):
+        return "Mobile device credential state is invalid."
+    if credential_data.get("hardware_backed") is not True:
+        return "Mobile biometric credential is not hardware-backed."
+    if credential_data.get("attestation_verified") is not True:
+        return "Mobile biometric credential attestation is not verified."
+    current_thumbprint = str(credential_data.get("public_key_thumbprint") or "").strip()
+    if (
+        not proof_thumbprint
+        or not current_thumbprint
+        or not hmac.compare_digest(proof_thumbprint.encode("utf-8"), current_thumbprint.encode("utf-8"))
+    ):
+        return "Mobile biometric proof thumbprint no longer matches the device credential."
     return ""
 
 
@@ -431,6 +502,10 @@ def decide_approval_atomically(
                 raise ValueError("Approval authorization requires both authorized_at and auth_context")
             data["authorized_at"] = authorized_at
             data["auth_context"] = dict(auth_context)
+        if status == "approved" and str((data.get("auth_context") or {}).get("channel") or "").lower() == "mobile":
+            authorization_error = _approval_authorization_error(conn, data, decided_at)
+            if authorization_error:
+                return _expire_approval_locked(conn, approval_id, data, decided_at, authorization_error)
         stored = db._json(data)
         cursor = conn.execute(
             """

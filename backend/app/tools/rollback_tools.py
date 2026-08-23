@@ -8,12 +8,11 @@ performed programmatically and surface as `requires_user_action`.
 
 from __future__ import annotations
 
-import hashlib
+import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-
-from pydantic import ValidationError
 
 from app.core import db
 from app.core.audit import record
@@ -23,7 +22,6 @@ from app.core.schemas import Approval, ApprovalStatus, ToolResult, now_iso
 from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
-from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe,
@@ -32,6 +30,50 @@ from app.tools.filesystem_safety import (
     safe_move_file,
 )
 from app.tools.managed_backups import managed_backup_root, resolve_managed_backup_path
+from app.tools.rollback_inventory import (
+    RollbackSnapshot,
+    RollbackSnapshotEntry,
+    load_rollback_snapshot,
+    plan_for_snapshot,
+    require_snapshot_task,
+)
+from app.tools.rollback_inventory import rollback_journal_hmac as rollback_journal_hmac
+from app.tools.rollback_inventory import (
+    rollback_snapshot_hmac as rollback_snapshot_hmac,
+)
+from app.tools.rollback_verification import (
+    absent_success as _absent_success,
+)
+from app.tools.rollback_verification import (
+    backup_identity_error as _backup_identity_error,
+)
+from app.tools.rollback_verification import (
+    managed_backup_identity as _managed_backup_identity,
+)
+from app.tools.rollback_verification import (
+    rollback_failure as _rollback_failure,
+)
+from app.tools.rollback_verification import (
+    safe_rollback_detail as _safe_rollback_detail,
+)
+from app.tools.rollback_verification import (
+    sha256_file as _sha256_file,
+)
+from app.tools.rollback_verification import (
+    verification_failure as _verification_failure,
+)
+from app.tools.rollback_verification import (
+    verify_absent as _verify_absent,
+)
+from app.tools.rollback_verification import (
+    verify_moved_file as _verify_moved_file,
+)
+from app.tools.rollback_verification import (
+    verify_restored_backup_cleanup as _verify_restored_backup_cleanup,
+)
+from app.tools.rollback_verification import (
+    verify_restored_file as _verify_restored_file,
+)
 from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 try:
@@ -41,6 +83,11 @@ except ImportError:  # pragma: no cover - optional dependency guard
 
 
 _ROLLBACK_FILESYSTEM_ERRORS = (OSError, SecurityError, ValueError, shutil.Error)
+_POST_RESOURCE_STATE_KEYS = ("_post_resource_state", "_post_state")
+
+
+class RollbackLeaseLostError(RuntimeError):
+    pass
 
 
 def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -58,20 +105,32 @@ def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = N
 
     if "move_back" in info:
         spec = info["move_back"]
-        return _move_back_then_restore(spec, info.get("dst_backup"), allowed, context)
+        return _move_back_then_restore(
+            spec,
+            info.get("dst_backup"),
+            allowed,
+            context,
+            _post_resource_states(info),
+        )
 
     if "rename_back" in info:
         spec = info["rename_back"]
-        return _move_back_then_restore(spec, info.get("dst_backup"), allowed, context)
+        return _move_back_then_restore(
+            spec,
+            info.get("dst_backup"),
+            allowed,
+            context,
+            _post_resource_states(info),
+        )
 
     if "trash_created_file" in info:
-        return _trash(info["trash_created_file"], allowed, context)
+        return _trash(info["trash_created_file"], allowed, context, _post_resource_states(info))
 
     if "delete_folder_if_empty" in info:
-        return _delete_if_empty(info["delete_folder_if_empty"], allowed, context)
+        return _delete_if_empty(info["delete_folder_if_empty"], allowed, context, _post_resource_states(info))
 
     if info.get("backup"):
-        return _restore_backup(info["backup"], allowed, context)
+        return _restore_backup(info["backup"], allowed, context, _post_resource_states(info))
 
     if "restore_from_recycle_bin" in info:
         target = info["restore_from_recycle_bin"]
@@ -105,42 +164,56 @@ def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = N
     }
 
 
-def build_rollback_plan(task_id: str) -> dict[str, Any]:
-    results = _results_for_task(task_id)
-    actions: list[dict[str, Any]] = []
-    for result in reversed(results):
-        info = dict(result.rollback_info or {})
-        if not info:
-            continue
-        actions.append(
-            {
-                "tool_call_id": result.tool_call_id,
-                "actions": list(info.keys()),
-                "detail": info,
-            }
-        )
-    return {"task_id": task_id, "steps": actions, "count": len(actions)}
+def build_rollback_plan(task_id: str, *, snapshot: RollbackSnapshot | None = None) -> dict[str, Any]:
+    frozen = snapshot or load_rollback_snapshot(task_id)
+    require_snapshot_task(frozen, task_id)
+    return plan_for_snapshot(frozen)
 
 
-def execute_rollback(task_id: str) -> dict[str, Any]:
-    results = _results_for_task(task_id)
-    context = _rollback_context()
+def execute_rollback(
+    task_id: str,
+    *,
+    snapshot: RollbackSnapshot | None = None,
+    heartbeat: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    frozen = snapshot or load_rollback_snapshot(task_id)
+    require_snapshot_task(frozen, task_id)
     executed: list[dict[str, Any]] = []
-    for result in reversed(results):
-        if not result.rollback_info:
-            continue
-        outcome = rollback_tool_result(result, context)
-        executed.append({"tool_call_id": result.tool_call_id, **outcome})
-        record(
-            "task.rollback_step",
-            "RollbackTool",
-            {
-                "tool_call_id": result.tool_call_id,
-                "ok": outcome.get("ok"),
-                "verification_status": (outcome.get("verification") or {}).get("status"),
-            },
-            task_id=task_id,
-        )
+    if any(entry.blocker for entry in frozen.entries):
+        for entry in frozen.entries:
+            _require_rollback_heartbeat(heartbeat)
+            outcome = _manual_inventory_blocker(entry) if entry.blocker else _skipped_incomplete_inventory(entry)
+            executed.append({"tool_call_id": entry.tool_call_id, **outcome})
+            _record_rollback_step(task_id, entry.tool_call_id, outcome)
+        _require_rollback_heartbeat(heartbeat)
+        summary = _summarize_rollback(executed)
+        return {"task_id": task_id, "executed": executed, "count": summary["attempted"], **summary}
+
+    context = _rollback_context()
+    if heartbeat is not None:
+        context["_rollback_lease_alive"] = heartbeat
+        lost_event = getattr(heartbeat, "lost_event", None)
+        if lost_event is not None:
+            context["_tool_abort_event"] = lost_event
+    for entry in frozen.entries:
+        _require_rollback_heartbeat(heartbeat)
+        if entry.blocker:
+            outcome = _manual_inventory_blocker(entry)
+        elif entry.result is not None:
+            outcome = rollback_tool_result(entry.result, context)
+        else:  # pragma: no cover - RollbackSnapshotEntry construction invariant
+            outcome = _manual_inventory_blocker(
+                RollbackSnapshotEntry(
+                    tool_call_id=entry.tool_call_id,
+                    effect_at=entry.effect_at,
+                    stable_id=entry.stable_id,
+                    blocker="invalid_snapshot_entry",
+                    detail="Rollback inventory entry is incomplete.",
+                )
+            )
+        executed.append({"tool_call_id": entry.tool_call_id, **outcome})
+        _record_rollback_step(task_id, entry.tool_call_id, outcome)
+    _require_rollback_heartbeat(heartbeat)
     summary = _summarize_rollback(executed)
     return {"task_id": task_id, "executed": executed, "count": summary["attempted"], **summary}
 
@@ -303,22 +376,51 @@ def _hmac_equal(left: str, right: str) -> bool:
     return hmac.compare_digest(str(left or ""), str(right or ""))
 
 
-def _results_for_task(task_id: str) -> list[ToolResult]:
-    rows = db.fetch_many("tool_calls", "task_id = ?", (task_id,), limit=500)
-    call_ids = [row["id"] for row in rows]
-    if not call_ids:
-        return []
-    out: list[ToolResult] = []
-    for call_id in call_ids:
-        results = db.fetch_many("tool_results", "tool_call_id = ?", (call_id,), limit=10)
-        for row in results:
-            try:
-                result = ToolResult.model_validate(row)
-            except ValidationError:
-                result = None
-            if result is not None:
-                out.append(result)
-    return out
+def _manual_inventory_blocker(entry: RollbackSnapshotEntry) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "action": "manual_review",
+        "requires_user_action": True,
+        "verified": False,
+        "verification": {"status": "manual_required", "method": "rollback_inventory"},
+        "reason": entry.blocker,
+        "detail": entry.detail,
+    }
+
+
+def _skipped_incomplete_inventory(entry: RollbackSnapshotEntry) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "action": "skipped",
+        "requires_user_action": True,
+        "verified": False,
+        "verification": {"status": "manual_required", "method": "rollback_inventory"},
+        "reason": "inventory_incomplete",
+        "detail": "Automatic rollback was skipped because another task effect lacks trustworthy evidence.",
+    }
+
+
+def _record_rollback_step(task_id: str, tool_call_id: str, outcome: dict[str, Any]) -> None:
+    record(
+        "task.rollback_step",
+        "RollbackTool",
+        {
+            "tool_call_id": tool_call_id,
+            "ok": outcome.get("ok"),
+            "verification_status": (outcome.get("verification") or {}).get("status"),
+        },
+        task_id=task_id,
+    )
+
+
+def _require_rollback_heartbeat(heartbeat: Callable[[], bool] | None) -> None:
+    if heartbeat is not None and not heartbeat():
+        raise RollbackLeaseLostError("Rollback claim lease was lost during execution.")
+
+
+def _require_rollback_context_heartbeat(context: dict[str, Any] | None) -> None:
+    heartbeat = (context or {}).get("_rollback_lease_alive")
+    _require_rollback_heartbeat(heartbeat if callable(heartbeat) else None)
 
 
 def _cleanup_rollback_steps(info: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
@@ -371,13 +473,36 @@ def _move_back_then_restore(
     dst_backup: Any,
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
+    post_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Undo a move/rename, then (if the destination was overwritten) restore the
     destination's original content from its managed backup."""
-    result = _move_back(spec.get("from"), spec.get("to"), allowed, context)
+    if dst_backup:
+        preflight = _preflight_destination_backup(dst_backup, spec.get("from"), allowed, context)
+        if preflight is not None:
+            return preflight
+    result = _move_back(spec.get("from"), spec.get("to"), allowed, context, post_states)
     if not dst_backup or not result.get("ok"):
         return result
-    restore = _restore_backup(dst_backup, allowed, context)
+    _require_rollback_context_heartbeat(context)
+    try:
+        _backup_path, original = _resolve_backup_restore_paths(dst_backup, allowed)
+        moved_source = _authorize_rollback_path(str(spec.get("from") or ""), allowed)
+    except (SecurityError, ValueError) as exc:
+        restore = _rollback_precondition_failure("restore_backup", exc)
+    else:
+        if _path_key(original) != _path_key(moved_source):
+            restore = _rollback_precondition_failure(
+                "restore_backup",
+                "Destination backup does not match the path verified absent by move rollback.",
+            )
+        else:
+            restore = _restore_backup(
+                dst_backup,
+                allowed,
+                context,
+                [{"path": str(original), "exists": False}],
+            )
     result["dst_restore"] = restore
     if not restore.get("ok"):
         result["ok"] = False
@@ -390,6 +515,7 @@ def _move_back(
     dst: str | None,
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
+    post_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not src or not dst:
         return _rollback_failure("move_back", "missing src/dst")
@@ -401,10 +527,19 @@ def _move_back(
     if not source.exists():
         return _rollback_failure("move_back", f"source path missing: {source}")
     try:
+        precondition = _check_rollback_preconditions(
+            ((source, _state_for_path(post_states, source)), (target, _state_for_path(post_states, target))),
+            allowed or [],
+            context,
+            action="move_back",
+        )
+        if precondition is not None:
+            return precondition
         ensure_mutation_path_safe(source, allowed or [], include_self=True, context=context)
         expected_digest = _sha256_file(source, context)
         raise_if_tool_aborted(context)
         safe_move_file(source, target, allowed or [], context)
+        _require_rollback_context_heartbeat(context)
         verification = _verify_moved_file(source, target, expected_digest, allowed or [], context)
         if verification["status"] != "passed":
             return _verification_failure("move_back", verification)
@@ -426,24 +561,34 @@ def _trash(
     path_str: str,
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
+    post_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
         return _rollback_failure("trash", exc)
-    if not path.exists():
+    expected = _state_for_path(post_states, path)
+    if _unsafe_rollback_state(expected):
+        return _rollback_precondition_failure("trash", "Rollback evidence contains a filesystem link.")
+    if not path_exists_or_reparse_point(path):
         return _absent_success("trash", path, detail="already absent")
     if send2trash is None:
         return _rollback_failure("trash", "send2trash not installed")
     try:
+        precondition = _check_rollback_preconditions(((path, expected),), allowed or [], context, action="trash")
+        if precondition is not None:
+            return precondition
         raise_if_tool_aborted(context)
         ensure_mutation_path_safe(path, allowed or [], include_self=True, context=context)
         send2trash(str(path))
+        _require_rollback_context_heartbeat(context)
         verification = _verify_absent(path)
         if verification["status"] != "passed":
             return _verification_failure("trash", verification)
         return {"ok": True, "action": "trash", "path": str(path), "verified": True, "verification": verification}
     except ToolAbortedError:
+        raise
+    except RollbackLeaseLostError:
         raise
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
         return _rollback_failure("trash", exc)
@@ -453,21 +598,34 @@ def _delete_if_empty(
     path_str: str,
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
+    post_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
         return _rollback_failure("delete_folder_if_empty", exc)
-    if not path.exists():
+    expected = _state_for_path(post_states, path)
+    if _unsafe_rollback_state(expected):
+        return _rollback_precondition_failure(
+            "delete_folder_if_empty",
+            "Rollback evidence contains a filesystem link.",
+        )
+    if not path_exists_or_reparse_point(path):
         return _absent_success("delete_folder_if_empty", path, detail="already absent")
-    if not path.is_dir():
-        return _rollback_failure("delete_folder_if_empty", "not a directory")
-    if any(path.iterdir()):
-        return _rollback_failure("delete_folder_if_empty", "directory not empty")
     try:
+        precondition = _check_rollback_preconditions(
+            ((path, expected),), allowed or [], context, action="delete_folder_if_empty"
+        )
+        if precondition is not None:
+            return precondition
+        if not path.is_dir():
+            return _rollback_failure("delete_folder_if_empty", "not a directory")
+        if any(path.iterdir()):
+            return _rollback_failure("delete_folder_if_empty", "directory not empty")
         raise_if_tool_aborted(context)
         ensure_mutation_path_safe(path, allowed or [], include_self=True, context=context)
         path.rmdir()
+        _require_rollback_context_heartbeat(context)
         verification = _verify_absent(path)
         if verification["status"] != "passed":
             return _verification_failure("delete_folder_if_empty", verification)
@@ -488,6 +646,7 @@ def _restore_backup(
     backup_spec: Any,
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
+    post_states: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     managed_backup = isinstance(backup_spec, dict)
     try:
@@ -500,15 +659,32 @@ def _restore_backup(
         return _rollback_failure("restore_backup", "backup is not a file")
     try:
         backup_allowed = [str(managed_backup_root())] if managed_backup else list(allowed or [])
+        identity_error = _backup_identity_error(backup_spec, backup, backup_allowed, context)
+        if identity_error:
+            return _rollback_precondition_failure("restore_backup", identity_error)
+        precondition = _check_rollback_preconditions(
+            ((original, _state_for_path(post_states, original)),),
+            allowed or [],
+            context,
+            action="restore_backup",
+        )
+        if precondition is not None:
+            return precondition
         ensure_mutation_path_safe(backup, backup_allowed, include_self=True, context=context)
-        expected_digest = _sha256_file(backup, context)
+        identity = _managed_backup_identity(backup_spec)
+        expected_digest = str(identity["sha256"]) if identity is not None else _sha256_file(backup, context)
         raise_if_tool_aborted(context)
+        identity_error = _backup_identity_error(backup_spec, backup, backup_allowed, context)
+        if identity_error:
+            return _rollback_precondition_failure("restore_backup", identity_error)
         safe_copy_file_between_scopes(backup, original, backup_allowed, allowed or [], context)
+        _require_rollback_context_heartbeat(context)
         verification = _verify_restored_file(original, expected_digest, allowed or [], context)
         if verification["status"] != "passed":
             return _verification_failure("restore_backup", verification)
         raise_if_tool_aborted(context)
-        ensure_mutation_path_safe(original, allowed or [], include_self=True, context=context)
+        _require_rollback_context_heartbeat(context)
+        ensure_mutation_path_safe(backup, backup_allowed, include_self=True, context=context)
         backup.unlink()
         verification = _verify_restored_backup_cleanup(backup, original, expected_digest, allowed or [], context)
         if verification["status"] != "passed":
@@ -526,118 +702,105 @@ def _restore_backup(
         return _rollback_failure("restore_backup", exc)
 
 
-def _sha256_file(path: Path, context: dict[str, Any] | None = None) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            raise_if_tool_aborted(context)
-            digest.update(chunk)
-    return digest.hexdigest()
+def _post_resource_states(info: dict[str, Any]) -> list[dict[str, Any]] | None:
+    for key in _POST_RESOURCE_STATE_KEYS:
+        value = info.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return None
 
 
-def _verify_moved_file(
-    source: Path,
-    target: Path,
-    expected_digest: str,
+def _state_for_path(
+    states: list[dict[str, Any]] | None,
+    path: Path,
+) -> dict[str, Any] | None:
+    if not states:
+        return None
+    expected_key = _path_key(path)
+    for state in states:
+        if _path_key(Path(str(state.get("path") or ""))) == expected_key:
+            return state
+    return None
+
+
+def _path_key(path: Path) -> str:
+    normalized = Path(os.path.abspath(str(path.expanduser())))
+    return os.path.normcase(str(normalized))
+
+
+def _check_rollback_preconditions(
+    entries: tuple[tuple[Path, dict[str, Any] | None], ...],
     allowed: list[str],
     context: dict[str, Any] | None,
-) -> dict[str, Any]:
-    source_absent = not path_exists_or_reparse_point(source)
-    target_is_file = _verified_regular_file(target, allowed, context)
-    content_match = target_is_file and _sha256_file(target, context) == expected_digest
-    return {
-        "status": "passed" if source_absent and target_is_file and content_match else "failed",
-        "method": "filesystem_readback_sha256",
-        "checks": {
-            "source_absent": source_absent,
-            "target_is_file": target_is_file,
-            "content_match": content_match,
-        },
-    }
+    *,
+    action: str,
+) -> dict[str, Any] | None:
+    """Compare every target with its post-tool snapshot before mutating it."""
+
+    for path, expected in entries:
+        if expected is None:
+            return _rollback_precondition_failure(
+                action,
+                f"Rollback evidence for '{path}' has no post-tool state; manual repair is required.",
+            )
+        if not isinstance(expected, dict) or "exists" not in expected:
+            return _rollback_precondition_failure(action, "Rollback post-tool state is malformed.")
+        if _unsafe_rollback_state(expected):
+            return _rollback_precondition_failure(action, "Rollback evidence contains a filesystem link.")
+        try:
+            exists_now = path_exists_or_reparse_point(path)
+            expected_exists = bool(expected.get("exists"))
+            if not expected_exists:
+                if exists_now:
+                    return _rollback_precondition_failure(
+                        action,
+                        f"Rollback target changed after the tool completed: {path}",
+                    )
+                continue
+            if not exists_now:
+                return _rollback_precondition_failure(
+                    action,
+                    f"Rollback target is missing or changed after the tool completed: {path}",
+                )
+            ensure_mutation_path_safe(path, allowed, include_self=True, context=context)
+            stat = path.stat()
+            expected_file = bool(expected.get("is_file"))
+            expected_dir = bool(expected.get("is_dir"))
+            if expected_file != path.is_file() or expected_dir != path.is_dir():
+                return _rollback_precondition_failure(action, f"Rollback target type changed: {path}")
+            expected_size = expected.get("size")
+            if expected_size is not None and int(expected_size) != int(stat.st_size):
+                return _rollback_precondition_failure(action, f"Rollback target size changed: {path}")
+            expected_inode = int(expected.get("inode") or 0)
+            current_inode = int(getattr(stat, "st_ino", 0) or 0)
+            # A verified rollback move recreates regular files by copy+delete,
+            # so their inode legitimately changes before an earlier action is
+            # undone. File identity is instead protected by type, size and
+            # SHA-256; directories retain the inode check because they have no
+            # content digest and must not be replaced underneath the rollback.
+            if expected_dir and expected_inode and current_inode and expected_inode != current_inode:
+                return _rollback_precondition_failure(action, f"Rollback target identity changed: {path}")
+            expected_digest = str(expected.get("sha256") or "")
+            if expected_file and expected_digest and _sha256_file(path, context) != expected_digest:
+                return _rollback_precondition_failure(action, f"Rollback target content changed: {path}")
+        except _ROLLBACK_FILESYSTEM_ERRORS as exc:
+            return _rollback_precondition_failure(action, _safe_rollback_detail(exc))
+    return None
 
 
-def _verify_absent(path: Path) -> dict[str, Any]:
-    absent = not path_exists_or_reparse_point(path)
-    return {
-        "status": "passed" if absent else "failed",
-        "method": "filesystem_readback",
-        "checks": {"target_absent": absent},
-    }
-
-
-def _verify_restored_file(
-    original: Path,
-    expected_digest: str,
-    allowed: list[str],
-    context: dict[str, Any] | None,
-) -> dict[str, Any]:
-    original_is_file = _verified_regular_file(original, allowed, context)
-    content_match = original_is_file and _sha256_file(original, context) == expected_digest
-    return {
-        "status": "passed" if original_is_file and content_match else "failed",
-        "method": "filesystem_readback_sha256",
-        "checks": {"original_is_file": original_is_file, "content_match": content_match},
-    }
-
-
-def _verify_restored_backup_cleanup(
-    backup: Path,
-    original: Path,
-    expected_digest: str,
-    allowed: list[str],
-    context: dict[str, Any] | None,
-) -> dict[str, Any]:
-    restored = _verify_restored_file(original, expected_digest, allowed, context)
-    backup_absent = not path_exists_or_reparse_point(backup)
-    checks = {**restored["checks"], "backup_absent": backup_absent}
-    return {
-        "status": "passed" if restored["status"] == "passed" and backup_absent else "failed",
-        "method": "filesystem_readback_sha256",
-        "checks": checks,
-    }
-
-
-def _verified_regular_file(path: Path, allowed: list[str], context: dict[str, Any] | None) -> bool:
-    try:
-        ensure_mutation_path_safe(path, allowed, include_self=True, context=context)
-    except _ROLLBACK_FILESYSTEM_ERRORS:
-        return False
-    return path.is_file()
-
-
-def _absent_success(action: str, path: Path, *, detail: str) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "action": action,
-        "detail": detail,
-        "path": str(path),
-        "verified": True,
-        "verification": _verify_absent(path),
-    }
-
-
-def _verification_failure(action: str, verification: dict[str, Any]) -> dict[str, Any]:
+def _rollback_precondition_failure(action: str, detail: Any) -> dict[str, Any]:
     return {
         "ok": False,
         "action": action,
+        "requires_user_action": True,
         "verified": False,
-        "verification": verification,
-        "detail": "Rollback action completed but post-action resource verification failed.",
-    }
-
-
-def _rollback_failure(action: str, detail: Any) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "action": action,
-        "verified": False,
-        "verification": {"status": "not_run", "method": "filesystem_readback"},
+        "verification": {"status": "manual_required", "method": "post_tool_state_compare"},
         "detail": _safe_rollback_detail(detail),
     }
 
 
-def _safe_rollback_detail(value: Any) -> str:
-    return redact_public_text(str(redact_value(str(value or "")) or ""))
+def _unsafe_rollback_state(state: dict[str, Any] | None) -> bool:
+    return bool(state and (state.get("is_reparse_point") or state.get("auto_rollback_safe") is False))
 
 
 def _resolve_backup_restore_paths(backup_spec: Any, allowed: list[str] | None) -> tuple[Path, Path]:
@@ -654,8 +817,32 @@ def _resolve_backup_restore_paths(backup_spec: Any, allowed: list[str] | None) -
     return backup, backup.with_suffix("")
 
 
+def _preflight_destination_backup(
+    backup_spec: Any,
+    expected_original: Any,
+    allowed: list[str] | None,
+    context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    try:
+        backup, original = _resolve_backup_restore_paths(backup_spec, allowed)
+        expected = _authorize_rollback_path(str(expected_original or ""), allowed)
+        if _path_key(original) != _path_key(expected):
+            return _rollback_precondition_failure(
+                "move_back",
+                "Destination backup is bound to a different overwritten path.",
+            )
+        backup_allowed = [str(managed_backup_root())] if isinstance(backup_spec, dict) else list(allowed or [])
+        identity_error = _backup_identity_error(backup_spec, backup, backup_allowed, context)
+        if identity_error:
+            return _rollback_precondition_failure("move_back", identity_error)
+    except (OSError, SecurityError, ValueError) as exc:
+        return _rollback_precondition_failure("move_back", exc)
+    return None
+
+
 def _authorize_rollback_path(path_str: str, allowed: list[str] | None = None) -> Path:
     allowed = list(allowed or [])
     if not allowed:
         raise SecurityError("No authorized directories configured for rollback.")
-    return resolve_authorized(path_str, allowed)
+    resolve_authorized(path_str, allowed)
+    return Path(os.path.abspath(str(Path(path_str).expanduser())))

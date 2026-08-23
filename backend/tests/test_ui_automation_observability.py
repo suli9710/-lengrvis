@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.api import routes_ui_automation
+from app.core import db
 from app.observability import metrics
 from app.perception import ui_automation_observability as observed
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import ui_automation_tools
+from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import ToolAbortedError
 
 
@@ -479,6 +482,8 @@ def test_missing_tool_approval_records_tool_guard() -> None:
 def _route_review(verdict: SafetyVerdict):
     return SimpleNamespace(
         verdict=verdict,
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        declared_risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
         reasons=["fixed policy result"],
         safe_alternative="",
         model_dump=lambda **kwargs: {"verdict": verdict.value},  # noqa: ARG005
@@ -486,8 +491,20 @@ def _route_review(verdict: SafetyVerdict):
 
 
 def _install_route_tool(monkeypatch: pytest.MonkeyPatch, *, verdict: SafetyVerdict) -> None:
-    tool = SimpleNamespace(
+    tool = ToolDefinition(
+        name="ui_automation.click",
+        description="UI automation observability test action",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
         risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="ComputerAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        read_only=False,
+        concurrency_safe=False,
+        effects=["write"],
+        resource_kinds=["desktop_ui"],
+        trust_tier="builtin",
         execute=lambda payload, context: {  # noqa: ARG005
             "ok": True,
             "dry_run": True,
@@ -513,7 +530,12 @@ def test_route_review_denial_records_approval_gate(monkeypatch: pytest.MonkeyPat
     }
 
 
-def test_route_review_and_claim_required_use_distinct_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_review_and_claim_required_use_distinct_stages(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db(force=True)
     _install_route_tool(monkeypatch, verdict=SafetyVerdict.NEEDS_USER_APPROVAL)
     monkeypatch.setattr(
         routes_ui_automation,

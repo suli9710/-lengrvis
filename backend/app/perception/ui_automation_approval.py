@@ -10,6 +10,12 @@ from pydantic import ValidationError
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
+)
 from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
@@ -46,7 +52,8 @@ def review_action(
             step_id=step_id,
             target_type="tool_call",
             verdict=SafetyVerdict.ALLOW,
-            risk_level=risk_level,
+            risk_level=review.risk_level,
+            declared_risk_level=review.declared_risk_level or risk_level,
             reasons=["Approved UIAutomation action may proceed."],
         )
     return policy_engine.review_tool_call(task_id or "ui_automation", step_id, tool_name, args, risk_level)
@@ -88,6 +95,7 @@ def approval_gate_error(
         allow_consumed=False,
     )
     if binding_error:
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), binding_error)
         return binding_error
     try:
         claimed = db.claim_approval_for_execution(approval.id, now_iso())
@@ -99,7 +107,7 @@ def approval_gate_error(
         claimed_approval = Approval.model_validate(claimed)
     except ValidationError as exc:
         return f"UIAutomation claimed approval record is invalid: {exc}"
-    return binding_validator(
+    claimed_error = binding_validator(
         claimed_approval,
         tool_name,
         args,
@@ -109,6 +117,9 @@ def approval_gate_error(
         step_id=step_id,
         allow_consumed=True,
     )
+    if not claimed_error:
+        approval_context["effective_risk_binding"] = dict(approval_risk_binding(claimed_approval) or {})
+    return claimed_error
 
 
 def approval_binding_error(
@@ -151,8 +162,30 @@ def approval_binding_error(
     ]
     if missing:
         return f"UIAutomation approval lacks binding metadata: {', '.join(missing)}."
-    if approval.risk_level and approval.risk_level != tool.risk_level.value:
-        return "UIAutomation approval risk level does not match this tool."
+    runtime_context = context or {}
+    runtime_settings = runtime_context.get("settings") or settings
+    from app.policy.policy_engine import PolicyEngine
+
+    current_review = PolicyEngine(settings=runtime_settings).review_tool_call(
+        approval.task_id,
+        approval.step_id,
+        tool_name,
+        approval_args(args),
+        tool.risk_level,
+        context=risk_revalidation_context(runtime_context, task_id=approval.task_id),
+        tool_definition=tool,
+    )
+    risk_binding = approval_risk_binding(approval)
+    risk_error = effective_risk_binding_error(
+        risk_binding,
+        current_declared_risk=current_review.declared_risk_level or tool.risk_level,
+        approval_risk_level=approval.risk_level,
+    )
+    if risk_error:
+        return risk_error
+    refreshed_error = refreshed_effective_risk_error(risk_binding, current_review)
+    if refreshed_error:
+        return refreshed_error
     if approval.tool_version != getattr(tool, "tool_version", "1"):
         return "UIAutomation approval tool version does not match this tool."
     expected_args = args_binding_hmac(
@@ -166,8 +199,6 @@ def approval_binding_error(
     expected_preview = preview_hmac(approval.diff_preview)
     if not hmac.compare_digest(str(approval.preview_hmac or ""), str(expected_preview or "")):
         return "UIAutomation approval preview was modified after review."
-    runtime_context = context or {}
-    runtime_settings = runtime_context.get("settings") or settings
     allowed_directories = list(
         runtime_context.get("allowed_directories") or getattr(runtime_settings, "allowed_directories", []) or []
     )

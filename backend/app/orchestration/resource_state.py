@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 READ_STATE_TTL_SECONDS = 30 * 60
+RESOURCE_STATE_SUMMARY_SCHEMA = "resource-state-summary/v1"
 PATH_ARG_KEYS = {
     "path",
     "paths",
@@ -59,6 +60,7 @@ PATH_ARG_KEYS = {
     "cwd",
 }
 PREVIEW_PATH_KEYS = {
+    "changed_paths",
     "path",
     "paths",
     "from",
@@ -349,6 +351,18 @@ def canonical_state_list(value: Any) -> list[dict[str, Any]]:
             json.dumps(item, sort_keys=True, default=str),
         ),
     )
+
+
+def resource_state_summary(value: Any) -> dict[str, Any]:
+    """Return a stable, bounded-shape digest for runtime-captured resource states."""
+
+    states = canonical_state_list(value)
+    payload = json.dumps(states, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema": RESOURCE_STATE_SUMMARY_SCHEMA,
+        "count": len(states),
+        "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+    }
 
 
 def read_result_paths(args: dict[str, Any], output: dict[str, Any], context: dict[str, Any]) -> list[Path]:

@@ -3,16 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 from typing import TYPE_CHECKING
 
+from app.core import db
 from app.core.audit import record
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration.deterministic_contracts import deterministic_contract_status
 from app.orchestration.events import ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_rollback_workflow import (
+    RollbackSource,
+    TaskRollbackRequest,
+    execute_task_rollback,
+)
 from app.policy.risk import RISK_ORDER, RiskLevel
-from app.tools import rollback_tools
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -229,7 +236,6 @@ class RecoveryHandler:
         reason: str,
     ) -> StepExecutionOutcome:
         orchestrator = self.orchestrator
-        rollback = rollback_tools.execute_rollback(task.id)
         set_step_status(step, StepStatus.FAILED, actor="RecoveryHandler")
         orchestrator._set_status(
             task,
@@ -237,6 +243,37 @@ class RecoveryHandler:
             final_summary=orchestrator._friendly_tool_error(result.error if result else "Tool failed."),
         )
         orchestrator._persist_plan_update(plan, "Plan failed after recovery was exhausted; rollback attempted.")
+        try:
+            run = await execute_task_rollback(
+                TaskRollbackRequest(
+                    task_id=task.id,
+                    source=RollbackSource.RUNTIME_RECOVERY,
+                    confirmation_id=f"runtime-recovery:{uuid.uuid4().hex}",
+                    actor="RecoveryHandler",
+                )
+            )
+            rollback = run.outcome
+            self._sync_task(task, run.task)
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: durable workflow persists repair state
+            persisted = db.fetch_one("tasks", task.id)
+            if persisted:
+                self._sync_task(task, Task.model_validate(persisted))
+            if task.status is not TaskPhase.REPAIR_REQUIRED:
+                orchestrator._set_status(
+                    task,
+                    TaskStatus.REPAIR_REQUIRED,
+                    final_summary=(
+                        "Automatic rollback could not be completed safely. "
+                        "Inspect the affected paths and repair them manually."
+                    ),
+                )
+            rollback = {
+                "task_id": task.id,
+                "state": "interrupted",
+                "count": 0,
+                "executed": [],
+                "error": orchestrator._friendly_tool_error(str(exc)),
+            }
         orchestrator.bus.publish_text(
             task.id,
             "RollbackTool",
@@ -252,6 +289,17 @@ class RecoveryHandler:
             task_id=task.id,
         )
         return StepExecutionOutcome("fatal_failed", result)
+
+    @staticmethod
+    def _sync_task(target: Task, source: Task) -> None:
+        # Keep the caller's pre-rollback version token. The outer execution
+        # engine closes ``fatal_failed`` generically; its stale-write guard
+        # must reload this stronger durable terminal instead of downgrading it.
+        target.status = source.status
+        target.phase = source.phase
+        target.execution_stage = source.execution_stage
+        target.metadata = dict(source.metadata)
+        target.final_summary = source.final_summary
 
     def _create_recovery_step(self, failed_step: PlanStep, action: AgentAction) -> PlanStep:
         tool_name = action.tool_name or failed_step.tool_name

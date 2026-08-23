@@ -126,7 +126,32 @@ def test_policy_denies_forbidden_shell_or_secret_tool_call():
     assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
 
 
-def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
+@pytest.mark.parametrize(
+    ("ok", "hidden_output", "reason_fragment"),
+    [
+        (True, {"runtime_health": {"diagnostic": "password LEAK42"}}, "restricted material"),
+        (
+            False,
+            {
+                "content_trust": BROWSER_CONTENT_TRUST,
+                "browser_content_warnings": [BROWSER_CONTENT_PROMPT_INJECTION_WARNING],
+            },
+            "prompt-injection",
+        ),
+    ],
+    ids=["hidden-sensitive-content", "hidden-prompt-injection"],
+)
+def test_policy_reviews_full_tool_result_when_summarizer_hides_unsafe_content(
+    ok: bool,
+    hidden_output: dict[str, object],
+    reason_fragment: str,
+):
+    summary_calls: list[dict[str, object]] = []
+
+    def summarize(output: dict[str, object]) -> str:
+        summary_calls.append(output)
+        return str(output.get("assistant_text") or "completed")
+
     tool = ToolDefinition(
         name="developer.lengrvis_code",
         description="Run a trusted developer subprocess.",
@@ -142,15 +167,16 @@ def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
         effects=["read", "execute_subprocess"],
         resource_kinds=["workspace", "developer_runtime"],
         trust_tier="builtin",
-        result_summary=lambda output: str(output.get("assistant_text") or "completed"),
+        result_summary=summarize,
     )
     result = ToolResult(
         tool_call_id="tool_dev",
-        ok=True,
+        ok=ok,
         output={
             "assistant_text": "Repository inspection completed.",
-            "runtime_health": {"command": ["python", "fake.py"], "token_metadata": "internal key name"},
+            "hidden": hidden_output,
         },
+        error="Developer runtime failed." if not ok else "",
     )
 
     review = PolicyEngine().review_tool_result(
@@ -162,7 +188,9 @@ def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
         tool_definition=tool,
     )
 
-    assert review.verdict == SafetyVerdict.ALLOW
+    assert review.verdict == SafetyVerdict.DENY
+    assert reason_fragment in " ".join(review.reasons)
+    assert summary_calls == []
 
 
 def test_policy_denies_browser_tool_result_with_prompt_injection_warning():

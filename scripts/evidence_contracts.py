@@ -9,6 +9,7 @@ import json
 import hmac
 import os
 import re
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
@@ -63,6 +64,7 @@ EVIDENCE_PRIVATE_KEY_ENV = "LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY"
 EVIDENCE_PUBLIC_KEY_ENV = "LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY"
 EVIDENCE_SIGNATURE_PAYLOAD_VERSION = "reviewed-evidence-ed25519/v3"
 EVIDENCE_SIGNATURE_DOMAIN = b"lengrvis-reviewed-evidence/v3\0"
+UNPADDED_BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SHA256_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 DEFAULT_ARTIFACT_CROSS_CHECK_BINDINGS: tuple[tuple[str, str], ...] = (
     ("candidate.artifact_path", "candidate.artifact_sha256"),
@@ -151,6 +153,90 @@ def load_json(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(payload, dict):
         return None, ["evidence root must be a JSON object"]
     return payload, []
+
+
+def paths_refer_to_same_file(input_path: Path, output_path: Path) -> bool:
+    """Return whether two paths name the same file, including hard links."""
+
+    if input_path.resolve(strict=False) == output_path.resolve(strict=False):
+        return True
+    try:
+        return os.path.samefile(input_path, output_path)
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def write_text_atomically(path: Path, text: str, *, force: bool) -> None:
+    """Publish a complete UTF-8 file without racing an implicit overwrite."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=False,
+    )
+    temporary_path = Path(temporary_name)
+    identity: tuple[int, int] | None = None
+    try:
+        identity = _descriptor_identity(descriptor)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+            if os.name != "nt" and hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o644)
+        if not _path_has_identity(temporary_path, identity):
+            raise OSError("temporary output path identity changed before publication")
+        if force:
+            os.replace(temporary_path, path)
+        elif os.name == "nt":
+            os.rename(temporary_path, path)
+        else:
+            os.link(temporary_path, path, follow_symlinks=False)
+            temporary_path.unlink()
+        _fsync_parent_directory(path.parent)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if identity is not None:
+            _unlink_if_identity_matches(temporary_path, identity)
+        raise
+
+
+def _descriptor_identity(descriptor: int) -> tuple[int, int]:
+    stat = os.fstat(descriptor)
+    return int(stat.st_dev), int(stat.st_ino)
+
+
+def _path_has_identity(path: Path, identity: tuple[int, int]) -> bool:
+    if path.is_symlink():
+        return False
+    try:
+        stat = path.lstat()
+    except (FileNotFoundError, OSError):
+        return False
+    return (int(stat.st_dev), int(stat.st_ino)) == identity
+
+
+def _unlink_if_identity_matches(path: Path, identity: tuple[int, int]) -> None:
+    if not _path_has_identity(path, identity):
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    if os.name == "nt" or not hasattr(os, "O_DIRECTORY"):
+        return
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def get_path(payload: dict[str, Any], dotted_path: str) -> Any:
@@ -503,6 +589,8 @@ def _decode_ed25519_value(value: str, *, expected_length: int, label: str) -> by
     encoded = normalized.removeprefix("ed25519:")
     if not encoded or "=" in encoded:
         raise ValueError(f"{label} must use unpadded base64url encoding")
+    if not UNPADDED_BASE64URL_RE.fullmatch(encoded):
+        raise ValueError(f"{label} is not valid base64url")
     padded = encoded + ("=" * (-len(encoded) % 4))
     try:
         decoded = base64.b64decode(

@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException
 
 from app.api.task_public_views import public_review
+from app.automation.intent_capsule import user_goal_digest
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.core import db
@@ -27,6 +28,7 @@ from app.policy.approval_binding import (
     redacted_preview,
     settings_fingerprint,
 )
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.redaction import redact_public_text
@@ -409,6 +411,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     tool_effects = _remote_input_tool_effects(tool)
     tool_trust_tier = _remote_input_trust_tier(tool)
     dry_run_summary = _remote_input_dry_run_summary(safe_preview)
+    risk_binding = build_effective_risk_binding(review.declared_risk_level or tool.risk_level, [review])
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
@@ -416,7 +419,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         message=review.user_confirmation_message or f"Approve remote desktop input {tool_name}?",
         diff_preview=safe_preview,
         tool_name=tool_name,
-        risk_level=tool.risk_level.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(tool_name, args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(safe_preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
@@ -426,16 +429,24 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         tool_effects=tool_effects,
         resource_kinds=resource_kinds,
         dry_run_summary=dry_run_summary,
-        engineering_boundary=_remote_input_approval_boundary_facts(
-            tool,
-            review,
-            safe_preview,
-            event_type=str(event.get("type") or ""),
-            resource_kinds=resource_kinds,
-            tool_effects=tool_effects,
-            tool_trust_tier=tool_trust_tier,
-            dry_run_summary=dry_run_summary,
-        ),
+        engineering_boundary={
+            **_remote_input_approval_boundary_facts(
+                tool,
+                review,
+                safe_preview,
+                event_type=str(event.get("type") or ""),
+                resource_kinds=resource_kinds,
+                tool_effects=tool_effects,
+                tool_trust_tier=tool_trust_tier,
+                dry_run_summary=dry_run_summary,
+            ),
+            "intent": {
+                "task_id": task.id,
+                "user_goal_digest": user_goal_digest(task.user_goal),
+                "plan_revision": plan.version,
+            },
+            "risk_provenance": risk_binding,
+        },
         source="remote_input",
         source_device_id=str((claims or {}).get("device_id") or ""),
         source_grant_id=str((claims or {}).get("grant_id") or ""),

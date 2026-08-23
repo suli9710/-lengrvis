@@ -20,6 +20,7 @@ from app.core.schemas import (
     MessageType,
     Plan,
     PlanStep,
+    SafetyReview,
     StepStatus,
     Task,
     TaskStatus,
@@ -28,8 +29,9 @@ from app.core.schemas import (
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.permissions import PermissionStore
-from app.policy.risk import RiskLevel
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools.registry import ToolRegistry, register_all_tools
 from app.tools.schemas import ToolDefinition
 
@@ -442,13 +444,23 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
     db.upsert_model("plans", plan)
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     preview: dict[str, Any] = {"ok": True}
+    risk_review = SafetyReview(
+        task_id=task.id,
+        step_id=step.id,
+        target_type="tool_call",
+        verdict=SafetyVerdict.ALLOW,
+        risk_level=RiskLevel.R0_READ_ONLY,
+        declared_risk_level=RiskLevel.R0_READ_ONLY,
+        reasons=["Test fixture binds the approved effective risk."],
+    )
+    risk_binding = build_effective_risk_binding(RiskLevel.R0_READ_ONLY, [risk_review])
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
         message="Approve test.file_probe",
         diff_preview=preview,
         tool_name=step.tool_name,
-        risk_level=RiskLevel.R0_READ_ONLY.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(preview),
         settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
@@ -459,7 +471,8 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
                 "task_id": task.id,
                 "user_goal_digest": user_goal_digest(task.user_goal),
                 "plan_revision": plan.version,
-            }
+            },
+            "risk_provenance": risk_binding,
         },
         status=ApprovalStatus.APPROVED,
     )

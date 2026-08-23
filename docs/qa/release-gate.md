@@ -1,6 +1,6 @@
 # Lengrvis Release Gate
 
-Last reviewed: 2026-06-09
+Last reviewed: 2026-07-31
 
 This release gate turns the end-to-end acceptance matrix into a repeatable decision checklist. It is intentionally split into fast preflight, demo-before-release readiness, artifact verification, and manual sign-off so development builds do not need release artifacts while release candidates still verify the package that will ship.
 
@@ -16,13 +16,36 @@ Beginner evidence map:
 
 | Surface | Helper or preflight output | Strict evidence before a pass claim |
 | --- | --- | --- |
-| Android gate | `npm run android:release-gate -- -PreflightOnly` proves source/config readiness only; `npm run evidence:android-real-device-template` creates a fail-closed evidence JSON starting point only. | Installable QA APK plus sealed, HMAC-signed Android/emulator evidence JSON bound to the immutable candidate; strict `android:release-gate` must see APK install, camera QR or documented emulator scan, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, input approval checks, and artifact redaction. |
+| Android gate | `npm run android:release-gate -- -PreflightOnly` proves source/config readiness only; `npm run evidence:android-real-device-template` creates a fail-closed evidence JSON starting point only. | Installable QA APK plus sealed, Ed25519-signed Android/emulator evidence JSON bound to the immutable candidate; strict `android:release-gate` must see APK install, camera QR or documented emulator scan, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, input approval checks, and artifact redaction. |
 | Real-device/WSS | `npm run evidence:mobile-lan-wss` proves only no-phone prerequisite/config readiness. | Real phone/emulator artifacts for camera QR, approval WSS, remote screen WSS, remote input WSS, explicit Android/emulator certificate trust, revoke/expiry behavior, and screenshot/log review. |
 | Local model | `npm run evidence:local-model-template` is a clean-machine handoff template. | Fresh machine/profile artifact/build/profile plus runtime/model/version/status and install/start/pull/task-smoke outcome, or a precise blocked reason. |
 | IPC / Skill / MCP / settings security | `npm run security:extensions` runs IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests, trusted-key Ed25519 Skill signature verification, release-profile Skill/MCP supply-chain controls, sensitive Settings API server-side enforcement, and writes evidence artifacts. | Candidate profile still needs release-owner review of the generated artifacts and any real third-party Skill/MCP packages or servers before release sign-off. |
 | Distribution install/upgrade | `npm run evidence:distribution-template` creates a fail-closed handoff template only; `npm run evidence:distribution-verify` validates a reviewed evidence JSON. | Clean Windows machine/profile install, signed installer verification, installer hash, upgrade from previous version, rollback to previous version, uninstall, real-device evidence if claimed, reviewer, timestamp, and attached logs. |
 | Diagnostics | `npm run evidence:diagnostics-review` is an external-review checklist template. | Human review of the actual exported diagnostics package contents with package label, reviewed logs/path labels/task traces/model traces/device identifiers, reviewer, timestamp, and sharing decision, then `npm run evidence:diagnostics-verify` against signed `diagnostics-external-review-evidence-reviewed`; keep `public_safe=false` unless a separate approval process explicitly changes it. |
 | RC handoff | `npm run evidence:release` and `npm run evidence:rc-handoff` organize missing evidence and handoff fields. | Candidate commit/build/platform, packaged artifact labels, exact gate commands and full exits, strict-state source, manual P1 evidence, waiver/residual-risk review, and release-owner approval. |
+
+Before uploading the five reviewed JSON files to the immutable review-input bundle, generate an Ed25519 pair with explicit private/public output paths, import the private value into reviewer-only secret storage, and configure the public value as `LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY` for verification. Keep both key files outside the repository and remove the temporary private-key file after the protected-store import is confirmed:
+
+```powershell
+npm run evidence:keypair -- `
+  --private-key-output "$env:TEMP\lengrvis-reviewed-evidence-private.key" `
+  --public-key-output "$env:TEMP\lengrvis-reviewed-evidence-public.key"
+$env:LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-private.key" -Raw
+$env:LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-public.key" -Raw
+```
+
+With both key values and the five immutable candidate environment fields present in the reviewer's protected environment, seal the four non-Android drafts through their artifact-specific verifier entrypoints:
+
+These sealing commands are not a pass and not release sign-off.
+
+```powershell
+npm run evidence:distribution-seal -- --input "<completed distribution draft.json>"
+npm run evidence:clean-machine-seal -- --input "<completed clean-machine draft.json>"
+npm run evidence:result-quality-seal -- --input "<completed result-quality draft.json>"
+npm run evidence:diagnostics-seal -- --input "<completed diagnostics draft.json>"
+```
+
+Each command refuses templates, overwrites only with `--force`, binds the exact candidate identity, emits `reviewed-evidence-ed25519/v3`, and validates the sealed artifact before publishing it atomically. Remove `LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY` from the shell environment after sealing. Candidate, review, and publish workflows must never receive that private key; they verify with the public key only. Sealing records reviewed evidence, not release-owner sign-off.
 
 ## 1. Preflight Gate
 
@@ -101,7 +124,7 @@ $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER = "rc-$($env:LENGRVIS_RELEASE_CANDIDATE_R
 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 = "<controlled release certificate SHA-256>"
 # This creates a fail-closed template, not a pass and not a release sign-off.
 npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk label>" -ArtifactSha256 "<sha256 if known>" -SignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 -BuilderId "<reviewed builder label>" -BuildInvocationId "<reviewed build invocation label>" -BuiltAtUtc "<UTC build timestamp>" -DeviceLabel "<redacted device label>" -BackendBuildLabel "<redacted backend/build label>" -CandidateCommit $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT -CandidateBuildIdentifier $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER -CandidateRepository $env:LENGRVIS_RELEASE_CANDIDATE_REPOSITORY -CandidateRunId $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID -CandidateRunAttempt $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
-# After a reviewer fills every required field, keep the HMAC secret in the protected environment and seal the draft.
+# After a reviewer fills every required field, keep the Ed25519 private key in the protected reviewer environment and seal the draft.
 npm run evidence:android-real-device-seal -- --input "<completed reviewed draft.json>" --output build/android-real-device-evidence-reviewed.json
 npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath build/android-real-device-evidence-reviewed.json -ExpectedSignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 -RequireCandidateBinding
 ```

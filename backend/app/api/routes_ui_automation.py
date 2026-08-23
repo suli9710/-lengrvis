@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter
@@ -10,7 +11,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus, now_iso
 from app.llm.registry import get_effective_settings
-from app.orchestration.direct_tool_execution import execute_direct_tool_journaled
+from app.orchestration.direct_tool_execution import execute_direct_tool_journaled, finalize_unjournaled_direct_result
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
@@ -22,6 +23,13 @@ from app.policy.approval_binding import (
     preview_hmac,
     redacted_preview,
     settings_fingerprint,
+)
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    build_effective_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
 )
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
@@ -62,44 +70,99 @@ def _tool_definition(tool_name: str):
     return tool_registry.get(tool_name)
 
 
+def _execute_reviewed_ui_adapter(
+    tool_name: str,
+    payload: dict[str, Any],
+    executor: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    context = _context()
+    review = _review_tool_call(tool_name, payload, context)
+    if review.verdict == SafetyVerdict.DENY:
+        return _blocked_response(review)
+    if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+        return {
+            "ok": False,
+            "status": "requires_approval",
+            "requires_approval": True,
+            "paused": True,
+            "error": "Current effective risk requires a fresh approval preview.",
+            "review": review.model_dump(mode="json"),
+        }
+    return finalize_unjournaled_direct_result(
+        _tool_definition(tool_name),
+        executor(payload, context),
+        context,
+        risk_level=review.risk_level,
+        task_id="direct_ui_automation_api",
+    )
+
+
 @router.get("/ui-automation/active-window")
 def active_window():
-    return ui_automation_tools.active_window({}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.active_window",
+        {},
+        ui_automation_tools.active_window,
+    )
 
 
 @router.post("/ui-automation/observe")
 def observe(payload: dict | None = None):
-    return ui_automation_tools.observe(payload or {}, _context())
+    return _execute_reviewed_ui_adapter("ui_automation.observe", payload or {}, ui_automation_tools.observe)
 
 
 @router.post("/ui-automation/find-element")
 def find_element(payload: dict | None = None):
-    return ui_automation_tools.find_element(payload or {}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.find_element",
+        payload or {},
+        ui_automation_tools.find_element,
+    )
 
 
 @router.post("/ui-automation/wait-for-element")
 def wait_for_element(payload: dict | None = None):
-    return ui_automation_tools.wait_for_element(payload or {}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.wait_for_element",
+        payload or {},
+        ui_automation_tools.wait_for_element,
+    )
 
 
 @router.get("/ui-automation/windows")
 def list_windows():
-    return ui_automation_tools.list_windows({}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.list_windows",
+        {},
+        ui_automation_tools.list_windows,
+    )
 
 
 @router.post("/ui-automation/screenshot")
 def screenshot(payload: dict | None = None):
-    return ui_automation_tools.screenshot(payload or {}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.screenshot",
+        payload or {},
+        ui_automation_tools.screenshot,
+    )
 
 
 @router.post("/ui-automation/property")
 def get_property(payload: dict | None = None):
-    return ui_automation_tools.get_property(payload or {}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.get_property",
+        payload or {},
+        ui_automation_tools.get_property,
+    )
 
 
 @router.post("/ui-automation/children")
 def get_children(payload: dict | None = None):
-    return ui_automation_tools.get_children(payload or {}, _context())
+    return _execute_reviewed_ui_adapter(
+        "ui_automation.get_children",
+        payload or {},
+        ui_automation_tools.get_children,
+    )
 
 
 @router.post("/ui-automation/action")
@@ -115,14 +178,38 @@ def action(payload: dict | None = None):
         }
     context = _context()
     tool = _tool_definition(tool_name)
+    review = _review_tool_call(tool_name, payload, context)
+    if review.verdict == SafetyVerdict.DENY:
+        record_approval_gate(tool_name, decision="denied", stage="route_review")
+        return _blocked_response(review)
     if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
-        return tool.execute(payload, context)
+        if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+            record_approval_gate(tool_name, decision="required", stage="route_review")
+            return {
+                "ok": False,
+                "status": "requires_approval",
+                "requires_approval": True,
+                "paused": True,
+                "error": "Current effective risk requires a fresh approval preview.",
+                "review": review.model_dump(mode="json"),
+            }
+        return finalize_unjournaled_direct_result(
+            tool,
+            tool.execute(payload, context),
+            context,
+            risk_level=review.risk_level,
+            task_id="direct_ui_automation_api",
+        )
     if ui_automation_tools.is_dry_run(payload):
-        review = _review_tool_call(tool_name, payload, context)
-        if review.verdict == SafetyVerdict.DENY:
-            record_approval_gate(tool_name, decision="denied", stage="route_review")
-            return _blocked_response(review)
-        preview = tool.execute({**payload, "dry_run": True}, context)
+        preview = finalize_unjournaled_direct_result(
+            tool,
+            tool.execute({**payload, "dry_run": True}, context),
+            context,
+            risk_level=review.risk_level,
+            task_id="direct_ui_automation_api",
+        )
+        if preview.get("withheld") is True:
+            return preview
         if not preview.get("ok") or preview.get("dry_run") is not True:
             return {
                 "ok": False,
@@ -226,18 +313,20 @@ def _create_action_approval(
     )
     db.upsert_model("plans", plan)
     safe_preview = binding_preview(preview)
+    risk_binding = build_effective_risk_binding(review.declared_risk_level or tool.risk_level, [review])
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
         message=review.user_confirmation_message or f"Approve GUI automation action {tool_name}?",
         diff_preview=safe_preview,
         tool_name=tool_name,
-        risk_level=tool.risk_level.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(tool_name, step.args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(safe_preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version=getattr(tool, "tool_version", "1"),
+        engineering_boundary={"risk_provenance": risk_binding},
     )
     db.upsert_model("approvals", approval)
     publish_approval_created(approval)
@@ -282,6 +371,7 @@ def _claim_valid_gui_approval(
     approval = Approval.model_validate(data)
     binding_error = _approval_binding_error(approval, tool_name, payload, context, allow_consumed=False)
     if binding_error:
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), binding_error)
         return {"ok": False, "status": "denied", "error": binding_error}
     resource_error = _approval_resource_state_error(approval, tool_name, payload, context)
     if resource_error:
@@ -300,6 +390,7 @@ def _claim_valid_gui_approval(
         return {"ok": False, "status": "denied", "error": binding_error}
     expected_state = (claimed_approval.diff_preview or {}).get("_resource_state")
     context["_expected_resource_state"] = expected_state if isinstance(expected_state, list) else []
+    context["effective_risk_binding"] = dict(approval_risk_binding(claimed_approval) or {})
     return None
 
 
@@ -356,8 +447,20 @@ def _approval_binding_error(
         return f"GUI automation approval lacks binding metadata: {', '.join(missing)}."
     if approval.tool_name != tool_name:
         return "GUI automation approval tool name does not match this route."
-    if approval.risk_level and approval.risk_level != tool.risk_level.value:
-        return "GUI automation approval risk level does not match this tool."
+    current_context = risk_revalidation_context(context, task_id=approval.task_id)
+    current_review = _review_tool_call(tool_name, _approval_args(payload), current_context)
+    current_declared = current_review.declared_risk_level or tool.risk_level
+    risk_binding = approval_risk_binding(approval)
+    risk_error = effective_risk_binding_error(
+        risk_binding,
+        current_declared_risk=current_declared,
+        approval_risk_level=approval.risk_level,
+    )
+    if risk_error:
+        return risk_error
+    refreshed_error = refreshed_effective_risk_error(risk_binding, current_review)
+    if refreshed_error:
+        return refreshed_error
     if approval.tool_version != getattr(tool, "tool_version", "1"):
         return "GUI automation approval tool version does not match this tool."
     expected_args = args_binding_hmac(

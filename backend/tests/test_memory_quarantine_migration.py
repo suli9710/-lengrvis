@@ -73,7 +73,7 @@ def test_memory_quarantine_migration_backfills_legacy_and_malformed_rows() -> No
     )
 
     try:
-        assert db_migrations.apply_schema_migrations(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert db_migrations.apply_schema_migrations(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         normalized = {
             row["memory_id"]: row
             for row in conn.execute("SELECT * FROM memory_quarantine ORDER BY memory_id").fetchall()
@@ -107,10 +107,11 @@ def test_memory_quarantine_migration_backfills_legacy_and_malformed_rows() -> No
         assert namespaces["mem_user"]["version"] == 3
         assert namespaces["mem_user"]["conflict_status"] == "resolved"
         assert namespaces["mem_malformed"]["principal_id"] == "local-user"
-        assert [(row["version"], row["name"]) for row in migrations][-3:] == [
+        assert [(row["version"], row["name"]) for row in migrations][-4:] == [
             (7, "sensitive_record_integrity_foundation"),
             (8, "sensitive_integrity_bootstrap_anchor"),
             (9, "task_denied_phase_backfill"),
+            (10, "task_denied_phase_reconcile"),
         ]
 
         state_index = conn.execute('PRAGMA index_info("idx_memory_quarantine_state_expiry")').fetchall()

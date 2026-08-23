@@ -38,6 +38,12 @@ from app.policy.approval_binding import (
     preview_hmac,
     settings_fingerprint,
 )
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
+)
 from app.policy.permissions import PermissionStore
 from app.policy.redaction import redact_audit_payload, redact_public_text
 
@@ -376,6 +382,16 @@ class StepExecutionHandler:
 
         runtime = self._runtime_context_for_step(task, step)
         self._bind_automation_authorization_context(runtime, plan)
+        risk_binding = approval_risk_binding(approval)
+        if risk_binding is None:
+            return self._deny_approved_step(
+                task,
+                plan,
+                step,
+                approval,
+                "Approval lacks effective risk binding metadata; a fresh preview is required.",
+            )
+        runtime.extra_context["effective_risk_binding"] = dict(risk_binding)
         provenance_error = self._bind_approved_content_provenance(runtime, approval, step.args, task.id)
         if provenance_error:
             return self._deny_approved_step(task, plan, step, approval, provenance_error)
@@ -589,8 +605,30 @@ class StepExecutionHandler:
         runtime = self._runtime_context_for_step(task, step)
         if approval.tool_name != step.tool_name:
             return "Approved tool name does not match current plan step."
-        if approval.risk_level and approval.risk_level != tool.risk_level.value:
-            return "Approved risk level does not match current tool risk."
+        review_context = risk_revalidation_context(runtime.tool_context(), task_id=task.id)
+        review_context.update({"task_id": task.id, "step_id": step.id})
+        current_review = self.tool_runtime._review_tool_call(  # noqa: SLF001 - shared execution-boundary review.
+            self.orchestrator.safety,
+            task.id,
+            step.id,
+            step.tool_name,
+            step.args,
+            tool.risk_level,
+            context=review_context,
+            tool_definition=tool,
+        )
+        current_declared = current_review.declared_risk_level or tool.risk_level
+        risk_binding = approval_risk_binding(approval)
+        risk_error = effective_risk_binding_error(
+            risk_binding,
+            current_declared_risk=current_declared,
+            approval_risk_level=approval.risk_level,
+        )
+        if risk_error:
+            return risk_error
+        refreshed_error = refreshed_effective_risk_error(risk_binding, current_review)
+        if refreshed_error:
+            return refreshed_error
         if approval.tool_version != getattr(tool, "tool_version", "1"):
             return "Approved tool version does not match current tool definition."
         boundary = approval.engineering_boundary if isinstance(approval.engineering_boundary, dict) else {}

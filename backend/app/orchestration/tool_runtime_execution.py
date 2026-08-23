@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -13,6 +15,7 @@ from app.orchestration.resource_state import (
     attach_dry_run_resource_state,
     capture_tool_resource_state,
     remember_read_states_for_tool,
+    resource_states,
     validate_write_preconditions,
 )
 from app.orchestration.tool_runtime_paths import ensure_authorized_paths, is_write_tool, write_lock_keys
@@ -30,6 +33,70 @@ _SHARED_PATH_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, async
 _SHARED_PENDING_TOOL_COMPLETIONS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Future[Any]]] = (
     WeakKeyDictionary()
 )
+_RESERVED_TOOL_RESULT_CONTROL_KEYS = frozenset(
+    {
+        "artifact_cleanup_pending",
+        "artifact_cleanup_required",
+        "artifact_sha256",
+        "artifact_size_bytes",
+        "automatic_replay_blocked",
+        "full_result_review_completed",
+        "outcome_unknown",
+        "persisted_result",
+        "post_tool_review_id",
+        "post_tool_review_verdict",
+        "review_pending",
+        "withheld",
+    }
+)
+
+
+class _RuntimeOwnedToolOutput(dict[str, Any]):
+    """Internal output whose journal controls were produced by this runtime."""
+
+
+def _shared_path_locks_for_current_loop() -> dict[str, asyncio.Lock]:
+    loop = asyncio.get_running_loop()
+    locks = _SHARED_PATH_LOCKS.get(loop)
+    if locks is None:
+        locks = {}
+        _SHARED_PATH_LOCKS[loop] = locks
+    return locks
+
+
+def _shared_pending_completions_for_current_loop() -> dict[str, asyncio.Future[Any]]:
+    loop = asyncio.get_running_loop()
+    pending = _SHARED_PENDING_TOOL_COMPLETIONS.get(loop)
+    if pending is None:
+        pending = {}
+        _SHARED_PENDING_TOOL_COMPLETIONS[loop] = pending
+    return pending
+
+
+async def _await_shared_pending_completions(lock_keys: tuple[str, ...]) -> None:
+    while True:
+        pending = _shared_pending_completions_for_current_loop()
+        waits = {future for key in lock_keys if (future := pending.get(key)) is not None and not future.done()}
+        if not waits:
+            return
+        await asyncio.gather(*(asyncio.shield(future) for future in waits), return_exceptions=True)
+
+
+@asynccontextmanager
+async def hold_shared_path_locks(lock_keys: Iterable[str]) -> AsyncIterator[None]:
+    """Serialize rollback and ordinary tool mutations on the same paths."""
+
+    keys = tuple(sorted({str(key) for key in lock_keys if str(key)}))
+    if not keys:
+        yield
+        return
+    await _await_shared_pending_completions(keys)
+    shared = _shared_path_locks_for_current_loop()
+    async with AsyncExitStack() as stack:
+        for key in keys:
+            await stack.enter_async_context(shared.setdefault(key, asyncio.Lock()))
+        await _await_shared_pending_completions(keys)
+        yield
 
 
 class ToolRuntimeExecutionMixin:
@@ -41,11 +108,19 @@ class ToolRuntimeExecutionMixin:
         context: dict[str, Any],
         *,
         threaded: bool = False,
+        post_execute: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         ensure_authorized_paths(tool, args, context)
         lock_keys = write_lock_keys(tool, args)
         if not lock_keys:
-            output = await self._execute_tool_body(tool, args, context, threaded=threaded, lock_keys=())
+            output = await self._execute_tool_body(
+                tool,
+                args,
+                context,
+                threaded=threaded,
+                lock_keys=(),
+                post_execute=post_execute,
+            )
             return self._normalize_tool_output(tool, args, context, output)
         await self._await_pending_tool_completions(lock_keys, tool=tool)
         path_locks = self._locks_for_current_loop()
@@ -57,6 +132,7 @@ class ToolRuntimeExecutionMixin:
             locks,
             lock_keys=lock_keys,
             threaded=threaded,
+            post_execute=post_execute,
         )
         return self._normalize_tool_output(tool, args, context, output)
 
@@ -67,8 +143,21 @@ class ToolRuntimeExecutionMixin:
         context: dict[str, Any],
         output: dict[str, Any],
     ) -> dict[str, Any]:
+        runtime_owned = type(output) is _RuntimeOwnedToolOutput
         if not isinstance(output, dict):
             output = {"result": output}
+        elif runtime_owned:
+            output = dict(output)
+        else:
+            reserved = sorted(_RESERVED_TOOL_RESULT_CONTROL_KEYS.intersection(output))
+            if reserved:
+                output = {key: value for key, value in output.items() if key not in reserved}
+                record(
+                    "tool.reserved_result_control_ignored",
+                    "ToolRuntime",
+                    {"tool": tool.name, "keys": reserved},
+                    task_id=str(context.get("task_id") or "") or None,
+                )
         attach_dry_run_resource_state(output, tool, args, context)
         remember_read_states_for_tool(tool, args, output, context)
         return output
@@ -82,10 +171,18 @@ class ToolRuntimeExecutionMixin:
         *,
         lock_keys: list[str],
         threaded: bool = False,
+        post_execute: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if not locks:
             await self._await_pending_tool_completions(lock_keys, tool=tool)
-            return await self._execute_tool_body(tool, args, context, threaded=threaded, lock_keys=lock_keys)
+            return await self._execute_tool_body(
+                tool,
+                args,
+                context,
+                threaded=threaded,
+                lock_keys=lock_keys,
+                post_execute=post_execute,
+            )
         async with locks[0]:
             return await self._execute_tool_under_locks(
                 tool,
@@ -94,6 +191,7 @@ class ToolRuntimeExecutionMixin:
                 locks[1:],
                 lock_keys=lock_keys,
                 threaded=threaded,
+                post_execute=post_execute,
             )
 
     async def _execute_tool_body(
@@ -104,6 +202,7 @@ class ToolRuntimeExecutionMixin:
         *,
         threaded: bool,
         lock_keys: list[str] | tuple[str, ...] = (),
+        post_execute: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         current_state = capture_tool_resource_state(tool, args, context)
         if current_state:
@@ -124,7 +223,17 @@ class ToolRuntimeExecutionMixin:
         except RuntimeError as exc:
             return {"error": str(exc), "resource_exhausted": True, "retry_after_pending_completion": True}
         try:
-            return await asyncio.wait_for(asyncio.shield(worker.future), timeout=timeout)
+            output = await asyncio.wait_for(asyncio.shield(worker.future), timeout=timeout)
+            if post_execute is not None:
+                post_execute()
+            if is_write_tool(tool) and args.get("dry_run") is not True:
+                trusted_paths = [
+                    state["path"]
+                    for state in current_state
+                    if isinstance(state, dict) and isinstance(state.get("path"), str) and state["path"]
+                ]
+                context["_resource_state_after"] = resource_states(trusted_paths) if trusted_paths else []
+            return output
         except TimeoutError:
             self._remember_pending_tool_completion(lock_keys, worker.future, tool=tool, reason="timeout")
             pending_completion = bool(lock_keys and not worker.future.done())
@@ -148,7 +257,7 @@ class ToolRuntimeExecutionMixin:
                         "automatic_replay_blocked": True,
                     }
                 )
-            return result
+            return _RuntimeOwnedToolOutput(result)
         except asyncio.CancelledError:
             self._abort_tool_worker(worker, tool=tool, context=context)
             raise
@@ -291,17 +400,7 @@ class ToolRuntimeExecutionMixin:
         return _DEFAULT_TOOL_TIMEOUT_SECONDS
 
     def _locks_for_current_loop(self) -> dict[str, asyncio.Lock]:
-        loop = asyncio.get_running_loop()
-        locks = _SHARED_PATH_LOCKS.get(loop)
-        if locks is None:
-            locks = {}
-            _SHARED_PATH_LOCKS[loop] = locks
-        return locks
+        return _shared_path_locks_for_current_loop()
 
     def _pending_tool_completions_for_current_loop(self) -> dict[str, asyncio.Future[Any]]:
-        loop = asyncio.get_running_loop()
-        pending = _SHARED_PENDING_TOOL_COMPLETIONS.get(loop)
-        if pending is None:
-            pending = {}
-            _SHARED_PENDING_TOOL_COMPLETIONS[loop] = pending
-        return pending
+        return _shared_pending_completions_for_current_loop()

@@ -962,6 +962,14 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="3",
         diff_preview=preview,
+        engineering_boundary={
+            "risk_provenance": {
+                "version": "effective-risk/v1",
+                "declared_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+                "effective_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+                "review_id": "review_00000000000000000000000000000000",
+            }
+        },
     )
     payload["approval_id"] = approval.id
     approval.args_binding_hmac = args_binding_hmac(
@@ -1038,6 +1046,14 @@ def test_ui_automation_api_expires_approval_when_target_state_changes(monkeypatc
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="3",
         diff_preview=preview,
+        engineering_boundary={
+            "risk_provenance": {
+                "version": "effective-risk/v1",
+                "declared_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+                "effective_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+                "review_id": "review_00000000000000000000000000000000",
+            }
+        },
     )
     payload["approval_id"] = approval.id
     approval.args_binding_hmac = args_binding_hmac(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,17 @@ from app.api import routes_approvals, routes_runtime
 from app.automation.intent_capsule import user_goal_digest
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import (
+    AgentAction,
+    Approval,
+    ApprovalStatus,
+    Plan,
+    PlanStep,
+    StepStatus,
+    Task,
+    TaskStatus,
+    ToolCall,
+)
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.approval_binding import (
@@ -32,6 +43,7 @@ from app.policy.approval_binding import (
 )
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.security import native_confirmation as native_confirmation_security
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
 from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_ID_HEADER,
@@ -39,6 +51,7 @@ from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_SECRET_ENV,
     NATIVE_CONFIRMATION_SIGNATURE_HEADER,
     NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    create_native_confirmation_challenge,
     require_native_confirmation,
 )
 from app.services import mobile_pairing_service
@@ -86,7 +99,13 @@ def _intent_boundary(task: Task, plan: Plan) -> dict[str, Any]:
             "task_id": task.id,
             "user_goal_digest": user_goal_digest(task.user_goal),
             "plan_revision": plan.version,
-        }
+        },
+        "risk_provenance": {
+            "version": "effective-risk/v1",
+            "declared_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+            "effective_risk_level": RiskLevel.R2_REVERSIBLE_MODIFY.value,
+            "review_id": "review_00000000000000000000000000000000",
+        },
     }
 
 
@@ -194,6 +213,46 @@ def test_bound_approval_executes_once_and_marks_consumed():
 
     assert calls and calls[0]["approved"] is True
     assert refreshed.consumed_at
+
+
+def test_approval_resume_expires_without_execution_when_latest_failure_raises_risk():
+    orchestrator, task, plan, _step, approval, calls = _setup_bound_approval()
+    plan.steps.append(
+        PlanStep(
+            task_id=task.id,
+            order=2,
+            agent_name="FileAgent",
+            tool_name="test.bound_write",
+            description="prior failed operation",
+            risk_level=RiskLevel.R0_READ_ONLY,
+            status=StepStatus.FAILED,
+        )
+    )
+    db.upsert_model("plans", plan)
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+
+    refreshed = db.fetch_one("approvals", approval.id)
+    assert calls == []
+    assert refreshed["status"] == ApprovalStatus.EXPIRED.value
+    assert refreshed["consumed_at"] is None
+    assert "higher than the approved risk" in refreshed["expired_reason"]
+
+
+def test_approval_resume_keeps_approved_higher_risk_when_current_risk_decreases():
+    orchestrator, task, _plan, _step, approval, calls = _setup_bound_approval()
+    approval.risk_level = RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value
+    approval.engineering_boundary["risk_provenance"]["effective_risk_level"] = RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+
+    rows = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10)
+    call = ToolCall.model_validate(next(row for row in rows if row["approval_id"] == approval.id))
+    assert calls
+    assert call.risk_level == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+    assert call.declared_risk_level == RiskLevel.R2_REVERSIBLE_MODIFY
+    assert call.risk_binding_version == "effective-risk/v1"
 
 
 def test_approval_for_execution_preserves_mobile_claim_denial_reason():
@@ -386,7 +445,8 @@ def test_native_confirmation_challenge_binds_decision_endpoint(
         )
     )
     monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
-    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
 
     app = FastAPI()
     app.include_router(routes_approvals.router, prefix="/api")
@@ -406,9 +466,11 @@ def test_native_confirmation_challenge_binds_decision_endpoint(
             NATIVE_CONFIRMATION_SIGNATURE_HEADER: _b64url(signature),
         }
         wrong_endpoint = client.post(f"/api/approvals/{approval.id}/reject", headers=headers)
+        correct_endpoint = client.post(f"/api/approvals/{approval.id}/approve", headers=headers)
 
     assert wrong_endpoint.status_code == 403
-    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+    assert correct_endpoint.status_code == 200, correct_endpoint.text
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.APPROVED
 
 
 def test_native_confirmation_challenge_rejects_malformed_signature(
@@ -422,7 +484,8 @@ def test_native_confirmation_challenge_rejects_malformed_signature(
         )
     )
     monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
-    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
 
     app = FastAPI()
     app.include_router(routes_approvals.router, prefix="/api")
@@ -440,10 +503,113 @@ def test_native_confirmation_challenge_rejects_malformed_signature(
             NATIVE_CONFIRMATION_SIGNATURE_HEADER: "a",
         }
         response = client.post(f"/api/approvals/{approval.id}/approve", headers=malformed)
+        valid_signature = private_key.sign(str(challenge["signing_payload"]).encode("utf-8"))
+        valid = {
+            NATIVE_CONFIRMATION_ID_HEADER: str(challenge["confirmation_id"]),
+            NATIVE_CONFIRMATION_TIMESTAMP_HEADER: str(challenge["expires_at_epoch"]),
+            NATIVE_CONFIRMATION_SIGNATURE_HEADER: _b64url(valid_signature),
+        }
+        retry = client.post(f"/api/approvals/{approval.id}/approve", headers=valid)
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Native confirmation proof is invalid."
-    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+    assert retry.status_code == 200, retry.text
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.APPROVED
+
+
+def test_native_confirmation_challenge_same_proof_has_one_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    challenge = create_native_confirmation_challenge(
+        action="approve",
+        endpoint="/api/approvals/concurrent/approve",
+        approval_id="approval-concurrent",
+        preview_hmac="preview-concurrent",
+    )
+    signature = _b64url(private_key.sign(str(challenge["signing_payload"]).encode("utf-8")))
+
+    def attempt() -> tuple[str, dict | tuple[int, str]]:
+        try:
+            return (
+                "ok",
+                require_native_confirmation(
+                    action="approve",
+                    endpoint="/api/approvals/concurrent/approve",
+                    approval_id="approval-concurrent",
+                    confirmation_id=str(challenge["confirmation_id"]),
+                    timestamp=str(challenge["expires_at_epoch"]),
+                    signature=signature,
+                    preview_hmac="preview-concurrent",
+                ),
+            )
+        except HTTPException as exc:
+            return ("error", (exc.status_code, str(exc.detail)))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [future.result() for future in (executor.submit(attempt), executor.submit(attempt))]
+
+    successes = [result for result in results if result[0] == "ok"]
+    failures = [result for result in results if result[0] == "error"]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0][1] == (403, "Native confirmation challenge is invalid or already used.")
+
+
+def test_native_confirmation_consume_rechecks_expiry_under_write_lock() -> None:
+    challenge = create_native_confirmation_challenge(
+        action="approve",
+        endpoint="/api/approvals/expired/approve",
+        approval_id="approval-expired",
+        now=1,
+    )
+    stored = native_confirmation_security._load_stored_challenge(str(challenge["confirmation_id"]))
+
+    assert stored is not None
+    assert not native_confirmation_security._consume_stored_challenge(stored)
+    assert native_confirmation_security._load_stored_challenge(stored.confirmation_id) is not None
+
+
+def test_native_confirmation_challenge_preserves_preview_mismatch_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    challenge = create_native_confirmation_challenge(
+        action="approve",
+        endpoint="/api/approvals/preview-retry/approve",
+        approval_id="approval-preview-retry",
+        preview_hmac="preview-current",
+    )
+    proof = {
+        "action": "approve",
+        "endpoint": "/api/approvals/preview-retry/approve",
+        "approval_id": "approval-preview-retry",
+        "confirmation_id": str(challenge["confirmation_id"]),
+        "timestamp": str(challenge["expires_at_epoch"]),
+        "signature": _b64url(private_key.sign(str(challenge["signing_payload"]).encode("utf-8"))),
+    }
+
+    with pytest.raises(HTTPException) as invalid:
+        require_native_confirmation(**proof, preview_hmac="preview-stale")
+
+    assert invalid.value.status_code == 403
+    assert invalid.value.detail == "Native confirmation preview changed."
+    confirmed = require_native_confirmation(**proof, preview_hmac="preview-current")
+    assert confirmed["confirmation_id"] == challenge["confirmation_id"]
 
 
 def test_native_confirmation_challenge_binds_current_preview_hmac(

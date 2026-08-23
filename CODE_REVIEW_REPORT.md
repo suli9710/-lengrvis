@@ -351,3 +351,32 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 
 - `.github/CODEOWNERS` 仍为单一 owner；这是人员与审批治理配置，不能在未知真实 reviewer 身份时由代码审查擅自改写。
 - Clean-machine、Android 真机、人工结果质量与 release-owner sign-off 等 P0 evidence 仍应由真实候选构建和人工/设备流程完成；不能用本地自动化测试冒充。
+
+---
+
+## 修复记录 · 批 7（2026-08-24）
+
+| 编号 | 修复 | 主要改动 | 回归测试 |
+|---|---|---|---|
+| B7-1 | 工具结果与启动恢复 fail-closed | 启动恢复改为任务级 `execution_recovery/v1` 聚合；`outcome_unknown`、cleanup 失败和回滚中断优先于 durable denial，任务保持 `REPAIR_REQUIRED`。所有大小的可恢复结果都要求根级 runtime review 完成、非空 review ID 与 `allow` verdict；缺失或篡改即隔离并阻止重放。artifact cleanup 成功归一为永久 quarantine stub，失败只保留单一 cleanup-required 状态，重复启动不重复写库、审计或删除 | unknown + DENY cleanup、多次启动幂等、未审查小结果、cleanup 中断、artifact 篡改与恢复组合测试 |
+| B7-2 | `rollback-evidence/v2` 可信绑定 | 可信路径集合只来自执行前参数、工具定义或 resolver；插件输出不能事后扩展。sanitizer 逐动作核验执行前后状态、摘要、路径边界与大小，创建/移动/备份必须满足真实状态转换；旧版、未知/多主动作、缺前态或不完整证据统一生成 blocker，整批零文件副作用。旧 committed/created 调用保守进入 inventory，稳定 journal hash 避免成功回滚后误判 | rollback evidence、inventory、claim/lease、heartbeat、共享路径锁与中断恢复组合 `160 passed, 3 skipped` |
+| B7-3 | 共享回滚工作流与永久中断态 | Native Confirmation 与自动恢复复用同一 claim/lease/锁/执行/finalize 工作流；执行中异常、lease 丢失或 finalize CAS 丢失持久化为 `interrupted` 并转 `REPAIR_REQUIRED`，永久阻止自动重试。文件写与回滚共享粗粒度 filesystem barrier，应用内并发路径闭合 | task rollback claim/workflow、状态机与 recovery 故障注入全通过 |
+| B7-4 | `effective-risk/v1` 全链路贯通 | PolicyEngine 在权限硬拒绝后、任何 allow/approval/cache/fast-path 前只计算一次动态风险；权限、动态风险与 cache bucket 使用同一服务端时间快照。Approval 保存有效风险与 provenance，R2 TTL 10 分钟、R3 TTL 5 分钟；ToolCall 保存 declared/effective risk 与 review 绑定。自动、人工恢复、developer、browser、UI、direct 与 remote-input 均复核统一绑定；风险升高原子过期旧审批，降低仍按已批准的较高风险执行，R3 移动端 claim 同事务验证 biometric | 核心风险/执行组合 `271 passed`；remote-input 与审批邻接回归 `281 passed`，claim 竞态与 22:00 时间边界 10 项通过 |
+| B7-5 | Direct 与 Developer 结果边界 | Browser/UI direct execution 复用控制字段剥离、pending stub、完整 post-tool review、结果预算、回滚证据清洗与 replay validator。PolicyEngine 始终审查完整 `ToolResult.output`，不再信任工具 summary；Developer 只从已审查、预算后的结果重建公开输出，失败状态不能被 payload 伪造成成功。取消结果仅在完整 ALLOW 绑定和双层取消标记一致时恢复常量化最小语义，不重水化诊断内容 | direct/developer 安全回归 68 项；Developer/Lengrvis runner 58 项；Runs API cancel 7 项及原场景连续 5 次通过 |
+| B7-6 | Windows 大结果 artifact 路径 | 大结果 canonical 文件名改为 domain-separated SHA-256 绑定的 `r-<32hex>.json`，避免完整 tool name 把 Win32 路径推到 260 字符；保留 exclusive create、canonical-only replay validator，并精确兼容旧命名 cleanup；软链或非普通文件 fail-closed | 新增长目录、400 字符工具名、身份绑定、exclusive create、旧格式拒绝/清理 5 项；ToolRuntime/Journal 组合 `142 passed` |
+
+### 批 7 验证
+
+- Backend 最终全量：`4133 passed, 15 skipped`（10 分 28 秒，Windows）。
+- 发布/证据专项：`148 passed`；DENIED/审批确认专项：`121 passed`；启动脚本：`119 passed`。
+- Desktop：typecheck、`96 files / 422 tests`、production renderer build 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
+- Mobile：typecheck 与 task-companion smoke 全通过。
+- Changed-file Ruff/format（84 个 Python 文件）、`git diff --check`、异常边界门禁、依赖哈希锁、repo hygiene、secret scan 与 agentic threat model 全通过。
+- Maintainability gate 通过：P95 `799/800`，Backend 最大文件 1398 行（阈值 1400）。
+
+### 剩余风险与外部条件
+
+- 应用内文件写与回滚已由共享路径锁闭合；外部进程仍可能在状态比较与路径操作之间抢写。彻底消除这类跨进程 TOCTOU 需要后续 native handle-bound 重构。
+- 未纳入 task journal 的 direct 路由没有 durable replay 记录；由于缺少可信执行前后状态，这些路径已统一阻止自动回滚并转人工修复，而不是猜测性补偿。
+- Maintainability P95 已到 `799/800`，余量很窄；后续新增共享执行逻辑应优先继续拆分，而不是扩大豁免。
+- `.github/CODEOWNERS` 的真实多人治理，以及 Android 真机、clean-machine、人工结果质量与 release-owner sign-off 等发布证据仍是外部上线条件；本次审查不伪造人员、设备或人工证据。

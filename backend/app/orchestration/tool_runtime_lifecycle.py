@@ -25,11 +25,16 @@ from app.core.schemas import (
 )
 from app.orchestration.resource_state import (
     ResourceStateError,
-    capture_tool_resource_state,
 )
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
-from app.orchestration.tool_execution_journal import build_tool_execution_key, reserve_prepared_tool_call
+from app.orchestration.tool_execution_journal import (
+    build_tool_execution_intent_key,
+    build_tool_execution_key,
+    normalize_tool_execution_risk_binding,
+    reserve_prepared_tool_call,
+    tool_call_risk_binding,
+)
 from app.orchestration.tool_runtime_paths import (
     is_write_tool,
 )
@@ -39,9 +44,12 @@ from app.orchestration.tool_runtime_support import (
     _exception_error_text,
     _message_safe_text,
     _message_safe_tool_result,
+    _sanitize_tool_rollback_evidence,
 )
+from app.policy.effective_risk_binding import EFFECTIVE_RISK_BINDING_VERSION
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.redaction import redact_value
+from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -60,13 +68,32 @@ class ToolRuntimeLifecycleMixin:
     ) -> tuple[ToolCall, bool]:
         orchestrator = self.orchestrator
         safe_args = self._redact_tool_args(args, tool)
+        risk_binding = runtime.extra_context.get("effective_risk_binding")
+        if not isinstance(risk_binding, dict):
+            raise ValueError("Tool execution lacks an effective risk review binding.")
+        normalized_risk_binding = normalize_tool_execution_risk_binding(risk_binding)
+        if normalized_risk_binding["version"] != EFFECTIVE_RISK_BINDING_VERSION:
+            raise ValueError("Tool execution effective risk binding version is invalid.")
         plan_revision = int(runtime.extra_context.get("plan_revision") or 0)
+        execution_intent_key = build_tool_execution_intent_key(
+            task=task,
+            step_id=step.id,
+            tool_name=step.tool_name,
+            tool_version=str(getattr(tool, "tool_version", "1") or "1"),
+            args=args,
+            plan_revision=plan_revision,
+            approval_id=approval_id,
+        )
         call = ToolCall(
             task_id=task.id,
             step_id=step.id,
             tool_name=step.tool_name,
             args=safe_args,
-            risk_level=tool.risk_level,
+            risk_level=RiskLevel(normalized_risk_binding["effective_risk_level"]),
+            declared_risk_level=RiskLevel(normalized_risk_binding["declared_risk_level"]),
+            risk_review_id=normalized_risk_binding["review_id"],
+            risk_binding_version=normalized_risk_binding["version"],
+            execution_intent_key=execution_intent_key,
             execution_key=build_tool_execution_key(
                 task=task,
                 step_id=step.id,
@@ -75,6 +102,7 @@ class ToolRuntimeLifecycleMixin:
                 args=args,
                 plan_revision=plan_revision,
                 approval_id=approval_id,
+                risk_binding=normalized_risk_binding,
             ),
             plan_revision=plan_revision,
             approval_id=approval_id or "",
@@ -82,6 +110,7 @@ class ToolRuntimeLifecycleMixin:
             dry_run=False,
         )
         call, created = reserve_prepared_tool_call(call)
+        runtime.extra_context["effective_risk_binding"] = tool_call_risk_binding(call)
         if not created:
             return call, False
         safe_call_payload = call.model_dump()
@@ -142,10 +171,17 @@ class ToolRuntimeLifecycleMixin:
                 args,
                 tool_context,
                 threaded=threaded_tools,
+                post_execute=lambda: self._run_lifecycle_hook(
+                    tool.post_execute,
+                    tool,
+                    args,
+                    tool_context,
+                    task_id=task.id,
+                    step_id=step.id,
+                ),
             )
             before_resource_state = list(tool_context.get("_resource_state_before") or [])
             self._attach_execution_resource_state(tool, args, tool_context, output, before_resource_state)
-            self._run_lifecycle_hook(tool.post_execute, tool, args, tool_context, task_id=task.id, step_id=step.id)
             self._publish_tool_progress(
                 task,
                 step,
@@ -155,13 +191,24 @@ class ToolRuntimeLifecycleMixin:
                 detail=f"Completed {step.tool_name}.",
                 payload={"ok": not bool(output.get("error"))},
             )
+            trusted_post_state = (
+                output.get("_resource_state_after") if is_write_tool(tool) and args.get("dry_run") is not True else []
+            )
+            changed_paths, rollback_info = _sanitize_tool_rollback_evidence(
+                output,
+                pre_resource_state=before_resource_state,
+                post_resource_state=trusted_post_state,
+                tool_origin=str(getattr(tool, "origin", "") or "unknown"),
+                tool_trust_tier=str(getattr(tool, "trust_tier", "") or "unknown"),
+                data_dir=runtime.settings.data_dir,
+            )
             result = ToolResult(
                 tool_call_id=call.id,
                 ok=not bool(output.get("error")),
                 output=output,
                 error=_actionable_error_text(str(output.get("error", "")), step) if output.get("error") else "",
-                changed_paths=list(output.get("changed_paths", [])),
-                rollback_info=dict(output.get("rollback_info", {})),
+                changed_paths=changed_paths,
+                rollback_info=rollback_info,
                 observation=self._observation(step, tool, output),
             )
         except ResourceStateError as exc:
@@ -299,7 +346,7 @@ class ToolRuntimeLifecycleMixin:
         if args.get("dry_run") is True or not is_write_tool(tool):
             return
         output.setdefault("_resource_state_before", before_state)
-        output["_resource_state_after"] = capture_tool_resource_state(tool, args, context, preview=output)
+        output["_resource_state_after"] = list(context.get("_resource_state_after") or [])
 
     def _redact_tool_args(self, args: dict[str, Any], tool: ToolDefinition) -> dict[str, Any]:
         redacted = redact_value(args)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+import json
 import re
 from typing import Any
 
@@ -134,15 +136,29 @@ def _mobile_claims_have_fresh_step_up(claims: dict[str, Any] | None) -> bool:
     proof_thumbprint = _text(confirmation.get("jkt")) if isinstance(confirmation, dict) else ""
     if not credential_id or not device_id or not proof_thumbprint:
         return False
-    credential = db.fetch_one("device_credentials", credential_id)
-    if not credential:
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT device_id, status, data FROM device_credentials WHERE id = ?",
+            (credential_id,),
+        ).fetchone()
+    if not row:
         return False
+    try:
+        credential = json.loads(row["data"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(credential, dict):
+        return False
+    credential.update({"device_id": row["device_id"], "status": row["status"]})
     return bool(
         _text(credential.get("device_id")) == device_id
         and _text(credential.get("status")).casefold() == "active"
         and credential.get("hardware_backed") is True
         and credential.get("attestation_verified") is True
-        and _text(credential.get("public_key_thumbprint")) == proof_thumbprint
+        and hmac.compare_digest(
+            _text(credential.get("public_key_thumbprint")).encode("utf-8"),
+            proof_thumbprint.encode("utf-8"),
+        )
     )
 
 
@@ -152,9 +168,17 @@ def _mobile_approval_requires_step_up(approval: dict[str, Any]) -> bool:
     boundary = approval.get("engineering_boundary")
     if isinstance(boundary, dict) and boundary.get("mobile_step_up_required") is True:
         return True
+    risk_provenance = boundary.get("risk_provenance") if isinstance(boundary, dict) else None
+    risk_provenance = risk_provenance if isinstance(risk_provenance, dict) else {}
     boundary_tool = boundary.get("tool") if isinstance(boundary, dict) else None
     boundary_tool = boundary_tool if isinstance(boundary_tool, dict) else {}
-    risk_text = f"{_text(approval.get('risk_level'))} {_text(boundary_tool.get('risk_level'))}".casefold()
+    risk_text = " ".join(
+        (
+            _text(approval.get("risk_level")),
+            _text(risk_provenance.get("effective_risk_level")),
+            _text(boundary_tool.get("risk_level")),
+        )
+    ).casefold()
     if any(marker in risk_text for marker in ("r3", "destructive", "system", "critical")):
         return True
     if boundary_tool.get("destructive") is True:
@@ -279,9 +303,7 @@ def _contains_high_impact_browser_marker(value: str) -> bool:
     if any(marker in normalized for marker in {"account_security", "change_password", "reset_password"}):
         return True
     tokens = {token for token in normalized.split("_") if token}
-    simple_markers = _BROWSER_HIGH_IMPACT_MARKERS.difference(
-        {"account_security", "change_password", "reset_password"}
-    )
+    simple_markers = _BROWSER_HIGH_IMPACT_MARKERS.difference({"account_security", "change_password", "reset_password"})
     return any(token == marker or token.startswith(marker) for token in tokens for marker in simple_markers)
 
 

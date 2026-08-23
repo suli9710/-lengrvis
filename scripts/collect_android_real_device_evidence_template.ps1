@@ -385,7 +385,7 @@ $markdown = @(
     "- `app.artifact_sha256`, package/version, and signer certificate SHA-256 must match Android SDK inspection of the exact APK supplied to `android:release-gate -ArtifactPath`.",
     "- `app.provenance` must bind the reviewed builder invocation and timestamp to the candidate source plus the same APK digest, package/version, and signer digest.",
     "- `evidence_artifact_manifest` must include SHA-256 and byte size for redacted device screenshot/video, backend/mobile logs, and adb install-status evidence; labels must match `evidence_artifacts_redacted`.",
-    "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the protected release-evidence HMAC secret.",
+    "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the reviewer-only Ed25519 private key.",
     "- A template has no valid signature and can never satisfy the strict gate.",
     "- `transport` must contain redacted HTTPS plus approval/screen/input WSS labels.",
     "- Shareable artifacts must use `binding_ref` or redacted active-grant labels; raw `deviceId` and `grantId` stay local-only.",

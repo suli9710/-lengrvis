@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from app.tools import file_tool_schemas as _file_tool_schemas
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe as _ensure_mutation_path_safe,
 )
+from app.tools.filesystem_safety import is_reparse_point as _is_reparse_point
+from app.tools.filesystem_safety import path_exists_or_reparse_point as _path_exists_or_reparse_point
 from app.tools.filesystem_safety import (
     safe_copy_file as _safe_copy_file,
 )
@@ -81,6 +84,53 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _rollback_resource_state(
+    path: Path,
+    allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    canonical = Path(os.path.abspath(str(path.expanduser())))
+    exists = _path_exists_or_reparse_point(canonical)
+    state: dict[str, Any] = {
+        "kind": "file_resource_state",
+        "path": str(canonical),
+        "exists": exists,
+    }
+    if not exists:
+        return state
+    if _is_reparse_point(canonical):
+        return {**state, "is_reparse_point": True, "auto_rollback_safe": False}
+    _ensure_mutation_path_safe(canonical, allowed, include_self=True, context=context)
+    if _is_reparse_point(canonical):
+        return {**state, "is_reparse_point": True, "auto_rollback_safe": False}
+    stat = canonical.lstat()
+    state.update(
+        {
+            "is_file": canonical.is_file(),
+            "is_dir": canonical.is_dir(),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "inode": getattr(stat, "st_ino", 0),
+            "sha256": sha256_file(canonical) if canonical.is_file() else "",
+        }
+    )
+    return state
+
+
+def _with_rollback_state(
+    info: dict[str, Any],
+    paths: list[Path],
+    allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        info["_post_resource_state"] = [_rollback_resource_state(path, allowed, context) for path in paths]
+    except (OSError, SecurityError, ValueError):
+        # Rollback execution fails closed when a post-state cannot be captured.
+        pass
+    return info
 
 
 def search_by_name(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -334,9 +384,17 @@ def create_folder(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     path = resolve_authorized(args["path"], allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "would_create": str(path)}
+    existed = path.exists()
     raise_if_tool_aborted(context)
     _safe_mkdir(path, allowed, context)
-    return {"changed_paths": [str(path)], "rollback_info": {"delete_folder_if_empty": str(path)}}
+    rollback_info: dict[str, Any] = {}
+    if not existed:
+        rollback_info = _with_rollback_state({"delete_folder_if_empty": str(path)}, [path], allowed, context)
+    return {
+        "changed_paths": [str(path)] if not existed else [],
+        "rollback_info": rollback_info,
+        **({"no_side_effect": True} if existed else {}),
+    }
 
 
 def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -361,6 +419,7 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         rollback_info: dict[str, Any] = {"backup": dst_backup}
     else:
         rollback_info = {"trash_created_file": str(dst)}
+    rollback_info = _with_rollback_state(rollback_info, [dst], allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
@@ -382,6 +441,7 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         # Overwrote an existing destination: after moving dst back to src, also
         # restore the destination's original content.
         rollback_info["dst_backup"] = dst_backup
+    rollback_info = _with_rollback_state(rollback_info, [src, dst], allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
@@ -402,6 +462,7 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     rollback_info = {"rename_back": {"from": str(dst), "to": str(src)}}
     if dst_backup is not None:
         rollback_info["dst_backup"] = dst_backup
+    rollback_info = _with_rollback_state(rollback_info, [src, dst], allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": rollback_info}
 
 
@@ -418,7 +479,15 @@ def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(path, _allowed(context), include_self=True, context=context)
     send2trash(str(path))
-    return {"changed_paths": [str(path)], "rollback_info": {"restore_from_recycle_bin": str(path)}}
+    return {
+        "changed_paths": [str(path)],
+        "rollback_info": _with_rollback_state(
+            {"restore_from_recycle_bin": str(path)},
+            [path],
+            _allowed(context),
+            context,
+        ),
+    }
 
 
 def _resolve_trash_target(path_value: str | Path, context: dict[str, Any]) -> Path:
@@ -445,7 +514,11 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         _ensure_mutation_path_safe(path, allowed, include_self=True)
         backup = create_managed_backup(path)
     _safe_write_text(path, text, allowed, context)
-    return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
+    rollback_info = {"backup": backup} if backup else {"trash_created_file": str(path)}
+    return {
+        "changed_paths": [str(path)],
+        "rollback_info": _with_rollback_state(rollback_info, [path], allowed, context),
+    }
 
 
 def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -511,7 +584,7 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         "changed_paths": [str(path)],
         "match_count": match_count,
         "replacements": replacements,
-        "rollback_info": {"backup": backup},
+        "rollback_info": _with_rollback_state({"backup": backup}, [path], allowed, context),
     }
 
 
@@ -528,8 +601,13 @@ def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> d
             "_resource_state": _resource_states(path),
         }
     raise_if_tool_aborted(context)
+    backup = create_managed_backup(path) if path.exists() else None
     _safe_write_text(path, text, allowed, context)
-    return {"changed_paths": [str(path)], "rollback_info": {"trash_created_file": str(path)}}
+    rollback_info = {"backup": backup} if backup else {"trash_created_file": str(path)}
+    return {
+        "changed_paths": [str(path)],
+        "rollback_info": _with_rollback_state(rollback_info, [path], allowed, context),
+    }
 
 
 def _safe_mkdir(path: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:

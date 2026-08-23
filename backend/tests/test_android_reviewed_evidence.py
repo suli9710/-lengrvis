@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import os
 import sys
 from copy import deepcopy
 from hashlib import sha256
@@ -126,6 +127,19 @@ def _reviewed_android_payload() -> dict:
 
 def _binding():
     return evidence_contracts.CandidateBinding(**STRICT_CANDIDATE)
+
+
+def _configure_sealer_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV,
+        TEST_EVIDENCE_PUBLIC_KEY,
+    )
+    monkeypatch.setenv(
+        evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV,
+        TEST_EVIDENCE_PRIVATE_KEY,
+    )
+    for environment_name, field_name in evidence_contracts.CANDIDATE_BINDING_ENVIRONMENT:
+        monkeypatch.setenv(environment_name, STRICT_CANDIDATE[field_name])
 
 
 def test_signed_android_reviewed_evidence_accepts_the_matching_candidate(monkeypatch) -> None:
@@ -332,13 +346,7 @@ def test_android_reviewed_evidence_rejects_unbound_artifact_manifest(
 
 
 def test_android_real_device_sealer_emits_candidate_bound_evidence(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
-    monkeypatch.setenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, TEST_EVIDENCE_PRIVATE_KEY)
-    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_COMMIT", STRICT_CANDIDATE["commit"])
-    monkeypatch.setenv("LENGRVIS_RELEASE_BUILD_IDENTIFIER", STRICT_CANDIDATE["build_identifier"])
-    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", STRICT_CANDIDATE["repository"])
-    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", STRICT_CANDIDATE["ci_run_id"])
-    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", STRICT_CANDIDATE["ci_run_attempt"])
+    _configure_sealer_environment(monkeypatch)
     draft = _reviewed_android_payload()
     draft.pop("evidence")
     input_path = tmp_path / "android-review.draft.json"
@@ -362,6 +370,75 @@ def test_android_real_device_sealer_emits_candidate_bound_evidence(tmp_path: Pat
         )
         == []
     )
+
+
+def test_android_real_device_sealer_does_not_overwrite_a_racing_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_sealer_environment(monkeypatch)
+    draft = _reviewed_android_payload()
+    draft.pop("evidence")
+    input_path = tmp_path / "android-review.draft.json"
+    output_path = tmp_path / "build" / "android-real-device-evidence-reviewed.json"
+    input_path.write_text(json.dumps(draft), encoding="utf-8")
+    write_output = android_seal._write_output_atomically
+
+    def _create_racing_output(path: Path, text: str, *, force: bool) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("concurrent-writer-won\n", encoding="utf-8")
+        write_output(path, text, force=force)
+
+    monkeypatch.setattr(
+        android_seal,
+        "_write_output_atomically",
+        _create_racing_output,
+    )
+
+    sealed, errors = android_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        force=False,
+    )
+
+    assert sealed is None
+    assert errors == [f"output already exists: {output_path}; pass --force to overwrite"]
+    assert output_path.read_text(encoding="utf-8") == "concurrent-writer-won\n"
+    assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+    forced, force_errors = android_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        force=True,
+    )
+
+    assert force_errors == []
+    assert forced is not None
+    assert json.loads(output_path.read_text(encoding="utf-8")) == forced
+    assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+
+def test_android_real_device_sealer_rejects_hardlinked_input_and_output(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "android-review.draft.json"
+    output_path = tmp_path / "android-reviewed-output.json"
+    input_path.write_text('{"artifact_type":"draft"}\n', encoding="utf-8")
+    try:
+        os.link(input_path, output_path)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
+    original = input_path.read_bytes()
+
+    sealed, errors = android_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        force=True,
+    )
+
+    assert sealed is None
+    assert errors == ["input and output paths must be different"]
+    assert input_path.read_bytes() == original
 
 
 def test_android_real_device_sealer_rejects_a_template(monkeypatch) -> None:

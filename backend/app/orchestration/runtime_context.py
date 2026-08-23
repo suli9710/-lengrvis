@@ -23,6 +23,8 @@ class LargeResultReference:
     original_size: int
     preview: str
     has_more: bool
+    artifact_sha256: str
+    artifact_size_bytes: int
 
 
 @dataclass(slots=True)

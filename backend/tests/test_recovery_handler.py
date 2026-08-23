@@ -88,6 +88,22 @@ def _register_write_tool(orchestrator: OrchestratorStub, *, safe_to_retry_errors
     )
 
 
+def _verified_empty_rollback(task_id: str) -> dict[str, object]:
+    return {
+        "task_id": task_id,
+        "executed": [],
+        "count": 0,
+        "state": "succeeded",
+        "attempted": 0,
+        "succeeded": 0,
+        "verified": 0,
+        "verification_failed": 0,
+        "failed": 0,
+        "manual_required": 0,
+        "unrecoverable": 0,
+    }
+
+
 def test_recovery_handler_creates_and_executes_recovery_step():
     orchestrator = OrchestratorStub(
         AgentAction(
@@ -120,11 +136,11 @@ def test_recovery_handler_creates_and_executes_recovery_step():
 def test_recovery_handler_rolls_back_when_no_alternative(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = OrchestratorStub(None)
     handler = RecoveryHandler(orchestrator)
     task = Task(id="task_1", user_goal="write file")
@@ -143,11 +159,11 @@ def test_recovery_handler_rolls_back_when_no_alternative(monkeypatch):
 def test_recovery_handler_blocks_unclassified_high_risk_failure_before_consulting(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = OrchestratorStub(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
     )
@@ -179,8 +195,8 @@ def test_recovery_handler_blocks_unclassified_high_risk_failure_before_consultin
 
 def test_recovery_handler_allows_explicitly_classified_high_risk_retry(monkeypatch):
     monkeypatch.setattr(
-        "app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback",
-        lambda task_id: {"task_id": task_id, "executed": [], "count": 0},
+        "app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback",
+        lambda task_id, **_kwargs: _verified_empty_rollback(task_id),
     )
     orchestrator = OrchestratorStub(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
@@ -213,11 +229,11 @@ def test_recovery_handler_allows_explicitly_classified_high_risk_retry(monkeypat
 def test_recovery_handler_blocks_high_risk_retry_when_registry_lookup_fails(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = OrchestratorStub(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="retry")
     )
@@ -249,9 +265,9 @@ def test_recovery_handler_blocks_high_risk_retry_when_registry_lookup_fails(monk
 def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
     class AlwaysFailingRecoveryOrchestrator(OrchestratorStub):
         async def _execute_step(self, task, plan, step, context, observation, *, threaded_tools=False):  # noqa: ARG002
@@ -264,7 +280,7 @@ def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
                 ToolResult(tool_call_id=f"{step.id}_call", ok=False, error="recovery failed"),
             )
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = AlwaysFailingRecoveryOrchestrator(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="try fallback")
     )
@@ -285,9 +301,9 @@ def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
 def test_recovery_handler_stops_repeated_identical_recovery_attempt(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
     class AlwaysFailingRecoveryOrchestrator(OrchestratorStub):
         async def _execute_step(self, task, plan, step, context, observation, *, threaded_tools=False):  # noqa: ARG002
@@ -300,7 +316,7 @@ def test_recovery_handler_stops_repeated_identical_recovery_attempt(monkeypatch)
                 ToolResult(tool_call_id=f"{step.id}_call", ok=False, error="recovery failed"),
             )
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = AlwaysFailingRecoveryOrchestrator(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="try fallback")
     )
@@ -321,11 +337,11 @@ def test_recovery_handler_stops_repeated_identical_recovery_attempt(monkeypatch)
 def test_recovery_handler_rejects_same_tool_subset_args(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = OrchestratorStub(
         AgentAction(
             kind="propose_tool",
@@ -357,11 +373,11 @@ def test_recovery_handler_rejects_same_tool_subset_args(monkeypatch):
 def test_recovery_handler_zero_retries_rolls_back_without_consulting(monkeypatch):
     rollback_calls: list[str] = []
 
-    def fake_rollback(task_id: str):
+    def fake_rollback(task_id: str, **_kwargs):
         rollback_calls.append(task_id)
-        return {"task_id": task_id, "executed": [], "count": 0}
+        return _verified_empty_rollback(task_id)
 
-    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    monkeypatch.setattr("app.orchestration.task_rollback_workflow.rollback_tools.execute_rollback", fake_rollback)
     orchestrator = OrchestratorStub(
         AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="try fallback")
     )

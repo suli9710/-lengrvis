@@ -2369,6 +2369,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:rc-handoff-template",
         "evidence:result-quality-review",
         "evidence:result-quality-verify",
+        "evidence:result-quality-seal",
         "evidence:mobile-lan-wss",
         "evidence:android-real-device-template",
         "evidence:android-real-device-verify",
@@ -2376,10 +2377,13 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:local-model-template",
         "evidence:diagnostics-review",
         "evidence:diagnostics-verify",
+        "evidence:diagnostics-seal",
         "evidence:distribution-template",
         "evidence:paid-launch-template",
         "evidence:distribution-verify",
+        "evidence:distribution-seal",
         "evidence:clean-machine-verify",
+        "evidence:clean-machine-seal",
         "evidence:support-privacy-verify",
         "evidence:claims-launch-verify",
         "evidence:commercial-operations-verify",
@@ -2443,6 +2447,36 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
             assert any(phrase in context for phrase in no_overclaim_phrases), (
                 f"{doc_path} mentions npm run {alias} without nearby no-overclaim wording"
             )
+
+
+def test_reviewed_evidence_surfaces_use_ed25519_wording(project_root: Path) -> None:
+    surfaces = [
+        project_root / "scripts" / "verify_android_release_gate.ps1",
+        project_root / "docs" / "release" / "delivery-pipeline.md",
+        project_root / "docs" / "qa" / "real-device-mobile-matrix.md",
+        project_root / "docs" / "industry-best-practices-audit-2026-07.md",
+    ]
+    stale_reviewed_evidence_phrases = (
+        "sealed hmac evidence block",
+        "reviewed-evidence hmac",
+        "hmac sealed",
+        "canonical hash and hmac",
+        "valid canonical hmac",
+        "hmac key fingerprint",
+    )
+
+    for path in surfaces:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "ed25519" in text, path
+        for phrase in stale_reviewed_evidence_phrases:
+            assert phrase not in text, f"{path} still contains {phrase!r}"
+
+
+def test_release_gate_documents_required_keypair_output_paths(project_root: Path) -> None:
+    text = (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
+    assert "npm run evidence:keypair -- `" in text
+    assert "--private-key-output" in text
+    assert "--public-key-output" in text
 
 
 def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: Path) -> None:

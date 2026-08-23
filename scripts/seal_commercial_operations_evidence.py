@@ -13,8 +13,10 @@ from typing import Any
 from evidence_contracts import (
     EVIDENCE_PRIVATE_KEY_ENV,
     load_json,
+    paths_refer_to_same_file as _paths_refer_to_same_file,
     print_result,
     seal_evidence_payload_signature,
+    write_text_atomically as _write_output_atomically,
 )
 from verify_commercial_operations_evidence import ARTIFACT_TYPE, validate_payload
 
@@ -40,6 +42,8 @@ def write_sealed_evidence(
     payload, errors = load_json(input_path)
     if payload is None:
         return None, errors
+    if _paths_refer_to_same_file(input_path, output_path):
+        return None, ["input and output paths must be different"]
     if output_path.exists() and not force:
         return None, [
             f"output already exists: {output_path}; pass --force to overwrite"
@@ -56,10 +60,15 @@ def write_sealed_evidence(
     if validation_errors:
         return None, validation_errors
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(sealed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    serialized = json.dumps(sealed, ensure_ascii=False, indent=2) + "\n"
+    try:
+        _write_output_atomically(output_path, serialized, force=force)
+    except FileExistsError:
+        return None, [
+            f"output already exists: {output_path}; pass --force to overwrite"
+        ]
+    except OSError as exc:
+        return None, [f"unable to write sealed evidence: {exc}"]
     return sealed, []
 
 
