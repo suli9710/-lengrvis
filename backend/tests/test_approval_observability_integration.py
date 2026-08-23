@@ -288,11 +288,7 @@ def test_atomic_storage_errors_emit_one_error_without_exception_text(
             db.claim_approval_for_execution(approval.id, now_iso())
 
     assert exc_info.value is original
-    entries = [
-        entry
-        for entry in metrics.snapshot()["counters"]
-        if entry["name"] == metric_name
-    ]
+    entries = [entry for entry in metrics.snapshot()["counters"] if entry["name"] == metric_name]
     assert entries == [
         {
             "name": metric_name,

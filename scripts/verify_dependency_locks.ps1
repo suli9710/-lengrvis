@@ -444,8 +444,8 @@ function Test-GradleWrapperDistribution {
     }
 
     $wrapperText = Get-Content -Raw -LiteralPath $wrapperPath
-    $urlMatch = [regex]::Match($wrapperText, "(?m)^distributionUrl=(?<value>[^\r\n]+)$")
-    $shaMatch = [regex]::Match($wrapperText, "(?m)^distributionSha256Sum=(?<value>[a-fA-F0-9]{64})$")
+    $urlMatch = [regex]::Match($wrapperText, "(?m)^distributionUrl=(?<value>[^\r\n]+)\r?$")
+    $shaMatch = [regex]::Match($wrapperText, "(?m)^distributionSha256Sum=(?<value>[a-fA-F0-9]{64})\r?$")
 
     if (-not $urlMatch.Success) {
         $Issues.Add("$wrapperRelativePath is missing distributionUrl.")

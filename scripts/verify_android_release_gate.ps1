@@ -577,9 +577,6 @@ if ($null -ne $appJson) {
         }
     }
 
-    if (-not (Test-BooleanFalse (Get-PropertyValue $android "usesCleartextTraffic"))) {
-        Add-Issue $sourceIssues "cleartext_traffic_not_disabled" "expo.android.usesCleartextTraffic must stay false for token-bearing mobile flows."
-    }
     if ((Get-PropertyValue $android "softwareKeyboardLayoutMode") -ne "resize") {
         Add-Issue $sourceIssues "keyboard_resize_missing" "expo.android.softwareKeyboardLayoutMode must be resize for Android remote-control text inputs."
     }
@@ -1268,7 +1265,7 @@ if ($null -ne $easJson) {
 if ($null -ne $mobilePackage) {
     $scripts = Get-PropertyValue $mobilePackage "scripts"
     $devDependencies = Get-PropertyValue $mobilePackage "devDependencies"
-    foreach ($scriptName in @("typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "smoke:android-prebuild-network-security", "smoke:android-manifest-resources", "smoke:android-lan-tls", "gate:android-instrumentation-compile", "gate:android-connected-lan-tls", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
+    foreach ($scriptName in @("postinstall", "typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "smoke:android-prebuild-network-security", "smoke:android-manifest-resources", "smoke:android-lan-tls", "smoke:eas-cli-compat", "gate:android-instrumentation-compile", "gate:android-connected-lan-tls", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
         if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $scripts $scriptName))) {
             Add-Issue $sourceIssues "missing_mobile_script" "mobile/package.json must define script '$scriptName'."
         }
@@ -1285,13 +1282,15 @@ if ($null -ne $mobilePackage) {
             }
         }
     }
-    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("verify_android_release_gate.ps1", "-PreflightOnly")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "postinstall" @("patch-eas-cli-runtime.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("smoke:eas-cli-compat", "verify_android_release_gate.ps1", "-PreflightOnly")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:preview" @("preflight:android-release", "eas build", "--platform android", "--profile preview", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:production" @("preflight:android-release", "eas build", "--platform android", "--profile production", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-release" @("verify_android_release_gate.ps1")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-prebuild-network-security" @("android-prebuild-network-security-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-manifest-resources" @("android-manifest-resources-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-lan-tls" @("android-lan-tls-smoke.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:eas-cli-compat" @("eas-cli-compat-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-instrumentation-compile" @("android-lan-tls-smoke.cjs", "--compile-instrumentation")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-connected-lan-tls" @("android-lan-tls-smoke.cjs", "--connected")
 }

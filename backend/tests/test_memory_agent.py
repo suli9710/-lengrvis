@@ -92,12 +92,15 @@ def test_recall_and_record_management_are_namespace_scoped() -> None:
     revoked = finance.revoke(inferred.id)
     assert revoked is not None and revoked.state == MemoryState.REVOKED
     assert finance.forget(inferred.id) is True
-    assert db.get_memory(
-        inferred.id,
-        principal_id="alice",
-        workspace_id="northwind",
-        domain_scope="finance",
-    ) is None
+    assert (
+        db.get_memory(
+            inferred.id,
+            principal_id="alice",
+            workspace_id="northwind",
+            domain_scope="finance",
+        )
+        is None
+    )
 
 
 def test_version_lineage_supersedes_stale_memory_and_blocks_cross_namespace_parent() -> None:

@@ -41,7 +41,7 @@ _ROLLBACK_PRIMARY_ACTIONS = frozenset(
 _ROLLBACK_SECONDARY_ACTIONS = frozenset({"dst_backup"})
 _ROLLBACK_EVIDENCE_KEY = "_rollback_evidence"
 _ROLLBACK_EVIDENCE_SCHEMA = "rollback-evidence/v2"
-_MANAGED_BACKUP_IDENTITY_SCHEMA = "managed-backup-identity/v1"
+_MANAGED_BACKUP_IDENTITY_SCHEMA = "managed-backup-identity/v2"
 _ROLLBACK_METADATA_KEYS = frozenset({"_post_resource_state", _ROLLBACK_EVIDENCE_KEY})
 _MAX_ROLLBACK_EVIDENCE_BYTES = 64 * 1024
 _MAX_ROLLBACK_EVIDENCE_ITEMS = 256
@@ -737,11 +737,12 @@ def _validate_managed_backup(value: Any, expected_original: str) -> None:
     if normalize_path_key(value["original_path"]) != normalize_path_key(expected_original):
         raise ValueError
     identity = value.get("identity")
-    if not isinstance(identity, dict) or set(identity) != {"schema", "sha256", "size", "inode"}:
+    identity_keys = {"schema", "sha256", "size", "inode", "device", "ctime_ns"}
+    if not isinstance(identity, dict) or set(identity) != identity_keys:
         raise ValueError
     if identity.get("schema") != _MANAGED_BACKUP_IDENTITY_SCHEMA or not _valid_digest(identity.get("sha256")):
         raise ValueError
-    if any(type(identity.get(key)) is not int or identity[key] < 0 for key in ("size", "inode")):
+    if any(type(identity.get(key)) is not int or identity[key] < 0 for key in ("size", "inode", "device", "ctime_ns")):
         raise ValueError
     raw_path = Path(value["path"]).expanduser()
     try:
@@ -751,10 +752,15 @@ def _validate_managed_backup(value: Any, expected_original: str) -> None:
         if not path_exists_or_reparse_point(backup):
             raise ValueError
         ensure_mutation_path_safe(backup, [str(root)], include_self=True)
+        backup_stat = backup.stat(follow_symlinks=False)
         if not backup.is_file():
             raise ValueError
-        stat = backup.stat()
-        if stat.st_size != identity["size"] or int(getattr(stat, "st_ino", 0)) != identity["inode"]:
+        if (
+            int(backup_stat.st_size) != identity["size"]
+            or int(getattr(backup_stat, "st_ino", 0) or 0) != identity["inode"]
+            or int(getattr(backup_stat, "st_dev", 0) or 0) != identity["device"]
+            or int(getattr(backup_stat, "st_ctime_ns", 0) or 0) != identity["ctime_ns"]
+        ):
             raise ValueError
         if _sha256_file(backup) != identity["sha256"]:
             raise ValueError

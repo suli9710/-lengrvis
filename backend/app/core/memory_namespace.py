@@ -47,7 +47,5 @@ def _normalize_component(value: str | None, *, default: str, field_name: str) ->
     if not normalized:
         raise ValueError(f"{field_name} cannot be empty")
     if len(normalized) > MAX_MEMORY_NAMESPACE_COMPONENT_LENGTH:
-        raise ValueError(
-            f"{field_name} cannot exceed {MAX_MEMORY_NAMESPACE_COMPONENT_LENGTH} characters"
-        )
+        raise ValueError(f"{field_name} cannot exceed {MAX_MEMORY_NAMESPACE_COMPONENT_LENGTH} characters")
     return normalized

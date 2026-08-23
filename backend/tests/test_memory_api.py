@@ -80,10 +80,13 @@ def test_memory_api_isolates_namespaces_and_scopes_id_based_operations(client: T
     deleted = client.delete(f"/api/memories/{memory.id}", params=finance)
     assert deleted.status_code == 200
     with db.connect() as conn:
-        assert conn.execute(
-            "SELECT 1 FROM memory_namespace WHERE memory_id = ?",
-            (memory.id,),
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM memory_namespace WHERE memory_id = ?",
+                (memory.id,),
+            ).fetchone()
+            is None
+        )
 
 
 def test_memory_api_promotes_quarantined_record_before_recall(client: TestClient) -> None:

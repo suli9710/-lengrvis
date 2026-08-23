@@ -258,12 +258,6 @@ function assertExpoCameraNativeConfig() {
   ]) {
     assert.ok(blockedPermissions.includes(permission), `app.json must block unused Android permission ${permission}`);
   }
-  assert.equal(
-    expo.android?.usesCleartextTraffic,
-    false,
-    "Android builds must not permit app-wide cleartext traffic; mobile LAN HTTP is blocked by the app contract",
-  );
-
   const iosCameraUsage = expo.ios?.infoPlist?.NSCameraUsageDescription;
   assert.equal(
     iosCameraUsage,

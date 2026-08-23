@@ -18,9 +18,7 @@ MEMORY_REVIEW_RETENTION_DAYS_ENV = "LENGRVIS_MEMORY_REVIEW_RETENTION_DAYS"
 EXPIRED_CONTENT_MARKER = "[expired by retention policy]"
 _MAX_RETENTION_DAYS = 3650
 _BATCH_SIZE = 200
-_TERMINAL_TASK_PHASES = frozenset(
-    {"completed", "failed", "cancelled", "denied", "rolled_back", "repair_required"}
-)
+_TERMINAL_TASK_PHASES = frozenset({"completed", "failed", "cancelled", "denied", "rolled_back", "repair_required"})
 _TASK_SUMMARY_KEYS = (
     "id",
     "status",

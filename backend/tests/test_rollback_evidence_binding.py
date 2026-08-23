@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -208,13 +209,55 @@ def test_valid_backup_is_bound_to_managed_copy_and_original_pre_state(tmp_path: 
 
     assert changed == [str(original)]
     assert info["backup"].items() >= backup.items()
+    backup_stat = Path(backup["path"]).stat(follow_symlinks=False)
     assert info["backup"]["identity"] == {
-        "schema": "managed-backup-identity/v1",
+        "schema": "managed-backup-identity/v2",
         "sha256": resource_state(Path(backup["path"]))["sha256"],
-        "size": Path(backup["path"]).stat().st_size,
-        "inode": Path(backup["path"]).stat().st_ino,
+        "size": backup_stat.st_size,
+        "inode": backup_stat.st_ino,
+        "device": backup_stat.st_dev,
+        "ctime_ns": backup_stat.st_ctime_ns,
     }
     _assert_v2(info, "backup")
+    outcome = rollback_tools.rollback_tool_result(
+        ToolResult(tool_call_id="call-valid-v2-backup", ok=True, changed_paths=changed, rollback_info=info),
+        {"allowed_directories": [str(tmp_path)]},
+    )
+    assert outcome["ok"] is True
+    assert original.read_text(encoding="utf-8") == "before"
+    assert not Path(backup["path"]).exists()
+
+
+@pytest.mark.parametrize("mutation", ["legacy_schema", "device", "ctime_ns"])
+def test_inventory_blocks_legacy_or_tampered_managed_backup_identity(tmp_path: Path, mutation: str) -> None:
+    data_dir = tmp_path / "data"
+    original = tmp_path / f"identity-{mutation}.txt"
+    original.write_text("before", encoding="utf-8")
+    before = [resource_state(original)]
+    backup = _managed_backup(data_dir, original)
+    original.write_text("after", encoding="utf-8")
+    changed, info = _sanitize(
+        {"changed_paths": [str(original)], "rollback_info": {"backup": backup}},
+        before,
+        [resource_state(original)],
+        data_dir,
+    )
+    identity = info["backup"]["identity"]
+    if mutation == "legacy_schema":
+        identity["schema"] = "managed-backup-identity/v1"
+        identity.pop("device")
+        identity.pop("ctime_ns")
+    else:
+        identity[mutation] += 1
+    task_id = f"task-identity-{mutation}"
+    _persist_result(task_id, f"identity-{mutation}", changed, info)
+
+    plan = rollback_tools.build_rollback_plan(task_id)
+
+    assert plan["complete"] is False
+    assert plan["blocker_count"] == 1
+    assert plan["steps"][0]["detail"]["reason"] == "invalid_rollback_evidence"
+    assert original.read_text(encoding="utf-8") == "after"
 
 
 @pytest.mark.parametrize("action", ["restore_from_recycle_bin", "permanent_delete_unrecoverable"])
@@ -509,6 +552,51 @@ def test_managed_backup_is_revalidated_after_inventory_snapshot_before_original_
 
     assert plan["complete"] is False
     assert outcome["state"] in {"failed", "manual_required"}
+    assert original.read_text(encoding="utf-8") == "after"
+
+
+def test_recreated_same_content_backup_is_rejected_when_inode_is_reused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    original = tmp_path / "original-reused-inode.txt"
+    original.write_text("before", encoding="utf-8")
+    before = [resource_state(original)]
+    backup = _managed_backup(data_dir, original)
+    original.write_text("after", encoding="utf-8")
+    changed, info = _sanitize(
+        {"changed_paths": [str(original)], "rollback_info": {"backup": backup}},
+        before,
+        [resource_state(original)],
+        data_dir,
+    )
+    task_id = "task-backup-reused-inode"
+    _persist_result(task_id, "backup-reused-inode", changed, info)
+
+    class Settings:
+        allowed_directories = [str(tmp_path)]
+
+    monkeypatch.setattr(rollback_tools, "get_effective_settings", lambda: Settings())
+    snapshot = rollback_tools.load_rollback_snapshot(task_id)
+    assert snapshot.entries[0].blocker == ""
+    entry = snapshot.entries[0]
+    assert entry.result is not None
+    identity = entry.result.rollback_info["backup"]["identity"]
+    captured_ctime_ns = identity["ctime_ns"]
+    backup_path = Path(entry.result.rollback_info["backup"]["path"])
+    backup_path.unlink()
+    time.sleep(0.01)
+    backup_path.write_text("before", encoding="utf-8")
+    replacement_stat = backup_path.stat(follow_symlinks=False)
+    assert replacement_stat.st_ctime_ns != captured_ctime_ns
+
+    # Model a filesystem reusing the original inode; ctime must still reject the replacement.
+    identity["inode"] = int(replacement_stat.st_ino)
+    identity["device"] = int(replacement_stat.st_dev)
+    outcome = rollback_tools.execute_rollback(task_id, snapshot=snapshot)
+
+    assert outcome["state"] == "manual_required"
     assert original.read_text(encoding="utf-8") == "after"
 
 

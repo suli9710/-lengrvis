@@ -158,7 +158,14 @@ $artifactShaNormalized = if ($ArtifactSha256 -match "^[a-fA-F0-9]{64}$") { $Arti
 $signerShaNormalized = if ($SignerCertificateSha256 -match "^[a-fA-F0-9]{64}$") { $SignerCertificateSha256.ToLowerInvariant() } else { "uncollected" }
 $packageName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.package_name)) { [string]$mobileAppIdentity.package_name } else { "uncollected" }
 $versionName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.version_name)) { [string]$mobileAppIdentity.version_name } else { "uncollected" }
-$versionCode = if ($null -ne $mobileAppIdentity -and $mobileAppIdentity.version_code -is [int]) { [int]$mobileAppIdentity.version_code } else { "uncollected" }
+$versionCode = "uncollected"
+if ($null -ne $mobileAppIdentity) {
+    $rawVersionCode = $mobileAppIdentity.version_code
+    if (($rawVersionCode -is [int] -or $rawVersionCode -is [long]) -and
+        [long]$rawVersionCode -ge 1 -and [long]$rawVersionCode -le [int]::MaxValue) {
+        $versionCode = [int]$rawVersionCode
+    }
+}
 $localEasCliBinaryPresent = (
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas.cmd")) -or
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas"))

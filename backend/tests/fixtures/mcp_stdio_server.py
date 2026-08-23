@@ -43,7 +43,7 @@ for raw_line in sys.stdin:
         _send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
     elif method == "tools/call":
         params = message.get("params") or {}
-        progress_token = ((params.get("_meta") or {}).get("progressToken"))
+        progress_token = (params.get("_meta") or {}).get("progressToken")
         if progress_token is not None:
             _send(
                 {

@@ -99,6 +99,7 @@ def test_strict_fails_on_blocked_p0():
         strict=True,
         artifact_root=REPO_ROOT,
         expected_repo="example/repo",
+        expected_run_id="123",
     )
     assert any("RR-P0-001" in e for e in errors)
     # The passed P0 row must not be flagged in strict mode.

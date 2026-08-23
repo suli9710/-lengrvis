@@ -193,6 +193,8 @@ jobs:
         run: |
           cd mobile
           npm exec expo -- install --check
+      - name: Mobile EAS CLI runtime compatibility smoke
+        run: npm --prefix mobile run smoke:eas-cli-compat
       - name: Mobile dependency audit gate (high+ blocks the PR)
         run: npm --prefix mobile audit --audit-level=high
       - name: Mobile typecheck

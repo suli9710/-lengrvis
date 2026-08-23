@@ -378,6 +378,7 @@ $gates = @(
         commands = @(
             "npm --prefix mobile ci",
             "cd mobile; npm exec expo -- install --check",
+            "npm --prefix mobile run smoke:eas-cli-compat",
             "npm --prefix mobile audit --audit-level=high",
             "npm --prefix mobile run typecheck",
             "npm --prefix mobile run smoke:token",

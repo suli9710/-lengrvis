@@ -56,7 +56,10 @@ def _template_matches_static_path(template: str, path: str) -> bool:
     path_segments = [segment for segment in path.split("/") if segment]
     if len(template_segments) != len(path_segments):
         return False
-    return all(template_segment.startswith(":") or template_segment == path_segment for template_segment, path_segment in zip(template_segments, path_segments, strict=True))
+    return all(
+        template_segment.startswith(":") or template_segment == path_segment
+        for template_segment, path_segment in zip(template_segments, path_segments, strict=True)
+    )
 
 
 def test_renderer_api_allowlist_matches_real_fastapi_routes() -> None:
@@ -89,9 +92,7 @@ def test_dynamic_allowlist_templates_do_not_capture_unreviewed_static_routes() -
         (method, template, path)
         for method, template in dynamic_rules
         for route_method, path in static_backend_routes
-        if route_method == method
-        and _template_matches_static_path(template, path)
-        and (method, path) not in rules
+        if route_method == method and _template_matches_static_path(template, path) and (method, path) not in rules
     )
 
     assert collisions == [], (

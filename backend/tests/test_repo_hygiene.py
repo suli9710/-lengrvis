@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HYGIENE_SCRIPT = REPO_ROOT / "scripts" / "check_repo_hygiene.ps1"
@@ -9,6 +12,13 @@ HYGIENE_SCRIPT = REPO_ROOT / "scripts" / "check_repo_hygiene.ps1"
 
 def _run(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _powershell() -> str:
+    executable = shutil.which("powershell") or shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("PowerShell is not available")
+    return executable
 
 
 def test_hygiene_rejects_tracked_cursor_runtime_log(tmp_path: Path) -> None:
@@ -24,7 +34,16 @@ def test_hygiene_rejects_tracked_cursor_runtime_log(tmp_path: Path) -> None:
     _run(["git", "commit", "-m", "fixture"], cwd=repo)
 
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HYGIENE_SCRIPT), "-Root", str(repo)],
+        [
+            _powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(HYGIENE_SCRIPT),
+            "-Root",
+            str(repo),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

@@ -733,9 +733,7 @@ def test_diff_preview_returns_summary_and_truncation_marker(monkeypatch: pytest.
     calls: list[list[str]] = []
     trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
-    def fake_run_command(
-        command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any
-    ) -> dict[str, Any]:  # noqa: ARG001
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": diff, "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 
@@ -759,9 +757,7 @@ def test_shell_readonly_wraps_git_diff_with_external_execution_guards(
     calls: list[list[str]] = []
     trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
-    def fake_run_command(
-        command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any
-    ) -> dict[str, Any]:  # noqa: ARG001
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": "", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 

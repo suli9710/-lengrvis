@@ -418,9 +418,7 @@ def ensure_document_chunks_fts(conn: sqlite3.Connection) -> str:
     ddl = _fts_table_sql(conn)
     existing_mode = _fts_mode_from_sql(ddl)
     desired_mode = (
-        FTS_MODE_TRIGRAM
-        if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn)
-        else FTS_MODE_PLAIN
+        FTS_MODE_TRIGRAM if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn) else FTS_MODE_PLAIN
     )
 
     if ddl and existing_mode not in {desired_mode, FTS_MODE_UNAVAILABLE}:

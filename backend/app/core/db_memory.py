@@ -69,9 +69,7 @@ def upsert_memory(payload: dict[str, Any]) -> None:
         raise ValueError("memory version must be a positive integer")
     supersedes = str(payload.get("supersedes") or "").strip()
     raw_conflict_status = payload.get("conflict_status")
-    conflict_status = str(
-        getattr(raw_conflict_status, "value", raw_conflict_status) or "none"
-    ).strip().casefold()
+    conflict_status = str(getattr(raw_conflict_status, "value", raw_conflict_status) or "none").strip().casefold()
     if conflict_status not in _MEMORY_CONFLICT_STATUSES:
         raise ValueError(f"unsupported memory conflict status: {conflict_status}")
     source = str(payload.get("source") or "user")
@@ -195,11 +193,7 @@ def upsert_memory(payload: dict[str, Any]) -> None:
                 """,
                 _namespace_values(body),
             )
-            if (
-                body["supersedes"]
-                and body["state"] == "active"
-                and body["conflict_status"] in {"none", "resolved"}
-            ):
+            if body["supersedes"] and body["state"] == "active" and body["conflict_status"] in {"none", "resolved"}:
                 conn.execute(
                     """
                     UPDATE memory_namespace
@@ -244,8 +238,7 @@ def list_memories(
     with db.connect() as conn:
         _ensure_memory_metadata(conn)
         rows = conn.execute(
-            f"{_MEMORY_SELECT} WHERE {' AND '.join(clauses)} "
-            "ORDER BY memory.created_at DESC LIMIT ?",
+            f"{_MEMORY_SELECT} WHERE {' AND '.join(clauses)} ORDER BY memory.created_at DESC LIMIT ?",
             tuple(params),
         ).fetchall()
     results: list[dict[str, Any]] = []
