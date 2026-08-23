@@ -1,5 +1,14 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -76,9 +85,12 @@ describe("ApprovalSessionGenerationManager", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "lengrvis-approval-persist-failure-"));
     let failPersistence = false;
     const persistGeneration = vi.fn((filePath: string, generation: string) => {
-      expect(existsSync(filePath)).toBe(false);
       if (failPersistence) throw new Error("simulated persistence failure");
-      writeFileSync(filePath, `${generation}\n`, { encoding: "utf-8", mode: 0o600 });
+      writeFileSync(filePath, `${generation}\n`, {
+        encoding: "utf-8",
+        flag: "wx",
+        mode: 0o600
+      });
     });
     const generations = [GENERATION_A, GENERATION_B];
     const manager = new ApprovalSessionGenerationManager({
@@ -91,6 +103,33 @@ describe("ApprovalSessionGenerationManager", () => {
 
     expect(() => manager.rotate()).toThrow(/persistence failure/);
     expect(existsSync(join(dataDir, APPROVAL_SESSION_GENERATION_FILE))).toBe(false);
+    expect(() => manager.bindSigningPayload("approval-v4\nchallenge")).toThrow(/unavailable/);
+  });
+
+  it("deactivates a dangling canonical symlink without following it", (context) => {
+    const dataDir = mkdtempSync(join(tmpdir(), "lengrvis-approval-symlink-"));
+    const generationPath = join(dataDir, APPROVAL_SESSION_GENERATION_FILE);
+    const missingTarget = join(dataDir, "missing-generation.secret");
+    const manager = new ApprovalSessionGenerationManager({
+      dataDir,
+      generate: () => GENERATION_A
+    });
+    manager.initialize();
+    unlinkSync(generationPath);
+    try {
+      symlinkSync(missingTarget, generationPath, "file");
+    } catch (error) {
+      const code = String((error as NodeJS.ErrnoException).code ?? "");
+      if (["EACCES", "ENOTSUP", "EPERM", "UNKNOWN"].includes(code)) {
+        context.skip(`symlink creation is unavailable on this host (${code})`);
+      }
+      throw error;
+    }
+
+    manager.deactivate();
+
+    expect(() => lstatSync(generationPath)).toThrow();
+    expect(existsSync(missingTarget)).toBe(false);
     expect(() => manager.bindSigningPayload("approval-v4\nchallenge")).toThrow(/unavailable/);
   });
 

@@ -14,6 +14,8 @@ export type BrowserContainer =
       view: BrowserView;
     };
 
+export const BROWSER_ACTION_MAX_DELAY_MS = 30_000;
+
 export function safeCredentialErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   const safePrefixes = [
@@ -72,7 +74,12 @@ export function runDomAction(webContents: WebContents, script: string): Promise<
 }
 
 export function delay(ms: number): Promise<void> {
+  if (!Number.isSafeInteger(ms) || ms < 0 || ms > BROWSER_ACTION_MAX_DELAY_MS) {
+    return Promise.reject(
+      new RangeError(`Browser action delay must be an integer from 0 to ${BROWSER_ACTION_MAX_DELAY_MS} ms`)
+    );
+  }
   return new Promise((resolve) => {
-    setTimeout(resolve, Math.max(0, Math.min(ms, 30_000)));
+    setTimeout(resolve, ms);
   });
 }

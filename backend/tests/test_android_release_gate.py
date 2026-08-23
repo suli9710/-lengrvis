@@ -804,6 +804,12 @@ def test_android_pr_ci_has_manifest_and_connected_tls_regression_contract(projec
         "node scripts/android-lan-tls-smoke.cjs --compile-instrumentation"
     )
     assert scripts["gate:android-connected-lan-tls"] == "node scripts/android-lan-tls-smoke.cjs --connected"
+    assert "ORG_GRADLE_PROJECT_${name}" in lan_tls_smoke
+    assert "runGradle(gradleArgs, projectProperties)" in lan_tls_smoke
+    assert "`-Pandroid.testInstrumentationRunnerArguments.lengrvisBaseUrl=${baseUrl}`" not in lan_tls_smoke
+    assert (
+        "`-Pandroid.testInstrumentationRunnerArguments.lengrvisPairClaimSecret=${pairClaimSecret}`" not in lan_tls_smoke
+    )
 
     assert "npm --prefix mobile run smoke:android-hardening-plugin" in ci
     assert "npm --prefix mobile run smoke:android-manifest-resources" in ci

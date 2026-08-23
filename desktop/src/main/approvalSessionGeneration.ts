@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
-  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -222,30 +221,26 @@ function writeGenerationFileAtomic(filePath: string, generation: string): void {
 }
 
 function invalidateCanonicalGeneration(filePath: string): string | null {
-  if (!existsSync(filePath)) return null;
   const stalePath = `${filePath}.${process.pid}.${randomBytes(8).toString("hex")}.stale`;
   try {
     renameSync(filePath, stalePath);
     return stalePath;
   } catch (renameError) {
-    // A synchronous empty canonical value is also strictly invalid to the
-    // backend. This fallback covers filesystems that reject replacement rename.
-    try {
-      const fd = openSync(filePath, "w", 0o600);
-      try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      chmodSync(filePath, 0o600);
-      return null;
-    } catch (truncateError) {
-      throw new ApprovalSessionGenerationInvalidationError(
-        "Existing approval session generation could not be invalidated; the primary app must terminate",
-        { cause: { renameError, truncateError } }
-      );
-    }
+    if (isFileNotFoundError(renameError)) return null;
+    throw new ApprovalSessionGenerationInvalidationError(
+      "Existing approval session generation could not be invalidated; the primary app must terminate",
+      { cause: renameError }
+    );
   }
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
 }
 
 function removeStaleGeneration(stalePath: string | null): void {

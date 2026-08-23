@@ -114,9 +114,18 @@ def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) ->
     codeql = yaml.safe_load(_text(project_root, ".github/workflows/codeql.yml"))
     analyze = codeql["jobs"]["analyze"]
     assert analyze["strategy"]["matrix"]["include"] == [
-        {"language": "python", "build-mode": "none"},
-        {"language": "javascript-typescript", "build-mode": "none"},
-        {"language": "java-kotlin", "build-mode": "manual"},
+        {
+            "languages": "python,javascript-typescript",
+            "build-mode": "none",
+            "category": "/language:python-typescript",
+            "android-build": False,
+        },
+        {
+            "languages": "java-kotlin",
+            "build-mode": "manual",
+            "category": "/language:java-kotlin",
+            "android-build": True,
+        },
     ]
 
     steps = analyze["steps"]
@@ -127,18 +136,18 @@ def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) ->
     codeql_init = next(step for step in steps if "github/codeql-action/init@" in step.get("uses", ""))
     codeql_analyze = next(step for step in steps if "github/codeql-action/analyze@" in step.get("uses", ""))
 
-    kotlin_only = "${{ matrix.language == 'java-kotlin' }}"
+    kotlin_only = "${{ matrix.android-build }}"
     assert node_setup["if"] == kotlin_only
     assert node_setup["with"]["node-version"] == "20"
     assert java_setup["if"] == kotlin_only
     assert java_setup["with"] == {"distribution": "temurin", "java-version": "17"}
     assert mobile_install["if"] == kotlin_only
     assert mobile_install["run"] == "npm --prefix mobile ci"
-    assert codeql_init["with"]["languages"] == "${{ matrix.language }}"
+    assert codeql_init["with"]["languages"] == "${{ matrix.languages }}"
     assert codeql_init["with"]["build-mode"] == "${{ matrix.build-mode }}"
     assert kotlin_compile["if"] == kotlin_only
     assert kotlin_compile["working-directory"] == "mobile/android"
     assert kotlin_compile["run"].startswith("bash ./gradlew ")
     assert ":app:compileDebugKotlin" in kotlin_compile["run"]
     assert ":app:compileDebugAndroidTestKotlin" in kotlin_compile["run"]
-    assert codeql_analyze["with"]["category"] == "/language:${{ matrix.language }}"
+    assert codeql_analyze["with"]["category"] == "${{ matrix.category }}"

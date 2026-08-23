@@ -10,11 +10,16 @@ function readMobile(relativePath) {
   return fs.readFileSync(path.join(mobileRoot, relativePath), "utf8");
 }
 
-function runGradle(args) {
+function runGradle(args, projectProperties = {}) {
   const command = process.platform === "win32" ? "cmd.exe" : "./gradlew";
   const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", "gradlew.bat", ...args] : args;
+  const gradleEnvironment = { ...process.env };
+  for (const [name, value] of Object.entries(projectProperties)) {
+    gradleEnvironment[`ORG_GRADLE_PROJECT_${name}`] = value;
+  }
   const result = childProcess.spawnSync(command, commandArgs, {
     cwd: androidRoot,
+    env: gradleEnvironment,
     stdio: "inherit",
     shell: false,
   });
@@ -330,20 +335,18 @@ function runConnectedGate() {
   const gradleArgs = [
     ":app:connectedDebugAndroidTest",
     "-Pandroid.testInstrumentationRunnerArguments.class=com.lengrvis.approval.LengrvisLanTrustInstrumentedTest",
-    `-Pandroid.testInstrumentationRunnerArguments.lengrvisBaseUrl=${baseUrl}`,
-    `-Pandroid.testInstrumentationRunnerArguments.lengrvisFingerprintSha256=${fingerprint}`,
     "--no-daemon",
     "--stacktrace",
   ];
+  const projectProperties = {
+    "android.testInstrumentationRunnerArguments.lengrvisBaseUrl": baseUrl,
+    "android.testInstrumentationRunnerArguments.lengrvisFingerprintSha256": fingerprint,
+  };
   if (pairCode) {
-    gradleArgs.splice(4, 0, `-Pandroid.testInstrumentationRunnerArguments.lengrvisPairCode=${pairCode}`);
-    gradleArgs.splice(
-      5,
-      0,
-      `-Pandroid.testInstrumentationRunnerArguments.lengrvisPairClaimSecret=${pairClaimSecret}`,
-    );
+    projectProperties["android.testInstrumentationRunnerArguments.lengrvisPairCode"] = pairCode;
+    projectProperties["android.testInstrumentationRunnerArguments.lengrvisPairClaimSecret"] = pairClaimSecret;
   }
-  runGradle(gradleArgs);
+  runGradle(gradleArgs, projectProperties);
 }
 
 if (process.argv.includes("--compile-instrumentation")) {

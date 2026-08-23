@@ -251,13 +251,8 @@ export class BackendProcessManager {
       });
       this.child = child;
 
-      child.stdout.on("data", (chunk) => {
-        void writeBackendLog(`[stdout] ${chunk.toString().trimEnd()}`);
-      });
-
-      child.stderr.on("data", (chunk) => {
-        void writeBackendLog(`[stderr] ${chunk.toString().trimEnd()}`);
-      });
+      child.stdout.on("data", createBackendProcessOutputLogHandler("stdout"));
+      child.stderr.on("data", createBackendProcessOutputLogHandler("stderr"));
 
       child.once("exit", (code) => {
         void writeBackendLog(`backend process exited; code=${code}`);
@@ -314,7 +309,7 @@ export class BackendProcessManager {
       10_000
     );
     if (drainError) {
-      void writeBackendLog(`backend drain before stop failed; error=${drainError.message}`);
+      void writeBackendLog("backend drain before stop failed; remote detail omitted");
     }
     await terminateProcessTree(child);
     if (this.child === child) {
@@ -690,13 +685,26 @@ export function writeBackendLog(message: string): Promise<void> {
     .then(() => writeBackendLogEntry(entry));
   return backendLogWriteQueue;
 }
+
+export function createBackendProcessOutputLogHandler(
+  channel: "stdout" | "stderr",
+  writer: (message: string) => void | Promise<void> = writeBackendLog
+): () => void {
+  let noticeWritten = false;
+  return () => {
+    if (noticeWritten) return;
+    noticeWritten = true;
+    void writer(`[${channel}] output received; content omitted from persistent logs`);
+  };
+}
+
 async function writeBackendLogEntry(entry: string): Promise<void> {
   try {
     const logDir = app.getPath("userData");
     await mkdir(logDir, { recursive: true });
     const logPath = join(logDir, "backend-process.log");
     await rotateBackendLogIfNeeded(logPath, Buffer.byteLength(entry, "utf8"));
-    await appendFile(logPath, entry, "utf8");
+    await appendFile(logPath, entry, { encoding: "utf8", mode: 0o600 });
   } catch {
     // Logging must never block app startup.
   }
