@@ -90,6 +90,7 @@ def approval_gate_error(
         args,
         context=approval_context,
         settings=getattr(policy_engine, "settings", None),
+        now_provider=getattr(policy_engine, "now_provider", None),
         task_id=task_id,
         step_id=step_id,
         allow_consumed=False,
@@ -113,6 +114,7 @@ def approval_gate_error(
         args,
         context=approval_context,
         settings=getattr(policy_engine, "settings", None),
+        now_provider=getattr(policy_engine, "now_provider", None),
         task_id=task_id,
         step_id=step_id,
         allow_consumed=True,
@@ -129,6 +131,7 @@ def approval_binding_error(
     *,
     context: dict[str, Any] | None,
     settings: Any,
+    now_provider: Callable[[], Any] | None,
     task_id: str,
     step_id: str | None,
     allow_consumed: bool,
@@ -166,7 +169,7 @@ def approval_binding_error(
     runtime_settings = runtime_context.get("settings") or settings
     from app.policy.policy_engine import PolicyEngine
 
-    current_review = PolicyEngine(settings=runtime_settings).review_tool_call(
+    current_review = PolicyEngine(settings=runtime_settings, now_provider=now_provider).review_tool_call(
         approval.task_id,
         approval.step_id,
         tool_name,

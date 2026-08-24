@@ -6,6 +6,7 @@ import logging
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 import psutil
@@ -1352,6 +1353,7 @@ def _ui_automation_approval_binding_error(
     *,
     context: dict[str, Any] | None,
     settings: Any,
+    now_provider: Callable[[], Any] | None,
     task_id: str,
     step_id: str | None,
     allow_consumed: bool,
@@ -1362,6 +1364,7 @@ def _ui_automation_approval_binding_error(
         args,
         context=context,
         settings=settings,
+        now_provider=now_provider,
         task_id=task_id,
         step_id=step_id,
         allow_consumed=allow_consumed,

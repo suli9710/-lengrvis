@@ -12,6 +12,7 @@ import inspect
 import json
 import os
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ os.environ.setdefault("LENGRVIS_NATIVE_CONFIRMATION_SECRET", "test-native-confir
 
 
 TEST_DESKTOP_API_TOKEN = "pytest-desktop-api-token"  # noqa: S105 - deterministic test credential.
+TEST_POLICY_NOW = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
 
 
 # test_start_app_script.py exercises Windows-only PowerShell launch behavior and
@@ -179,6 +181,20 @@ def desktop_api_auth_for_testclient(request: pytest.FixtureRequest, monkeypatch:
         original_async_client_init(self, *args, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "__init__", authenticated_async_client_init)
+
+
+@pytest.fixture(autouse=True)
+def stabilize_default_policy_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep default policy decisions independent of the wall-clock test hour."""
+    from app.policy.policy_engine import PolicyEngine
+
+    original_init = PolicyEngine.__init__
+
+    def deterministic_init(self: PolicyEngine, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("now_provider", lambda: TEST_POLICY_NOW)
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(PolicyEngine, "__init__", deterministic_init)
 
 
 @pytest.fixture(autouse=True)

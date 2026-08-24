@@ -50,11 +50,10 @@ def write_keypair(*, private_key_path: Path, public_key_path: Path) -> str:
     private_identity = _exclusive_write(
         private_path,
         private_text,
-        mode=0o600,
         protect_private=True,
     )
     try:
-        _exclusive_write(public_path, public_text, mode=0o644)
+        _exclusive_write(public_path, public_text)
     except Exception:
         _unlink_if_same_file(private_path, private_identity)
         raise
@@ -65,13 +64,11 @@ def _exclusive_write(
     path: Path,
     text: str,
     *,
-    mode: int,
     protect_private: bool = False,
 ) -> FileIdentity:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor: int | None = _open_exclusive_file(
         path,
-        mode=mode,
         protect_private=protect_private,
     )
     identity: FileIdentity | None = None
@@ -89,7 +86,7 @@ def _exclusive_write(
             handle.write(text + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-            _chmod_open_file(handle.fileno(), path=path, mode=mode)
+            _chmod_open_file(handle.fileno(), path=path)
             if protect_private and os.name == "nt":
                 _protect_windows_private_key_file(
                     path,
@@ -107,10 +104,10 @@ def _exclusive_write(
     return identity
 
 
-def _open_exclusive_file(path: Path, *, mode: int, protect_private: bool) -> int:
+def _open_exclusive_file(path: Path, *, protect_private: bool) -> int:
     if protect_private and os.name == "nt":
         return _open_windows_private_key_file(path)
-    return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+    return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
 
 
 def _open_windows_private_key_file(path: Path) -> int:
@@ -521,13 +518,13 @@ def _powershell_environment(
     }
 
 
-def _chmod_open_file(descriptor: int, *, path: Path, mode: int) -> None:
+def _chmod_open_file(descriptor: int, *, path: Path) -> None:
     if os.name == "nt":
         return
     if hasattr(os, "fchmod"):
-        os.fchmod(descriptor, mode)
+        os.fchmod(descriptor, 0o600)
     else:
-        os.chmod(path, mode)
+        os.chmod(path, 0o600)
 
 
 def _unlink_if_same_file(path: Path, expected_identity: FileIdentity) -> None:

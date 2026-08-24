@@ -356,7 +356,8 @@ def search_web_via_provider(args: dict[str, Any], context: dict[str, Any]) -> di
     results = []
     for link in page.get("links", []):
         href = str(link.get("url", ""))
-        if "bing.com" in urlparse(href).netloc:
+        hostname = (urlparse(href).hostname or "").rstrip(".").casefold()
+        if hostname == "bing.com" or hostname.endswith(".bing.com"):
             continue
         results.append(link)
         if len(results) >= 10:

@@ -150,9 +150,8 @@ def _stored_secret_value(path: Path, value: str) -> str:
     if _insecure_plaintext_allowed():
         logger.warning(
             "storing plaintext local secret at %s because secure local secret storage is unavailable "
-            "and %s/test mode is enabled",
+            "and an explicit insecure-development override or test mode is enabled",
             path,
-            ALLOW_INSECURE_LOCAL_SECRETS_ENV,
         )
         return value
     raise RuntimeError(

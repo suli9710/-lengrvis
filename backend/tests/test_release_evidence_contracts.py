@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 from copy import deepcopy
@@ -152,6 +153,9 @@ def test_reviewed_evidence_keypair_generator_writes_distinct_verifiable_keys(
             env={**os.environ, "LENGRVIS_TEST_PRIVATE_KEY_PATH": str(private_path)},
         )
         assert acl_check.returncode == 0, acl_check.stderr
+    else:
+        assert stat.S_IMODE(private_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(public_path.stat().st_mode) == 0o600
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         evidence_keypair.write_keypair(
             private_key_path=private_path,

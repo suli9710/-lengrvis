@@ -121,7 +121,7 @@ export class BrowserHostPinnedProxy {
         response.writeHead(
           upstreamResponse.statusCode ?? 502,
           upstreamResponse.statusMessage,
-          upstreamResponse.headers
+          forwardedResponseHeaders(upstreamResponse)
         );
         upstreamResponse.pipe(response);
       });
@@ -162,12 +162,31 @@ function safeErrorMessage(error: unknown): string {
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
+  "proxy-connection",
   "proxy-authenticate",
   "proxy-authorization",
   "te",
   "trailer",
+  "transfer-encoding",
   "upgrade"
 ]);
+
+function forwardedResponseHeaders(upstream: IncomingMessage): string[] {
+  const connectionHeaders = new Set(
+    String(upstream.headers.connection ?? "")
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const forwarded: string[] = [];
+  for (let index = 0; index + 1 < upstream.rawHeaders.length; index += 2) {
+    const name = upstream.rawHeaders[index];
+    const lowerName = name.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lowerName) || connectionHeaders.has(lowerName)) continue;
+    forwarded.push(name, upstream.rawHeaders[index + 1]);
+  }
+  return forwarded;
+}
 
 function forwardedHeaders(headers: IncomingHttpHeaders, authority: string): IncomingHttpHeaders {
   const forwarded: IncomingHttpHeaders = {};

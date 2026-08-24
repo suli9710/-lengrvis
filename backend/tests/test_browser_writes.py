@@ -450,6 +450,7 @@ def test_search_web_via_provider_redacts_result_link_queries(monkeypatch):
                 "title": "Search",
                 "links": [
                     {"title": "Bing", "url": "https://www.bing.com/ck/a?token=bing-token"},
+                    {"title": "Bing lookalike", "url": "https://bing.com.attacker.example/result?id=1"},
                     {"title": "Result", "url": "https://result.example/path?session=secret-session"},
                 ],
             }
@@ -460,7 +461,10 @@ def test_search_web_via_provider_redacts_result_link_queries(monkeypatch):
     result = browser_tools.search_web_via_provider({"query": "demo"}, context)
 
     assert result["ok"] is True
-    assert result["results"] == [{"title": "Result", "url": "https://result.example/path?***"}]
+    assert result["results"] == [
+        {"title": "Bing lookalike", "url": "https://bing.com.attacker.example/result?***"},
+        {"title": "Result", "url": "https://result.example/path?***"},
+    ]
     assert "secret-session" not in str(result)
     assert "bing-token" not in str(result)
 

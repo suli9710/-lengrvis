@@ -118,7 +118,7 @@ describe("ApprovalSessionGenerationManager", () => {
     unlinkSync(generationPath);
     try {
       symlinkSync(missingTarget, generationPath, "file");
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary: skip only known host symlink restrictions; rethrow every other failure.
       const code = String((error as NodeJS.ErrnoException).code ?? "");
       if (["EACCES", "ENOTSUP", "EPERM", "UNKNOWN"].includes(code)) {
         context.skip(`symlink creation is unavailable on this host (${code})`);

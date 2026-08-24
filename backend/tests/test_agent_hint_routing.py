@@ -57,6 +57,17 @@ def test_supervisor_hint_allows_deterministic_matrix():
     assert not supervisor_hint_allows_deterministic("BrowserAgent", "FileAgent")
 
 
+def test_mock_supervisor_routes_bare_domains_without_treating_email_as_a_url():
+    provider = MockProvider()
+
+    assert provider._supervisor_decision("读取 docs.example.com/guide")["agent_hint"] == "BrowserAgent"
+    assert provider._supervisor_decision("打开docs.example.com")["agent_hint"] == "BrowserAgent"
+    assert provider._supervisor_decision("给 alice@example.com 写一封邮件")["agent_hint"] != "BrowserAgent"
+    assert provider._supervisor_decision("给 alice@mail.example.com 写一封邮件")["agent_hint"] != "BrowserAgent"
+    for filename in ("report.pdf", "app.py", "config.json", "README.md", "foo.bar"):
+        assert provider._supervisor_decision(f"read {filename}")["agent_hint"] != "BrowserAgent"
+
+
 @pytest.mark.anyio
 async def test_create_plan_includes_supervisor_hint_in_prompt(monkeypatch):
     monkeypatch.setenv("LENGRVIS_ALLOW_MOCK_FALLBACK", "true")

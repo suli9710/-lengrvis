@@ -74,12 +74,16 @@ export function runDomAction(webContents: WebContents, script: string): Promise<
 }
 
 export function delay(ms: number): Promise<void> {
-  if (!Number.isSafeInteger(ms) || ms < 0 || ms > BROWSER_ACTION_MAX_DELAY_MS) {
-    return Promise.reject(
-      new RangeError(`Browser action delay must be an integer from 0 to ${BROWSER_ACTION_MAX_DELAY_MS} ms`)
-    );
+  // Keep the timer sink inside a direct upper-bound branch so static analysis
+  // can prove that remote input cannot allocate an unbounded timer.
+  if (ms < BROWSER_ACTION_MAX_DELAY_MS + 1) {
+    if (Number.isSafeInteger(ms) && ms >= 0) {
+      return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    }
   }
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+  return Promise.reject(
+    new RangeError(`Browser action delay must be an integer from 0 to ${BROWSER_ACTION_MAX_DELAY_MS} ms`)
+  );
 }

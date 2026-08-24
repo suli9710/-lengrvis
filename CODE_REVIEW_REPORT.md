@@ -368,21 +368,23 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 | B7-8 | 跨平台 CI 与 CodeQL 闭环 | PowerShell Core 的 JSON 整数按 Int32/Int64 严格解析并做溢出检查；测试不再受 runner `GITHUB_RUN_ID` 污染，Linux 使用 `pwsh` fallback。CodeQL 保留历史成功的 Python/TypeScript 配置身份与 `none` build mode，并以独立 `manual` Kotlin 配置安装锁定 mobile 依赖、通过 `bash ./gradlew` 编译主代码和 androidTest，保留真实 Kotlin 扫描 | Ubuntu/macOS 原失败用例定向复现通过；Android release/mobile gate `17 passed`；CodeQL YAML、基线 category 与执行方式契约通过 |
 | B7-9 | 依赖与锁文件安全收口 | Python 升级 `cryptography 50.0.0`、`pypdf 6.16.2`、`pip 26.2.1`；Desktop 锁升级 Electron/axios 等安全补丁。Mobile 升级 Expo patch line、EAS CLI 22.2.0，显式使用 Expo 推荐的 Reanimated/Worklets，并补齐 Constants/Linking/SVG 原生 peers；移除破坏 Oclif `safeDump` 的跨 major `js-yaml` override。`minimatch` 只在 EAS 旧 5.1.2 依赖边升级至兼容的 5.1.9，Oclif 保留 10.2.6；`ts-deepmerge` 升至安全 v8，并以版本、源码标记和本地路径所有权约束的幂等 postinstall 补丁适配 EAS 唯一旧调用点。Gradle checksum 验证兼容 CRLF checkout | desktop/mobile npm audit 均 0；四份 Python lock 无已知漏洞；npm10 clean install/`npm ls`、Expo check、EAS CLI 启动/build help/真实配置合并、15 项 mobile smoke 与 SBOM 门禁通过 |
 | B7-10 | GitHub CodeQL 实扫告警闭环 | 审批会话代际失效移除 check-then-act 与 truncate fallback，改为一次原子 rename、仅 `ENOENT` 幂等；Browser wait 严格限制为 `0..30000ms` 安全整数；后端 stdout/stderr 与远端 drain 正文不再持久化，日志文件以 `0600` 创建；Android connected gate 将动态地址与配对凭据移入 Gradle project-property 环境通道，Windows 命令行只保留固定参数；清理 renderer 未使用导入 | 审批代际 `10 passed, 1 skipped`；新增 timer/日志 8 项；Desktop 全量 `98 files / 430 passed, 1 skipped`；Android/CodeQL 契约 `17 passed` 与 LAN TLS source smoke 通过 |
+| B7-11 | CodeQL 二次扫描与遗留 high 收口 | 二次实扫暴露的 5 个 high 与 1 个 error 已逐项修复：timer sink 置于静态可证明的直接上界分支；HTTP proxy 用成对 `rawHeaders` 保留端到端/重复响应头并剥离 hop-by-hop；Ed25519 公私钥都以 `0600` 创建；测试响应不再反射请求 URL；UI fake automation 正确调用父类初始化。同步修复默认分支遗留的 Bing lookalike、邮箱/文件名误判、敏感配置名日志与 `0666` 文件创建；UI 审批复核沿用同一服务端 `now_provider`，pytest 默认策略时钟固定而显式夜间测试不受影响。Mobile #215–#219 经主/guardian 双路安全传输、active-device JWT、逐事件 claims 过滤、有限字段重序列化及特权操作服务端复核查证为误报，已留证据并按 false positive 处置 | 受影响 Backend `209 passed, 5 skipped`，审批绑定/UI 组合 `113 passed`；Desktop 定向 `20 passed, 1 skipped`、全量 `98 files / 431 passed, 1 skipped`；异常边界门禁通过，CodeQL 复扫待推送后由 GitHub 确认 |
 
 ### 批 7 验证
 
-- Backend 最终全量：`4138 passed, 15 skipped`（10 分 07 秒，Windows）。
+- Backend 最终全量：`4140 passed, 16 skipped`（10 分 02 秒，Windows）。
 - 发布/证据专项：`148 passed`；DENIED/审批确认专项：`121 passed`；启动脚本：`119 passed`。
-- Desktop：typecheck、`98 files / 430 passed, 1 skipped`、production renderer build 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
+- Desktop：typecheck、`98 files / 431 passed, 1 skipped`、production renderer/Electron build、legal resources 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
 - Mobile：npm10 clean install、有效依赖树、Expo compatibility、EAS CLI 启动/build help/真实配置合并、typecheck 与 15 项行为 smoke 全通过；原生 debug APK + androidTest 编译 `420 actionable tasks` 通过。
-- PR-range Ruff/format（308 个 Backend Python 文件）、`git diff --check`、异常边界门禁、依赖哈希锁、repo hygiene、secret scan 与 agentic threat model 全通过。
+- PR-range Ruff/format（308 个 Backend Python 文件）及二次修复的 14 个 Python 文件、`git diff --check`、异常边界门禁、依赖哈希锁、repo hygiene、secret scan 与 agentic threat model 全通过。
 - 依赖审计全通过：Desktop/Mobile `npm audit` 均 0，四份 Python lock 均无已知漏洞；CycloneDX SBOM 共 1328 个组件（npm 1196、Python 132）。
-- Maintainability gate 通过：P95 `790/800`，Backend 最大文件 1398 行（阈值 1400）。
+- Maintainability gate 通过：P95 `790/800`，Backend 最大文件 1399 行（阈值 1400）。
 
 ### 剩余风险与外部条件
 
 - 应用内文件写与回滚已由共享路径锁闭合；外部进程仍可能在状态比较与路径操作之间抢写。彻底消除这类跨进程 TOCTOU 需要后续 native handle-bound 重构。
 - 未纳入 task journal 的 direct 路由没有 durable replay 记录；由于缺少可信执行前后状态，这些路径已统一阻止自动回滚并转人工修复，而不是猜测性补偿。
 - `expo-doctor` 当前为 `19/22`：本地精确 pin EAS CLI 与提交原生 Android 目录是项目为可复现构建和原生安全审计做出的有意选择；另有 Expo SDK 56 / React Native 0.85 所带 Hermes V1 已知内存回归，彻底修复需独立升级至 Expo SDK 57 / React Native 0.86.2 以上并重新完成真机回归，本批不做跨代升级。
+- Mobile approval WebSocket 当前对已鉴权服务端 JSON 使用 TypeScript 类型断言而非完整运行时 schema；异常结构会被外围 catch/polling fallback 吸收，但后续仍应增加有数组上限和嵌套字段约束的 `parseApprovalEvent`，作为客户端韧性加固，不应误当作授权边界。
 - Maintainability P95 为 `790/800`，余量仍有限；后续新增共享执行逻辑应优先继续拆分，而不是扩大豁免。
 - `.github/CODEOWNERS` 的真实多人治理，以及 Android 真机、clean-machine、人工结果质量与 release-owner sign-off 等发布证据仍是外部上线条件；本次审查不伪造人员、设备或人工证据。

@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import types
+from datetime import UTC, datetime
 
 import pytest
 
@@ -34,11 +35,14 @@ from app.tools import ui_automation_tools
 from app.tools.registry import register_all_tools
 from app.tools.tool_abort import ToolAbortedError
 
+_TEST_DAYTIME = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+
 
 class FakePolicy:
     def __init__(self, verdict: SafetyVerdict = SafetyVerdict.ALLOW) -> None:
         self.verdict = verdict
         self.calls: list[tuple[str, dict]] = []
+        self.now_provider = lambda: _TEST_DAYTIME
 
     def review_tool_call(self, task_id, step_id, tool_name, args, risk_level):
         self.calls.append((tool_name, args))
@@ -708,6 +712,7 @@ async def test_click_revalidates_runtime_identity_and_blocks_replaced_target():
 
     class ReplacingAutomation(FakeAutomation):
         def __init__(self) -> None:
+            super().__init__(original)
             self.calls = 0
 
         def GetRootElement(self):
@@ -1359,7 +1364,7 @@ def test_policy_classifies_gui_input_as_approval_gated():
 
 
 def test_policy_blocks_sensitive_gui_text_and_targets():
-    policy = PolicyEngine()
+    policy = PolicyEngine(now_provider=lambda: _TEST_DAYTIME)
     fake_token = "abcdef12" + "34567890"
 
     password_target = policy.review_tool_call(
@@ -1384,7 +1389,7 @@ def test_policy_blocks_sensitive_gui_text_and_targets():
 
 
 def test_policy_blocks_sensitive_remote_type_text():
-    policy = PolicyEngine()
+    policy = PolicyEngine(now_provider=lambda: _TEST_DAYTIME)
     fake_token = "abcdef12" + "34567890"
 
     review = policy.review_tool_call(

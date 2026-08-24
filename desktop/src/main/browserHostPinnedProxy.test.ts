@@ -1,5 +1,9 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+  type IncomingHttpHeaders
+} from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { BrowserHostPinnedProxy } from "./browserHostPinnedProxy";
@@ -41,10 +45,13 @@ describe("BrowserHostPinnedProxy", () => {
   });
 
   it("forwards HTTP requests to the pinned IP while preserving the original Host header", async () => {
+    let receivedHost: string | undefined;
+    let receivedUrl: string | undefined;
     const upstream = createHttpServer((request, response) => {
-      const body = `${request.headers.host} ${request.url}`;
-      response.writeHead(200, { "Content-Length": Buffer.byteLength(body) });
-      response.end(body);
+      receivedHost = request.headers.host;
+      receivedUrl = request.url;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end('{"ok":true}');
     });
     servers.push(upstream);
     const upstreamPort = await listen(upstream);
@@ -53,10 +60,48 @@ describe("BrowserHostPinnedProxy", () => {
     });
     servers.push(proxy.server);
 
-    const body = await requestBody(proxy.address, `http://rebind.invalid:${upstreamPort}/hello?x=1`);
+    const targetPath = "/hello?next=%3Cscript%3Ealert%281%29%3C%2Fscript%3E";
+    const result = await requestBody(
+      proxy.address,
+      `http://rebind.invalid:${upstreamPort}${targetPath}`
+    );
 
-    expect(body.status).toBe(200);
-    expect(body.text).toBe(`rebind.invalid:${upstreamPort} /hello?x=1`);
+    expect(result.status).toBe(200);
+    expect(result.text).toBe('{"ok":true}');
+    expect(receivedHost).toBe(`rebind.invalid:${upstreamPort}`);
+    expect(receivedUrl).toBe(targetPath);
+  });
+
+  it("preserves end-to-end response headers and strips hop-by-hop response headers", async () => {
+    const upstream = createHttpServer((_request, response) => {
+      response.setHeader("Content-Type", "text/plain; charset=utf-8");
+      response.setHeader("Content-Security-Policy", "default-src 'none'");
+      response.setHeader("Set-Cookie", ["session=one; HttpOnly", "theme=dark; SameSite=Lax"]);
+      response.setHeader("Access-Control-Expose-Headers", "X-App-Protocol");
+      response.setHeader("X-App-Protocol", "v2");
+      response.setHeader("Connection", "X-Hop-Only");
+      response.setHeader("X-Hop-Only", "must-not-cross");
+      response.end("end-to-end headers preserved");
+    });
+    servers.push(upstream);
+    const upstreamPort = await listen(upstream);
+    const proxy = await BrowserHostPinnedProxy.start({
+      resolveTarget: async (_hostname, port) => ({ address: "127.0.0.1", port })
+    });
+    servers.push(proxy.server);
+
+    const result = await requestBody(proxy.address, `http://headers.invalid:${upstreamPort}/`);
+
+    expect(result.status).toBe(200);
+    expect(result.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(result.headers["content-security-policy"]).toBe("default-src 'none'");
+    expect(result.headers["set-cookie"]).toEqual([
+      "session=one; HttpOnly",
+      "theme=dark; SameSite=Lax"
+    ]);
+    expect(result.headers["access-control-expose-headers"]).toBe("X-App-Protocol");
+    expect(result.headers["x-app-protocol"]).toBe("v2");
+    expect(result.headers["x-hop-only"]).toBeUndefined();
   });
 
   it("converts resolver failures into bounded 403 responses and reports the block", async () => {
@@ -111,7 +156,7 @@ function onceData(socket: Socket): Promise<Buffer> {
 function requestBody(
   proxy: { host: string; port: number },
   target: string
-): Promise<{ status: number; text: string }> {
+): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       { host: proxy.host, port: proxy.port, method: "GET", path: target },
@@ -119,7 +164,11 @@ function requestBody(
         const chunks: Buffer[] = [];
         response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
         response.on("end", () =>
-          resolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString() })
+          resolve({
+            status: response.statusCode ?? 0,
+            text: Buffer.concat(chunks).toString(),
+            headers: response.headers
+          })
         );
       }
     );

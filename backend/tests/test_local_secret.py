@@ -121,6 +121,19 @@ def test_explicit_insecure_dev_fallback_keeps_plaintext_on_non_windows(monkeypat
     assert read_local_secret(secret_path) == value
 
 
+def test_insecure_fallback_warning_never_logs_secret_or_secret_environment_name(monkeypatch, caplog, tmp_path: Path):
+    monkeypatch.setattr(local_secret, "dpapi_available", lambda: False)
+    monkeypatch.setattr(local_secret, "keyring_available", lambda: False)
+    monkeypatch.setenv(local_secret.ALLOW_INSECURE_LOCAL_SECRETS_ENV, "1")
+    secret = "top-secret-local-value"
+
+    with caplog.at_level("WARNING", logger="app.security.local_secret"):
+        assert local_secret._stored_secret_value(tmp_path / "unit.secret", secret) == secret
+
+    assert secret not in caplog.text
+    assert local_secret.ALLOW_INSECURE_LOCAL_SECRETS_ENV not in caplog.text
+
+
 def test_legacy_plaintext_secret_is_kept_and_migrated(tmp_path: Path):
     secret_path = tmp_path / "unit.secret"
     secret_path.write_text("legacy-secret", encoding="utf-8")
