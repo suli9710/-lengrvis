@@ -24,6 +24,11 @@ from cryptography.hazmat.primitives.serialization import (
 
 FileIdentity: TypeAlias = tuple[int, int, int]
 
+# Clean Windows hosts may need more than 15 seconds to start PowerShell and
+# compile the file-identity helper. Keep the operation bounded while allowing
+# enough time for first-run initialization on CI and release workstations.
+_WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS = 60
+
 
 def generate_keypair() -> tuple[str, str, str]:
     private_key = Ed25519PrivateKey.generate()
@@ -397,7 +402,7 @@ if (($allows[0].FileSystemRights -band $full) -ne $full) {
             check=False,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=_WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             env=_powershell_environment(
                 system_root=system_root,
@@ -406,6 +411,11 @@ if (($allows[0].FileSystemRights -band $full) -ne $full) {
                 repair=repair,
             ),
         )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(
+            "Windows private-key DACL protection timed out after "
+            f"{_WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS} seconds"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise OSError("unable to apply the Windows private-key DACL") from exc
     if completed.returncode != 0:

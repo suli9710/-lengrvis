@@ -150,6 +150,7 @@ def test_reviewed_evidence_keypair_generator_writes_distinct_verifiable_keys(
             check=False,
             capture_output=True,
             text=True,
+            timeout=evidence_keypair._WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS,
             env={**os.environ, "LENGRVIS_TEST_PRIVATE_KEY_PATH": str(private_path)},
         )
         assert acl_check.returncode == 0, acl_check.stderr
@@ -179,6 +180,66 @@ def test_reviewed_evidence_keypair_cleanup_does_not_delete_replaced_path(
     evidence_keypair._unlink_if_same_file(path, identity)
 
     assert path.read_text(encoding="utf-8") == "replacement-must-survive\n"
+
+
+def test_reviewed_evidence_windows_dacl_protection_uses_bounded_cold_start_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    powershell = tmp_path / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    powershell.parent.mkdir(parents=True)
+    powershell.touch()
+    target = tmp_path / "reviewer-private.key"
+    target.touch()
+    expected_identity = (1, 2, 3)
+    observed_timeout: list[int] = []
+
+    monkeypatch.setattr(evidence_keypair, "_trusted_windows_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        evidence_keypair,
+        "_file_identity_from_descriptor",
+        lambda _descriptor: expected_identity,
+    )
+
+    def _record_run(command, **kwargs):
+        observed_timeout.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(evidence_keypair.subprocess, "run", _record_run)
+
+    evidence_keypair._protect_windows_private_key_file(
+        target,
+        descriptor=7,
+        expected_identity=expected_identity,
+        repair=False,
+    )
+
+    assert observed_timeout == [evidence_keypair._WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS]
+    assert 60 <= observed_timeout[0] <= 120
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL protection only")
+def test_reviewed_evidence_keypair_timeout_fails_closed_without_key_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_path = tmp_path / "reviewer-private.key"
+    public_path = tmp_path / "verifier-public.key"
+
+    def _time_out(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(evidence_keypair.subprocess, "run", _time_out)
+
+    with pytest.raises(OSError, match="DACL protection timed out after 60 seconds") as error:
+        evidence_keypair.write_keypair(
+            private_key_path=private_path,
+            public_key_path=public_path,
+        )
+
+    assert isinstance(error.value.__cause__, subprocess.TimeoutExpired)
+    assert not private_path.exists()
+    assert not public_path.exists()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows handle conversion only")

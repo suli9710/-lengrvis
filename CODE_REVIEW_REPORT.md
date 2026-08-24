@@ -1,6 +1,6 @@
 # Lengrvis 全量代码审查报告
 
-> **更新（截至 2026-08-24，共 7 批）**：报告中确认的 Critical、全部 High、代码级剩余 Medium 及一批 Low 已完成修复与回归验证。最终验证覆盖 Backend 全量 `4140 passed, 16 skipped`、Desktop `98 files / 432 passed, 1 skipped` + typecheck/production build、Mobile npm10 clean install/typecheck/15 项行为 smoke/Android 原生编译，以及发布证据、依赖锁、Ruff、repo hygiene、maintainability、secret scan、CodeQL 与 threat-model 门禁。各批详情见文末七节「修复记录」；剩余项为已明示的跨进程 TOCTOU/SDK 跨代升级，以及必须由真实人员、设备和候选构建完成的外部发布条件。
+> **更新（截至 2026-08-24，共 7 批）**：报告中确认的 Critical、全部 High、代码级剩余 Medium 及一批 Low 已完成修复与回归验证。最终验证覆盖 Backend 全量 `4142 passed, 16 skipped`、Desktop `98 files / 432 passed, 1 skipped` + typecheck/production build、Mobile npm10 clean install/typecheck/15 项行为 smoke/Android 原生编译，以及发布证据、依赖锁、Ruff、repo hygiene、maintainability、secret scan、CodeQL 与 threat-model 门禁。各批详情见文末七节「修复记录」；剩余项为已明示的跨进程 TOCTOU/SDK 跨代升级，以及必须由真实人员、设备和候选构建完成的外部发布条件。
 >
 > 审查日期：2026-07-26
 > 范围：整个代码库（backend / desktop / mobile / scripts / CI / 根目录配置），共约 1472 个 git 跟踪文件（655 Python + 286 TS + 101 TSX + 6 Kotlin + 69 PowerShell + 9 workflow）。
@@ -369,12 +369,13 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 | B7-9 | 依赖与锁文件安全收口 | Python 升级 `cryptography 50.0.0`、`pypdf 6.16.2`、`pip 26.2.1`；Desktop 锁升级 Electron/axios 等安全补丁。Mobile 升级 Expo patch line、EAS CLI 22.2.0，显式使用 Expo 推荐的 Reanimated/Worklets，并补齐 Constants/Linking/SVG 原生 peers；移除破坏 Oclif `safeDump` 的跨 major `js-yaml` override。`minimatch` 只在 EAS 旧 5.1.2 依赖边升级至兼容的 5.1.9，Oclif 保留 10.2.6；`ts-deepmerge` 升至安全 v8，并以版本、源码标记和本地路径所有权约束的幂等 postinstall 补丁适配 EAS 唯一旧调用点。Gradle checksum 验证兼容 CRLF checkout | desktop/mobile npm audit 均 0；四份 Python lock 无已知漏洞；npm10 clean install/`npm ls`、Expo check、EAS CLI 启动/build help/真实配置合并、15 项 mobile smoke 与 SBOM 门禁通过 |
 | B7-10 | GitHub CodeQL 实扫告警闭环 | 审批会话代际失效移除 check-then-act 与 truncate fallback，改为一次原子 rename、仅 `ENOENT` 幂等；Browser wait 严格限制为 `0..30000ms` 安全整数；后端 stdout/stderr 与远端 drain 正文不再持久化，日志文件以 `0600` 创建；Android connected gate 将动态地址与配对凭据移入 Gradle project-property 环境通道，Windows 命令行只保留固定参数；清理 renderer 未使用导入 | 审批代际 `10 passed, 1 skipped`；新增 timer/日志 8 项；Desktop 全量 `98 files / 430 passed, 1 skipped`；Android/CodeQL 契约 `17 passed` 与 LAN TLS source smoke 通过 |
 | B7-11 | CodeQL 二次扫描与遗留 high 收口 | 二次实扫暴露的 5 个 high 与 1 个 error 已逐项修复：timer sink 置于静态可证明的直接上界分支；HTTP proxy 用成对 `rawHeaders` 保留端到端/重复响应头，显式验证每个头名、头值及 `Connection` option 后剥离 hop-by-hop，畸形元数据封闭为固定 502；该透明代理边界没有自有安全头可被远端覆盖，使用 CodeQL 官方精确规则标注留证。Ed25519 公私钥都以 `0600` 创建；测试响应不再反射请求 URL；UI fake automation 正确调用父类初始化。同步修复默认分支遗留的 Bing lookalike、邮箱/文件名误判、敏感配置名日志与 `0666` 文件创建；UI 审批复核沿用同一服务端 `now_provider`，pytest 默认策略时钟固定而显式夜间测试不受影响。Mobile #215–#219 经主/guardian 双路安全传输、active-device JWT、逐事件 claims 过滤、有限字段重序列化及特权操作服务端复核查证为误报，已留证据并按 false positive 处置 | 受影响 Backend `209 passed, 5 skipped`，审批绑定/UI 组合 `113 passed`；Desktop proxy `5 passed`、全量 `98 files / 432 passed, 1 skipped`、typecheck/production build 通过；异常边界门禁通过，GitHub CodeQL required check 作为最终实扫凭据 |
+| B7-12 | Windows 私钥 DACL 冷启动预算 | reviewed-evidence keypair 生成器继续以受信 System32 PowerShell、路径文件身份和最终 DACL 复核 fail-closed，但将首次 PowerShell/`Add-Type` 的固定 15 秒预算改为不可由环境覆盖的 60 秒有界常量；超时保留明确根因且不重试，避免未知 ACL 状态竞争。测试自身的独立 ACL 复核使用相同上限，同步 `TimeoutExpired` 故障注入确认清理路径不残留私钥或公钥 | keypair 专项 `4 passed`；完整发布/证据专项 `150 passed`；Ruff check/format 通过 |
 
 ### 批 7 验证
 
-- Backend 最终全量：`4140 passed, 16 skipped`（10 分 02 秒，Windows）。
-- 发布/证据专项：`148 passed`；DENIED/审批确认专项：`121 passed`；启动脚本：`119 passed`。
-- Desktop：typecheck、`98 files / 431 passed, 1 skipped`、production renderer/Electron build、legal resources 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
+- Backend 最终全量：`4142 passed, 16 skipped`（9 分 53 秒，Windows）。
+- 发布/证据专项：`150 passed`；DENIED/审批确认专项：`121 passed`；启动脚本：`119 passed`。
+- Desktop：typecheck、`98 files / 432 passed, 1 skipped`、production renderer/Electron build、legal resources 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
 - Mobile：npm10 clean install、有效依赖树、Expo compatibility、EAS CLI 启动/build help/真实配置合并、typecheck 与 15 项行为 smoke 全通过；原生 debug APK + androidTest 编译 `420 actionable tasks` 通过。
 - PR-range Ruff/format（308 个 Backend Python 文件）及二次修复的 14 个 Python 文件、`git diff --check`、异常边界门禁、依赖哈希锁、repo hygiene、secret scan 与 agentic threat model 全通过。
 - 依赖审计全通过：Desktop/Mobile `npm audit` 均 0，四份 Python lock 均无已知漏洞；CycloneDX SBOM 共 1328 个组件（npm 1196、Python 132）。
@@ -383,6 +384,7 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 ### 剩余风险与外部条件
 
 - 应用内文件写与回滚已由共享路径锁闭合；外部进程仍可能在状态比较与路径操作之间抢写。彻底消除这类跨进程 TOCTOU 需要后续 native handle-bound 重构。
+- Windows DACL helper 超时时，若受信 PowerShell 派生的系统工具在父进程结束后仍短暂占用目标，身份安全的清理可能保留一个仅当前用户可访问的私钥文件；生成仍失败且不会生成公钥。彻底约束后代进程与删除完成性需要后续 Windows Job Object 集成。
 - 未纳入 task journal 的 direct 路由没有 durable replay 记录；由于缺少可信执行前后状态，这些路径已统一阻止自动回滚并转人工修复，而不是猜测性补偿。
 - `expo-doctor` 当前为 `19/22`：本地精确 pin EAS CLI 与提交原生 Android 目录是项目为可复现构建和原生安全审计做出的有意选择；另有 Expo SDK 56 / React Native 0.85 所带 Hermes V1 已知内存回归，彻底修复需独立升级至 Expo SDK 57 / React Native 0.86.2 以上并重新完成真机回归，本批不做跨代升级。
 - Mobile approval WebSocket 当前对已鉴权服务端 JSON 使用 TypeScript 类型断言而非完整运行时 schema；异常结构会被外围 catch/polling fallback 吸收，但后续仍应增加有数组上限和嵌套字段约束的 `parseApprovalEvent`，作为客户端韧性加固，不应误当作授权边界。
