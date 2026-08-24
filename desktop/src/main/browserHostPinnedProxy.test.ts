@@ -104,6 +104,28 @@ describe("BrowserHostPinnedProxy", () => {
     expect(result.headers["x-hop-only"]).toBeUndefined();
   });
 
+  it("fails closed when an upstream Connection option is not a valid header token", async () => {
+    const blocked: string[] = [];
+    const upstream = createHttpServer((_request, response) => {
+      response.setHeader("Connection", "invalid option");
+      response.end("must not reach the browser");
+    });
+    servers.push(upstream);
+    const upstreamPort = await listen(upstream);
+    const proxy = await BrowserHostPinnedProxy.start({
+      resolveTarget: async (_hostname, port) => ({ address: "127.0.0.1", port }),
+      onBlock: (message) => blocked.push(message)
+    });
+    servers.push(proxy.server);
+
+    const result = await requestBody(proxy.address, `http://headers.invalid:${upstreamPort}/`);
+
+    expect(result.status).toBe(502);
+    expect(result.text).toBe("");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toContain("invalid option");
+  });
+
   it("converts resolver failures into bounded 403 responses and reports the block", async () => {
     const blocked: string[] = [];
     const proxy = await BrowserHostPinnedProxy.start({
