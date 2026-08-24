@@ -14,11 +14,12 @@ from urllib.parse import urlparse
 from app.core.content_provenance import propagate_content_envelope
 from app.core.errors import SecurityError
 from app.core.schemas import PlanStep, SafetyReview, ToolResult
-from app.orchestration.resource_state import normalize_path_key, resource_state, resource_state_summary
+from app.orchestration.resource_state import normalize_path_key, resource_state_summary
 from app.orchestration.result_budget import discard_large_result_artifact, large_result_artifact_path
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_value
 from app.tools.filesystem_safety import ensure_mutation_path_safe
+from app.tools.managed_backup_identity import capture_managed_backup_identity
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,6 @@ _ROLLBACK_SECONDARY_ACTIONS = frozenset({"dst_backup"})
 _TOOL_SUPPLIED_STATE_KEYS = frozenset({"_post_resource_state", "_post_state"})
 _ROLLBACK_EVIDENCE_KEY = "_rollback_evidence"
 _ROLLBACK_EVIDENCE_SCHEMA = "rollback-evidence/v2"
-_MANAGED_BACKUP_IDENTITY_SCHEMA = "managed-backup-identity/v2"
 _TRUSTED_TOOL_TIERS = frozenset({"builtin", "core", "first_party"})
 _RESOURCE_STATE_KEYS = frozenset(
     {
@@ -368,13 +368,11 @@ def _managed_backup_spec(
     if candidate == root or not candidate.is_relative_to(root):
         raise ValueError("managed backup path escapes its runtime directory")
     ensure_mutation_path_safe(raw_candidate, [str(root)], include_self=True)
-    backup_stat = candidate.stat(follow_symlinks=False)
-    backup_state = resource_state(candidate)
-    _require_existing_kind(backup_state, is_file=True)
+    backup_identity = capture_managed_backup_identity(candidate, expected_size=original_before["size"])
     if (
         not original_before.get("sha256")
-        or backup_state.get("sha256") != original_before.get("sha256")
-        or backup_state.get("size") != original_before.get("size")
+        or backup_identity["sha256"] != original_before.get("sha256")
+        or backup_identity["size"] != original_before.get("size")
     ):
         raise ValueError("managed backup content does not match the original pre-state")
     return {
@@ -382,14 +380,7 @@ def _managed_backup_spec(
         "schema": 1,
         "path": str(candidate),
         "original_path": original_path,
-        "identity": {
-            "schema": _MANAGED_BACKUP_IDENTITY_SCHEMA,
-            "sha256": backup_state["sha256"],
-            "size": int(backup_stat.st_size),
-            "inode": int(getattr(backup_stat, "st_ino", 0) or 0),
-            "device": int(getattr(backup_stat, "st_dev", 0) or 0),
-            "ctime_ns": int(getattr(backup_stat, "st_ctime_ns", 0) or 0),
-        },
+        "identity": backup_identity,
     }
 
 

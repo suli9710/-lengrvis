@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +26,7 @@ from app.orchestration.tool_runtime_support import _sanitize_tool_rollback_evide
 from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import rollback_tools
+from app.tools.managed_backup_identity import capture_managed_backup_identity
 
 INVALID_EVIDENCE = {"_runtime_evidence_status": "invalid"}
 
@@ -209,15 +209,8 @@ def test_valid_backup_is_bound_to_managed_copy_and_original_pre_state(tmp_path: 
 
     assert changed == [str(original)]
     assert info["backup"].items() >= backup.items()
-    backup_stat = Path(backup["path"]).stat(follow_symlinks=False)
-    assert info["backup"]["identity"] == {
-        "schema": "managed-backup-identity/v2",
-        "sha256": resource_state(Path(backup["path"]))["sha256"],
-        "size": backup_stat.st_size,
-        "inode": backup_stat.st_ino,
-        "device": backup_stat.st_dev,
-        "ctime_ns": backup_stat.st_ctime_ns,
-    }
+    assert info["backup"]["identity"] == capture_managed_backup_identity(Path(backup["path"]))
+    assert info["backup"]["identity"]["schema"] == "managed-backup-identity/v3"
     _assert_v2(info, "backup")
     outcome = rollback_tools.rollback_tool_result(
         ToolResult(tool_call_id="call-valid-v2-backup", ok=True, changed_paths=changed, rollback_info=info),
@@ -228,7 +221,7 @@ def test_valid_backup_is_bound_to_managed_copy_and_original_pre_state(tmp_path: 
     assert not Path(backup["path"]).exists()
 
 
-@pytest.mark.parametrize("mutation", ["legacy_schema", "device", "ctime_ns"])
+@pytest.mark.parametrize("mutation", ["legacy_schema", "device", "object_id", "mtime_ns", "change_time_ns"])
 def test_inventory_blocks_legacy_or_tampered_managed_backup_identity(tmp_path: Path, mutation: str) -> None:
     data_dir = tmp_path / "data"
     original = tmp_path / f"identity-{mutation}.txt"
@@ -244,9 +237,16 @@ def test_inventory_blocks_legacy_or_tampered_managed_backup_identity(tmp_path: P
     )
     identity = info["backup"]["identity"]
     if mutation == "legacy_schema":
-        identity["schema"] = "managed-backup-identity/v1"
-        identity.pop("device")
-        identity.pop("ctime_ns")
+        info["backup"]["identity"] = {
+            "schema": "managed-backup-identity/v2",
+            "sha256": identity["sha256"],
+            "size": identity["size"],
+            "inode": identity["inode"],
+            "device": identity["device"],
+            "ctime_ns": identity["change_time_ns"],
+        }
+    elif mutation == "object_id":
+        identity["object_id"] = "win32:0000000000000000:00000000000000000000000000000000"
     else:
         identity[mutation] += 1
     task_id = f"task-identity-{mutation}"
@@ -583,21 +583,27 @@ def test_recreated_same_content_backup_is_rejected_when_inode_is_reused(
     entry = snapshot.entries[0]
     assert entry.result is not None
     identity = entry.result.rollback_info["backup"]["identity"]
-    captured_ctime_ns = identity["ctime_ns"]
+    captured_change_time_ns = identity["change_time_ns"]
     backup_path = Path(entry.result.rollback_info["backup"]["path"])
     backup_path.unlink()
-    time.sleep(0.01)
     backup_path.write_text("before", encoding="utf-8")
-    replacement_stat = backup_path.stat(follow_symlinks=False)
-    assert replacement_stat.st_ctime_ns != captured_ctime_ns
+    replacement = capture_managed_backup_identity(backup_path)
+    assert replacement["sha256"] == identity["sha256"]
+    assert replacement["size"] == identity["size"]
 
-    # Model a filesystem reusing the original inode; ctime must still reject the replacement.
-    identity["inode"] = int(replacement_stat.st_ino)
-    identity["device"] = int(replacement_stat.st_dev)
+    # Model object-id reuse and NTFS creation-time tunneling; ChangeTime is the sole mismatch.
+    for key in ("inode", "device", "object_id", "mtime_ns"):
+        identity[key] = replacement[key]
+    identity["change_time_ns"] = (
+        captured_change_time_ns
+        if captured_change_time_ns != replacement["change_time_ns"]
+        else replacement["change_time_ns"] + 100
+    )
     outcome = rollback_tools.execute_rollback(task_id, snapshot=snapshot)
 
     assert outcome["state"] == "manual_required"
     assert original.read_text(encoding="utf-8") == "after"
+    assert backup_path.read_text(encoding="utf-8") == "before"
 
 
 def test_tampered_destination_backup_blocks_before_move_back_mutates_paths(tmp_path: Path) -> None:

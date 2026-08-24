@@ -23,6 +23,11 @@ from app.orchestration.tool_execution_identity import (
 from app.orchestration.tool_execution_journal import runtime_review_allows_result_reuse
 from app.policy.risk import is_modifying_or_higher
 from app.tools.filesystem_safety import ensure_mutation_path_safe, path_exists_or_reparse_point
+from app.tools.managed_backup_identity import (
+    MANAGED_BACKUP_IDENTITY_OBJECT_KEYS,
+    capture_managed_backup_identity,
+    validate_managed_backup_identity,
+)
 from app.tools.managed_backups import managed_backup_root, resolve_managed_backup_path
 
 _ROLLBACK_CALL_STATES = frozenset({"committed", "created", "executing", "outcome_unknown"})
@@ -41,7 +46,6 @@ _ROLLBACK_PRIMARY_ACTIONS = frozenset(
 _ROLLBACK_SECONDARY_ACTIONS = frozenset({"dst_backup"})
 _ROLLBACK_EVIDENCE_KEY = "_rollback_evidence"
 _ROLLBACK_EVIDENCE_SCHEMA = "rollback-evidence/v2"
-_MANAGED_BACKUP_IDENTITY_SCHEMA = "managed-backup-identity/v2"
 _ROLLBACK_METADATA_KEYS = frozenset({"_post_resource_state", _ROLLBACK_EVIDENCE_KEY})
 _MAX_ROLLBACK_EVIDENCE_BYTES = 64 * 1024
 _MAX_ROLLBACK_EVIDENCE_ITEMS = 256
@@ -736,14 +740,7 @@ def _validate_managed_backup(value: Any, expected_original: str) -> None:
         raise ValueError
     if normalize_path_key(value["original_path"]) != normalize_path_key(expected_original):
         raise ValueError
-    identity = value.get("identity")
-    identity_keys = {"schema", "sha256", "size", "inode", "device", "ctime_ns"}
-    if not isinstance(identity, dict) or set(identity) != identity_keys:
-        raise ValueError
-    if identity.get("schema") != _MANAGED_BACKUP_IDENTITY_SCHEMA or not _valid_digest(identity.get("sha256")):
-        raise ValueError
-    if any(type(identity.get(key)) is not int or identity[key] < 0 for key in ("size", "inode", "device", "ctime_ns")):
-        raise ValueError
+    identity = validate_managed_backup_identity(value.get("identity"))
     raw_path = Path(value["path"]).expanduser()
     try:
         root = managed_backup_root()
@@ -752,17 +749,12 @@ def _validate_managed_backup(value: Any, expected_original: str) -> None:
         if not path_exists_or_reparse_point(backup):
             raise ValueError
         ensure_mutation_path_safe(backup, [str(root)], include_self=True)
-        backup_stat = backup.stat(follow_symlinks=False)
         if not backup.is_file():
             raise ValueError
-        if (
-            int(backup_stat.st_size) != identity["size"]
-            or int(getattr(backup_stat, "st_ino", 0) or 0) != identity["inode"]
-            or int(getattr(backup_stat, "st_dev", 0) or 0) != identity["device"]
-            or int(getattr(backup_stat, "st_ctime_ns", 0) or 0) != identity["ctime_ns"]
-        ):
+        current = capture_managed_backup_identity(backup, expected_size=identity["size"])
+        if any(current[key] != identity[key] for key in MANAGED_BACKUP_IDENTITY_OBJECT_KEYS):
             raise ValueError
-        if _sha256_file(backup) != identity["sha256"]:
+        if current["sha256"] != identity["sha256"]:
             raise ValueError
     except (OSError, SecurityError):
         raise ValueError from None
@@ -795,11 +787,3 @@ def _short_text(value: Any) -> bool:
 
 def _valid_digest(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value.casefold())
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()

@@ -10,11 +10,15 @@ from typing import Any
 from app.core.errors import SecurityError
 from app.policy.redaction import redact_public_text, redact_value
 from app.tools.filesystem_safety import ensure_mutation_path_safe, path_exists_or_reparse_point
+from app.tools.managed_backup_identity import (
+    MANAGED_BACKUP_IDENTITY_OBJECT_KEYS,
+    capture_managed_backup_identity,
+    validate_managed_backup_identity,
+)
 from app.tools.tool_abort import raise_if_tool_aborted
 
 ROLLBACK_FILESYSTEM_ERRORS = (OSError, SecurityError, ValueError)
 POST_RESOURCE_STATE_KEYS = ("_post_resource_state", "_post_state")
-MANAGED_BACKUP_IDENTITY_SCHEMA = "managed-backup-identity/v2"
 
 
 def post_resource_states(info: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -227,18 +231,7 @@ def safe_rollback_detail(value: Any) -> str:
 def managed_backup_identity(backup_spec: Any) -> dict[str, Any] | None:
     if not isinstance(backup_spec, dict) or "identity" not in backup_spec:
         return None
-    identity = backup_spec.get("identity")
-    identity_keys = {"schema", "sha256", "size", "inode", "device", "ctime_ns"}
-    if not isinstance(identity, dict) or set(identity) != identity_keys:
-        raise ValueError("Managed backup identity is malformed.")
-    digest = identity.get("sha256")
-    if identity.get("schema") != MANAGED_BACKUP_IDENTITY_SCHEMA:
-        raise ValueError("Managed backup identity schema is unsupported.")
-    if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        raise ValueError("Managed backup identity digest is malformed.")
-    if any(type(identity.get(key)) is not int or identity[key] < 0 for key in ("size", "inode", "device", "ctime_ns")):
-        raise ValueError("Managed backup identity numbers are malformed.")
-    return identity
+    return validate_managed_backup_identity(backup_spec.get("identity"))
 
 
 def backup_identity_error(
@@ -259,16 +252,14 @@ def backup_identity_error(
             return "Managed backup is not a regular file."
         if identity is None:
             return ""
-        backup_stat = backup.stat(follow_symlinks=False)
-        if int(backup_stat.st_size) != identity["size"]:
-            return "Managed backup size changed after evidence capture."
-        if (
-            int(getattr(backup_stat, "st_ino", 0) or 0) != identity["inode"]
-            or int(getattr(backup_stat, "st_dev", 0) or 0) != identity["device"]
-            or int(getattr(backup_stat, "st_ctime_ns", 0) or 0) != identity["ctime_ns"]
-        ):
+        current = capture_managed_backup_identity(
+            backup,
+            abort_callback=lambda: raise_if_tool_aborted(context),
+            expected_size=identity["size"],
+        )
+        if any(current[key] != identity[key] for key in MANAGED_BACKUP_IDENTITY_OBJECT_KEYS):
             return "Managed backup file identity changed after evidence capture."
-        if sha256_file(backup, context) != identity["sha256"]:
+        if current["sha256"] != identity["sha256"]:
             return "Managed backup content changed after evidence capture."
     except ROLLBACK_FILESYSTEM_ERRORS as exc:
         return safe_rollback_detail(exc)
