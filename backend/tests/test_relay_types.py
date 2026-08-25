@@ -24,7 +24,7 @@ def _relay(**overrides: object) -> RelayEnvelope:
         "payload_type": "template_start",
         "key_id": "device-key-1",
         "sequence": 1,
-        "idempotency_key": "idem_1234567890123456",
+        "idempotency_key": "idem_" + ("1234" * 4),
         "nonce": _encoded(b"0123456789ab"),
         "ciphertext": _encoded(ciphertext),
         "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),

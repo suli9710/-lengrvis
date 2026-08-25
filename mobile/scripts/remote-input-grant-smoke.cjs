@@ -198,6 +198,14 @@ function assertRemoteScreenBeginnerCopy() {
 
 function assertApprovalDetailBeginnerSafety() {
   const approvalSafety = loadTsModule(mobilePath("src/approvalSafetyDisplay.ts"));
+  const expired = approvalSafety.approvalDecisionGuard({
+    status: "pending",
+    expires_at: "2020-01-01T00:00:00.000Z",
+    approval_type: "tool_call",
+  });
+  assert.equal(expired.approveBlockedReason, "此审批授权已过期，不能继续批准；请回电脑端重新生成预览。");
+  assert.match(expired.title, /已过期/);
+  assert.equal(expired.tone, "danger");
   const blocked = approvalSafety.approvalDecisionGuard({
     approval_type: "system_change",
     risk_level: "R4_FORBIDDEN_OR_HANDOFF",
@@ -305,6 +313,7 @@ function assertApprovalDetailBeginnerSafety() {
   assertSourceIncludes(source, "正在加载审批详情", "Approval detail must expose a loading state");
   assertSourceIncludes(source, "重新加载详情", "Approval detail must offer retry after detail load failures");
   assertSourceIncludes(source, "approvalApproveBlockedReason", "Approval detail must use approval block helper");
+  assertSourceIncludes(source, "approvalAuthorizationExpired", "Approval detail must disable decisions when authorization TTL expires");
   assertSourceIncludes(source, "const activeGrantContext = useMemo", "Approval detail must bind approval safety to the active remote input grant");
   assertSourceIncludes(source, "latestApproveBlockedReason", "Approval detail must re-check blocked approval before submit");
   assertSourceIncludes(source, "latestMobileDecisionBlockedReason", "Approval detail must re-check remote-input grant mismatch before approving");

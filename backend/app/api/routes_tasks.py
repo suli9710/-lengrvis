@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -51,11 +50,15 @@ from app.api.task_public_views import (
 )
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.core import db
-from app.core.errors import StateTransitionError
+from app.core.errors import AppError, StateTransitionError
 from app.core.schemas import Task, TaskStatus
 from app.llm.registry import get_effective_settings
-from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_rollback_workflow import (
+    RollbackSource,
+    TaskRollbackRequest,
+    execute_task_rollback,
+)
 from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_ID_HEADER,
     NATIVE_CONFIRMATION_SIGNATURE_HEADER,
@@ -180,7 +183,7 @@ def _boundary_events_for_tasks(task_ids: list[str]) -> dict[str, list[dict]]:
 def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
     unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
     if not unique_task_ids:
-        return {"messages": {}, "reviews": {}, "audits": {}}
+        return {"messages": {}, "reviews": {}, "audits": {}, "tool_calls": {}}
     audits: dict[str, list[dict]] = {}
     if _audit_export_enabled():
         audits = _recent_records_by_task("audit_events", unique_task_ids)
@@ -188,6 +191,7 @@ def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[st
         "messages": _recent_records_by_task("agent_messages", unique_task_ids),
         "reviews": _recent_records_by_task("safety_reviews", unique_task_ids),
         "audits": audits,
+        "tool_calls": _recent_records_by_task("tool_calls", unique_task_ids),
     }
 
 
@@ -199,12 +203,14 @@ def _boundary_events_from_source_records(
     messages_by_task = source_records.get("messages", {})
     reviews_by_task = source_records.get("reviews", {})
     audits_by_task = source_records.get("audits", {})
+    tool_calls_by_task = source_records.get("tool_calls", {})
     return {
         task_id: _boundary_events(
             task_id,
             messages=messages_by_task.get(task_id, []),
             reviews=reviews_by_task.get(task_id, []),
             audits=audits_by_task.get(task_id, []),
+            tool_calls=tool_calls_by_task.get(task_id, []),
         )
         for task_id in unique_task_ids
     }
@@ -231,7 +237,7 @@ def _completion_evidence_for_tasks(
 def _recent_records_by_task(
     table: str, task_ids: list[str], *, limit_per_task: int = BOUNDARY_EVENT_SOURCE_LIMIT
 ) -> dict[str, list[dict]]:
-    if table not in {"agent_messages", "safety_reviews", "audit_events"}:
+    if table not in {"agent_messages", "safety_reviews", "audit_events", "tool_calls"}:
         raise ValueError(f"Unsupported boundary event table: {table}")
     if not task_ids:
         return {}
@@ -276,12 +282,16 @@ def _boundary_events(
     messages: list[dict] | None = None,
     reviews: list[dict] | None = None,
     audits: list[dict] | None = None,
+    tool_calls: list[dict] | None = None,
 ) -> list[dict]:
     messages = (
         messages if messages is not None else db.fetch_many_by_fields("agent_messages", {"task_id": task_id}, limit=500)
     )
     reviews = (
         reviews if reviews is not None else db.fetch_many_by_fields("safety_reviews", {"task_id": task_id}, limit=500)
+    )
+    tool_calls = (
+        tool_calls if tool_calls is not None else db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=500)
     )
     if not _audit_export_enabled():
         audits = []
@@ -364,6 +374,30 @@ def _boundary_events(
                     payload=review,
                 )
             )
+
+    for call in tool_calls:
+        if str(call.get("status") or "") != "outcome_unknown":
+            continue
+        events.append(
+            _boundary_event(
+                f"outcome-unknown-{call.get('id')}",
+                "outcome_unknown",
+                "Tool outcome requires review",
+                (
+                    "The action may or may not have completed. Automatic replay is blocked "
+                    "until the target state is inspected."
+                ),
+                str(call.get("outcome_unknown_at") or call.get("created_at") or ""),
+                step_id=call.get("step_id"),
+                severity="danger",
+                payload={
+                    "status": "outcome_unknown",
+                    "tool_name": call.get("tool_name"),
+                    "automatic_replay_blocked": True,
+                    "requires_user_review": True,
+                },
+            )
+        )
 
     for audit in audits:
         event_type = str(audit.get("event_type") or "")
@@ -540,7 +574,7 @@ async def cancel(task_id: str):
 
 
 @router.post("/tasks/{task_id}/rollback")
-def rollback(
+async def rollback(
     task_id: str,
     confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
     timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
@@ -550,6 +584,7 @@ def rollback(
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
+    preview_hmac = _rollback_preview_hmac(task_id)
     native_confirmation = require_native_confirmation(
         action=ROLLBACK_NATIVE_ACTION,
         endpoint=_rollback_endpoint(task_id),
@@ -557,17 +592,23 @@ def rollback(
         confirmation_id=confirmation_id,
         timestamp=timestamp,
         signature=signature,
-        preview_hmac=_rollback_preview_hmac(task_id),
+        preview_hmac=preview_hmac,
     )
-    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
-        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
-    db.require_sensitive_integrity_ok()
-    outcome = rollback_tools.execute_rollback(task_id)
+    _require_rollback_available(task)
+    run = await execute_task_rollback(
+        TaskRollbackRequest(
+            task_id=task_id,
+            source=RollbackSource.NATIVE_CONFIRMATION,
+            confirmation_id=str(native_confirmation.get("confirmation_id") or ""),
+            expected_inventory_hmac=preview_hmac,
+            actor="TaskService",
+        )
+    )
+    outcome = run.outcome
     outcome["native_confirmation"] = {
         "confirmation_id": native_confirmation.get("confirmation_id"),
         "desktop_native_confirmed": True,
     }
-    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService", strict=True)
     return outcome
 
 
@@ -577,8 +618,7 @@ def rollback_native_confirmation_challenge(task_id: str, request: Request):
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
-    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
-        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
+    _require_rollback_available(task)
     enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
     db.require_sensitive_integrity_ok()
     return create_native_confirmation_challenge(
@@ -599,11 +639,22 @@ def rollback_preview(task_id: str):
 
 
 def _rollback_preview_hmac(task_id: str) -> str:
-    return sha256(_canonical_json(rollback_tools.build_rollback_plan(task_id)).encode("utf-8")).hexdigest()
+    return _rollback_inventory_hmac(task_id)
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _rollback_inventory_hmac(task_id: str) -> str:
+    return rollback_tools.rollback_snapshot_hmac(rollback_tools.load_rollback_snapshot(task_id))
+
+
+def _require_rollback_available(task: Task) -> None:
+    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.DENIED}:
+        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
+    if task.status == TaskPhase.DENIED and rollback_tools.build_rollback_plan(task.id).get("count", 0) < 1:
+        raise AppError(
+            code="rollback_unavailable",
+            message="Denied task has no committed changes available to roll back.",
+            status_code=409,
+        )
 
 
 def _client_scope(request: Request) -> str:

@@ -102,6 +102,20 @@ def test_parallel_review_agent_allows_only_readonly_concurrency_safe_batches() -
     assert "approved 2 concurrency-safe read-only" in review.reasons[0]
 
 
+def test_parallel_review_agent_serializes_explicit_approval_steps() -> None:
+    registry = MiniRegistry(_tool("test.read"))
+    steps = [
+        _step("A", "test.read"),
+        _step("B", "test.read"),
+    ]
+    steps[0].requires_approval = True
+
+    review = ParallelReviewAgent().review_parallel_batch("task_parallel_approval", steps, registry)
+
+    assert review.verdict == SafetyVerdict.REVISE_PLAN
+    assert any("requires user approval" in reason for reason in review.reasons)
+
+
 def test_parallel_review_agent_revises_write_like_parallel_batches() -> None:
     write_tool = _tool(
         "test.write_file",

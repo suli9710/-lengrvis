@@ -77,7 +77,7 @@
 
 .lengrvis-sidebar {
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   min-height: 0;
   height: 100vh;
@@ -209,6 +209,9 @@
 .primary-nav-wrap {
   position: relative;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .primary-nav__more {

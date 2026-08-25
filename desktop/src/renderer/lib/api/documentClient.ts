@@ -15,6 +15,7 @@ import type {
   BackendDocumentIR,
   BackendDocumentParseRequest
 } from "./documentBackendTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import { mapDocumentAskResponse, mapDocumentCompareResponse, mapDocumentIR } from "./documentMappers";
 import { mapResponse } from "./transport";
 
@@ -27,7 +28,9 @@ export function parseDocumentEndpoint(
   body: DocumentParseRequest
 ): Promise<ApiResponse<DocumentIR>> {
   const response = window.lengrvis?.documents
-    ? window.lengrvis.documents.parse(body) as Promise<ApiResponse<BackendDocumentIR>>
+    ? safeIpcApiRequest(() =>
+        window.lengrvis.documents.parse(body) as Promise<ApiResponse<BackendDocumentIR>>
+      )
     : request<BackendDocumentIR, BackendDocumentParseRequest>({
         endpoint: "/api/documents/parse",
         method: "POST",
@@ -45,7 +48,9 @@ export function askDocumentEndpoint(
   body: DocumentAskRequest
 ): Promise<ApiResponse<DocumentAskResponse>> {
   const response = window.lengrvis?.documents
-    ? window.lengrvis.documents.ask(body) as Promise<ApiResponse<BackendDocumentAskResponse>>
+    ? safeIpcApiRequest(() =>
+        window.lengrvis.documents.ask(body) as Promise<ApiResponse<BackendDocumentAskResponse>>
+      )
     : request<BackendDocumentAskResponse, BackendDocumentAskRequest>({
         endpoint: "/api/documents/ask",
         method: "POST",
@@ -64,7 +69,9 @@ export function compareDocumentsEndpoint(
   body: DocumentCompareRequest
 ): Promise<ApiResponse<DocumentCompareResponse>> {
   const response = window.lengrvis?.documents
-    ? window.lengrvis.documents.compare(body) as Promise<ApiResponse<BackendDocumentCompareResponse>>
+    ? safeIpcApiRequest(() =>
+        window.lengrvis.documents.compare(body) as Promise<ApiResponse<BackendDocumentCompareResponse>>
+      )
     : request<BackendDocumentCompareResponse, BackendDocumentCompareRequest>({
         endpoint: "/api/documents/compare",
         method: "POST",

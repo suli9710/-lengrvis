@@ -171,6 +171,22 @@ def test_cua_provider_uses_configurable_model_without_logging_secrets():
     assert "sk-test" not in str(result)
 
 
+def test_cua_provider_defaults_to_store_false_and_allows_explicit_opt_in():
+    FakeAsyncClient.responses = [
+        _response(200, {"id": "resp_default", "status": "completed", "output": []}),
+        _response(200, {"id": "resp_opt_in", "status": "completed", "output": []}),
+    ]
+
+    default_provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
+    opt_in_provider = CUAProvider(_settings(disable_response_storage=False), client_factory=FakeAsyncClient)
+
+    assert asyncio.run(default_provider.run_step(instruction="Inspect the page."))["ok"] is True
+    assert asyncio.run(opt_in_provider.run_step(instruction="Inspect the page."))["ok"] is True
+
+    assert FakeAsyncClient.requests[0]["json"]["store"] is False
+    assert FakeAsyncClient.requests[1]["json"]["store"] is True
+
+
 def test_cua_provider_accepts_small_inline_screenshot_data_url():
     screenshot = "data:image/png;base64," + base64.b64encode(b"png").decode("ascii")
     provider = CUAProvider(_settings(), client_factory=FakeAsyncClient)
@@ -190,9 +206,7 @@ def test_cua_provider_normalizes_browser_environment():
     result = asyncio.run(provider.run_step(instruction="Inspect the page.", environment="BROWSER"))
 
     assert result["ok"] is True
-    assert FakeAsyncClient.requests[0]["json"]["tools"] == [
-        {"type": "computer_use_preview", "environment": "browser"}
-    ]
+    assert FakeAsyncClient.requests[0]["json"]["tools"] == [{"type": "computer_use_preview", "environment": "browser"}]
 
 
 def test_cua_provider_rejects_non_browser_environment_without_request():

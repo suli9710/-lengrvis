@@ -1,5 +1,6 @@
 import type { CommerceLicenseStatus, CommercePlanStatus, CommerceQuotaStatus } from "../../../shared/commerceTypes";
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   BackendCommerceLicenseStatus,
   BackendCommercePlanStatus,
@@ -41,7 +42,9 @@ export async function installCommerceLicenseEndpoint(
   token: string
 ): Promise<ApiResponse<CommerceLicenseStatus>> {
   const response = window.lengrvis?.commerce
-    ? await window.lengrvis.commerce.installLicense({ token }) as ApiResponse<BackendCommerceLicenseStatus>
+    ? await safeIpcApiRequest<BackendCommerceLicenseStatus>(() =>
+        window.lengrvis.commerce.installLicense({ token }) as Promise<ApiResponse<BackendCommerceLicenseStatus>>
+      )
     : await request<BackendCommerceLicenseStatus, { token: string }>({
         endpoint: "/api/commerce/license/install",
         method: "POST",
@@ -56,7 +59,9 @@ export async function activateCommerceLicenseEndpoint(
   appVersion = "desktop"
 ): Promise<ApiResponse<CommerceLicenseStatus>> {
   const response = window.lengrvis?.commerce
-    ? await window.lengrvis.commerce.activateLicense({ activationKey, appVersion }) as ApiResponse<BackendCommerceLicenseStatus>
+    ? await safeIpcApiRequest<BackendCommerceLicenseStatus>(() =>
+        window.lengrvis.commerce.activateLicense({ activationKey, appVersion }) as Promise<ApiResponse<BackendCommerceLicenseStatus>>
+      )
     : await request<BackendCommerceLicenseStatus, { activation_key: string; app_version: string }>({
         endpoint: "/api/commerce/license/activate",
         method: "POST",

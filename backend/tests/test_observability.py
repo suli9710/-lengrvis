@@ -61,6 +61,43 @@ def test_span_sets_context_and_records_metric():
     assert obs_context.get_span_id() is None
 
 
+def test_nested_spans_preserve_trace_and_parent_correlation(caplog):
+    logger_name = "lengrvis.observability.tracing"
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        with span("parent-span") as parent:
+            with span("child-span") as child:
+                assert child.trace_id == parent.trace_id
+                assert child.parent_span_id == parent.span_id
+            assert obs_context.get_span_id() == parent.span_id
+
+    ended = [record for record in caplog.records if record.getMessage() == "span.end"]
+    child_record = next(record for record in ended if record.observability["span"] == "child-span")
+    assert child_record.observability["trace_id"] == parent.trace_id
+    assert child_record.observability["span_id"] == child.span_id
+    assert child_record.observability["parent_span_id"] == parent.span_id
+
+
+def test_span_does_not_record_prompt_or_tool_argument_bodies(caplog):
+    logger_name = "lengrvis.observability.tracing"
+    with caplog.at_level(logging.DEBUG, logger=logger_name):
+        with span(
+            "tool.execute",
+            {
+                "tool.name": "file.read_text",
+                "tool.args": {"path": "C:\\secret\\report.txt"},
+                "prompt": "do not persist this",
+            },
+        ) as current:
+            current.mark_outcome_unknown()
+
+    record = next(record for record in caplog.records if record.getMessage() == "span.end")
+    observability = record.observability
+    assert observability["outcome_unknown"] is True
+    assert observability["attributes"] == {"tool.name": "file.read_text", "lengrvis.outcome_unknown": True}
+    assert "do not persist this" not in str(observability)
+    assert "report.txt" not in str(observability)
+
+
 def test_json_formatter_redacts_and_includes_correlation():
     formatter = JsonLogFormatter()
     token = obs_context.set_trace_id("trace-123")

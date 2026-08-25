@@ -38,11 +38,18 @@ export function RouteLoading() {
 }
 
 export function selectedPendingApproval(approvals: ApprovalRequest[], taskId?: string | null): ApprovalRequest | null {
+  const usable = approvals.filter((approval) => approvalAuthorizationIsFresh(approval));
   if (taskId) {
-    const taskApproval = approvals.find((approval) => approval.taskId === taskId);
+    const taskApproval = usable.find((approval) => approval.taskId === taskId);
     if (taskApproval) return taskApproval;
   }
-  return approvals[0] ?? null;
+  return usable[0] ?? null;
+}
+
+export function approvalAuthorizationIsFresh(approval: ApprovalRequest, now = Date.now()): boolean {
+  if (approval.status !== "pending") return false;
+  const expiresAt = Date.parse(approval.expiresAt ?? "");
+  return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
 export function latestLegacyTaskIdFromEvents(
@@ -336,16 +343,22 @@ export function chatMessageFromTaskAgentMessage(
 }
 
 export function chatMessageFromLegacyTaskTerminal(task: TaskEvent): ChatMessage | null {
-  const content = task.state === "completed"
-    ? terminalLegacyTaskMessage("completed", task.description)
-    : terminalLegacyTaskMessage("failed", task.description);
+  const terminalStatus =
+    task.state === "completed" || task.state === "rolled_back"
+      ? "completed"
+      : task.state === "denied"
+        ? "denied"
+        : task.state === "cancelled"
+          ? "cancelled"
+          : "failed";
+  const content = terminalLegacyTaskMessage(terminalStatus, task.description);
   return {
     id: `${task.id}-terminal-chat`,
     role: "assistant",
     author: "主管 Agent",
     content,
     createdAt: task.updatedAt || new Date().toISOString(),
-    status: task.state === "failed" ? "failed" : "sent"
+    status: task.state === "failed" || task.state === "denied" || task.state === "repair_required" ? "failed" : "sent"
   };
 }
 
@@ -405,13 +418,19 @@ export function isInternalTaskMessageContent(content: string): boolean {
   ].some((fragment) => value.includes(fragment));
 }
 
-export function terminalLegacyTaskMessage(status: "completed" | "failed", description: string): string {
+export function terminalLegacyTaskMessage(status: "completed" | "failed" | "denied" | "cancelled", description: string): string {
   const detail = stripTerminalPrefix(zhBackendText(description));
   if (status === "completed") {
     if (detail.includes("只读") || detail.includes("清理预览")) {
       return "清理预览已完成。我没有删除任何文件；需要真正清理时，会先让你确认要处理哪些项目。";
     }
     return detail ? `任务已完成：${detail}` : "任务已完成。";
+  }
+  if (status === "denied") {
+    return detail ? `任务已被安全或权限边界拒绝：${detail}` : "任务已被安全或权限边界拒绝。";
+  }
+  if (status === "cancelled") {
+    return detail ? `任务已取消：${detail}` : "任务已取消。";
   }
   if (detail.includes("Explicit absolute path is required") || detail.includes("绝对路径")) {
     return "这次没有继续执行，因为没有拿到明确目录。请告诉我具体要清理的位置，比如 D:\\Downloads 或 D:\\Temp。";

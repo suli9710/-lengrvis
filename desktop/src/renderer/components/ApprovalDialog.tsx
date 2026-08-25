@@ -1,9 +1,10 @@
 import { CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, Trash2, Undo2, XCircle } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { CleanupPlan } from "../../shared/cleanupTypes";
 import type { ApprovalRequest } from "../../shared/executionTypes";
 import { zhAgentName, zhSeverity } from "../lib/zh";
+import { AccessibleDialog } from "./AccessibleDialog";
 import { Badge } from "./Panel";
 
 interface ApprovalDialogProps {
@@ -35,31 +36,24 @@ export function ApprovalDialog({
   onNext,
   onDecision
 }: ApprovalDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedElement = useRef<HTMLElement | null>(null);
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [expiryClock, setExpiryClock] = useState(() => Date.now());
 
   useEffect(() => {
     setNote("");
+    setSubmissionError(null);
+    setExpiryClock(Date.now());
   }, [approval?.id]);
 
   useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    previouslyFocusedElement.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const timerId = window.setTimeout(() => {
-      firstFocusableElement(dialogRef.current)?.focus() ?? dialogRef.current?.focus();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timerId);
-      previouslyFocusedElement.current?.focus();
-      previouslyFocusedElement.current = null;
-    };
-  }, [isOpen, approval?.id]);
+    if (!isOpen || !approval?.expiresAt) return undefined;
+    const expiresAt = Date.parse(approval.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return undefined;
+    const timerId = window.setTimeout(() => setExpiryClock(Date.now()), Math.min(expiresAt - Date.now() + 25, 2_147_000_000));
+    return () => window.clearTimeout(timerId);
+  }, [approval?.expiresAt, approval?.id, isOpen]);
 
   if (!isOpen || !approval) {
     return null;
@@ -69,42 +63,34 @@ export function ApprovalDialog({
   const cleanupGroups = splitCleanupItems(cleanupPlan);
   const decisionSummary = buildDecisionSummary(approval, cleanupPlan, cleanupGroups);
   const subtitle = approvalSubtitle(approval, selectionContext, pendingCount, queueIndex);
-  const canDecide = approval.status === "pending";
+  const expiresAt = Date.parse(approval.expiresAt ?? "");
+  const authorizationExpired = !Number.isFinite(expiresAt) || expiresAt <= expiryClock;
+  const canDecide = approval.status === "pending" && !authorizationExpired;
+  // High/critical actions must not be blind-approved: surface the concrete
+  // tool/effects/resources/dry-run engineering boundary by default instead of
+  // hiding it behind a collapsed <details>.
+  const isHighRisk = approval.riskLevel === "high" || approval.riskLevel === "critical";
 
   const decide = async (decision: "approved" | "denied") => {
     if (!canDecide) return;
     setIsSubmitting(true);
+    setSubmissionError(null);
     try {
       await onDecision(approval.id, decision, note.trim() || undefined);
       setNote("");
+    } catch (error) { // broad-exception-boundary
+      setSubmissionError(error instanceof Error && error.message.trim() ? error.message : "审批提交失败，请刷新后重试");
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="approval-title"
-        tabIndex={-1}
-        ref={dialogRef}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            if (isSubmitting) {
-              event.preventDefault();
-              return;
-            }
-            onClose();
-            return;
-          }
-          if (event.key === "Tab") {
-            trapFocus(event, dialogRef.current);
-          }
-        }}
-      >
+    <AccessibleDialog
+      labelledBy="approval-title"
+      closeDisabled={isSubmitting}
+      onClose={onClose}
+    >
         <header className="modal__header">
           <div>
             <span className="panel__eyebrow">审批</span>
@@ -130,6 +116,9 @@ export function ApprovalDialog({
         ) : null}
         <div className="modal__body">
           <ApprovalDecisionOverview summary={decisionSummary} />
+          {authorizationExpired ? (
+            <p className="field-error" role="alert">此审批授权已过期。请刷新任务并重新生成预览。</p>
+          ) : null}
           {cleanupPlan ? (
             <CleanupApprovalPreview
               plan={cleanupPlan}
@@ -139,9 +128,11 @@ export function ApprovalDialog({
             />
           ) : null}
           <ApprovalSafetyChecklist summary={buildSafetyChecklist(approval, cleanupPlan, cleanupGroups)} />
-          <details className="approval-tech-details">
+          <details className="approval-tech-details" open={isHighRisk}>
             <summary className="approval-tech-details__summary">
-              查看技术细节（工具、参数与运行时边界）
+              {isHighRisk
+                ? "高风险操作 — 请核对工具、参数与运行时边界"
+                : "查看技术细节（工具、参数与运行时边界）"}
             </summary>
             <ApprovalEngineeringBoundary approval={approval} />
           </details>
@@ -159,6 +150,10 @@ export function ApprovalDialog({
               <dd>{zhAgentName(approval.requester)}</dd>
             </div>
             <div>
+              <dt>有效期</dt>
+              <dd>{approval.expiresAt ? new Date(approval.expiresAt).toLocaleString() : "缺少有效期，不能批准"}</dd>
+            </div>
+            <div>
               <dt>原因</dt>
               <dd>{approval.reason}</dd>
             </div>
@@ -170,7 +165,7 @@ export function ApprovalDialog({
           <label className="field">
             <span>审批备注</span>
             <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} />
-            {error ? <p className="field-error" role="alert">{error}</p> : null}
+            {error || submissionError ? <p className="field-error" role="alert">{error || submissionError}</p> : null}
           </label>
         </div>
         <footer className="modal__footer">
@@ -190,8 +185,7 @@ export function ApprovalDialog({
             </>
           ) : null}
         </footer>
-      </div>
-    </div>
+    </AccessibleDialog>
   );
 }
 
@@ -568,44 +562,6 @@ function buildDecisionSummary(
     guard: warningCount ? `${warningCount} 条风险提示` : "等待你批准",
     tone: highRisk ? "danger" : warningCount ? "warning" : "safe"
   };
-}
-
-const focusableSelector = [
-  "a[href]",
-  "button:not([disabled])",
-  "textarea:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  "[tabindex]:not([tabindex='-1'])"
-].join(",");
-
-function focusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  return Array.from(container.querySelectorAll<HTMLElement>(focusableSelector))
-    .filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
-}
-
-function firstFocusableElement(container: HTMLElement | null): HTMLElement | null {
-  return focusableElements(container)[0] ?? null;
-}
-
-function trapFocus(event: KeyboardEvent, container: HTMLElement | null) {
-  const focusables = focusableElements(container);
-  if (!focusables.length) {
-    event.preventDefault();
-    container?.focus();
-    return;
-  }
-
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
 }
 
 function formatBytes(bytes?: number): string {

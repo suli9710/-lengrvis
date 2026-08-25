@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -9,7 +10,16 @@ from pydantic import BaseModel, Field
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus, now_iso
+from app.core.schemas import (
+    Approval,
+    ApprovalStatus,
+    Plan,
+    StepStatus,
+    Task,
+    TaskStatus,
+    approval_is_expired,
+    now_iso,
+)
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.policy.redaction import redact_public_text
@@ -25,6 +35,7 @@ from app.services.mobile_pairing_service import approve_approval as approve_mobi
 from app.services.mobile_pairing_service import (
     get_approval_detail,
     list_pending_approvals,
+    mobile_approval_auth_context,
     raise_if_mobile_claims_disallowed,
     safe_approval_payload,
 )
@@ -114,7 +125,12 @@ def native_confirmation_challenge(
 
 @router.post("/approvals/{approval_id}/approve")
 async def approve(approval_id: str, native_confirmation: ApprovalNativeConfirmation):
-    approval = approval_for_execution(approval_id)
+    authorized_at, auth_context = _desktop_native_authorization(native_confirmation)
+    approval = approval_for_execution(
+        approval_id,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     _record_desktop_native_confirmation(approval, "approve", native_confirmation)
     approval = await _execute_approved_step(approval)
     return approval_execution_response(approval)
@@ -123,7 +139,12 @@ async def approve(approval_id: str, native_confirmation: ApprovalNativeConfirmat
 @router.post("/approvals/{approval_id}/reject")
 def reject(approval_id: str, native_confirmation: RejectionNativeConfirmation):
     before = db.fetch_one("approvals", approval_id)
-    approval = reject_mobile_approval(approval_id)
+    authorized_at, auth_context = _desktop_native_authorization(native_confirmation)
+    approval = reject_mobile_approval(
+        approval_id,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     _record_desktop_native_confirmation(
         Approval.model_validate(before) if before else approval, "reject", native_confirmation
     )
@@ -147,6 +168,9 @@ def _approval_for_confirmation(approval_id: str) -> Approval:
         raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
     if approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
+    if approval_is_expired(approval):
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), "Approval authorization expired.")
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
     return approval
 
 
@@ -187,6 +211,42 @@ def _record_desktop_native_confirmation(
         },
         task_id=approval.task_id,
     )
+
+
+def _desktop_native_authorization(native_confirmation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    try:
+        confirmed_at_epoch = int(native_confirmation.get("confirmed_at_epoch"))
+        authorized_at = datetime.fromtimestamp(confirmed_at_epoch, UTC).isoformat()
+    except (TypeError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=403, detail="Native confirmation timestamp is invalid.") from exc
+    confirmation_id = str(native_confirmation.get("confirmation_id") or "").strip()
+    if not confirmation_id:
+        raise HTTPException(status_code=403, detail="Native confirmation id is missing.")
+    context: dict[str, Any] = {
+        "channel": "desktop_native",
+        "confirmation_id": confirmation_id,
+        "confirmed_at_epoch": confirmed_at_epoch,
+    }
+    session_generation_fingerprint = str(
+        native_confirmation.get("approval_session_generation_fingerprint") or ""
+    ).strip()
+    if session_generation_fingerprint:
+        context["approval_session_generation_fingerprint"] = session_generation_fingerprint
+    if native_confirmation.get("legacy_hmac"):
+        context["proof_type"] = "legacy_hmac"
+        context["legacy_hmac_fingerprint"] = str(native_confirmation.get("legacy_hmac_fingerprint") or "").strip()
+    else:
+        context["proof_type"] = "ed25519"
+        try:
+            challenge_expires_at_epoch = int(native_confirmation.get("challenge_expires_at_epoch") or 0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=403, detail="Native confirmation expiry is invalid.") from exc
+        context["challenge_expires_at_epoch"] = challenge_expires_at_epoch
+        context["public_key_fingerprint"] = str(native_confirmation.get("public_key_fingerprint") or "").strip()
+    fingerprint_key = "legacy_hmac_fingerprint" if context["proof_type"] == "legacy_hmac" else "public_key_fingerprint"
+    if not context.get(fingerprint_key):
+        raise HTTPException(status_code=403, detail="Native confirmation key binding is missing.")
+    return authorized_at, context
 
 
 async def _execute_approved_step(approval: Approval) -> Approval:
@@ -252,6 +312,9 @@ def latest_approval_payload(approval: Approval) -> dict:
 
 
 def _restore_retryable_approval_state(approval: Approval) -> None:
+    if approval_is_expired(approval):
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), "Approval authorization expired.")
+        return
     task_data = db.fetch_one("tasks", approval.task_id)
     if not task_data:
         return
@@ -268,21 +331,53 @@ def _restore_retryable_approval_state(approval: Approval) -> None:
     db.upsert_model("tasks", task)
 
 
-def approval_for_execution(approval_id: str, claims: dict | None = None) -> Approval:
+def approval_for_execution(
+    approval_id: str,
+    claims: dict | None = None,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
     db.require_sensitive_integrity_ok()
     data = db.fetch_one("approvals", approval_id)
     if not data:
         raise HTTPException(status_code=404, detail="Approval not found")
     approval = Approval.model_validate(data)
     raise_if_mobile_claims_disallowed(approval, claims)
+    if approval_is_expired(approval):
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), "Approval authorization expired.")
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
     if approval.status == ApprovalStatus.APPROVED:
         if approval.consumed_at:
             raise HTTPException(status_code=409, detail="Approval has already been consumed.")
+        if claims is not None and authorized_at is None and auth_context is None:
+            authorized_at = now_iso()
+            auth_context = mobile_approval_auth_context(claims)
+            if (
+                not auth_context["device_id"]
+                or not auth_context["token_family_id"]
+                or not auth_context["credential_id"]
+            ):
+                raise HTTPException(status_code=401, detail="Mobile approval requires a device-bound session")
+        if authorized_at is not None or auth_context is not None:
+            refreshed = db.reauthorize_approval_atomically(
+                approval.id,
+                authorized_at or "",
+                auth_context or {},
+            )
+            if not refreshed or refreshed.get("status") != ApprovalStatus.APPROVED.value:
+                raise HTTPException(status_code=409, detail="Approval is no longer executable.")
+            return Approval.model_validate(refreshed)
         return approval
     if approval.status != ApprovalStatus.PENDING:
         raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
     try:
-        return approve_mobile_approval(approval_id, claims)
+        return approve_mobile_approval(
+            approval_id,
+            claims,
+            authorized_at=authorized_at,
+            auth_context=auth_context,
+        )
     except HTTPException as exc:
         refreshed = Approval.model_validate(db.fetch_one("approvals", approval_id) or data)
         if exc.status_code == 409 and refreshed.status == ApprovalStatus.APPROVED and not refreshed.consumed_at:
@@ -332,8 +427,10 @@ def _approval_execution_error(approval: Approval) -> str:
         task = Task.model_validate(task_data)
         if task.status == TaskStatus.FAILED:
             return task.final_summary or "Approved operation failed during execution."
-        if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED}:
-            return task.final_summary or "Approved operation did not complete execution."
+        if task.status == TaskStatus.DENIED:
+            return task.final_summary or "Approved operation was denied by a safety or permission boundary."
+        if task.status == TaskStatus.CANCELLED:
+            return task.final_summary or "Approved operation was cancelled before execution completed."
     plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)
     if plans:
         plan = Plan.model_validate(plans[0])

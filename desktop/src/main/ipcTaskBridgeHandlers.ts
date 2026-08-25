@@ -7,6 +7,7 @@ import {
   proxyExplicitDesktopBridgeRequest
 } from "./ipcBackendProxy";
 import {
+  approvalAuthorizationError,
   approvalConfirmationDialogOptions,
   confirmNativeDesktopAction,
   nativeActionConfirmationHeaders,
@@ -49,6 +50,8 @@ export function registerTaskBridgeIpcHandlers(backend: BackendProcessManager): v
     if (!approvalResponse.ok) {
       throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
     }
+    const approvalError = approvalAuthorizationError(approvalResponse.data, "approve");
+    if (approvalError) throw new ApiRequestValidationError(approvalError);
     const confirmationHeaders = await nativeApprovalConfirmationHeaders(
       (request) => proxyExplicitDesktopBridgeRequest(backend, request),
       backend,
@@ -74,6 +77,8 @@ export function registerTaskBridgeIpcHandlers(backend: BackendProcessManager): v
     if (!approvalResponse.ok) {
       throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
     }
+    const approvalError = approvalAuthorizationError(approvalResponse.data, "reject");
+    if (approvalError) throw new ApiRequestValidationError(approvalError);
     const confirmationHeaders = await nativeApprovalConfirmationHeaders(
       (request) => proxyExplicitDesktopBridgeRequest(backend, request),
       backend,

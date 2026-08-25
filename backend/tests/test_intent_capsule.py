@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -96,6 +97,25 @@ def test_intent_capsule_rejects_tamper_expiry_and_revocation() -> None:
     with pytest.raises(IntentCapsuleError, match="stored intent capsule status is revoked"):
         verify_intent_capsule(issued.token, **common, now=datetime.now(UTC) + timedelta(hours=2))
     assert revoke_intent_capsule(issued.capsule.id).status == "revoked"  # type: ignore[union-attr]
+
+
+def test_intent_capsule_rejects_equivalent_noncanonical_signature_encoding() -> None:
+    issued = _issue()
+    payload_segment, signature_segment = issued.token.split(".")
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    canonical_index = alphabet.index(signature_segment[-1])
+    assert canonical_index % 4 == 0
+    noncanonical_signature = f"{signature_segment[:-1]}{alphabet[canonical_index + 1]}"
+    assert base64.urlsafe_b64decode(f"{signature_segment}=") == base64.urlsafe_b64decode(f"{noncanonical_signature}=")
+
+    with pytest.raises(IntentCapsuleError, match="signature"):
+        verify_intent_capsule(
+            f"{payload_segment}.{noncanonical_signature}",
+            task_id="task-1",
+            user_goal="把表格数据填入已认证网页",
+            plan_revision=3,
+            policy_version="policy-v2",
+        )
 
 
 @pytest.mark.parametrize("ttl_seconds", [59, 3601])

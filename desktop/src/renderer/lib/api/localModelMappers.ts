@@ -8,15 +8,7 @@ import type {
   BackendLocalModelSetupPlan,
   BackendLocalModelVerification
 } from "./localModelBackendTypes";
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
-  return Number.isFinite(number) ? number : undefined;
-}
+import { numberOrUndefined, optionalString } from "./mapperPrimitives";
 
 export function mapLocalLlmHealth(health: BackendLocalLlmHealth): LocalLLMHealth {
   const fallbackBackend =

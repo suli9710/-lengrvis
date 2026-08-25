@@ -47,10 +47,10 @@
       "id": "ASI04",
       "title": "Agentic supply-chain compromise",
       "threats": ["A dependency, prompt, Skill, MCP server, or update is malicious or substituted."],
-      "controls": ["Dependency locks", "SBOM", "Skill signatures", "candidate binding", "capability manifest"],
-      "tests": ["backend/tests/test_delivery_pipeline.py", "backend/tests/test_app_skill_packages.py"],
+      "controls": ["Dependency locks", "CycloneDX SBOM", "Skill signatures", "candidate SHA-256 manifest", "SLSA provenance attestation", "SBOM attestation", "publish-time offline bundle verification", "candidate binding", "capability manifest"],
+      "tests": ["backend/tests/test_delivery_pipeline.py", "backend/tests/test_app_skill_packages.py", "backend/tests/test_rc_signing_workflow.py"],
       "owner": "Release Engineering",
-      "residual_risk": "Signed third-party content may still be malicious."
+      "residual_risk": "Signed third-party content may still be malicious; a real candidate run and reproducible-build evidence are still required."
     },
     {
       "id": "ASI05",
@@ -65,19 +65,19 @@
       "id": "ASI06",
       "title": "Memory and context poisoning",
       "threats": ["Hostile external text is persisted and recalled as trusted guidance."],
-      "controls": ["Automatic lesson disabled", "memory quarantine", "TTL and scope", "explicit promotion and revoke"],
-      "tests": ["backend/tests/test_memory_agent.py", "backend/tests/test_content_provenance.py"],
+      "controls": ["Automatic lesson disabled", "memory quarantine", "TTL and trust validation", "principal/workspace/domain namespace", "version and supersedes lineage", "single active successor guard", "conflict-aware retention", "explicit promotion and revoke", "atomic privacy erasure"],
+      "tests": ["backend/tests/test_memory_agent.py", "backend/tests/test_memory_api.py", "backend/tests/test_memory_quarantine_migration.py", "backend/tests/test_local_retention_service.py", "backend/tests/test_privacy_erase.py", "backend/tests/test_content_provenance.py"],
       "owner": "Memory Runtime",
-      "residual_risk": "User-approved memories may still contain inaccurate information."
+      "residual_risk": "User-approved memories may still be inaccurate; quarantine/conflict UI and application-layer encryption remain incomplete."
     },
     {
       "id": "ASI07",
       "title": "Insecure inter-agent communication",
       "threats": ["Agent or tool messages lose provenance or carry hidden instructions."],
-      "controls": ["ContentEnvelope propagation", "structured messages", "tainted-to-write reauthorization"],
-      "tests": ["backend/tests/test_content_provenance.py", "backend/tests/test_agent_bus_state_machine.py"],
+      "controls": ["Signed ContentEnvelope propagation", "all-parent dependency injection", "multi-hop upstream taint merge", "persistent observation reconstruction after pause or restart", "structured messages", "tainted-to-write reauthorization"],
+      "tests": ["backend/tests/test_content_provenance.py", "backend/tests/test_tool_runtime.py", "backend/tests/test_tool_execution_journal.py", "backend/tests/test_task_resume.py", "backend/tests/test_state_machine_integration.py", "backend/tests/test_agent_bus_state_machine.py"],
       "owner": "Agent Runtime",
-      "residual_risk": "Legacy unwrapped message paths require incremental migration."
+      "residual_risk": "Field-level derived lineage and legacy unwrapped message paths require incremental migration."
     },
     {
       "id": "ASI08",

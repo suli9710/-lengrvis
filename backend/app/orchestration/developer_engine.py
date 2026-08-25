@@ -10,7 +10,7 @@ from typing import Any
 from app.agents.delegation_metadata import developer_engine_capabilities
 from app.config import PROJECT_ROOT, AppSettings
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus, now_iso
+from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult, now_iso
 from app.integrations.lengrvis_code import (
     allowed_tools_for_developer,
     validate_allowed_tools,
@@ -43,6 +43,12 @@ from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.task_phase import TaskPhase
 from app.orchestration.tool_runtime import ToolRuntime
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
+)
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.security.execution_isolation import arbitrary_execution_denial, constrain_developer_allowed_tools
@@ -296,10 +302,18 @@ class DeveloperExecutionEngine(ExecutionEngine):
             return result.model_copy(update={"state": self.store.put(result.state)}, deep=True)
 
         result = lengrvis_code_summary_to_turn_result(state, summary)
-        if writes_enabled and summary.permission_denials:
-            result = _await_write_approval(result, summary)
-        elif writes_enabled and result.state.phase == RunPhase.COMPLETED:
+        if writes_enabled and _is_backend_approval_summary(summary):
+            result = _await_backend_write_approval(result, summary)
+        elif writes_enabled:
+            # Run write verification on ANY terminal outcome, not only COMPLETED:
+            # a run that already wrote files but then failed/timed out must still
+            # have its out-of-bounds write detection (validate_write_paths) and
+            # diff preview run. run_write_verification only flips the phase to
+            # FAILED when out-of-bounds writes are actually detected, so this is
+            # safe for an already-FAILED run.
             result = _apply_write_verification(result, summary, settings=self.settings, writes_enabled=writes_enabled)
+            if summary.permission_denials:
+                result = _fail_internal_permission_denial(result, summary)
         step_status = _plan_step_status(result.state.phase)
         result.state.current_plan = _mark_plan_steps_status(
             result.state.current_plan, step_status, step_id="lengrvis_code_run"
@@ -387,21 +401,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
         db.upsert_model("plans", plan)
         if approval is not None and execution.result is not None and execution.result.ok:
             db.upsert_model("approvals", approval, status=approval.status)
-        output = execution.result.output if execution.result is not None else {}
-        runtime_summary = runtime.extra_context.get("_developer_lengrvis_code_last_summary")
-        if isinstance(runtime_summary, LengrvisCodeStreamSummary):
-            return runtime_summary
-        summary_payload = output.get("summary")
-        if isinstance(summary_payload, LengrvisCodeStreamSummary):
-            return summary_payload
-        if isinstance(summary_payload, dict):
-            try:
-                return LengrvisCodeStreamSummary(**summary_payload)
-            except TypeError:
-                pass
-        if execution.result is not None and not execution.result.ok:
-            return LengrvisCodeStreamSummary(result={"is_error": True, "errors": [execution.result.error]})
-        return LengrvisCodeStreamSummary(result={"is_error": False, "result": "Developer run completed."})
+        return _developer_summary_from_reviewed_result(execution.result)
 
 
 def readonly_developer_tool_names() -> tuple[str, ...]:
@@ -584,6 +584,7 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
         result={
             "is_error": True,
             "result": f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run requires backend approval.",
+            "backend_approval_required": True,
             "permission_denials": [
                 {
                     "tool_name": DEVELOPER_TOOL_NAME,
@@ -594,12 +595,13 @@ def _developer_waiting_for_approval_summary() -> LengrvisCodeStreamSummary:
     )
 
 
-
 def _developer_terminal_run_phase(task: Task) -> RunPhase | None:
-    if task.status == TaskPhase.COMPLETED:
+    if task.status in {TaskPhase.COMPLETED, TaskPhase.ROLLED_BACK}:
         return RunPhase.COMPLETED
-    if task.status == TaskPhase.FAILED:
+    if task.status in {TaskPhase.FAILED, TaskPhase.REPAIR_REQUIRED}:
         return RunPhase.FAILED
+    if task.status == TaskPhase.DENIED:
+        return RunPhase.DENIED
     if task.status == TaskPhase.CANCELLED:
         return RunPhase.CANCELLED
     return None
@@ -644,7 +646,9 @@ def _claim_developer_write_approval(
             continue
         claimed = db.claim_approval_for_execution(approval.id, now_iso())
         if claimed:
-            return Approval.model_validate(claimed)
+            claimed_approval = Approval.model_validate(claimed)
+            runtime.extra_context["effective_risk_binding"] = dict(approval_risk_binding(claimed_approval) or {})
+            return claimed_approval
     return None
 
 
@@ -672,8 +676,28 @@ def _developer_approval_binding_error(
         return "Approval lacks binding metadata."
     if approval.tool_name != step.tool_name:
         return "Approved tool name does not match current plan step."
-    if approval.risk_level and approval.risk_level != tool.risk_level.value:
-        return "Approved risk level does not match current tool risk."
+    from app.agents.safety_review_agent import SafetyReviewAgent
+
+    review = SafetyReviewAgent(settings=runtime.settings).review_tool_call(
+        task.id,
+        step.id,
+        step.tool_name,
+        step.args,
+        tool.risk_level,
+        context=risk_revalidation_context(runtime.tool_context(), task_id=task.id),
+        tool_definition=tool,
+    )
+    risk_binding = approval_risk_binding(approval)
+    risk_error = effective_risk_binding_error(
+        risk_binding,
+        current_declared_risk=review.declared_risk_level or tool.risk_level,
+        approval_risk_level=approval.risk_level,
+    )
+    if risk_error:
+        return risk_error
+    refreshed_error = refreshed_effective_risk_error(risk_binding, review)
+    if refreshed_error:
+        return refreshed_error
     if approval.tool_version != getattr(tool, "tool_version", "1"):
         return "Approved tool version does not match current tool definition."
     expected_args = args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id)
@@ -806,9 +830,6 @@ def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -
         abort_event=abort_event if isinstance(abort_event, threading.Event) else None,
         allow_write_tools=allow_write_tools,
     )
-    runtime = context.get("runtime")
-    if isinstance(getattr(runtime, "extra_context", None), dict):
-        runtime.extra_context["_developer_lengrvis_code_last_summary"] = summary
     output = _developer_summary_output(summary)
     if summary.is_error:
         output["error"] = output.get("error") or summary.error_classification or "developer_runtime_failed"
@@ -927,6 +948,83 @@ def _developer_timeout_summary(timeout_seconds: float | None) -> LengrvisCodeStr
     )
 
 
+def _developer_summary_from_reviewed_result(result: ToolResult | None) -> LengrvisCodeStreamSummary:
+    if result is None:
+        return _developer_execution_failure_summary()
+    if not result.ok:
+        output = result.output if isinstance(result.output, dict) else {}
+        payload = output.get("summary")
+        if (
+            result.error == "cancelled"
+            and result.runtime_review_completed is True
+            and bool(str(result.runtime_review_id or "").strip())
+            and result.runtime_review_verdict == "allow"
+            and output.get("cancelled") is True
+            and isinstance(payload, dict)
+            and payload.get("cancelled") is True
+        ):
+            return LengrvisCodeStreamSummary(
+                cancelled=True,
+                result={"is_error": True, "errors": [f"{LENGRVIS_CODE_DISPLAY_NAME} run was cancelled."]},
+            )
+        return _developer_execution_failure_summary(permission_denied=result.error == "permission_denial")
+    output = result.output if isinstance(result.output, dict) else {}
+    if output.get("withheld") is True:
+        return _developer_execution_failure_summary()
+    if output.get("persisted_result") is True:
+        # The budget stub is the complete public boundary. Never hydrate its
+        # preview or artifact back into durable run state.
+        return LengrvisCodeStreamSummary(result={"is_error": False, "persisted_result": True})
+
+    payload = output.get("summary")
+    if not isinstance(payload, dict):
+        return LengrvisCodeStreamSummary(result={"is_error": False})
+
+    assistant_text = str(payload.get("assistant_text") or "").strip()
+    tool_events = payload.get("tool_events")
+    system_events = payload.get("system_events")
+    invalid_lines = payload.get("invalid_lines")
+    command = payload.get("command")
+    runtime_health = payload.get("runtime_health")
+    result_payload = payload.get("result")
+    safe_result = dict(result_payload) if isinstance(result_payload, dict) else {}
+    permission_denials = payload.get("permission_denials")
+    if isinstance(permission_denials, list) and permission_denials:
+        safe_result["permission_denials"] = list(permission_denials)
+    if "is_error" not in safe_result:
+        safe_result["is_error"] = not bool(payload.get("ok", result.ok))
+    returncode = payload.get("returncode")
+
+    return LengrvisCodeStreamSummary(
+        assistant_text=[assistant_text] if assistant_text else [],
+        tool_events=list(tool_events) if isinstance(tool_events, list) else [],
+        system_events=list(system_events) if isinstance(system_events, list) else [],
+        invalid_lines=[str(item) for item in invalid_lines] if isinstance(invalid_lines, list) else [],
+        result=safe_result,
+        stderr=str(payload.get("stderr") or ""),
+        returncode=returncode if isinstance(returncode, int) and not isinstance(returncode, bool) else None,
+        cancelled=payload.get("cancelled") is True,
+        command=[str(item) for item in command] if isinstance(command, list) else [],
+        launch_error=str(payload.get("launch_error") or ""),
+        runtime_health=dict(runtime_health) if isinstance(runtime_health, dict) else {},
+    )
+
+
+def _developer_execution_failure_summary(*, permission_denied: bool = False) -> LengrvisCodeStreamSummary:
+    result: dict[str, Any] = {
+        "is_error": True,
+        "errors": ["Developer tool execution failed or was withheld."],
+    }
+    if permission_denied:
+        result["permission_denials"] = [
+            {
+                "tool_name": DEVELOPER_TOOL_NAME,
+                "reason": "An internal developer tool request was denied.",
+            }
+        ]
+    return LengrvisCodeStreamSummary(result=result)
+
+
 def _developer_summary_output(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
     payload = {
         "summary": _summary_payload(summary),
@@ -991,18 +1089,51 @@ def _prompt_from_goal(goal: str, *, writes_enabled: bool = False) -> str:
     )
 
 
-def _await_write_approval(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
+def _fail_internal_permission_denial(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
     from app.integrations.lengrvis_code import LENGRVIS_CODE_DISPLAY_NAME
 
     payload = dict(result.outputs.get("lengrvis_code") or {})
+    payload.pop("awaiting_write_approval", None)
+    payload["permission_denied"] = True
+    public_denials = _public_lengrvis_code_value(summary.permission_denials)
+    updated = result.state.model_copy(
+        update={
+            "phase": RunPhase.FAILED,
+            "transition_reason": (
+                f"{LENGRVIS_CODE_DISPLAY_NAME} denied {len(summary.permission_denials)} internal tool request(s). "
+                "No additional approval can broaden this run's fixed tool and workspace boundary."
+            ),
+            "current_plan": {
+                **result.state.current_plan,
+                "internal_permission_denials": public_denials,
+            },
+        },
+        deep=True,
+    )
+    return result.model_copy(
+        update={
+            "state": updated,
+            "finished": True,
+            "message": updated.transition_reason,
+            "outputs": {**result.outputs, "lengrvis_code": payload},
+        },
+        deep=True,
+    )
+
+
+def _is_backend_approval_summary(summary: Any) -> bool:
+    result = getattr(summary, "result", None)
+    return isinstance(result, dict) and result.get("backend_approval_required") is True
+
+
+def _await_backend_write_approval(result: EngineTurnResult, summary: Any) -> EngineTurnResult:
+    payload = dict(result.outputs.get("lengrvis_code") or {})
+    payload.pop("permission_denied", None)
     payload["awaiting_write_approval"] = True
     updated = result.state.model_copy(
         update={
             "phase": RunPhase.AWAITING_APPROVAL,
-            "transition_reason": (
-                f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit blocked pending user approval "
-                f"({len(summary.permission_denials)} denial(s))."
-            ),
+            "transition_reason": f"{LENGRVIS_CODE_DISPLAY_NAME} write/edit run is waiting for backend approval.",
             "current_plan": {
                 **result.state.current_plan,
                 "pending_write_approvals": _public_lengrvis_code_value(summary.permission_denials),

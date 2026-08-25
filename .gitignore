@@ -12,6 +12,15 @@ node_modules/
 dist/
 build/
 .turbo/
+
+# Archives: build outputs / source snapshots must never be committed. A binary
+# zip is opaque to gitleaks, so an accidental `git add .` of a snapshot could
+# ship secrets without any scanner noticing.
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
 mobile/.expo/
 mobile/android/.kotlin/
 

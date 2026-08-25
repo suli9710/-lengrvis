@@ -67,9 +67,6 @@ export function BrowserActivityPanel({
     ? mergedEvents.filter((event) => event.session_id === activeSession.id).slice(0, 80)
     : mergedEvents.slice(0, 80);
   const hostControlDisabled = !activeSessionHasHost || isWorking;
-  // The main process intentionally rejects renderer takeover until a backend
-  // approval can be cryptographically bound to this action.
-  const takeoverUnavailable = true;
   const sensitiveState = Boolean(
     activeSession?.paused ||
     activeSession?.status === "awaiting_approval" ||
@@ -83,7 +80,9 @@ export function BrowserActivityPanel({
         onActiveSessionChange(snapshot.activeSessionId);
       }
     });
-    void refreshBrowserState();
+    void refreshBrowserState().catch((error) => {
+      onErrorChange(readableError(error, "浏览器状态刷新失败"));
+    });
     return () => {
       unsubscribe();
       void api.hideBrowserHost().catch(() => undefined);
@@ -110,6 +109,8 @@ export function BrowserActivityPanel({
         y: Math.round(rect.top),
         width: Math.round(rect.width),
         height: Math.round(rect.height)
+      }).catch((error) => {
+        onErrorChange(readableError(error, "浏览器窗口布局同步失败"));
       });
     };
     const scheduleUpdate = () => {
@@ -128,30 +129,43 @@ export function BrowserActivityPanel({
   }, [activeSession?.id, api]);
 
   const refreshBrowserState = async () => {
-    const [host, backendSessions] = await Promise.allSettled([
-      api.getBrowserHostSnapshot(),
-      api.listBrowserSessions()
-    ]);
+    try {
+      const [host, backendSessions] = await Promise.allSettled([
+        api.getBrowserHostSnapshot(),
+        api.listBrowserSessions()
+      ]);
+      const refreshErrors: string[] = [];
 
-    if (host.status === "fulfilled") {
-      onHostSnapshotChange(host.value);
-      if (host.value.activeSessionId) onActiveSessionChange(host.value.activeSessionId);
-    }
-
-    if (backendSessions.status === "fulfilled" && backendSessions.value.ok && backendSessions.value.data) {
-      onSessionsChange(backendSessions.value.data);
-      if (!activeSessionId && backendSessions.value.data[0]) {
-        onActiveSessionChange(backendSessions.value.data[0].id);
+      if (host.status === "fulfilled") {
+        onHostSnapshotChange(host.value);
+        if (host.value.activeSessionId) onActiveSessionChange(host.value.activeSessionId);
+      } else {
+        refreshErrors.push(readableError(host.reason, "内置浏览器状态读取失败"));
       }
-      const sessionIdForEvents = activeSessionId ?? backendSessions.value.data[0]?.id;
-      if (sessionIdForEvents) {
-        const backendEvents = await api.listBrowserSessionEvents(sessionIdForEvents);
-        if (backendEvents.ok && backendEvents.data) {
-          onEventsChange((current) => mergeBrowserEvents(current, backendEvents.data ?? []));
+
+      if (backendSessions.status === "fulfilled" && backendSessions.value.ok && backendSessions.value.data) {
+        onSessionsChange(backendSessions.value.data);
+        if (!activeSessionId && backendSessions.value.data[0]) {
+          onActiveSessionChange(backendSessions.value.data[0].id);
         }
+        const sessionIdForEvents = activeSessionId ?? backendSessions.value.data[0]?.id;
+        if (sessionIdForEvents) {
+          const backendEvents = await api.listBrowserSessionEvents(sessionIdForEvents);
+          if (backendEvents.ok && backendEvents.data) {
+            onEventsChange((current) => mergeBrowserEvents(current, backendEvents.data ?? []));
+          }
+        }
+      } else if (backendSessions.status === "rejected") {
+        refreshErrors.push(readableError(backendSessions.reason, "浏览器会话列表读取失败"));
+      } else if (backendSessions.value.status !== 404) {
+        refreshErrors.push("浏览器会话列表读取失败");
       }
-    } else if (backendSessions.status === "fulfilled" && backendSessions.value.status !== 404) {
-      onErrorChange(backendSessions.value.error?.message ?? null);
+
+      if (refreshErrors.length) {
+        onErrorChange(refreshErrors.join("；"));
+      }
+    } catch (error) { // broad-exception-boundary
+      onErrorChange(readableError(error, "浏览器状态刷新失败"));
     }
   };
 
@@ -187,7 +201,7 @@ export function BrowserActivityPanel({
         onHostSnapshotChange(result.snapshot);
       }
       if (!result.ok) {
-        onErrorChange(result.error ?? `${label} failed`);
+        onErrorChange(`${label}失败，请稍后重试。`);
         return;
       }
       if (backendCommand) {
@@ -218,7 +232,7 @@ export function BrowserActivityPanel({
         const observedEvent = backendResult.data;
         onEventsChange((current) => mergeBrowserEvents(current, [observedEvent]));
       } else if (!activeSessionHasHost && !backendResult.ok) {
-        onErrorChange(backendResult.error?.message ?? "观察失败");
+        onErrorChange("观察失败，请稍后重试。");
       }
     } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "观察失败"));
@@ -239,7 +253,7 @@ export function BrowserActivityPanel({
       } else if (result.status === 404) {
         setExportResult("当前会话没有可导出的回放数据。请先打开内置浏览器并完成一次观察，或选择已有浏览器会话后重试。");
       } else {
-        onErrorChange(result.error?.message ?? "回放导出失败");
+        onErrorChange("回放导出失败，请稍后重试。");
       }
     } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "回放导出失败"));
@@ -249,20 +263,41 @@ export function BrowserActivityPanel({
   };
 
   const showActiveSession = async (sessionId: string) => {
-    onActiveSessionChange(sessionId);
-    if (!hostSessions.some((session) => session.id === sessionId)) {
-      const backendEvents = await api.listBrowserSessionEvents(sessionId);
-      if (backendEvents.ok && backendEvents.data) {
-        onEventsChange((current) => mergeBrowserEvents(current, backendEvents.data ?? []));
-        onErrorChange(null);
+    try {
+      onActiveSessionChange(sessionId);
+      if (!hostSessions.some((session) => session.id === sessionId)) {
+        const backendEvents = await api.listBrowserSessionEvents(sessionId);
+        if (backendEvents.ok && backendEvents.data) {
+          onEventsChange((current) => mergeBrowserEvents(current, backendEvents.data ?? []));
+          onErrorChange(null);
+        } else if (!backendEvents.ok) {
+          onErrorChange("读取浏览器事件失败，请稍后重试。");
+        }
+        return;
       }
-      return;
+
+      const result = await api.showBrowserHost(sessionId);
+      applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
+    } catch (error) { // broad-exception-boundary
+      onErrorChange(readableError(error, "显示浏览器会话失败"));
     }
+  };
+
+  const showActiveHost = async (sessionId: string) => {
     try {
       const result = await api.showBrowserHost(sessionId);
       applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
     } catch (error) { // broad-exception-boundary
       onErrorChange(readableError(error, "显示浏览器会话失败"));
+    }
+  };
+
+  const hideActiveHost = async () => {
+    try {
+      const result = await api.hideBrowserHost();
+      applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
+    } catch (error) { // broad-exception-boundary
+      onErrorChange(readableError(error, "隐藏浏览器会话失败"));
     }
   };
 
@@ -334,16 +369,14 @@ export function BrowserActivityPanel({
                   <small>{activeSession.current_url}</small>
                 </div>
                 {activeSessionHasHost && !hostSnapshot?.visible ? (
-                  <button className="button button--secondary" onClick={() => void api.showBrowserHost(activeSession.id)} type="button">
+                  <button className="button button--secondary" onClick={() => void showActiveHost(activeSession.id)} type="button">
                     <Eye size={14} aria-hidden="true" />
                     显示内嵌浏览器
                   </button>
                 ) : null}
                 {!activeSession.takeover ? <div className="browser-stage__shield">仅查看</div> : null}
                 {activeSessionHasHost ? (
-                  <p className="browser-stage__notice muted" role="status">
-                    接管功能需要已兑现的后端审批；当前版本尚未启用。
-                  </p>
+                  <p className="browser-stage__notice muted" role="status">接管前会在原生窗口再次确认；交还后需重新观察再继续。</p>
                 ) : null}
               </>
             ) : (
@@ -367,7 +400,7 @@ export function BrowserActivityPanel({
             <button
               className="button button--secondary"
               onClick={() => void runSessionCommand("Resume", api.resumeBrowserHost.bind(api), api.resumeBrowserSession.bind(api))}
-              disabled={hostControlDisabled}
+              disabled={hostControlDisabled || Boolean(activeSession?.takeover) || activeSession?.status === "awaiting_observation"}
               type="button"
             >
               <Play size={14} aria-hidden="true" />
@@ -376,8 +409,8 @@ export function BrowserActivityPanel({
             <button
               className="button button--primary"
               onClick={() => void runSessionCommand("Take over", api.takeoverBrowserHost.bind(api), api.takeoverBrowserSession.bind(api))}
-              disabled={hostControlDisabled || takeoverUnavailable}
-              title="接管功能需要已兑现的后端审批；当前版本尚未启用。"
+              disabled={hostControlDisabled || Boolean(activeSession?.takeover)}
+              title="需要原生确认后暂停并接管"
               type="button"
             >
               <Hand size={14} aria-hidden="true" />
@@ -386,7 +419,7 @@ export function BrowserActivityPanel({
             <button
               className="button button--secondary"
               onClick={() => void runSessionCommand("Return control", api.releaseBrowserHost.bind(api), api.releaseBrowserSession.bind(api))}
-              disabled={hostControlDisabled}
+              disabled={hostControlDisabled || !activeSession?.takeover}
               type="button"
             >
               <Bot size={14} aria-hidden="true" />
@@ -409,7 +442,7 @@ export function BrowserActivityPanel({
               <Square size={14} aria-hidden="true" />
               停止
             </button>
-            <button className="button button--ghost" onClick={() => void api.hideBrowserHost()} disabled={isWorking || !hostSnapshot?.visible} type="button">
+            <button className="button button--ghost" onClick={() => void hideActiveHost()} disabled={isWorking || !hostSnapshot?.visible} type="button">
               <X size={14} aria-hidden="true" />
               隐藏
             </button>
@@ -487,7 +520,7 @@ function applyHostResult(
   if (result.session) {
     onActiveSessionChange(result.session.id);
   }
-  onErrorChange(result.ok ? null : result.error ?? "浏览器宿主操作失败");
+  onErrorChange(result.ok ? null : "浏览器宿主操作失败，请稍后重试。");
 }
 
 function mergeBrowserSessions(primary: BrowserSession[], secondary: BrowserSession[]): BrowserSession[] {
@@ -561,7 +594,8 @@ function stringOrUndefined(value: unknown): string | undefined {
 }
 
 function readableError(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  void error;
+  return fallback;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

@@ -5,6 +5,8 @@ import {
   Menu,
   Tray,
   nativeImage,
+  powerMonitor,
+  screen,
   session,
   type MenuItemConstructorOptions,
   type PermissionCheckHandlerHandlerDetails,
@@ -13,9 +15,14 @@ import {
 } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import type { BackendStatus } from "../shared/types";
+import {
+  ApprovalSessionGenerationInvalidationError,
+  ApprovalSessionVisibilityCoordinator,
+  registerApprovalSessionPowerRotation,
+  type ApprovalSessionPowerEvent
+} from "./approvalSessionGeneration";
 import {
   checkForUpdatesInteractive,
   describeUpdaterForTray,
@@ -24,12 +31,27 @@ import {
 } from "./autoUpdater";
 import { BackendProcessManager } from "./backendProcess";
 import { BrowserHost, BrowserHostWebSocketBridge } from "./browserHost";
+import { emergencyStopAgentWork, GLOBAL_EMERGENCY_STOP_SHORTCUT } from "./emergencyStop";
 import { registerConsentIpcHandlers } from "./consentManager";
 import { setupCrashReporter } from "./crashReporter";
 import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
 import { openSafeExternalUrl } from "./externalUrl";
 import { registerIpcHandlers } from "./ipc";
+import {
+  registerMainWindowConstraintListeners,
+  registerMainWindowDisplayConstraintListeners
+} from "./mainWindowDisplayConstraints";
+import {
+  fitMainWindowToWorkArea,
+  minimumMainWindowSize
+} from "./mainWindowSizing";
 import { NotificationBridge } from "./notifications";
+import {
+  isPackagedRendererEntryUrl,
+  PACKAGED_RENDERER_ENTRY_URL,
+  registerPackagedRendererProtocol,
+  registerRendererSchemePrivileges
+} from "./rendererProtocol";
 import { advanceUpdateHealthWindow } from "./updateHealthGate";
 import { closeLaunch, confirmHealthy, getLastGoodVersion, reconcileOnStartup } from "./updateHealthStore";
 
@@ -41,7 +63,20 @@ const HEALTHY_AFTER_MS = 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5_000;
 const GLOBAL_TOGGLE_SHORTCUT = "CommandOrControl+Alt+L";
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAI/SURBVFhH1VcxTwIxGGV0dHTDxFZXR0d/ghtuaMvg6OiG8Q84urEwODrq5kLiaJgcSVg4rgTCQIhhqPlKr7RfW+7OHCa+5EWOe/R7fe199Wq1/wrSSs6OuDi3iTWVot4cHxCW3FAmXikXMkomPsj1+O6kOTrEY/wK9eZsn3JxT7lYesVyOXkC43jMwoBYKU9n/sCluKQsvcRj54Ky8dXvZh3lPa4RhS6OB6iCj7iWh3Xslc7cIWxkXNMANkwFa57HJW2NT3FtBYgo8APZ7ksHw7epp6EPCzm0RclCNrBGk/DJC66tZx+OHhsIDd54W+VqHOIUoHl4ImwgWelZrmT3wdZMZTdZfz9UfwsY4JMnxwB0MF8UM4CWwcT/LXtGm2dAjExx3e2wIGBgIbuBAib+/tzR5hjYLAMcLN7NiIFG51tfZMuQxS9lr7P5XMhA1iGPWXLh3YwZ4HPZ05dqGaz425aZIgbIdXq7TgBOuYAgbMC9blvx22kUMWDaM0QRuBk1QM0ybDZdrwPacgbgyVMGdPv1BFEDdiEFiL+8AThz9FOgmpAviBpAjUfFX94AbH79INZqhIsBFmwzYLfedfylDSzrzcGeMRA7B3ZF7zyApoBFuyQ8+o4BALjCwl2QMPGJayv8VQrB2WfYdipWQ3QKhkC4ePZ/WAGZ+HB2fgwgqtyEKj7bx7W2Qr+Q+IOVJrygFJh5CKpNs/TdHzSfhKdfWzdcGcBAelmC/zc6hPfHrM/vApCKflpgiQzh+7JR/wBFmasNoNL4MAAAAABJRU5ErkJggg==";
+
+registerRendererSchemePrivileges();
+
+app.setName("Lengrvis");
+if (process.platform === "win32") {
+  app.setAppUserModelId("Lengrvis");
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 const backend = new BackendProcessManager();
+const approvalSessionVisibility = new ApprovalSessionVisibilityCoordinator({
+  activate: () => backend.activateApprovalSessionGeneration(),
+  deactivate: () => backend.deactivateApprovalSessionGeneration()
+});
 const browserHost = new BrowserHost(() => mainWindow);
 const browserHostBridge = new BrowserHostWebSocketBridge(
   browserHost,
@@ -62,6 +97,8 @@ function isPortableMode(): boolean {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let disposeApprovalSessionPowerRotation: (() => void) | null = null;
+let disposeMainWindowDisplayConstraintListeners: (() => void) | null = null;
 let tray: Tray | null = null;
 let latestBackendStatus: BackendStatus | null = null;
 let backendStatusTimer: NodeJS.Timeout | null = null;
@@ -69,7 +106,7 @@ let healthConfirmTimer: NodeJS.Timeout | null = null;
 let updateHealthySince: number | null = null;
 let healthConfirmationGeneration = 0;
 let isQuitting = false;
-let backgroundTransition: Promise<void> | null = null;
+let approvalSessionRotationFailed = false;
 
 function hardenDefaultSessionPermissions(): void {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -115,11 +152,13 @@ function getRequestedMediaTypes(details?: PermissionRequest | PermissionCheckHan
 }
 
 function createMainWindow(): BrowserWindow {
+  const initialSize = fitMainWindowToWorkArea(screen.getPrimaryDisplay().workAreaSize);
+  const minimumSize = minimumMainWindowSize(initialSize);
   const window = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 1120,
-    minHeight: 720,
+    ...initialSize,
+    minWidth: minimumSize.width,
+    minHeight: minimumSize.height,
+    center: true,
     title: "Lengrvis",
     backgroundColor: "#f4f6f8",
     show: false,
@@ -132,7 +171,9 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.once("ready-to-show", () => {
-    window.show();
+    if (!startHiddenRequested() && approvalSessionVisibility.isForegroundRequested()) {
+      window.show();
+    }
   });
 
   window.on("close", (event) => {
@@ -143,6 +184,9 @@ function createMainWindow(): BrowserWindow {
     void enterTrayBackground();
   });
 
+  const disposeDisplayConstraintListeners = registerMainWindowConstraintListeners(window, screen);
+  window.once("closed", disposeDisplayConstraintListeners);
+
   window.webContents.setWindowOpenHandler(({ url }) => {
     void openSafeExternalUrl(url).catch(() => undefined);
     return { action: "deny" };
@@ -151,7 +195,7 @@ function createMainWindow(): BrowserWindow {
     if (isDev && url === devServerUrl) {
       return;
     }
-    if (!isDev && url.startsWith(rendererFileUrl())) {
+    if (!isDev && isPackagedRendererEntryUrl(url)) {
       return;
     }
     event.preventDefault();
@@ -162,14 +206,10 @@ function createMainWindow(): BrowserWindow {
     window.loadURL(devServerUrl);
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    window.loadFile(join(__dirname, "../renderer/index.html"));
+    window.loadURL(PACKAGED_RENDERER_ENTRY_URL);
   }
 
   return window;
-}
-
-function rendererFileUrl(): string {
-  return pathToFileURL(join(__dirname, "../renderer/")).toString();
 }
 
 function createTray(): void {
@@ -189,7 +229,26 @@ function showMainWindow(): void {
 }
 
 async function enterForegroundAndShow(): Promise<void> {
-  latestBackendStatus = await backend.enterForeground("desktop_opened");
+  let backendTransitionFailed = false;
+  let shouldShow = false;
+  try {
+    shouldShow = await approvalSessionVisibility.enterForeground(async () => {
+      try {
+        latestBackendStatus = await backend.enterForeground("desktop_opened");
+      } catch (error) { // broad-exception-boundary: classify the backend failure, then rethrow unchanged.
+        backendTransitionFailed = true;
+        throw error;
+      }
+    });
+  } catch (error) { // broad-exception-boundary: keep the window hidden when foreground rotation fails.
+    if (backendTransitionFailed) {
+      console.warn("Could not enter foreground runtime mode:", error);
+      return;
+    }
+    handleApprovalSessionRotationFailure("tray-foreground", error);
+    return;
+  }
+  if (!shouldShow) return;
   rebuildTrayMenu();
   browserHostBridge.start();
 
@@ -205,20 +264,34 @@ async function enterForegroundAndShow(): Promise<void> {
 }
 
 async function enterTrayBackground(): Promise<void> {
-  if (backgroundTransition) {
-    return backgroundTransition;
-  }
-  backgroundTransition = (async () => {
-    browserHostBridge.stop();
-    browserHost.destroy();
-    mainWindow?.hide();
-    latestBackendStatus = await backend.enterBackground("window_hidden_to_tray");
-    rebuildTrayMenu();
-  })();
+  let backendTransitionFailed = false;
+  let transition: Promise<boolean>;
   try {
-    await backgroundTransition;
-  } finally {
-    backgroundTransition = null;
+    transition = approvalSessionVisibility.enterBackground(async () => {
+      try {
+        latestBackendStatus = await backend.enterBackground("window_hidden_to_tray");
+        rebuildTrayMenu();
+      } catch (error) { // broad-exception-boundary: classify the backend failure, then rethrow unchanged.
+        backendTransitionFailed = true;
+        throw error;
+      }
+    });
+  } catch (error) { // broad-exception-boundary: rotation already fails closed before the window is hidden.
+    handleApprovalSessionRotationFailure("tray-background", error);
+    return;
+  }
+  // Signing has already been synchronously revoked at this point.
+  browserHostBridge.stop();
+  browserHost.destroy();
+  mainWindow?.hide();
+  try {
+    await transition;
+  } catch (error) { // broad-exception-boundary: signing is revoked; normalize the async transition failure.
+    if (backendTransitionFailed) {
+      console.warn("Could not enter tray background runtime mode:", error);
+      return;
+    }
+    handleApprovalSessionRotationFailure("tray-background", error);
   }
 }
 
@@ -243,6 +316,12 @@ function rebuildTrayMenu(): void {
       label: "刷新连接状态",
       click: () => {
         void refreshTrayBackendStatus();
+      }
+    },
+    {
+      label: `紧急停止所有 Agent 工作 (${GLOBAL_EMERGENCY_STOP_SHORTCUT.replace("CommandOrControl", "Ctrl")})`,
+      click: () => {
+        void triggerEmergencyStop();
       }
     },
     { type: "separator" },
@@ -299,9 +378,24 @@ function registerGlobalShortcut(): void {
     if (!registered) {
       console.warn(`Global shortcut ${GLOBAL_TOGGLE_SHORTCUT} is taken by another app; skipping.`);
     }
+    const emergencyRegistered = globalShortcut.register(GLOBAL_EMERGENCY_STOP_SHORTCUT, () => {
+      void triggerEmergencyStop();
+    });
+    if (!emergencyRegistered) {
+      console.warn(`Global shortcut ${GLOBAL_EMERGENCY_STOP_SHORTCUT} is taken by another app; skipping.`);
+    }
   } catch (error) { // broad-exception-boundary
     console.warn("Failed to register global shortcut:", error);
   }
+}
+
+async function triggerEmergencyStop(): Promise<void> {
+  const result = await emergencyStopAgentWork(browserHost, backend);
+  if (!result.ok) {
+    console.warn("Emergency stop completed with incomplete cancellation", result);
+  }
+  latestBackendStatus = await backend.getStatus().catch(() => latestBackendStatus);
+  rebuildTrayMenu();
 }
 
 /**
@@ -452,32 +546,43 @@ function backendStateLabel(state: BackendStatus["state"]): string {
   }
 }
 
-app.setName("Lengrvis");
-if (process.platform === "win32") {
-  app.setAppUserModelId("Lengrvis");
-}
-
 // 尽早启动崩溃采集，确保后续任何进程崩溃都能被记录。
 setupCrashReporter();
-
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  backend.initializeApprovalSessionGeneration();
+  if (startHiddenRequested()) {
+    // Login-item startup is background from the first synchronous boundary:
+    // do not leave a signing generation active while backend/window startup awaits.
+    backend.deactivateApprovalSessionGeneration();
+  }
   app.on("second-instance", () => {
     showMainWindow();
   });
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
+    if (!isDev) {
+      registerPackagedRendererProtocol(join(__dirname, "../renderer"));
+    }
     hardenDefaultSessionPermissions();
+    disposeApprovalSessionPowerRotation = registerApprovalSessionPowerRotation(
+      powerMonitor,
+      () => backend.rotateApprovalSessionGeneration(),
+      handleApprovalSessionRotationFailure
+    );
     registerIpcHandlers(backend, browserHost);
     registerDesktopWebSocketIpcHandlers(backend);
     registerConsentIpcHandlers();
     browserHost.registerIpcHandlers();
     notifications.registerIpcHandlers();
     mainWindow = createMainWindow();
+    disposeMainWindowDisplayConstraintListeners = registerMainWindowDisplayConstraintListeners(
+      screen,
+      () => mainWindow
+    );
     createTray();
     registerGlobalShortcut();
     // 先对照持久化的健康记录核对当前运行版本，再启动自动更新检查。
@@ -521,6 +626,10 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on("will-quit", () => {
+    disposeApprovalSessionPowerRotation?.();
+    disposeApprovalSessionPowerRotation = null;
+    disposeMainWindowDisplayConstraintListeners?.();
+    disposeMainWindowDisplayConstraintListeners = null;
     globalShortcut.unregisterAll();
     // 干净退出：关闭启动信标，避免一次正常的短会话在下次启动被误判为崩溃。
     closeLaunch();
@@ -556,6 +665,28 @@ if (!gotSingleInstanceLock) {
       }
     })();
   });
+}
+
+function handleApprovalSessionRotationFailure(
+  event: ApprovalSessionPowerEvent | "tray-background" | "tray-foreground",
+  error: unknown
+): void {
+  if (approvalSessionRotationFailed) return;
+  approvalSessionRotationFailed = true;
+  console.error(`Approval session generation rotation failed during ${event}; shutting down safely.`, error);
+  if (error instanceof ApprovalSessionGenerationInvalidationError) {
+    // Both rename and truncate failed, so a separately managed backend could
+    // still observe the old canonical file. Bound shutdown latency and force
+    // this primary process down; service-managed backends remain an explicit
+    // operational residual and must be stopped by their service boundary.
+    const forcedExit = setTimeout(() => app.exit(1), 2_000);
+    void backend.stop().finally(() => {
+      clearTimeout(forcedExit);
+      app.exit(1);
+    });
+    return;
+  }
+  void backend.stop().finally(() => app.quit());
 }
 
 function backendAutostartEnabled(): boolean {

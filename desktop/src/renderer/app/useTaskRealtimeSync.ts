@@ -90,8 +90,10 @@ export function useTaskRealtimeSync({
     const controller = new AbortController();
     taskSnapshotAbortRef.current = controller;
     const { signal } = controller;
-    await api.beginBatch("task-snapshot");
+    let batchStarted = false;
     try {
+      await api.beginBatch("task-snapshot");
+      batchStarted = true;
       const [runsResult, legacyTasksResult, planResult, agentsResult, safetyResult, approvalsResult] = await Promise.allSettled([
         api.listRuns(),
         api.listTaskTimeline(),
@@ -116,7 +118,7 @@ export function useTaskRealtimeSync({
         setApprovalRequests(approvalsResult.value.data);
       }
     } finally {
-      api.endBatch("task-snapshot");
+      if (batchStarted) api.endBatch("task-snapshot");
     }
   }, [api]);
 

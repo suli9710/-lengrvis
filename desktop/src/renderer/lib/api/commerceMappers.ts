@@ -55,7 +55,8 @@ export function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): Co
 }
 
 export function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): CommerceQuotaStatus {
-  const usage = data.usage
+  const reportedAvailable = data.available === true && data.state === "available";
+  const usage = reportedAvailable && data.usage
     ? {
         calls: Number(data.usage.calls || 0),
         totalTokens: Number(data.usage.total_tokens || 0),
@@ -63,32 +64,59 @@ export function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): Commer
         windowHours: Number(data.usage.window_hours || data.window_hours || 0),
         lastEventAt: data.usage.last_event_at || undefined
       }
-    : undefined;
+    : null;
   const windows = Array.isArray(data.windows)
-    ? data.windows.map((window) => ({
-        key: window.key || `${Number(window.window_hours || 0)}h`,
-        windowHours: Number(window.window_hours || 0),
-        limits: {
-          totalTokens: window.limits.total_tokens,
-          calls: window.limits.calls,
-          totalCostUsd: window.limits.total_cost_usd
-        },
-        usage: window.usage
-          ? {
-              calls: Number(window.usage.calls || 0),
-              totalTokens: Number(window.usage.total_tokens || 0),
-              totalCostUsd: Number(window.usage.total_cost_usd || 0),
-              windowHours: Number(window.usage.window_hours || window.window_hours || 0),
-              lastEventAt: window.usage.last_event_at || undefined
-            }
-          : undefined,
-        exceeded: Array.isArray(window.exceeded) ? window.exceeded.map(String) : []
-      }))
+    ? data.windows.map((window) => {
+        const windowAvailable = reportedAvailable && window.available === true && Boolean(window.usage);
+        return {
+          key: window.key || `${Number(window.window_hours || 0)}h`,
+          windowHours: Number(window.window_hours || 0),
+          available: windowAvailable,
+          limits: {
+            totalTokens: window.limits.total_tokens,
+            calls: window.limits.calls,
+            totalCostUsd: window.limits.total_cost_usd
+          },
+          usage: windowAvailable && window.usage
+            ? {
+                calls: Number(window.usage.calls || 0),
+                totalTokens: Number(window.usage.total_tokens || 0),
+                totalCostUsd: Number(window.usage.total_cost_usd || 0),
+                windowHours: Number(window.usage.window_hours || window.window_hours || 0),
+                lastEventAt: window.usage.last_event_at || undefined
+              }
+            : null,
+          exceeded: Array.isArray(window.exceeded) ? window.exceeded.map(String) : []
+        };
+      })
     : [];
+  const normalizedWindows =
+    windows.length > 0
+      ? windows
+      : [
+          {
+            key: `${Number(data.window_hours || 0)}h`,
+            windowHours: Number(data.window_hours || 0),
+            available: reportedAvailable && (data.unlimited || usage !== null),
+            limits: {
+              totalTokens: data.limits.total_tokens,
+              calls: data.limits.calls,
+              totalCostUsd: data.limits.total_cost_usd
+            },
+            usage,
+            exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : []
+          }
+        ];
+  const available =
+    reportedAvailable &&
+    (data.unlimited || usage !== null) &&
+    normalizedWindows.every((window) => window.available);
   return {
     plan: normalizeCommercePlan(data.plan),
     enforced: Boolean(data.enforced),
     unlimited: Boolean(data.unlimited),
+    available,
+    state: available ? "available" : "metering_unavailable",
     windowHours: Number(data.window_hours || 0),
     limits: {
       totalTokens: data.limits.total_tokens,
@@ -97,22 +125,7 @@ export function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): Commer
     },
     usage,
     exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : [],
-    windows:
-      windows.length > 0
-        ? windows
-        : [
-            {
-              key: `${Number(data.window_hours || 0)}h`,
-              windowHours: Number(data.window_hours || 0),
-              limits: {
-                totalTokens: data.limits.total_tokens,
-                calls: data.limits.calls,
-                totalCostUsd: data.limits.total_cost_usd
-              },
-              usage,
-              exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : []
-            }
-          ]
+    windows: normalizedWindows
   };
 }
 

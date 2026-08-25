@@ -38,6 +38,7 @@ export default defineConfig(({ mode }) => {
       outDir: "dist/renderer",
       emptyOutDir: true,
       sourcemap: false,
+      minify: "terser",
       // The renderer only runs in the bundled Electron Chromium (and modern
       // browsers in dev:web), so target a modern baseline instead of Vite's
       // broad default. This also avoids an esbuild>=0.28 regression that errors

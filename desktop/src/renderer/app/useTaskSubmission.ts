@@ -171,7 +171,7 @@ export function useTaskSubmission({
           response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
           setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
           setFocusedTaskId(response.taskUpdates[0]?.id ?? null);
-          void refreshTaskSnapshot();
+          void refreshTaskSnapshot().catch(() => undefined);
         }
         return { ok: true };
       }
@@ -207,24 +207,28 @@ export function useTaskSubmission({
     const userMessage = createLocalUserMessage(suggestion.prompt, `local-${crypto.randomUUID()}`, new Date().toISOString());
     setMessages((current) => [...current, userMessage]);
 
-    const result = await api.launchPerceptionSuggestion({
-      suggestionId: suggestion.id,
-      prompt: suggestion.prompt,
-      mode
-    });
+    try {
+      const result = await api.launchPerceptionSuggestion({
+        suggestionId: suggestion.id,
+        prompt: suggestion.prompt,
+        mode
+      });
 
-    const response = result.data;
-    if (result.ok && response) {
-      setMessages((current) => [...current, response.message]);
-      if (response.taskUpdates?.length) {
-        setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
+      const response = result.data;
+      if (result.ok && response) {
+        setMessages((current) => [...current, response.message]);
+        if (response.taskUpdates?.length) {
+          setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
+        }
+        setFocusedTaskId(response.runId ?? response.taskUpdates?.[0]?.id ?? null);
+        void refreshTaskSnapshot().catch(() => undefined);
+        return;
       }
-      setFocusedTaskId(response.runId ?? response.taskUpdates?.[0]?.id ?? null);
-      void refreshTaskSnapshot();
-      return;
-    }
 
-    appendFailedAssistantMessage(result.error?.message ?? "建议任务启动失败，请稍后再试。");
+      appendFailedAssistantMessage(result.error?.message ?? "建议任务启动失败，请稍后再试。");
+    } catch (error) { // broad-exception-boundary
+      appendFailedAssistantMessage(readableError(error, "建议任务启动失败，请稍后再试。"));
+    }
   }, [
     api,
     appendFailedAssistantMessage,
@@ -258,7 +262,7 @@ export function useTaskSubmission({
     await sendMessage(
       `请基于这个文件范围生成清理确认任务：${scope}。先生成可清理项预览和审批请求；在我明确批准前不要移动或删除任何文件。`
     );
-    void refreshTaskSnapshot();
+    void refreshTaskSnapshot().catch(() => undefined);
   }, [refreshTaskSnapshot, sendMessage]);
 
   return {

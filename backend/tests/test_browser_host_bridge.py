@@ -78,12 +78,18 @@ def test_browser_host_bridge_allows_only_read_only_actions() -> None:
     assert not worker.is_alive()
     response = response_queue.get_nowait()
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    assert {key: payload[key] for key in ("ok", "session", "event", "error")} == {
         "ok": True,
         "session": {"id": "session-1"},
         "event": {"type": "action.observe"},
         "error": None,
     }
+    assert payload["full_result_review_completed"] is True
+    assert payload["post_tool_review_id"].startswith("review_")
+    assert payload["post_tool_review_verdict"] == "allow"
+    assert payload["direct_result_journaled"] is False
+    assert payload["automatic_replay_available"] is False
 
 
 def test_browser_host_bridge_rejects_remote_write_actions() -> None:
@@ -141,3 +147,29 @@ def test_browser_host_bridge_preserves_only_bounded_screenshot_artifact_results(
     assert response.json()["event"]["screenshot_url"] == artifact_url
     assert response.json()["event"]["image_url"] == "[redacted:screenshot]"
     assert "raw-private-image" not in response.text
+
+
+def test_browser_host_bridge_dispatches_task_scoped_cancellation() -> None:
+    from app.services.browser_host_bridge_service import browser_host_bridge_hub
+
+    response_queue: Queue[dict] = Queue()
+
+    def dispatch_cancel() -> None:
+        import asyncio
+
+        response_queue.put(asyncio.run(browser_host_bridge_hub.request_task_cancel(task_id="task-1")))
+
+    client = TestClient(app, client=("127.0.0.1", 50100))
+    with client.websocket_connect("/api/ws/browser-host") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        worker = Thread(target=dispatch_cancel, daemon=True)
+        worker.start()
+
+        request = websocket.receive_json()
+        assert request["type"] == "cancel_task"
+        assert request["task_id"] == "task-1"
+        websocket.send_json({"type": "result", "request_id": request["request_id"], "ok": True})
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert response_queue.get_nowait()["ok"] is True

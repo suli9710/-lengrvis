@@ -1,19 +1,50 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
-import json
-import math
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime
-from enum import Enum
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from app.core.schemas import ContentEnvelope
+from app.core.content_lineage import (
+    CONTENT_LINEAGE_SIDECAR_PREFIX as CONTENT_LINEAGE_SIDECAR_PREFIX,
+)
+from app.core.content_lineage import (
+    MAX_CONTENT_LINEAGE_ENTRIES as MAX_CONTENT_LINEAGE_ENTRIES,
+)
+from app.core.content_lineage import (
+    ContentEnvelope as ContentEnvelope,
+)
+from app.core.content_lineage import (
+    ContentLineageEdge as ContentLineageEdge,
+)
+from app.core.content_lineage import (
+    build_content_lineage as _build_field_lineage,
+)
+from app.core.content_lineage import (
+    content_envelope_hmac_payload as _content_envelope_payload,
+)
+from app.core.content_lineage import (
+    content_lineage_matches_output,
+    content_lineage_value_hashes,
+)
+from app.core.content_lineage import (
+    content_lineage_parent_key as _lineage_parent_key,
+)
+from app.core.content_lineage import (
+    legacy_direct_field_hmac_payload as _content_envelope_direct_field_payload,
+)
+from app.core.content_lineage import (
+    materialize_content_lineage as _materialize_field_lineage,
+)
+from app.core.content_lineage import (
+    normalize_lineage_parent_contents as _normalize_parent_contents,
+)
+from app.core.content_lineage import (
+    stable_content_hash as stable_content_hash,
+)
 
 _TRUST_RANK = {
     "untrusted": 0,
@@ -39,23 +70,22 @@ _RUNTIME_ONLY_TOOL_ARG_KEYS = {
     "dry_run",
     "policy_decision",
 }
+_PARENT_CONTENT_UNSET = object()
+_TOOL_OUTPUT_PROVENANCE_CONTEXT_KEY = "_tool_output_provenance"
 
 
 class ContentRevalidationRequired(ValueError):
     pass
 
 
-def stable_content_hash(content: Any) -> str:
-    """Return a deterministic SHA-256 digest for structured or scalar content."""
+@dataclass(frozen=True)
+class ToolOutputProvenance:
+    """Ephemeral authenticated inputs for one derived tool output."""
 
-    canonical = json.dumps(
-        _canonical_value(content),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    parents: tuple[ContentEnvelope, ...]
+    parent_contents: dict[str, Any]
+    field_lineage: tuple[ContentLineageEdge, ...]
+    output_value_hashes: tuple[str, ...]
 
 
 def content_binding_payload(args: Mapping[str, Any]) -> dict[str, Any]:
@@ -125,10 +155,28 @@ def propagate_content_envelope(
     sanitizer: str | Iterable[str] | None = None,
     user_confirmed: bool | None = None,
     taint_flags: Iterable[str] | None = None,
+    field_lineage: (
+        ContentLineageEdge | Mapping[str, Any] | Iterable[ContentLineageEdge | Mapping[str, Any]] | None
+    ) = None,
+    parent_content: Any = _PARENT_CONTENT_UNSET,
 ) -> ContentEnvelope:
     """Update the content hash without allowing a rewrite to erase provenance or taint."""
 
-    parent = _verified_or_downgraded_envelope(coerce_content_envelope(envelope))
+    supplied_parent = coerce_content_envelope(envelope)
+    if field_lineage is not None and not content_envelope_integrity_valid(supplied_parent):
+        raise ValueError("explicit field lineage requires authenticated parent provenance")
+    parent = _verified_or_downgraded_envelope(supplied_parent)
+    parent_contents = {}
+    if parent_content is not _PARENT_CONTENT_UNSET:
+        parent_contents[_lineage_parent_key(parent)] = parent_content
+    lineage = _build_field_lineage(
+        field_lineage,
+        parents=[parent],
+        output=rewritten_content,
+        default_operation="rewrite",
+        single_parent_autofill=True,
+        parent_contents=parent_contents,
+    )
     sanitizers = [*parent.sanitizers_applied, *_string_items(sanitizer)]
     confirmed = parent.user_confirmed
     if user_confirmed is False:
@@ -141,6 +189,7 @@ def propagate_content_envelope(
             # Trust promotion is deliberately unavailable at a generic rewrite
             # boundary. Only revalidate_content_envelope may set this to true.
             "user_confirmed": confirmed,
+            "field_lineage": lineage,
             "integrity_hmac": "",
         }
     )
@@ -171,6 +220,14 @@ def revalidate_content_envelope(
             "user_confirmed": True,
             "task_scope": normalized_scope,
             "sanitizers_applied": _unique_strings([*parent.sanitizers_applied, sanitizer]),
+            "field_lineage": _build_field_lineage(
+                None,
+                parents=[parent],
+                output=content,
+                default_operation="rewrite",
+                single_parent_autofill=True,
+                parent_contents={},
+            ),
             "integrity_hmac": "",
         }
     )
@@ -180,10 +237,84 @@ def revalidate_content_envelope(
 def model_rewrite_envelope(
     envelope: ContentEnvelope | Mapping[str, Any],
     rewritten_content: Any,
+    *,
+    field_lineage: (
+        ContentLineageEdge | Mapping[str, Any] | Iterable[ContentLineageEdge | Mapping[str, Any]] | None
+    ) = None,
+    parent_content: Any = _PARENT_CONTENT_UNSET,
 ) -> ContentEnvelope:
-    """Explicit model-boundary helper: a paraphrase changes only the hash."""
+    """Record a model rewrite and its authenticated immediate-parent field mapping."""
 
-    return propagate_content_envelope(envelope, rewritten_content)
+    return propagate_content_envelope(
+        envelope,
+        rewritten_content,
+        field_lineage=field_lineage,
+        parent_content=parent_content,
+    )
+
+
+def record_tool_output_provenance(
+    context: dict[str, Any],
+    output: Any,
+    *,
+    source_content: Any,
+    source_kind: str,
+    source_id: str = "",
+    origin: str = "",
+    trust_level: str = "untrusted",
+    taint_flags: Iterable[str] | None = None,
+    task_scope: str = "",
+    field_lineage: (ContentLineageEdge | Mapping[str, Any] | Iterable[ContentLineageEdge | Mapping[str, Any]]),
+) -> None:
+    """Attach verified derivation metadata to an in-process tool context.
+
+    The context value is deliberately ephemeral: it never becomes part of the
+    public tool output. The lifecycle consumes it after execution and binds it
+    to the final, budgeted ``ContentEnvelope``.
+    """
+
+    parent = create_content_envelope(
+        source_content,
+        source_kind=source_kind,
+        source_id=source_id,
+        origin=origin,
+        trust_level=trust_level,
+        taint_flags=taint_flags,
+        task_scope=task_scope,
+    )
+    raw_mappings = _materialize_field_lineage(field_lineage)
+    validated = _build_field_lineage(
+        raw_mappings,
+        parents=[parent],
+        output=output,
+        default_operation="rewrite",
+        single_parent_autofill=True,
+        parent_contents={_lineage_parent_key(parent): source_content},
+    )
+    explicit_edges = tuple(validated[: len(raw_mappings)])
+    context[_TOOL_OUTPUT_PROVENANCE_CONTEXT_KEY] = ToolOutputProvenance(
+        parents=(parent,),
+        parent_contents={parent.content_hash: source_content},
+        field_lineage=explicit_edges,
+        output_value_hashes=content_lineage_value_hashes(output, explicit_edges),
+    )
+
+
+def clear_tool_output_provenance(context: dict[str, Any]) -> None:
+    """Clear an inherited/stale internal provenance directive before a tool runs."""
+
+    context.pop(_TOOL_OUTPUT_PROVENANCE_CONTEXT_KEY, None)
+
+
+def take_tool_output_provenance(context: dict[str, Any]) -> ToolOutputProvenance | None:
+    """Consume the one-shot internal provenance directive emitted by a tool."""
+
+    value = context.pop(_TOOL_OUTPUT_PROVENANCE_CONTEXT_KEY, None)
+    if value is None:
+        return None
+    if not isinstance(value, ToolOutputProvenance):
+        raise ContentRevalidationRequired("tool output provenance directive is invalid")
+    return value
 
 
 def merge_content_envelopes(
@@ -194,9 +325,18 @@ def merge_content_envelopes(
     source_id: str = "",
     origin: str = "",
     task_scope: str = "",
+    field_lineage: (
+        ContentLineageEdge | Mapping[str, Any] | Iterable[ContentLineageEdge | Mapping[str, Any]] | None
+    ) = None,
+    parent_contents: Mapping[str, Any] | Iterable[Any] | None = None,
 ) -> ContentEnvelope:
-    parents = [_verified_or_downgraded_envelope(coerce_content_envelope(item)) for item in envelopes]
+    supplied_parents = [coerce_content_envelope(item) for item in envelopes]
+    if field_lineage is not None and any(not content_envelope_integrity_valid(parent) for parent in supplied_parents):
+        raise ValueError("explicit field lineage requires authenticated parent provenance")
+    parents = [_verified_or_downgraded_envelope(parent) for parent in supplied_parents]
     if not parents:
+        if _materialize_field_lineage(field_lineage):
+            raise ValueError("field lineage references an unknown parent")
         return create_content_envelope(
             content,
             source_kind=source_kind,
@@ -210,6 +350,14 @@ def merge_content_envelopes(
     parent_hash = stable_content_hash([item.content_hash for item in parents]).split(":", 1)[1]
     merged_source_id = source_id or f"merge:{parent_hash}"
     trust_level = min(parents, key=lambda item: _TRUST_RANK.get(item.trust_level, 1)).trust_level
+    lineage = _build_field_lineage(
+        field_lineage,
+        parents=parents,
+        output=content,
+        default_operation="merge",
+        single_parent_autofill=len(parents) == 1,
+        parent_contents=_normalize_parent_contents(parents, parent_contents),
+    )
     merged = ContentEnvelope(
         source_kind=str(source_kind or "derived"),
         source_id=merged_source_id,
@@ -220,9 +368,8 @@ def merge_content_envelopes(
         observed_at=min(item.observed_at for item in parents),
         task_scope=",".join(scopes),
         user_confirmed=all(item.user_confirmed for item in parents),
-        sanitizers_applied=_unique_strings(
-            sanitizer for item in parents for sanitizer in item.sanitizers_applied
-        ),
+        sanitizers_applied=_unique_strings(sanitizer for item in parents for sanitizer in item.sanitizers_applied),
+        field_lineage=lineage,
     )
     return _sign_content_envelope(merged)
 
@@ -237,6 +384,7 @@ def content_envelope_for_tool_output(
     external_network: bool = False,
     resource_kinds: Iterable[str] | None = None,
     upstream: Iterable[ContentEnvelope | Mapping[str, Any] | None] | None = None,
+    output_provenance: ToolOutputProvenance | None = None,
 ) -> ContentEnvelope:
     """Reusable Browser/Document/MCP/generic tool-result provenance boundary."""
 
@@ -258,13 +406,24 @@ def content_envelope_for_tool_output(
         task_scope=task_scope,
     )
     parents: list[ContentEnvelope] = [base]
+    parent_contents: dict[str, Any] = {}
+    explicit_lineage: tuple[ContentLineageEdge, ...] | None = None
+    if output_provenance is not None:
+        parents.extend(output_provenance.parents)
+        parent_contents.update(output_provenance.parent_contents)
+        if content_lineage_matches_output(
+            payload,
+            output_provenance.field_lineage,
+            output_provenance.output_value_hashes,
+        ):
+            explicit_lineage = output_provenance.field_lineage
     for candidate in [*embedded, *(upstream or [])]:
         if candidate is None:
             continue
         try:
             parents.append(coerce_content_envelope(candidate))
-        except (TypeError, ValidationError, ValueError):
-            continue
+        except (TypeError, ValidationError, ValueError) as exc:
+            raise ContentRevalidationRequired("tool output provenance is invalid") from exc
     if len(parents) == 1:
         return base
     return merge_content_envelopes(
@@ -274,6 +433,8 @@ def content_envelope_for_tool_output(
         source_id=tool_call_id,
         origin=tool_name,
         task_scope=task_scope,
+        field_lineage=explicit_lineage,
+        parent_contents=parent_contents,
     )
 
 
@@ -298,7 +459,25 @@ def content_envelope_integrity_valid(envelope: ContentEnvelope | Mapping[str, An
         _content_envelope_payload(candidate),
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(supplied, expected)
+    if hmac.compare_digest(supplied, expected):
+        return True
+    if candidate.field_lineage:
+        direct_field_expected = hmac.new(
+            _content_envelope_secret().encode("utf-8"),
+            _content_envelope_direct_field_payload(candidate),
+            hashlib.sha256,
+        ).hexdigest()
+        # A pre-lineage HMAC authenticates only the legacy envelope fields. It
+        # must never be used to bless subsequently injected field mappings.
+        # Current sidecar and short-lived direct-field formats were both
+        # signed with lineage included and are handled above.
+        return hmac.compare_digest(supplied, direct_field_expected)
+    legacy_expected = hmac.new(
+        _content_envelope_secret().encode("utf-8"),
+        _content_envelope_payload(candidate, include_field_lineage=False),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(supplied, legacy_expected)
 
 
 def content_envelope_requires_revalidation(envelope: ContentEnvelope | Mapping[str, Any]) -> bool:
@@ -322,19 +501,13 @@ def assert_content_revalidated(
         try:
             envelope = coerce_content_envelope(raw)
         except (TypeError, ValueError) as exc:
-            raise ContentRevalidationRequired(
-                f"{boundary} is blocked because content provenance is invalid"
-            ) from exc
+            raise ContentRevalidationRequired(f"{boundary} is blocked because content provenance is invalid") from exc
         if not content_envelope_requires_revalidation(envelope):
             continue
         if not content_envelope_integrity_valid(envelope):
-            raise ContentRevalidationRequired(
-                f"{boundary} is blocked because content provenance is not authenticated"
-            )
+            raise ContentRevalidationRequired(f"{boundary} is blocked because content provenance is not authenticated")
         if not envelope.user_confirmed:
-            raise ContentRevalidationRequired(
-                f"{boundary} requires explicit user revalidation of tainted content"
-            )
+            raise ContentRevalidationRequired(f"{boundary} requires explicit user revalidation of tainted content")
         if allowed_scopes and envelope.task_scope not in allowed_scopes:
             raise ContentRevalidationRequired(
                 f"{boundary} is blocked because content revalidation belongs to another task"
@@ -437,6 +610,14 @@ def _verified_or_downgraded_envelope(envelope: ContentEnvelope) -> ContentEnvelo
 
 
 def _sign_content_envelope(envelope: ContentEnvelope) -> ContentEnvelope:
+    if envelope.field_lineage:
+        envelope = envelope.model_copy(
+            update={
+                "sanitizers_applied": [
+                    item for item in envelope.sanitizers_applied if not item.startswith(CONTENT_LINEAGE_SIDECAR_PREFIX)
+                ]
+            }
+        )
     signature = hmac.new(
         _content_envelope_secret().encode("utf-8"),
         _content_envelope_payload(envelope),
@@ -445,46 +626,12 @@ def _sign_content_envelope(envelope: ContentEnvelope) -> ContentEnvelope:
     return envelope.model_copy(update={"integrity_hmac": signature})
 
 
-def _content_envelope_payload(envelope: ContentEnvelope) -> bytes:
-    return json.dumps(
-        envelope.model_dump(mode="json", exclude={"integrity_hmac"}),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
 def _content_envelope_secret() -> str:
     from app.core import db
     from app.security.local_secret import load_or_create_local_secret
 
     path = db.db_path().parent / "secrets" / _CONTENT_ENVELOPE_SECRET_FILE
     return load_or_create_local_secret(path, unavailable_message="Content provenance secret is unavailable.")
-
-
-def _canonical_value(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return _canonical_value(value.model_dump(mode="json"))
-    if value is None or isinstance(value, bool | int | str):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else str(value)
-    if isinstance(value, bytes | bytearray | memoryview):
-        return {"$bytes": base64.b64encode(bytes(value)).decode("ascii")}
-    if isinstance(value, datetime | date):
-        return value.isoformat()
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Enum):
-        return _canonical_value(value.value)
-    if isinstance(value, Mapping):
-        return {str(key): _canonical_value(value[key]) for key in sorted(value, key=lambda item: str(item))}
-    if isinstance(value, list | tuple):
-        return [_canonical_value(item) for item in value]
-    if isinstance(value, set | frozenset):
-        normalized = [_canonical_value(item) for item in value]
-        return sorted(normalized, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str))
-    return str(value)
 
 
 def _normalize_trust_level(value: Any) -> str:

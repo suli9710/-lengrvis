@@ -54,7 +54,7 @@ reviewed JSON 只能包含红acted 标签，不能包含原始客户数据、邮
 - `summary.commercial_operations_ready = true`
 - `summary.paid_public_launch_signoff = false`
 - `summary.release_signoff = false`
-- 使用受保护的 `LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET` 生成有效 reviewed-evidence HMAC 签名；密钥必须由密码学安全随机源生成，至少 32 字节，不能使用人工口令或开发/CI 占位值
+- 使用 reviewer 独占的 `LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY` 生成 `reviewed-evidence-ed25519/v3` 签名；验证侧只配置 `LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY`，不得取得私钥
 
 最后两个 summary sign-off 字段必须保持 false，因为此 artifact 是证据，不是发布授权。发布授权仍来自商业 owner 更新 `docs/business/market-readiness.md` 并运行：
 
@@ -88,10 +88,15 @@ npm run evidence:paid-launch-template
 商业 owner 用真实法务、支付、税务、客服、退款和 claims 证据填完 reviewed JSON 后，用以下命令封存：
 
 ```powershell
-$env:LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET = "<reviewed evidence HMAC secret>"
+npm run evidence:keypair -- `
+  --private-key-output "$env:TEMP\lengrvis-reviewed-evidence-private.key" `
+  --public-key-output "$env:TEMP\lengrvis-reviewed-evidence-public.key"
+
+$env:LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-private.key" -Raw
+$env:LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-public.key" -Raw
 npm run evidence:commercial-operations-seal -- `
   --input path\to\commercial-operations-evidence.reviewed.draft.json `
   --output build\commercial-operations-evidence-reviewed.json
 ```
 
-封存命令会拒绝模板、不安全的开发 HMAC 值、错误 artifact type、缺失必填标签、原始敏感值，以及无法通过 `npm run evidence:commercial-operations-verify` 的证据。封存仍不是 release sign-off；它只创建 `delivery:paid-launch` 使用的已签名 reviewed evidence artifact。
+私钥文件必须导入 reviewer 独占的密钥存储，导入确认后删除临时文件；不能配置到 candidate、publish 或普通验证工作流。公钥内容配置为 GitHub Actions variable `LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY`。封存命令会拒绝模板、无效 Ed25519 密钥、错误 artifact type、缺失必填标签、原始敏感值，以及无法通过 `npm run evidence:commercial-operations-verify` 的证据。封存仍不是 release sign-off；它只创建 `delivery:paid-launch` 使用的已签名 reviewed evidence artifact。

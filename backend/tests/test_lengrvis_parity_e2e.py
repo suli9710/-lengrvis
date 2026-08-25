@@ -129,7 +129,19 @@ def _make_mcp_handler():
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
             method = payload.get("method")
-            if method == "tools/list":
+            if method == "initialize":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "result": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "mock", "version": "1"},
+                    },
+                }
+            elif method == "notifications/initialized":
+                response = {}
+            elif method == "tools/list":
                 response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"tools": _MOCK_TOOLS}}
             elif method == "tools/call":
                 response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"echo": "ok"}}

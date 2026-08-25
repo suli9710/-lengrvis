@@ -94,6 +94,36 @@ def test_production_environment_without_escape_hatches_can_start(monkeypatch):
     assert_no_production_test_escape_hatches()
 
 
+@pytest.mark.parametrize("env_value", ["ga", "beta", "rc", "candidate"])
+def test_release_channel_env_refuses_test_escape_hatches(monkeypatch, env_value):
+    # A build labelled ga/beta/rc is a release profile (see execution_isolation)
+    # and must not be exempt from the escape-hatch assertion.
+    monkeypatch.setenv("LENGRVIS_ENV", env_value)
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+
+    with pytest.raises(RuntimeError, match="Refusing to start production backend"):
+        assert_no_production_test_escape_hatches()
+
+
+def test_commercial_release_boolean_refuses_test_escape_hatches(monkeypatch):
+    monkeypatch.delenv("LENGRVIS_ENV", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+
+    with pytest.raises(RuntimeError, match="Refusing to start production backend"):
+        assert_no_production_test_escape_hatches()
+
+
+def test_release_channel_env_excludes_vite_dev_origins(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_ENV", "ga")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    assert cors_allow_origins() == ["app://local"]
+
+
 def test_desktop_token_guard_allows_cors_preflight_without_token(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)

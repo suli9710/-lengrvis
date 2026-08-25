@@ -48,6 +48,7 @@ class ToolRuntimeReviewMixin:
         step: PlanStep,
         tool: ToolDefinition,
         result: ToolResult,
+        risk_level: Any | None = None,
     ):
         orchestrator = self.orchestrator
         review_tool_result = orchestrator.safety.review_tool_result
@@ -55,4 +56,11 @@ class ToolRuntimeReviewMixin:
         accepted_keywords = self._accepted_review_tool_call_keywords(review_tool_result)
         if accepted_keywords is None or "tool_definition" in accepted_keywords:
             kwargs["tool_definition"] = tool
-        return review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level, **kwargs)
+        return review_tool_result(
+            task.id,
+            step.id,
+            step.tool_name,
+            result,
+            risk_level or tool.risk_level,
+            **kwargs,
+        )

@@ -164,19 +164,29 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
         )
 
     if not failures and limit is None and external_anchor is not None:
-        anchored_sequence = int(external_anchor.get("sequence") or 0)
-        anchored_hash = str(external_anchor.get("event_hash") or "")
-        if anchored_sequence != last_sequence or anchored_hash != last_hash:
+        if external_anchor.get("invalid"):
             failures.append(
                 {
                     "index": checked + 1,
-                    "id": external_anchor.get("event_id") or None,
-                    "sequence": anchored_sequence,
-                    "reason": "external_anchor_mismatch",
-                    "expected_last_sequence": anchored_sequence,
-                    "actual_last_sequence": last_sequence,
+                    "id": None,
+                    "sequence": 0,
+                    "reason": "external_anchor_invalid",
                 }
             )
+        else:
+            anchored_sequence = int(external_anchor.get("sequence") or 0)
+            anchored_hash = str(external_anchor.get("event_hash") or "")
+            if anchored_sequence != last_sequence or anchored_hash != last_hash:
+                failures.append(
+                    {
+                        "index": checked + 1,
+                        "id": external_anchor.get("event_id") or None,
+                        "sequence": anchored_sequence,
+                        "reason": "external_anchor_mismatch",
+                        "expected_last_sequence": anchored_sequence,
+                        "actual_last_sequence": last_sequence,
+                    }
+                )
 
     failure = failures[0] if failures else {}
     return {
@@ -405,6 +415,13 @@ def read_audit_anchor() -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
     if not isinstance(payload, dict):
+        return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
+    expected_payload = {key: value for key, value in payload.items() if key != "anchor_sha256"}
+    expected_checksum = sha256(
+        json.dumps(expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    actual_checksum = str(payload.get("anchor_sha256") or "")
+    if not actual_checksum or not hmac.compare_digest(actual_checksum, expected_checksum):
         return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
     return payload
 

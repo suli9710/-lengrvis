@@ -138,7 +138,7 @@ def supports_dir_fd_no_follow() -> bool:
 
 def write_text_with_dir_fd_no_follow(path: Path, text: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    mode = 0o666
+    mode = 0o600
     dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         fd = os.open(path.name, flags, mode, dir_fd=dir_fd)
@@ -340,9 +340,7 @@ def _open_windows_file_relative(parent_handle: int, name: str, *, access: int, c
         _win_file_attribute_normal(),
         _win_share_read() | _win_share_write() | _win_share_delete(),
         disposition,
-        _win_file_non_directory_file()
-        | _win_file_synchronous_io_nonalert()
-        | _win_file_flag_open_reparse_point(),
+        _win_file_non_directory_file() | _win_file_synchronous_io_nonalert() | _win_file_flag_open_reparse_point(),
         None,
         0,
     )

@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   forgetMemoryEndpoint,
   listMemoriesEndpoint,
+  promoteMemoryEndpoint,
   recallMemoryEndpoint,
+  revokeMemoryEndpoint,
   saveMemoryEndpoint,
   type MemoryEndpointRequest
 } from "./memoryClient";
@@ -21,6 +23,8 @@ describe("memory client", () => {
     await listMemoriesEndpoint(endpointRequest);
     await saveMemoryEndpoint(endpointRequest, "Remember this");
     await recallMemoryEndpoint(endpointRequest, "Remember");
+    await promoteMemoryEndpoint(endpointRequest, "memory-one", { resolveConflict: true });
+    await revokeMemoryEndpoint(endpointRequest, "memory-one");
     await forgetMemoryEndpoint(endpointRequest, "memory/one");
 
     expect(request.mock.calls.map(([input]) => input)).toEqual([
@@ -35,6 +39,16 @@ describe("memory client", () => {
         method: "POST",
         body: { query: "Remember", k: 5, tags: [] }
       },
+      {
+        endpoint: "/api/memories/memory-one/promote",
+        method: "POST",
+        body: { reviewed_by: "desktop-user", conflict_status: "resolved" }
+      },
+      {
+        endpoint: "/api/memories/memory-one/revoke",
+        method: "POST",
+        body: { reviewed_by: "desktop-user" }
+      },
       { endpoint: "/api/memories/memory/one", method: "DELETE" }
     ]);
   });
@@ -44,6 +58,8 @@ describe("memory client", () => {
     const memories = {
       save: vi.fn().mockResolvedValue(response),
       recall: vi.fn().mockResolvedValue(response),
+      promote: vi.fn().mockResolvedValue(response),
+      revoke: vi.fn().mockResolvedValue(response),
       forget: vi.fn().mockResolvedValue(response)
     };
     (window as unknown as { lengrvis?: { memories: typeof memories } }).lengrvis = { memories };
@@ -57,6 +73,8 @@ describe("memory client", () => {
       kind: "decision"
     });
     await recallMemoryEndpoint(endpointRequest, "Remember", { k: 8, tags: ["work"] });
+    await promoteMemoryEndpoint(endpointRequest, "memory-one", { reviewedBy: "reviewer", resolveConflict: true });
+    await revokeMemoryEndpoint(endpointRequest, "memory-one", { reviewedBy: "reviewer" });
     await forgetMemoryEndpoint(endpointRequest, "memory-one");
 
     expect(request).toHaveBeenCalledTimes(1);
@@ -68,6 +86,12 @@ describe("memory client", () => {
       kind: "decision"
     });
     expect(memories.recall).toHaveBeenCalledWith({ query: "Remember", k: 8, tags: ["work"] });
+    expect(memories.promote).toHaveBeenCalledWith({
+      memoryId: "memory-one",
+      reviewedBy: "reviewer",
+      resolveConflict: true
+    });
+    expect(memories.revoke).toHaveBeenCalledWith({ memoryId: "memory-one", reviewedBy: "reviewer" });
     expect(memories.forget).toHaveBeenCalledWith("memory-one");
   });
 });

@@ -18,7 +18,21 @@ from app.core.content_provenance import (
     revalidate_content_envelope,
     stable_content_hash,
 )
-from app.core.schemas import ContentEnvelope, Memory, MemoryState, MessageType, now_iso
+from app.core.memory_namespace import (
+    DEFAULT_MEMORY_DOMAIN_SCOPE,
+    DEFAULT_MEMORY_PRINCIPAL_ID,
+    DEFAULT_MEMORY_WORKSPACE_ID,
+    MemoryNamespace,
+    normalize_memory_namespace,
+)
+from app.core.schemas import (
+    ContentEnvelope,
+    Memory,
+    MemoryConflictStatus,
+    MemoryState,
+    MessageType,
+    now_iso,
+)
 from app.indexer.embedding_service import embed_texts
 
 
@@ -26,6 +40,21 @@ class MemoryAgent(BaseAgent):
     name = "MemoryAgent"
     domain_summary = "Long-term memory store. Embedding-backed recall over user-confirmed facts and preferences."
     prompt_file = "memory_agent.md"
+
+    def __init__(
+        self,
+        bus=None,
+        *,
+        principal_id: str = DEFAULT_MEMORY_PRINCIPAL_ID,
+        workspace_id: str = DEFAULT_MEMORY_WORKSPACE_ID,
+        domain_scope: str = DEFAULT_MEMORY_DOMAIN_SCOPE,
+    ) -> None:
+        super().__init__(bus)
+        self.namespace = normalize_memory_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
 
     async def _embed(self, text: str) -> list[float]:
         try:
@@ -42,13 +71,42 @@ class MemoryAgent(BaseAgent):
         *,
         task_id: str = "",
         kind: str = "fact",
+        version: int | None = None,
+        supersedes: str = "",
+        conflict_status: MemoryConflictStatus | str = MemoryConflictStatus.NONE,
         tags: list[str] | None = None,
         source: str = "user",
         user_confirmed: bool | None = None,
         quarantine: bool | None = None,
         ttl_seconds: int | None = None,
         content_envelope: ContentEnvelope | dict[str, Any] | None = None,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
     ) -> Memory:
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        normalized_kind = str(kind or "fact").strip() or "fact"
+        normalized_supersedes = str(supersedes or "").strip()
+        effective_version = 1 if version is None else int(version)
+        if normalized_supersedes:
+            parent_row = db.get_memory(
+                normalized_supersedes,
+                principal_id=namespace.principal_id,
+                workspace_id=namespace.workspace_id,
+                domain_scope=namespace.domain_scope,
+            )
+            if parent_row is None:
+                raise ValueError("superseded memory was not found in the current namespace")
+            parent = self._memory_from_row(parent_row)
+            if parent.kind != normalized_kind:
+                raise ValueError("a memory can only supersede a record of the same kind")
+            effective_version = parent.version + 1 if version is None else int(version)
+            if effective_version <= parent.version:
+                raise ValueError("a superseding memory must have a higher version")
         confirmed = source.strip().casefold() == "user" if user_confirmed is None else bool(user_confirmed)
         quarantined = not confirmed if quarantine is None else bool(quarantine)
         state = MemoryState.QUARANTINED if quarantined else MemoryState.ACTIVE
@@ -57,8 +115,14 @@ class MemoryAgent(BaseAgent):
             expires_at = (datetime.now(UTC) + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat()
         normalized_content = content.strip()
         memory = Memory(
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
             content=normalized_content,
-            kind=kind,
+            kind=normalized_kind,
+            version=effective_version,
+            supersedes=normalized_supersedes,
+            conflict_status=conflict_status,
             tags=tags or [],
             task_id=task_id,
             source=source,
@@ -83,7 +147,18 @@ class MemoryAgent(BaseAgent):
         record(
             "memory.remembered",
             self.name,
-            {"id": memory.id, "kind": kind, "state": memory.state.value, "tag_count": len(memory.tags)},
+            {
+                "id": memory.id,
+                "kind": memory.kind,
+                "state": memory.state.value,
+                "principal_id": memory.principal_id,
+                "workspace_id": memory.workspace_id,
+                "domain_scope": memory.domain_scope,
+                "version": memory.version,
+                "supersedes": memory.supersedes,
+                "conflict_status": memory.conflict_status.value,
+                "tag_count": len(memory.tags),
+            },
             task_id=task_id,
         )
         try:
@@ -95,8 +170,11 @@ class MemoryAgent(BaseAgent):
                     message_type=MessageType.OBSERVATION,
                     structured_payload={
                         "memory_id": memory.id,
-                        "kind": kind,
+                        "kind": memory.kind,
                         "state": memory.state.value,
+                        "principal_id": memory.principal_id,
+                        "workspace_id": memory.workspace_id,
+                        "domain_scope": memory.domain_scope,
                         "tags": memory.tags,
                     },
                 )
@@ -112,6 +190,9 @@ class MemoryAgent(BaseAgent):
         tags: list[str] | None = None,
         source: str = "system",
         user_confirmed: bool = False,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
     ) -> Memory:
         """Store a structured post-task lesson for future planning."""
         normalized = {
@@ -130,6 +211,9 @@ class MemoryAgent(BaseAgent):
             tags=["lesson", tool_tag, *(tags or [])],
             source=source,
             user_confirmed=user_confirmed,
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
         )
 
     async def recall(
@@ -138,8 +222,24 @@ class MemoryAgent(BaseAgent):
         *,
         k: int = 5,
         tags: list[str] | None = None,
+        kind: str | None = None,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
     ) -> list[Memory]:
-        rows = db.list_memories(tags=tags, limit=500)
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        rows = db.list_memories(
+            tags=tags,
+            kind=kind,
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
+            limit=500,
+        )
         active_rows: list[tuple[Memory, dict[str, Any]]] = []
         for row in rows:
             try:
@@ -176,8 +276,27 @@ class MemoryAgent(BaseAgent):
             results.append(memory)
         return results
 
-    def promote(self, memory_id: str, *, reviewed_by: str = "user") -> Memory | None:
-        row = db.get_memory(memory_id)
+    def promote(
+        self,
+        memory_id: str,
+        *,
+        reviewed_by: str = "user",
+        conflict_status: MemoryConflictStatus | str | None = None,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
+    ) -> Memory | None:
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        row = db.get_memory(
+            memory_id,
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
+        )
         if row is None:
             return None
         try:
@@ -189,6 +308,9 @@ class MemoryAgent(BaseAgent):
         memory.user_confirmed = True
         memory.reviewed_at = now_iso()
         memory.reviewed_by = str(reviewed_by or "user")
+        if conflict_status is not None:
+            raw_conflict_status = getattr(conflict_status, "value", conflict_status)
+            memory.conflict_status = MemoryConflictStatus(str(raw_conflict_status))
         if memory.content_envelope is not None:
             try:
                 memory.content_envelope = revalidate_content_envelope(
@@ -225,8 +347,26 @@ class MemoryAgent(BaseAgent):
         record("memory.promoted", self.name, {"id": memory.id, "reviewed_by": memory.reviewed_by})
         return memory
 
-    def revoke(self, memory_id: str, *, reviewed_by: str = "user") -> Memory | None:
-        row = db.get_memory(memory_id)
+    def revoke(
+        self,
+        memory_id: str,
+        *,
+        reviewed_by: str = "user",
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
+    ) -> Memory | None:
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        row = db.get_memory(
+            memory_id,
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
+        )
         if row is None:
             return None
         try:
@@ -243,14 +383,50 @@ class MemoryAgent(BaseAgent):
         record("memory.revoked", self.name, {"id": memory.id, "reviewed_by": memory.reviewed_by})
         return memory
 
-    def forget(self, memory_id: str) -> bool:
-        ok = db.delete_memory(memory_id)
+    def forget(
+        self,
+        memory_id: str,
+        *,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
+    ) -> bool:
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        ok = db.delete_memory(
+            memory_id,
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
+        )
         if ok:
             record("memory.forgotten", self.name, {"id": memory_id})
         return ok
 
-    def list_all(self, *, limit: int = 200) -> list[Memory]:
-        rows = db.list_memories(limit=limit)
+    def list_all(
+        self,
+        *,
+        kind: str | None = None,
+        principal_id: str | None = None,
+        workspace_id: str | None = None,
+        domain_scope: str | None = None,
+        limit: int = 200,
+    ) -> list[Memory]:
+        namespace = self._resolve_namespace(
+            principal_id=principal_id,
+            workspace_id=workspace_id,
+            domain_scope=domain_scope,
+        )
+        rows = db.list_memories(
+            kind=kind,
+            principal_id=namespace.principal_id,
+            workspace_id=namespace.workspace_id,
+            domain_scope=namespace.domain_scope,
+            limit=limit,
+        )
         result: list[Memory] = []
         for row in rows:
             try:
@@ -291,6 +467,8 @@ class MemoryAgent(BaseAgent):
 
     def _is_recallable(self, memory: Memory) -> bool:
         if memory.state != MemoryState.ACTIVE:
+            return False
+        if memory.conflict_status not in {MemoryConflictStatus.NONE, MemoryConflictStatus.RESOLVED}:
             return False
         if not memory.expires_at:
             return True
@@ -344,6 +522,19 @@ class MemoryAgent(BaseAgent):
             payload["state"] = MemoryState.ACTIVE if legacy_user_memory else MemoryState.QUARANTINED
             payload["user_confirmed"] = legacy_user_memory
         return Memory.model_validate(payload)
+
+    def _resolve_namespace(
+        self,
+        *,
+        principal_id: str | None,
+        workspace_id: str | None,
+        domain_scope: str | None,
+    ) -> MemoryNamespace:
+        return normalize_memory_namespace(
+            principal_id=self.namespace.principal_id if principal_id is None else principal_id,
+            workspace_id=self.namespace.workspace_id if workspace_id is None else workspace_id,
+            domain_scope=self.namespace.domain_scope if domain_scope is None else domain_scope,
+        )
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:

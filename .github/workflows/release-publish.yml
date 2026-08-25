@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       release_owner_signature:
-        description: "Release-owner signature for the already-approved RC evidence"
+        description: "Detached Ed25519 signature over the exact reviewed candidate sign-off payload"
         required: true
         type: string
       manual_signoff_status:
@@ -38,23 +38,28 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  attestations: read
+  contents: read
 
 concurrency:
   group: release-publish-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build signed artifacts + publish release
+  preflight:
+    name: Verify candidate and release evidence
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: windows-latest
     timeout-minutes: 120
     environment: production
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
       LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-      LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
+      LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY: ${{ vars.LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY }}
       LENGRVIS_STRICT_STATE_MACHINE: "true"
       LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
       LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
@@ -71,14 +76,15 @@ jobs:
       LENGRVIS_ANDROID_AAPT_SHA256: ${{ vars.LENGRVIS_ANDROID_AAPT_SHA256 }}
       RELEASE_OWNER: ${{ github.actor }}
       RELEASE_OWNER_SIGNATURE: ${{ inputs.release_owner_signature }}
+      LENGRVIS_RELEASE_OWNER_PUBLIC_KEY: ${{ vars.LENGRVIS_RELEASE_OWNER_PUBLIC_KEY }}
       RELEASE_EVIDENCE_MANUAL_SIGNOFF_STATUS: ${{ inputs.manual_signoff_status }}
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - name: Validate immutable release candidate before checkout
         id: candidate_identity
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $releaseTag = [string]$env:RELEASE_TAG
           if ($releaseTag -notmatch '^v[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
@@ -142,6 +148,9 @@ jobs:
           if ($commit -notmatch '^[0-9a-f]{40}$') {
             throw "Candidate run did not provide a full immutable Git commit SHA."
           }
+          if (([string]$env:GITHUB_SHA).Trim().ToLowerInvariant() -ne $commit) {
+            throw "Release publishing must be dispatched from the exact frozen candidate commit."
+          }
 
           $evidenceWorkflowJson = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-reviewed-evidence.yml"
           if ($LASTEXITCODE -ne 0) { throw "Unable to read the reviewed-evidence workflow through the GitHub Actions API." }
@@ -167,13 +176,13 @@ jobs:
           "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "LENGRVIS_RELEASE_CANDIDATE_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "LENGRVIS_RELEASE_BUILD_IDENTIFIER=$buildIdentifier" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "GITHUB_SHA=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Checkout verified release candidate commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ steps.candidate_identity.outputs.commit }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify supplied release tag is bound to verified candidate
         shell: pwsh
@@ -194,18 +203,157 @@ jobs:
 
       - name: Download immutable candidate artifacts into isolated staging
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $destination = "build/promotion-input/candidate"
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name "release-candidate-artifacts" --dir $destination
+          $candidateArtifact = "release-candidate-artifacts-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT"
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name $candidateArtifact --dir $destination
           if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts." }
+
+          $mcpEvidenceDestination = ".tmp/qa-evidence/mcp-conformance-job"
+          New-Item -ItemType Directory -Force -Path $mcpEvidenceDestination | Out-Null
+          $mcpEvidenceArtifact = "mcp-conformance-evidence-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT"
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name $mcpEvidenceArtifact --dir $mcpEvidenceDestination
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download isolated MCP conformance evidence." }
+
+          $realLlmEvidenceDestination = ".tmp/qa-evidence/real-llm-eval"
+          New-Item -ItemType Directory -Force -Path $realLlmEvidenceDestination | Out-Null
+          $realLlmEvidenceArtifact = "real-llm-quality-evidence-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT"
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name $realLlmEvidenceArtifact --dir $realLlmEvidenceDestination
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download isolated real LLM quality evidence." }
+
+      - name: Verify immutable candidate checksums and provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $candidateRoot = (Resolve-Path -LiteralPath "build/promotion-input/candidate").Path
+          $manifestPath = Join-Path $candidateRoot "build/release-candidate-subjects.sha256"
+          $provenanceBundle = Join-Path $candidateRoot "build/attestations/build-provenance.sigstore.json"
+          $sbomBundle = Join-Path $candidateRoot "build/attestations/sbom.sigstore.json"
+          $sbomPath = Join-Path $candidateRoot ".tmp/sbom/lengrvis-sbom.cdx.json"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Candidate artifact is missing its checksum manifest."
+          }
+          foreach ($bundle in @($provenanceBundle, $sbomBundle)) {
+            if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) {
+              throw "Candidate artifact is missing required attestation bundle: $bundle"
+            }
+            Get-Content -LiteralPath $bundle -Raw | ConvertFrom-Json | Out-Null
+          }
+          if (-not (Test-Path -LiteralPath $sbomPath -PathType Leaf)) {
+            throw "Candidate artifact is missing the attested CycloneDX SBOM."
+          }
+          $sbomDocument = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
+          if ($sbomDocument.bomFormat -ne "CycloneDX" -or -not $sbomDocument.components) {
+            throw "Candidate artifact contains an invalid or empty CycloneDX SBOM."
+          }
+
+          $sbomBundleDocument = Get-Content -LiteralPath $sbomBundle -Raw | ConvertFrom-Json
+          $payload = $sbomBundleDocument.dsseEnvelope.payload
+          if ([string]::IsNullOrWhiteSpace($payload)) {
+            throw "Candidate SBOM attestation bundle is missing its signed statement payload."
+          }
+          $statementJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+          $statement = $statementJson | ConvertFrom-Json
+          if ($statement.predicateType -ne "https://cyclonedx.org/bom") {
+            throw "Candidate SBOM attestation uses an unexpected predicate type."
+          }
+          $signedSbom = $statement.predicate | ConvertTo-Json -Depth 100 -Compress
+          $downloadedSbom = $sbomDocument | ConvertTo-Json -Depth 100 -Compress
+          if ($signedSbom -cne $downloadedSbom) {
+            throw "Downloaded CycloneDX SBOM does not match the signed attestation predicate."
+          }
+
+          $lines = @(
+            Get-Content -LiteralPath $manifestPath |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          $version = (Get-Content -LiteralPath desktop/package.json -Raw | ConvertFrom-Json).version
+          $expectedSubjectPaths = @(
+            ".tmp/sbom/lengrvis-sbom.cdx.json",
+            "dist/backend.exe",
+            "dist/backend-capabilities.json",
+            "dist/Lengrvis-win-portable.zip",
+            "dist/Lengrvis-$version-x64-self-extracting.exe",
+            "desktop/release/Lengrvis-$version-x64.exe",
+            "desktop/release/Lengrvis-$version-x64.exe.blockmap",
+            "desktop/release/latest.yml"
+          )
+          if ($lines.Count -ne $expectedSubjectPaths.Count) {
+            throw "Candidate checksum manifest must contain the exact immutable release subject set."
+          }
+
+          $candidatePrefix = "$candidateRoot$([IO.Path]::DirectorySeparatorChar)"
+          $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in $lines) {
+            if ($line -notmatch '^(?<digest>[0-9a-f]{64}) \*(?<path>.+)$') {
+              throw "Candidate checksum manifest contains an invalid line."
+            }
+            $expectedDigest = $Matches.digest
+            $relative = $Matches.path.Replace("\", "/")
+            if (-not (
+              $relative.StartsWith("dist/", [StringComparison]::OrdinalIgnoreCase) -or
+              $relative.StartsWith("desktop/release/", [StringComparison]::OrdinalIgnoreCase) -or
+              $relative.Equals(".tmp/sbom/lengrvis-sbom.cdx.json", [StringComparison]::Ordinal)
+            )) {
+              throw "Candidate checksum manifest contains a path outside the release artifact allowlist."
+            }
+            if (-not $seen.Add($relative)) {
+              throw "Candidate checksum manifest contains a duplicate artifact path."
+            }
+
+            $artifactPath = [IO.Path]::GetFullPath((Join-Path $candidateRoot $relative))
+            if (-not $artifactPath.StartsWith($candidatePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Candidate checksum manifest path escapes the immutable candidate root."
+            }
+            if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+              throw "Candidate checksum manifest references a missing artifact: $relative"
+            }
+            $actualDigest = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualDigest -ne $expectedDigest) {
+              throw "Candidate artifact digest does not match the immutable manifest: $relative"
+            }
+
+            gh attestation verify "$artifactPath" `
+              --bundle "$provenanceBundle" `
+              --predicate-type "https://slsa.dev/provenance/v1" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "GitHub provenance verification failed for candidate artifact: $relative"
+            }
+
+            gh attestation verify "$artifactPath" `
+              --bundle "$sbomBundle" `
+              --predicate-type "https://cyclonedx.org/bom" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "GitHub SBOM attestation verification failed for candidate artifact: $relative"
+            }
+          }
+          foreach ($expectedSubjectPath in $expectedSubjectPaths) {
+            if (-not $seen.Contains($expectedSubjectPath)) {
+              throw "Candidate checksum manifest is missing required release subject: $expectedSubjectPath"
+            }
+          }
 
       - name: Download reviewed release evidence into isolated staging
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $destination = "build/promotion-input/evidence"
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          gh run download "$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID" --name "release-reviewed-evidence" --dir $destination
+          $evidenceArtifact = "release-reviewed-evidence-$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID-$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT"
+          gh run download "$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID" --name $evidenceArtifact --dir $destination
           if ($LASTEXITCODE -ne 0) { throw "Unable to download reviewed release evidence." }
 
       - name: Materialize only allowed staged release inputs
@@ -226,7 +374,10 @@ jobs:
             Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $pair[1] -Recurse -Force
           }
 
-          foreach ($relative in @("build/delivery-candidate-verdict.json")) {
+          foreach ($relative in @(
+            "build/delivery-candidate-verdict.json",
+            ".tmp/sbom/lengrvis-sbom.cdx.json"
+          )) {
             $source = Join-Path $candidateRoot $relative
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Candidate artifact is missing required file: $relative" }
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $relative) | Out-Null
@@ -256,7 +407,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -268,6 +419,18 @@ jobs:
       - name: Verify checked-out candidate binding
         run: python scripts/verify_release_candidate_binding.py --require-checkout-match
 
+      - name: Verify isolated MCP conformance evidence
+        run: >-
+          python scripts/mcp_conformance_evidence.py verify
+          --input .tmp/qa-evidence/mcp-conformance-job/mcp-conformance-evidence.json
+          --require-checkout-match
+
+      - name: Verify isolated real LLM quality evidence
+        id: real_llm_quality
+        run: >-
+          python scripts/real_llm_evidence.py verify
+          --require-checkout-match
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -277,10 +440,12 @@ jobs:
         run: |
           python -m venv .venv
           ".venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          .venv\Scripts\python.exe -m pip install -U pip
 
       - name: Install backend dependencies
         run: python -m pip install --require-hashes -r requirements-dev-lock.txt
+
+      - name: Install locked workspace QA dependencies
+        run: npm ci --ignore-scripts --engine-strict
 
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
@@ -315,15 +480,6 @@ jobs:
         id: qa_gate
         run: npm run qa:gate
 
-      - name: Run real-provider quality preflight
-        id: real_llm_quality
-        env:
-          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
-          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
-          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
-          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
-        run: python scripts/run_real_llm_eval.py --quality-gate
-
       - name: Run supply-chain preflight
         id: supply_chain
         run: npm run supply-chain:verify && npm run audit:deps && npm run security:secrets
@@ -346,95 +502,11 @@ jobs:
             {"hygiene":{"result":"${{ steps.hygiene.outcome }}"},"backend":{"result":"${{ steps.qa_gate.outcome }}"},"real-llm-quality":{"result":"${{ steps.real_llm_quality.outcome }}"},"desktop":{"result":"${{ steps.qa_gate.outcome }}"},"mobile":{"result":"${{ steps.qa_gate.outcome }}"},"supply-chain":{"result":"${{ steps.supply_chain.outcome }}"},"extension-security":{"result":"${{ steps.extension_security.outcome }}"}}
         run: npm run delivery:rc
 
-      - name: Prepare verified GitHub Release assets and checksums
-        run: |
-          $version = (Get-Content -LiteralPath desktop/package.json -Raw | ConvertFrom-Json).version
-          $portableAssets = @(
-            @{
-              Source = "dist/Lengrvis-win-portable.zip"
-              Target = "dist/Lengrvis-$version-win-portable.zip"
-            },
-            @{
-              Source = "dist/Lengrvis-$version-x64-self-extracting.exe"
-              Target = "dist/Lengrvis-$version-x64-self-extracting.exe"
-            },
-            @{
-              Source = "dist/backend.exe"
-              Target = "dist/Lengrvis-$version-backend.exe"
-            },
-            @{
-              Source = "dist/backend-capabilities.json"
-              Target = "dist/Lengrvis-$version-backend-capabilities.json"
-            }
-          )
-          $uploadAssets = @()
-          foreach ($asset in $portableAssets) {
-            if (-not (Test-Path -LiteralPath $asset.Source -PathType Leaf)) {
-              throw "Missing release asset: $($asset.Source)"
-            }
-            if ($asset.Source -ne $asset.Target) {
-              Copy-Item -LiteralPath $asset.Source -Destination $asset.Target -Force
-            }
-            $uploadAssets += (Resolve-Path -LiteralPath $asset.Target).Path
-          }
-          $installers = @(
-            Get-ChildItem -Path "desktop/release/*.exe" -File
-            Get-ChildItem -Path "desktop/release/*.msi" -File -ErrorAction SilentlyContinue
-            Get-ChildItem -Path "desktop/release/*.blockmap" -File -ErrorAction SilentlyContinue
-            Get-ChildItem -Path "desktop/release/*.yml" -File -ErrorAction SilentlyContinue
-          )
-          if (@($installers | Where-Object { $_.Extension -in @(".exe", ".msi") }).Count -eq 0) {
-            throw "Downloaded candidate does not contain a Windows installer."
-          }
-          $uploadAssets += @($installers | ForEach-Object { $_.FullName })
-          $checksumLines = @($uploadAssets | ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $(Split-Path -Leaf $_)"
-          })
-          $checksumPath = (Resolve-Path -LiteralPath dist).Path + "\lengrvis-$version-windows-sha256.txt"
-          Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ASCII
-          $uploadAssets += $checksumPath
-          New-Item -ItemType Directory -Path build -Force | Out-Null
-          Set-Content -LiteralPath build/release-upload-assets.txt -Value $uploadAssets -Encoding UTF8
-
-      - name: Create or update draft GitHub Release
-        run: |
-          $version = (Get-Content -LiteralPath desktop/package.json -Raw | ConvertFrom-Json).version
-          $signingMode = "signed Windows installer plus portable assets"
-          $notes = @"
-          Lengrvis $version release.
-
-          Publishing mode: $signingMode.
-
-          Automated release commit: $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT.
-          "@
-          $existingJson = gh release view "$env:RELEASE_TAG" --json isDraft 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $existing = $existingJson | ConvertFrom-Json
-            if (-not [bool]$existing.isDraft) {
-              throw "Refusing to replace assets on an already-published release."
-            }
-            gh release edit "$env:RELEASE_TAG" --title "Lengrvis $version" --notes "$notes" --latest
-          } else {
-            gh release create "$env:RELEASE_TAG" --title "Lengrvis $version" --notes "$notes" --draft --target "$env:LENGRVIS_RELEASE_CANDIDATE_COMMIT"
-          }
-
-      - name: Upload the verified candidate bytes to GitHub Release
-        run: |
-          $uploadAssets = @(Get-Content -LiteralPath build/release-upload-assets.txt | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-          if ($uploadAssets.Count -lt 6) {
-            throw "Expected installer, portable, backend, capabilities, and checksum release assets."
-          }
-          gh release upload "$env:RELEASE_TAG" @uploadAssets --clobber
-
-      - name: Publish verified GitHub Release
-        run: gh release edit "$env:RELEASE_TAG" --draft=false --latest
-
-      - name: Upload release diagnostics artifact
+      - name: Upload release preflight diagnostics artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-publish-diagnostics
+          name: release-publish-preflight-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/delivery-verdict.json
             docs/release/current-release-evidence.md
@@ -443,4 +515,465 @@ jobs:
             desktop/release/**
             .tmp/qa-evidence/**
             .tmp/release-evidence-packet/**
+          include-hidden-files: true
           if-no-files-found: ignore
+
+  publish:
+    name: Publish attested candidate from a clean runner
+    needs: preflight
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT: ${{ inputs.candidate_run_attempt }}
+      LENGRVIS_REVIEWED_EVIDENCE_RUN_ID: ${{ inputs.reviewed_evidence_run_id }}
+      LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT: ${{ inputs.reviewed_evidence_run_attempt }}
+
+    steps:
+      - name: Reverify and publish the fixed candidate asset set
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Invoke-GitHubJson([string]$Endpoint, [string]$FailureMessage) {
+            $json = gh api $Endpoint
+            if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+            return $json | ConvertFrom-Json
+          }
+
+          function Resolve-RemoteTagCommit([string]$Repository, [string]$Tag) {
+            $reference = Invoke-GitHubJson `
+              "repos/$Repository/git/ref/tags/$Tag" `
+              "Unable to read the remote release tag through the GitHub API."
+            $object = $reference.object
+            $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            for ($depth = 0; $depth -lt 8; $depth++) {
+              $type = ([string]$object.type).Trim().ToLowerInvariant()
+              $sha = ([string]$object.sha).Trim().ToLowerInvariant()
+              if ($sha -notmatch '^[0-9a-f]{40}$' -or -not $seen.Add($sha)) {
+                throw "Remote release tag contains an invalid or cyclic object chain."
+              }
+              if ($type -eq "commit") { return $sha }
+              if ($type -ne "tag") {
+                throw "Remote release tag must resolve through annotated tags to a commit."
+              }
+              $tagObject = Invoke-GitHubJson `
+                "repos/$Repository/git/tags/$sha" `
+                "Unable to peel the annotated remote release tag."
+              $object = $tagObject.object
+            }
+            throw "Remote release tag exceeds the maximum annotated-tag depth."
+          }
+
+          function Resolve-RemoteBranchCommit([string]$Repository, [string]$Branch) {
+            if ([string]::IsNullOrWhiteSpace($Branch)) {
+              throw "Repository default branch is missing."
+            }
+            $currentRepository = Invoke-GitHubJson `
+              "repos/$Repository" `
+              "Unable to refresh the current repository before checking its default branch."
+            if ([string]$currentRepository.full_name -cne $Repository -or
+                [string]$currentRepository.default_branch -cne $Branch) {
+              throw "Repository default branch identity changed during publication."
+            }
+            $encodedBranch = [Uri]::EscapeDataString($Branch)
+            $reference = Invoke-GitHubJson `
+              "repos/$Repository/git/ref/heads/$encodedBranch" `
+              "Unable to read the current default-branch ref through the GitHub API."
+            $type = ([string]$reference.object.type).Trim().ToLowerInvariant()
+            $sha = ([string]$reference.object.sha).Trim().ToLowerInvariant()
+            if ($type -cne "commit" -or $sha -notmatch '^[0-9a-f]{40}$') {
+              throw "Repository default branch does not resolve directly to a full commit SHA."
+            }
+            return $sha
+          }
+
+          $releaseTag = ([string]$env:RELEASE_TAG).Trim()
+          if ($releaseTag -notmatch '^v[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "release_tag must be a v-prefixed semantic version without whitespace or ref syntax."
+          }
+          $version = $releaseTag.Substring(1)
+          $candidateRunId = ([string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID).Trim()
+          $candidateRunAttempt = ([string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT).Trim()
+          $evidenceRunId = ([string]$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ID).Trim()
+          $evidenceRunAttempt = ([string]$env:LENGRVIS_REVIEWED_EVIDENCE_RUN_ATTEMPT).Trim()
+          if ($candidateRunId -notmatch '^[1-9][0-9]*$' -or $candidateRunAttempt -notmatch '^[1-9][0-9]*$' -or
+              $evidenceRunId -notmatch '^[1-9][0-9]*$' -or $evidenceRunAttempt -notmatch '^[1-9][0-9]*$') {
+            throw "Promotion run IDs and run attempts must be positive integers."
+          }
+
+          $repository = Invoke-GitHubJson `
+            "repos/$env:GITHUB_REPOSITORY" `
+            "Unable to read the current repository through the GitHub API."
+          if ([string]$repository.full_name -cne [string]$env:GITHUB_REPOSITORY -or
+              [string]$env:GITHUB_REF_NAME -cne [string]$repository.default_branch) {
+            throw "Clean publication must run from this repository's exact default branch."
+          }
+          $candidateWorkflow = Invoke-GitHubJson `
+            "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-candidate.yml" `
+            "Unable to read the release-candidate workflow."
+          $candidateRun = Invoke-GitHubJson `
+            "repos/$env:GITHUB_REPOSITORY/actions/runs/$candidateRunId" `
+            "Unable to read the requested candidate run."
+          if ([string]$candidateWorkflow.state -cne "active" -or
+              [string]$candidateRun.repository.full_name -cne [string]$env:GITHUB_REPOSITORY -or
+              [string]$candidateRun.workflow_id -cne [string]$candidateWorkflow.id -or
+              [string]$candidateRun.run_attempt -cne $candidateRunAttempt -or
+              [string]$candidateRun.status -cne "completed" -or
+              [string]$candidateRun.conclusion -cne "success" -or
+              [string]$candidateRun.event -cne "workflow_dispatch" -or
+              [string]$candidateRun.head_repository.full_name -cne [string]$env:GITHUB_REPOSITORY -or
+              [string]$candidateRun.head_branch -cne [string]$repository.default_branch) {
+            throw "Candidate run provenance does not match the exact successful protected workflow run."
+          }
+          $candidateCommit = ([string]$candidateRun.head_sha).Trim().ToLowerInvariant()
+          if ($candidateCommit -notmatch '^[0-9a-f]{40}$' -or
+              ([string]$env:GITHUB_SHA).Trim().ToLowerInvariant() -cne $candidateCommit) {
+            throw "Clean publication must execute from the exact frozen candidate commit."
+          }
+
+          $evidenceWorkflow = Invoke-GitHubJson `
+            "repos/$env:GITHUB_REPOSITORY/actions/workflows/release-reviewed-evidence.yml" `
+            "Unable to read the reviewed-evidence workflow."
+          $evidenceRun = Invoke-GitHubJson `
+            "repos/$env:GITHUB_REPOSITORY/actions/runs/$evidenceRunId" `
+            "Unable to read the reviewed-evidence run."
+          if ([string]$evidenceWorkflow.state -cne "active" -or
+              [string]$evidenceRun.repository.full_name -cne [string]$env:GITHUB_REPOSITORY -or
+              [string]$evidenceRun.workflow_id -cne [string]$evidenceWorkflow.id -or
+              [string]$evidenceRun.run_attempt -cne $evidenceRunAttempt -or
+              [string]$evidenceRun.status -cne "completed" -or
+              [string]$evidenceRun.conclusion -cne "success" -or
+              [string]$evidenceRun.event -cne "workflow_dispatch" -or
+              [string]$evidenceRun.head_repository.full_name -cne [string]$env:GITHUB_REPOSITORY -or
+              [string]$evidenceRun.head_branch -cne [string]$repository.default_branch -or
+              ([string]$evidenceRun.head_sha).Trim().ToLowerInvariant() -cne $candidateCommit) {
+            throw "Reviewed-evidence provenance does not match the exact candidate commit."
+          }
+          $defaultBranch = [string]$repository.default_branch
+          if ((Resolve-RemoteBranchCommit $env:GITHUB_REPOSITORY $defaultBranch) -cne $candidateCommit) {
+            throw "Repository default branch moved away from the frozen candidate before clean publication."
+          }
+          if ((Resolve-RemoteTagCommit $env:GITHUB_REPOSITORY $releaseTag) -cne $candidateCommit) {
+            throw "Remote release tag does not resolve to the verified candidate commit."
+          }
+
+          $candidateRoot = Join-Path $env:RUNNER_TEMP "lengrvis-clean-promotion-candidate"
+          if (Test-Path -LiteralPath $candidateRoot) {
+            throw "Clean candidate staging unexpectedly exists before artifact download."
+          }
+          New-Item -ItemType Directory -Path $candidateRoot | Out-Null
+          $candidateArtifact = "release-candidate-artifacts-$candidateRunId-$candidateRunAttempt"
+          gh run download "$candidateRunId" --repo "$env:GITHUB_REPOSITORY" --name $candidateArtifact --dir $candidateRoot
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts in the clean job." }
+          $candidateRoot = (Resolve-Path -LiteralPath $candidateRoot).Path
+          $candidatePrefix = "$candidateRoot$([IO.Path]::DirectorySeparatorChar)"
+          $reparsePoints = @(
+            Get-ChildItem -LiteralPath $candidateRoot -Force -Recurse |
+              Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }
+          )
+          if ($reparsePoints.Count -ne 0) {
+            throw "Candidate artifact must not contain symbolic links or reparse points."
+          }
+
+          $manifestPath = Join-Path $candidateRoot "build/release-candidate-subjects.sha256"
+          $provenanceBundle = Join-Path $candidateRoot "build/attestations/build-provenance.sigstore.json"
+          $sbomBundle = Join-Path $candidateRoot "build/attestations/sbom.sigstore.json"
+          foreach ($required in @($manifestPath, $provenanceBundle, $sbomBundle)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Immutable candidate verification input is missing in the clean job: $required"
+            }
+          }
+          Get-Content -LiteralPath $provenanceBundle -Raw | ConvertFrom-Json | Out-Null
+          Get-Content -LiteralPath $sbomBundle -Raw | ConvertFrom-Json | Out-Null
+
+          $expectedSubjectPaths = @(
+            ".tmp/sbom/lengrvis-sbom.cdx.json",
+            "dist/backend.exe",
+            "dist/backend-capabilities.json",
+            "dist/Lengrvis-win-portable.zip",
+            "dist/Lengrvis-$version-x64-self-extracting.exe",
+            "desktop/release/Lengrvis-$version-x64.exe",
+            "desktop/release/Lengrvis-$version-x64.exe.blockmap",
+            "desktop/release/latest.yml"
+          )
+          $expectedSubjectSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          foreach ($expectedSubjectPath in $expectedSubjectPaths) {
+            $expectedSubjectSet.Add($expectedSubjectPath) | Out-Null
+          }
+          $manifestEntries = [Collections.Generic.Dictionary[string,object]]::new(
+            [StringComparer]::Ordinal
+          )
+          $manifestLines = @(
+            Get-Content -LiteralPath $manifestPath |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          foreach ($line in $manifestLines) {
+            if ($line -notmatch '^(?<digest>[0-9a-f]{64}) \*(?<path>.+)$') {
+              throw "Candidate checksum manifest contains an invalid line during clean publication."
+            }
+            $relative = $Matches.path.Replace("\", "/")
+            if (-not $expectedSubjectSet.Contains($relative) -or $manifestEntries.ContainsKey($relative)) {
+              throw "Candidate checksum manifest does not match the exact clean publication subject set."
+            }
+            $manifestEntries[$relative] = $Matches.digest
+          }
+          if ($manifestEntries.Count -ne $expectedSubjectPaths.Count) {
+            throw "Candidate checksum manifest must contain exactly the final 8 immutable subjects."
+          }
+
+          foreach ($relative in $expectedSubjectPaths) {
+            if (-not $manifestEntries.ContainsKey($relative)) {
+              throw "Candidate checksum manifest is missing final release subject: $relative"
+            }
+            $source = [IO.Path]::GetFullPath((Join-Path $candidateRoot $relative))
+            if (-not $source.StartsWith($candidatePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Final release subject escapes or is missing from clean candidate staging: $relative"
+            }
+            $actualDigest = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualDigest -cne $manifestEntries[$relative]) {
+              throw "Final release subject does not match the immutable candidate manifest: $relative"
+            }
+
+            gh attestation verify "$source" `
+              --bundle "$provenanceBundle" `
+              --predicate-type "https://slsa.dev/provenance/v1" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$candidateCommit" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "Clean-job GitHub provenance verification failed for candidate subject: $relative"
+            }
+            gh attestation verify "$source" `
+              --bundle "$sbomBundle" `
+              --predicate-type "https://cyclonedx.org/bom" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" `
+              --source-digest "$candidateCommit" `
+              --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) {
+              throw "Clean-job GitHub SBOM verification failed for candidate subject: $relative"
+            }
+          }
+
+          $sbomRelativePath = ".tmp/sbom/lengrvis-sbom.cdx.json"
+          $sbomSource = Join-Path $candidateRoot $sbomRelativePath
+          $candidateSbom = Get-Content -LiteralPath $sbomSource -Raw | ConvertFrom-Json
+          if ($candidateSbom.bomFormat -cne "CycloneDX" -or -not $candidateSbom.components) {
+            throw "Candidate artifact contains an invalid or empty CycloneDX SBOM."
+          }
+          $sbomBundleDocument = Get-Content -LiteralPath $sbomBundle -Raw | ConvertFrom-Json
+          $payload = [string]$sbomBundleDocument.dsseEnvelope.payload
+          if ([string]::IsNullOrWhiteSpace($payload)) {
+            throw "Candidate SBOM attestation bundle is missing its signed statement payload."
+          }
+          $statement = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))) | ConvertFrom-Json
+          if ($statement.predicateType -cne "https://cyclonedx.org/bom") {
+            throw "Candidate SBOM attestation uses an unexpected predicate type."
+          }
+          $signedSbom = $statement.predicate | ConvertTo-Json -Depth 100 -Compress
+          $downloadedSbom = $candidateSbom | ConvertTo-Json -Depth 100 -Compress
+          if ($signedSbom -cne $downloadedSbom) {
+            throw "Immutable candidate SBOM does not match the signed attestation predicate."
+          }
+
+          $releaseAssetsDir = Join-Path $env:RUNNER_TEMP "lengrvis-fixed-release-assets"
+          if (Test-Path -LiteralPath $releaseAssetsDir) {
+            throw "Clean release asset staging unexpectedly exists before materialization."
+          }
+          New-Item -ItemType Directory -Path $releaseAssetsDir | Out-Null
+          $releaseAssetsDir = (Resolve-Path -LiteralPath $releaseAssetsDir).Path
+          $releaseAssetsPrefix = "$releaseAssetsDir$([IO.Path]::DirectorySeparatorChar)"
+          $releaseMappings = @(
+            @{ Source = "dist/Lengrvis-win-portable.zip"; Target = "Lengrvis-$version-win-portable.zip" },
+            @{ Source = "dist/Lengrvis-$version-x64-self-extracting.exe"; Target = "Lengrvis-$version-x64-self-extracting.exe" },
+            @{ Source = "dist/backend.exe"; Target = "Lengrvis-$version-backend.exe" },
+            @{ Source = "dist/backend-capabilities.json"; Target = "Lengrvis-$version-backend-capabilities.json" },
+            @{ Source = "desktop/release/Lengrvis-$version-x64.exe"; Target = "Lengrvis-$version-x64.exe" },
+            @{ Source = "desktop/release/Lengrvis-$version-x64.exe.blockmap"; Target = "Lengrvis-$version-x64.exe.blockmap" },
+            @{ Source = "desktop/release/latest.yml"; Target = "latest.yml" },
+            @{ Source = $sbomRelativePath; Target = "Lengrvis-$version-sbom.cdx.json" }
+          )
+          $expectedAssets = [Collections.Generic.Dictionary[string,object]]::new(
+            [StringComparer]::Ordinal
+          )
+          foreach ($mapping in $releaseMappings) {
+            $source = [IO.Path]::GetFullPath((Join-Path $candidateRoot $mapping.Source))
+            $target = [IO.Path]::GetFullPath((Join-Path $releaseAssetsDir $mapping.Target))
+            if (-not $source.StartsWith($candidatePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                -not $target.StartsWith($releaseAssetsPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Fixed release mapping escaped its clean staging root."
+            }
+            Copy-Item -LiteralPath $source -Destination $target
+            $copiedDigest = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+            $copiedSize = (Get-Item -LiteralPath $target).Length
+            if ($copiedDigest -cne $manifestEntries[$mapping.Source] -or
+                $copiedSize -ne (Get-Item -LiteralPath $source).Length) {
+              throw "Clean release staging copy changed immutable candidate bytes: $($mapping.Source)"
+            }
+            $expectedAssets[$mapping.Target] = @{
+              Path = $target
+              Digest = $manifestEntries[$mapping.Source]
+              Size = $copiedSize
+            }
+          }
+
+          $fixedSubjectPaths = @(
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-win-portable.zip"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64-self-extracting.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-backend.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-backend-capabilities.json"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64.exe.blockmap"),
+            (Join-Path $releaseAssetsDir "latest.yml"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-sbom.cdx.json")
+          )
+          $checksumLines = @($fixedSubjectPaths | ForEach-Object {
+            $name = Split-Path -Leaf $_
+            "$($expectedAssets[$name].Digest)  $name"
+          })
+          $checksumName = "lengrvis-$version-windows-sha256.txt"
+          $checksumPath = Join-Path $releaseAssetsDir $checksumName
+          Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ASCII
+          $expectedAssets[$checksumName] = @{
+            Path = $checksumPath
+            Digest = (Get-FileHash -LiteralPath $checksumPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Size = (Get-Item -LiteralPath $checksumPath).Length
+          }
+          $uploadAssets = @(
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-win-portable.zip"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64-self-extracting.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-backend.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-backend-capabilities.json"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64.exe"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-x64.exe.blockmap"),
+            (Join-Path $releaseAssetsDir "latest.yml"),
+            (Join-Path $releaseAssetsDir "Lengrvis-$version-sbom.cdx.json"),
+            (Join-Path $releaseAssetsDir "lengrvis-$version-windows-sha256.txt")
+          )
+          if ($uploadAssets.Count -ne 9 -or $expectedAssets.Count -ne 9) {
+            throw "Final GitHub Release asset set must contain exactly 9 fixed files."
+          }
+
+          function Assert-LocalReleaseAssets {
+            $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($path in $uploadAssets) {
+              $resolved = (Resolve-Path -LiteralPath $path).Path
+              if (-not $resolved.StartsWith($releaseAssetsPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Fixed release asset escaped clean staging before upload."
+              }
+              $name = Split-Path -Leaf $resolved
+              if (-not $names.Add($name) -or -not $expectedAssets.ContainsKey($name)) {
+                throw "Fixed release asset names changed before upload."
+              }
+              $actualDigest = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
+              $actualSize = (Get-Item -LiteralPath $resolved).Length
+              if ($actualDigest -cne $expectedAssets[$name].Digest -or
+                  $actualSize -ne $expectedAssets[$name].Size) {
+                throw "Fixed release asset changed before upload: $name"
+              }
+            }
+            if ($names.Count -ne 9) { throw "Fixed release asset set is incomplete." }
+          }
+
+          function Assert-RemoteRelease([bool]$ExpectedDraft) {
+            $release = Invoke-GitHubJson `
+              "repos/$env:GITHUB_REPOSITORY/releases/tags/$releaseTag" `
+              "Unable to inspect the GitHub Release."
+            if ([bool]$release.draft -ne $ExpectedDraft -or
+                [bool]$release.prerelease -or
+                [string]$release.tag_name -cne $releaseTag -or
+                ([string]$release.target_commitish).Trim().ToLowerInvariant() -cne $candidateCommit) {
+              throw "GitHub Release identity or draft state does not match the verified candidate."
+            }
+            $actualAssets = @($release.assets)
+            $actualNames = @($actualAssets | ForEach-Object { [string]$_.name })
+            if ($actualAssets.Count -ne 9 -or @($actualNames | Sort-Object -Unique -CaseSensitive).Count -ne 9) {
+              throw "GitHub Release asset set does not exactly match the fixed candidate asset set."
+            }
+            foreach ($asset in $actualAssets) {
+              $name = [string]$asset.name
+              if (-not $expectedAssets.ContainsKey($name) -or [string]$asset.state -cne "uploaded") {
+                throw "GitHub Release contains an unexpected or incomplete asset: $name"
+              }
+              if ([string]$asset.digest -cne "sha256:$($expectedAssets[$name].Digest)" -or
+                  [int64]$asset.size -ne [int64]$expectedAssets[$name].Size) {
+                throw "GitHub Release asset does not match verified candidate bytes: $name"
+              }
+            }
+          }
+
+          Assert-LocalReleaseAssets
+          if ((Resolve-RemoteBranchCommit $env:GITHUB_REPOSITORY $defaultBranch) -cne $candidateCommit) {
+            throw "Repository default branch moved before draft mutation."
+          }
+          if ((Resolve-RemoteTagCommit $env:GITHUB_REPOSITORY $releaseTag) -cne $candidateCommit) {
+            throw "Remote release tag moved before draft mutation."
+          }
+          $notes = @"
+          Lengrvis $version release.
+
+          Publishing mode: signed Windows installer plus portable assets.
+
+          Automated release commit: $candidateCommit.
+          "@
+          $existingJson = gh release view "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets,tagName,targetCommitish 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $existing = $existingJson | ConvertFrom-Json
+            if (-not [bool]$existing.isDraft -or [bool]$existing.isPrerelease -or
+                [string]$existing.tagName -cne $releaseTag -or
+                ([string]$existing.targetCommitish).Trim().ToLowerInvariant() -cne $candidateCommit) {
+              throw "Refusing to replace assets on a prerelease, non-draft, or differently bound release."
+            }
+            foreach ($asset in @($existing.assets)) {
+              gh release delete-asset "$releaseTag" "$($asset.name)" --repo "$env:GITHUB_REPOSITORY" --yes
+              if ($LASTEXITCODE -ne 0) { throw "Unable to remove stale draft asset: $($asset.name)" }
+            }
+            gh release edit "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --title "Lengrvis $version" --notes "$notes" --latest --prerelease=false --target "$candidateCommit"
+            if ($LASTEXITCODE -ne 0) { throw "Unable to update the existing draft release." }
+          } else {
+            gh release create "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --title "Lengrvis $version" --notes "$notes" --draft --target "$candidateCommit"
+            if ($LASTEXITCODE -ne 0) { throw "Unable to create the draft release." }
+          }
+
+          Assert-LocalReleaseAssets
+          if ((Resolve-RemoteBranchCommit $env:GITHUB_REPOSITORY $defaultBranch) -cne $candidateCommit) {
+            throw "Repository default branch moved before fixed asset upload."
+          }
+          if ((Resolve-RemoteTagCommit $env:GITHUB_REPOSITORY $releaseTag) -cne $candidateCommit) {
+            throw "Remote release tag moved before fixed asset upload."
+          }
+          gh release upload "$releaseTag" @uploadAssets --repo "$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to upload the exact fixed release asset set." }
+          Assert-RemoteRelease $true
+
+          if ((Resolve-RemoteBranchCommit $env:GITHUB_REPOSITORY $defaultBranch) -cne $candidateCommit) {
+            throw "Repository default branch moved immediately before publication."
+          }
+          if ((Resolve-RemoteTagCommit $env:GITHUB_REPOSITORY $releaseTag) -cne $candidateCommit) {
+            throw "Remote release tag moved immediately before publication."
+          }
+          Assert-LocalReleaseAssets
+          Assert-RemoteRelease $true
+          gh release edit "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --draft=false --latest --prerelease=false
+          if ($LASTEXITCODE -ne 0) { throw "Unable to publish the verified GitHub Release." }
+
+          if ((Resolve-RemoteBranchCommit $env:GITHUB_REPOSITORY $defaultBranch) -cne $candidateCommit) {
+            throw "Repository default branch moved after publication."
+          }
+          if ((Resolve-RemoteTagCommit $env:GITHUB_REPOSITORY $releaseTag) -cne $candidateCommit) {
+            throw "Remote release tag moved after publication."
+          }
+          Assert-RemoteRelease $false

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.config import AppSettings
 from app.core.errors import AppError
@@ -15,12 +19,15 @@ from app.integrations.lengrvis_code import (
     validate_allowed_tools,
 )
 from app.orchestration.engine_router import route_engine
+from app.security import execution_isolation
 from app.security.execution_isolation import (
     REQUIRED_EXECUTION_ISOLATION_CAPABILITIES,
     ExecutionIsolationAttestation,
     ExecutionIsolationRequiredError,
     arbitrary_execution_allowed,
     assert_release_execution_configuration,
+    canonical_execution_isolation_attestation_bytes,
+    current_execution_isolation_attestation,
     release_execution_configuration_issues,
     release_profile_active,
 )
@@ -38,8 +45,176 @@ def _complete_attestation() -> ExecutionIsolationAttestation:
         verified=True,
         enforced=True,
         evidence_id="test-attestation",
+        issued_at_utc="2026-07-17T00:00:00+00:00",
+        expires_at_utc="2026-07-17T00:05:00+00:00",
+        host_binary_sha256=f"sha256:{'1' * 64}",
+        policy_sha256=f"sha256:{'2' * 64}",
+        key_fingerprint=f"sha256:{'3' * 64}",
         reason="test-only complete attestation",
     )
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _signed_isolation_host(
+    private_key: Ed25519PrivateKey,
+    *,
+    challenge_mutator=None,
+    issued_delta: timedelta = timedelta(seconds=-1),
+    expires_delta: timedelta = timedelta(minutes=2),
+):
+    class SignedHost:
+        @staticmethod
+        def attest_current_process_tree(challenge):  # noqa: ANN001, ANN205
+            signed_challenge = dict(challenge)
+            if challenge_mutator is not None:
+                signed_challenge = challenge_mutator(signed_challenge)
+            now = datetime.now(UTC)
+            payload = {
+                "schema_version": "lengrvis-windows-execution-isolation-v1",
+                "provider": "test-native-host",
+                "platform": "win32",
+                "capabilities": sorted(REQUIRED_EXECUTION_ISOLATION_CAPABILITIES),
+                "enforced": True,
+                "evidence_id": "test-native-attestation",
+                "issued_at_utc": (now + issued_delta).isoformat(),
+                "expires_at_utc": (now + expires_delta).isoformat(),
+                "host_binary_sha256": f"sha256:{'4' * 64}",
+                "policy_sha256": f"sha256:{'5' * 64}",
+                "challenge": signed_challenge,
+                "reason": "test native host enforced all required boundaries",
+            }
+            signature = private_key.sign(canonical_execution_isolation_attestation_bytes(payload))
+            return {
+                "payload": payload,
+                "signature": f"ed25519:{_b64url(signature)}",
+            }
+
+    return SignedHost()
+
+
+def _install_signed_isolation_host(monkeypatch: pytest.MonkeyPatch, host) -> None:
+    private_key = getattr(host, "_private_key", None)
+    if private_key is not None:
+        raise AssertionError("private keys must never be attached to the host object")
+    monkeypatch.setattr(execution_isolation.sys, "platform", "win32")
+    monkeypatch.setattr(
+        execution_isolation.importlib,
+        "import_module",
+        lambda _name: host,
+    )
+
+
+def _set_isolation_public_key(
+    monkeypatch: pytest.MonkeyPatch,
+    private_key: Ed25519PrivateKey,
+) -> None:
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv(
+        "LENGRVIS_WINDOWS_ISOLATION_ATTESTATION_PUBLIC_KEY",
+        f"ed25519:{_b64url(public_key)}",
+    )
+    monkeypatch.setenv(
+        "LENGRVIS_WINDOWS_ISOLATION_HOST_SHA256",
+        f"sha256:{'4' * 64}",
+    )
+    monkeypatch.setenv(
+        "LENGRVIS_WINDOWS_ISOLATION_POLICY_SHA256",
+        f"sha256:{'5' * 64}",
+    )
+
+
+def test_current_execution_isolation_requires_signed_fresh_process_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    _set_isolation_public_key(monkeypatch, private_key)
+    _install_signed_isolation_host(
+        monkeypatch,
+        _signed_isolation_host(private_key),
+    )
+
+    attestation = current_execution_isolation_attestation()
+
+    assert attestation.complete is True
+    assert attestation.key_fingerprint.startswith("sha256:")
+    assert attestation.host_binary_sha256 == f"sha256:{'4' * 64}"
+
+
+def test_current_execution_isolation_rejects_replayed_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    _set_isolation_public_key(monkeypatch, private_key)
+    _install_signed_isolation_host(
+        monkeypatch,
+        _signed_isolation_host(
+            private_key,
+            challenge_mutator=lambda challenge: {**challenge, "process_id": 1},
+        ),
+    )
+
+    attestation = current_execution_isolation_attestation()
+
+    assert attestation.complete is False
+    assert "challenge" in attestation.reason.lower()
+
+
+def test_current_execution_isolation_rejects_expired_signed_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    _set_isolation_public_key(monkeypatch, private_key)
+    _install_signed_isolation_host(
+        monkeypatch,
+        _signed_isolation_host(
+            private_key,
+            issued_delta=timedelta(minutes=-3),
+            expires_delta=timedelta(minutes=-1),
+        ),
+    )
+
+    attestation = current_execution_isolation_attestation()
+
+    assert attestation.complete is False
+    assert "expired" in attestation.reason.lower()
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "value", "reason_fragment"),
+    [
+        ("LENGRVIS_WINDOWS_ISOLATION_HOST_SHA256", "", "host binary digest"),
+        ("LENGRVIS_WINDOWS_ISOLATION_POLICY_SHA256", "", "policy digest"),
+        ("LENGRVIS_WINDOWS_ISOLATION_HOST_SHA256", f"sha256:{'6' * 64}", "host binary digest"),
+        ("LENGRVIS_WINDOWS_ISOLATION_POLICY_SHA256", f"sha256:{'6' * 64}", "policy digest"),
+    ],
+)
+def test_current_execution_isolation_rejects_missing_or_mismatched_release_pins(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_name: str,
+    value: str,
+    reason_fragment: str,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    _set_isolation_public_key(monkeypatch, private_key)
+    if value:
+        monkeypatch.setenv(environment_name, value)
+    else:
+        monkeypatch.delenv(environment_name)
+    _install_signed_isolation_host(
+        monkeypatch,
+        _signed_isolation_host(private_key),
+    )
+
+    attestation = current_execution_isolation_attestation()
+
+    assert attestation.complete is False
+    assert reason_fragment in attestation.reason.casefold()
 
 
 def test_release_profile_detection_covers_packaged_and_public_beta_profiles() -> None:

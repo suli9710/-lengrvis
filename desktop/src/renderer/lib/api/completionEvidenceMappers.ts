@@ -1,16 +1,7 @@
 import type { TaskCompletionEvidence } from "../../../shared/executionTypes";
 import type { BackendTaskCompletionEvidenceFallback } from "./executionBackendTypes";
+import { arrayOfObjects, recordOrUndefined } from "./mapperPrimitives";
 import { zhBackendText } from "../zh";
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function arrayOfObjects(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
-    : [];
-}
 
 export function mapOptionalTaskCompletionEvidence(
   value: unknown,

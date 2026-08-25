@@ -13,6 +13,7 @@ import type {
   TaskExplain
 } from "../../../shared/executionTypes";
 import { zhBackendTaskStatus, zhBackendText, zhRiskLevel, zhSafetyVerdict, zhToolName } from "../zh";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   BackendAgentMessage,
   BackendApproval,
@@ -71,7 +72,9 @@ export function startRunEndpoint(
     engine: "auto"
   };
   const responsePromise = window.lengrvis?.runs
-    ? window.lengrvis.runs.start(requestBody) as Promise<ApiResponse<BackendRunCreateResponse>>
+    ? safeIpcApiRequest(() =>
+        window.lengrvis.runs.start(requestBody) as Promise<ApiResponse<BackendRunCreateResponse>>
+      )
     : request<BackendRunCreateResponse, BackendRunCreateRequest>({
         endpoint: "/api/runs",
         method: "POST",
@@ -338,9 +341,11 @@ export function submitApprovalDecisionEndpoint(
 ): Promise<ApiResponse<ApprovalRequest>> {
   const action = decision.decision === "approved" ? "approve" : "reject";
   if (window.lengrvis?.approvals) {
-    const bridgeRequest = action === "approve"
-      ? window.lengrvis.approvals.approve(decision.approvalId)
-      : window.lengrvis.approvals.reject(decision.approvalId);
+    const bridgeRequest = safeIpcApiRequest<BackendApproval>(() =>
+      (action === "approve"
+        ? window.lengrvis.approvals.approve(decision.approvalId)
+        : window.lengrvis.approvals.reject(decision.approvalId)) as Promise<ApiResponse<BackendApproval>>
+    );
     return bridgeRequest.then((response) => mapResponse(response, mapApproval));
   }
   return request<BackendApproval>({
@@ -363,8 +368,10 @@ export function executeCommandEndpoint(
   args: Record<string, unknown> = {}
 ): Promise<ApiResponse<CommandExecutionResult>> {
   if (window.lengrvis?.commands) {
-    return window.lengrvis.commands.execute({ name, args }).then((response) =>
-      mapResponse(response as ApiResponse<BackendCommandExecutionResult>, mapCommandExecutionResult)
+    return safeIpcApiRequest<BackendCommandExecutionResult>(() =>
+      window.lengrvis.commands.execute({ name, args }) as Promise<ApiResponse<BackendCommandExecutionResult>>
+    ).then((response) =>
+      mapResponse(response, mapCommandExecutionResult)
     );
   }
   return request<BackendCommandExecutionResult, { name: string; args: Record<string, unknown> }>({
@@ -384,11 +391,45 @@ export function previewRollbackEndpoint(
 export function executeRollbackEndpoint(
   request: ExecutionEndpointRequest,
   taskId: string
-): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
+): Promise<ApiResponse<{
+  executed: unknown[];
+  count: number;
+  state: string;
+  attempted: number;
+  succeeded: number;
+  verified: number;
+  verification_failed: number;
+  failed: number;
+  manual_required: number;
+  unrecoverable: number;
+}>> {
   const response = window.lengrvis?.tasks
-    ? window.lengrvis.tasks.rollback(taskId)
+    ? safeIpcApiRequest(() => window.lengrvis.tasks.rollback(taskId))
     : request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
-  return response as Promise<ApiResponse<{ executed: unknown[]; count: number }>>;
+  return response as Promise<ApiResponse<{
+    executed: unknown[];
+    count: number;
+    state: string;
+    attempted: number;
+    succeeded: number;
+    verified: number;
+    verification_failed: number;
+    failed: number;
+    manual_required: number;
+    unrecoverable: number;
+  }>>;
+}
+
+export function taskLifecycleEndpoint(
+  request: ExecutionEndpointRequest,
+  taskId: string,
+  action: "pause" | "resume" | "cancel"
+): Promise<ApiResponse<BackendTask>> {
+  const bridge = window.lengrvis?.tasks;
+  const response = bridge
+    ? safeIpcApiRequest(() => bridge[action](taskId))
+    : request<BackendTask>({ endpoint: `/api/tasks/${taskId}/${action}`, method: "POST" });
+  return response as Promise<ApiResponse<BackendTask>>;
 }
 
 export function subscribeRunEventsEndpoint(

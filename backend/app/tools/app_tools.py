@@ -15,12 +15,13 @@ from typing import Any
 from app.core.audit import record
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+from app.core.process_tree import ProcessCancelledError, run_process_tree
 from app.core.subprocess_output import decode_process_output
 from app.llm.registry import get_effective_settings
 from app.policy.redaction import redact_public_text, redact_value
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
-from app.tools.tool_abort import raise_if_tool_aborted
+from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted, tool_abort_event
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 ALLOWLIST = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe"}
@@ -563,12 +564,14 @@ def _run_uninstall_command(
 ) -> dict[str, Any]:
     try:
         raise_if_tool_aborted(abort_context)
-        completed = subprocess.run(  # noqa: S603 - command is selected from scanned uninstall entries.
+        completed = run_process_tree(
             command_args,
             shell=False,
             capture_output=True,
             timeout=timeout,
             check=False,
+            hide_window=True,
+            cancel_event=tool_abort_event(abort_context),
         )
         return {
             "returncode": completed.returncode,
@@ -578,6 +581,8 @@ def _run_uninstall_command(
         }
     except subprocess.TimeoutExpired:
         return {"returncode": -1, "stdout": "", "stderr": "Uninstaller timed out.", "timed_out": True}
+    except ProcessCancelledError:
+        raise ToolAbortedError("Tool execution was cancelled.") from None
     except OSError as exc:
         return {"returncode": -1, "stdout": "", "stderr": _safe_process_output(str(exc)), "timed_out": False}
 

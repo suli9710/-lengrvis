@@ -115,6 +115,38 @@ class BrowserHostBridgeHub:
             with self._lock:
                 self._pending.pop(request_id, None)
 
+    async def request_task_cancel(self, *, task_id: str, timeout_seconds: float = 0.5) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            raise ValueError("BrowserHost task cancellation requires a task id.")
+        request_id = uuid.uuid4().hex
+        response: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+        with self._lock:
+            websocket = self._websocket
+            socket_loop = self._socket_loop
+            if websocket is None or socket_loop is None:
+                raise BrowserHostBridgeUnavailable("No authenticated Desktop BrowserHost bridge is connected.")
+            self._pending[request_id] = response
+
+        try:
+            await self._send(
+                websocket,
+                socket_loop,
+                {
+                    "type": "cancel_task",
+                    "request_id": request_id,
+                    "task_id": normalized_task_id,
+                },
+            )
+            return await asyncio.wait_for(asyncio.wrap_future(response), timeout=timeout_seconds)
+        except BrowserHostBridgeUnavailable:
+            raise
+        except TimeoutError as exc:
+            raise TimeoutError("Desktop BrowserHost bridge did not acknowledge task cancellation in time.") from exc
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
     async def _send(
         self,
         websocket: WebSocket,

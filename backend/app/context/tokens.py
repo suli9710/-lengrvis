@@ -12,8 +12,12 @@ CHARS_PER_TOKEN = 4
 JSON_CHARS_PER_TOKEN = 2
 # CJK text tokenizes far denser than ASCII (~1-1.5 chars/token vs ~4); a flat
 # len/4 underestimates Chinese contexts 3-5x, so auto-compaction would never
-# trigger before the provider rejects the prompt.
-CJK_CHARS_PER_TOKEN = 1.6
+# trigger before the provider rejects the prompt. 1.6 sat OUTSIDE the ~1-1.5
+# range above and still undercounted cl100k-class Chinese by ~35%, so proactive
+# compaction failed to fire for long Chinese contexts. Use 1.2 (inside the
+# range) to bias the estimate upward — over-counting only compacts slightly
+# early, whereas under-counting risks a hard provider prompt-too-long failure.
+CJK_CHARS_PER_TOKEN = 1.2
 IMAGE_OR_DOCUMENT_TOKENS = 2000
 SUMMARY_RESERVED_TOKENS = 20000
 ATTACHMENT_BLOCK_TYPES = {"image", "image_url", "document", "input_audio"}

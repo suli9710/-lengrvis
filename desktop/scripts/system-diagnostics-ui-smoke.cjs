@@ -521,6 +521,20 @@ async function assertDiagnosticsLayout(page, label) {
       }
     }
 
+    if (failures.length > 0) {
+      const target = document.querySelector("[data-testid='system-update-card']");
+      const scrollState = [`window=${Math.round(window.scrollX)}`, `document=${document.documentElement.scrollLeft}`, `body=${document.body.scrollLeft}`];
+      let ancestor = target?.parentElement ?? null;
+      while (ancestor) {
+        if (ancestor.scrollLeft || ancestor.scrollWidth > ancestor.clientWidth + tolerance) {
+          const label = ancestor.className || ancestor.tagName.toLowerCase();
+          scrollState.push(`${label}:${ancestor.scrollLeft}/${ancestor.scrollWidth}/${ancestor.clientWidth}`);
+        }
+        ancestor = ancestor.parentElement;
+      }
+      failures.push(`horizontal scroll state ${scrollState.join(" | ")}`);
+    }
+
     const textFitSelectors = [
       ["update detail", "[data-testid='system-update-detail']"],
       ["update facts", ".system-update-card__facts"],

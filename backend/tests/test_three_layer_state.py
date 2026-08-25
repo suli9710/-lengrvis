@@ -73,31 +73,43 @@ class TestTaskPhaseTransitions:
         "source,target",
         [
             (TaskPhase.CREATED, TaskPhase.GOAL_ANALYSIS),
+            (TaskPhase.CREATED, TaskPhase.DENIED),
             (TaskPhase.CREATED, TaskPhase.CANCELLED),
             (TaskPhase.GOAL_ANALYSIS, TaskPhase.PLANNING),
             (TaskPhase.GOAL_ANALYSIS, TaskPhase.FAILED),
+            (TaskPhase.GOAL_ANALYSIS, TaskPhase.DENIED),
             (TaskPhase.GOAL_ANALYSIS, TaskPhase.CANCELLED),
             (TaskPhase.PLANNING, TaskPhase.CONSULTATION),
             (TaskPhase.PLANNING, TaskPhase.PLAN_REVIEW),
             (TaskPhase.PLANNING, TaskPhase.FAILED),
+            (TaskPhase.PLANNING, TaskPhase.DENIED),
             (TaskPhase.PLANNING, TaskPhase.CANCELLED),
             (TaskPhase.CONSULTATION, TaskPhase.PLAN_REVIEW),
             (TaskPhase.CONSULTATION, TaskPhase.PLANNING),
             (TaskPhase.CONSULTATION, TaskPhase.FAILED),
+            (TaskPhase.CONSULTATION, TaskPhase.DENIED),
             (TaskPhase.CONSULTATION, TaskPhase.CANCELLED),
             (TaskPhase.PLAN_REVIEW, TaskPhase.EXECUTION),
             (TaskPhase.PLAN_REVIEW, TaskPhase.PLANNING),
             (TaskPhase.PLAN_REVIEW, TaskPhase.CONSULTATION),
             (TaskPhase.PLAN_REVIEW, TaskPhase.FAILED),
+            (TaskPhase.PLAN_REVIEW, TaskPhase.DENIED),
             (TaskPhase.PLAN_REVIEW, TaskPhase.CANCELLED),
             (TaskPhase.EXECUTION, TaskPhase.FINAL_REVIEW),
             (TaskPhase.EXECUTION, TaskPhase.COMPLETED),
             (TaskPhase.EXECUTION, TaskPhase.FAILED),
+            (TaskPhase.EXECUTION, TaskPhase.DENIED),
             (TaskPhase.EXECUTION, TaskPhase.CANCELLED),
             (TaskPhase.FINAL_REVIEW, TaskPhase.COMPLETED),
             (TaskPhase.FINAL_REVIEW, TaskPhase.EXECUTION),
             (TaskPhase.FINAL_REVIEW, TaskPhase.FAILED),
+            (TaskPhase.FINAL_REVIEW, TaskPhase.DENIED),
             (TaskPhase.FINAL_REVIEW, TaskPhase.CANCELLED),
+            (TaskPhase.COMPLETED, TaskPhase.DENIED),
+            (TaskPhase.DENIED, TaskPhase.ROLLED_BACK),
+            (TaskPhase.DENIED, TaskPhase.REPAIR_REQUIRED),
+            (TaskPhase.CANCELLED, TaskPhase.REPAIR_REQUIRED),
+            (TaskPhase.ROLLED_BACK, TaskPhase.REPAIR_REQUIRED),
         ],
     )
     def test_valid_phase_transition(self, source: TaskPhase, target: TaskPhase):
@@ -111,6 +123,7 @@ class TestTaskPhaseTransitions:
             (TaskPhase.CREATED, TaskPhase.EXECUTION),
             (TaskPhase.COMPLETED, TaskPhase.CREATED),
             (TaskPhase.FAILED, TaskPhase.PLANNING),
+            (TaskPhase.DENIED, TaskPhase.PLANNING),
             (TaskPhase.CANCELLED, TaskPhase.GOAL_ANALYSIS),
             (TaskPhase.EXECUTION, TaskPhase.CREATED),
             (TaskPhase.GOAL_ANALYSIS, TaskPhase.EXECUTION),
@@ -121,9 +134,63 @@ class TestTaskPhaseTransitions:
         with pytest.raises(StateTransitionError):
             phase_transition(source, target)
 
-    def test_terminal_phases_have_no_transitions(self):
-        for terminal in (TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED):
-            assert TASK_PHASE_TRANSITIONS[terminal] == set()
+    def test_terminal_phases_only_allow_explicit_recovery_transitions(self):
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.CANCELLED] == {TaskPhase.REPAIR_REQUIRED}
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.ROLLED_BACK] == {TaskPhase.REPAIR_REQUIRED}
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.REPAIR_REQUIRED] == {TaskPhase.DENIED}
+
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.COMPLETED] == {
+            TaskPhase.DENIED,
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.FAILED] == {
+            TaskPhase.DENIED,
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+        assert TASK_PHASE_TRANSITIONS[TaskPhase.DENIED] == {
+            TaskPhase.ROLLED_BACK,
+            TaskPhase.REPAIR_REQUIRED,
+        }
+
+
+@pytest.mark.parametrize(
+    ("rollback_state", "expected_phase"),
+    [
+        ("succeeded", TaskPhase.ROLLED_BACK),
+        ("partial", TaskPhase.REPAIR_REQUIRED),
+        ("manual_required", TaskPhase.REPAIR_REQUIRED),
+        ("unrecoverable", TaskPhase.REPAIR_REQUIRED),
+    ],
+)
+def test_legacy_failed_rollback_record_normalizes_to_explicit_phase(rollback_state, expected_phase):
+    task = Task.model_validate(
+        {
+            "user_goal": "legacy rollback",
+            "status": "failed",
+            "phase": "failed",
+            "metadata": {"rollback": {"state": rollback_state}},
+        }
+    )
+
+    assert task.status == expected_phase
+    assert task.phase == expected_phase
+    assert task.execution_stage == ExecutionStage.IDLE
+
+
+def test_legacy_denied_record_normalizes_to_explicit_denied_phase():
+    task = Task.model_validate(
+        {
+            "user_goal": "legacy denied",
+            "status": "denied",
+            "phase": "denied",
+        }
+    )
+
+    assert task.status == TaskPhase.DENIED
+    assert task.phase == TaskPhase.DENIED
+    assert task.execution_stage == ExecutionStage.IDLE
 
 
 # ===========================================================================

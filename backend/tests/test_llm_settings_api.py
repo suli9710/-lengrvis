@@ -43,6 +43,33 @@ def test_settings_rejects_persisted_secrets(tmp_path, monkeypatch):
     assert "jwt_secret" not in overrides
 
 
+def test_settings_rejects_nested_mcp_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/settings",
+        json={
+            "mcp_servers": [
+                {
+                    "name": "private-mcp",
+                    "url": "https://mcp.example/mcp",
+                    "auth": {
+                        "token": "secret-token-that-must-not-persist",
+                        "resource": "https://mcp.example/mcp",
+                    },
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "secret_settings_must_use_external_config"
+    assert "secret-token-that-must-not-persist" not in body["message"]
+    assert "mcp_servers" not in db.get_settings_overrides()
+
+
 def test_settings_public_dict_redacts_mcp_auth():
     from app.config import AppSettings
 

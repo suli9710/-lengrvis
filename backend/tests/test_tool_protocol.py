@@ -57,6 +57,10 @@ def test_tool_definition_public_serialization_exposes_capability_metadata() -> N
     assert public["effects"] == ["read", "search"]
     assert public["resource_kinds"] == ["workspace", "repository"]
     assert public["fast_path_eligible"] is True
+    assert public["idempotency_scope"] == "local_execution_key"
+    assert public["supports_reconciliation"] is False
+    assert public["compensation_strength"] == "none"
+    assert public["safe_to_retry_errors"] == []
     assert "input_schema" not in public
     assert "output_schema" not in public
     assert "sensitive_arg_keys" not in public
@@ -174,6 +178,56 @@ def test_registry_hides_tools_missing_model_visible_contract() -> None:
     assert tool.contract_errors()
     assert registry.list_for_planning() == []
     assert registry.search("incomplete contract") == []
+
+
+def test_tool_definition_rejects_invalid_transaction_contract_values() -> None:
+    tool = ToolDefinition(
+        name="test.invalid_transaction_contract",
+        description="invalid transaction contract",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="TestAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=_noop,
+        read_only=False,
+        concurrency_safe=False,
+        effects=["write"],
+        resource_kinds=["test_resource"],
+        trust_tier="builtin",
+        idempotency_scope="magic",
+        compensation_strength="perfect",
+        safe_to_retry_errors=[""],
+    )
+
+    errors = tool.contract_errors()
+
+    assert "idempotency_scope must be authoritative" in errors
+    assert "compensation_strength must be authoritative" in errors
+    assert "safe_to_retry_errors must contain non-empty error codes" in errors
+
+
+def test_high_risk_tool_cannot_disable_idempotency_scope() -> None:
+    tool = ToolDefinition(
+        name="test.no_high_risk_idempotency",
+        description="missing high-risk idempotency",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="TestAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=_noop,
+        read_only=False,
+        concurrency_safe=False,
+        effects=["write"],
+        resource_kinds=["test_resource"],
+        trust_tier="builtin",
+        idempotency_scope="none",
+    )
+
+    assert "R2/R3 tools must declare an idempotency scope" in tool.contract_errors()
 
 
 def test_fast_path_eligible_tools_declare_explicit_object_schema() -> None:

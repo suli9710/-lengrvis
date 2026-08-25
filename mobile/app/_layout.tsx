@@ -1,16 +1,16 @@
 import { Slot, usePathname, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, AppState, type AppStateStatus, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
-import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, isExpiredTimestamp, refreshMobileSession, type PairingSession, type RemoteInputGrant } from "../src/api/client";
+import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, refreshMobileSession, type PairingSession, type RemoteInputGrant } from "../src/api/client";
 import { resolveAndroidBack } from "../src/androidBackNavigation";
 import { addApprovalNotificationResponseListener, getLastApprovalNotificationApprovalId } from "../src/notifications";
 import { reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs, isRemoteInputGrantUsable } from "../src/remoteInputGrant";
 import { ConsentScreen } from "../src/screens/ConsentScreen";
 import { PairScreen } from "../src/screens/PairScreen";
 import { MobileCompanionProvider, useMobileCompanion } from "../src/state/MobileCompanionContext";
-import { sessionRefreshDelayMs, sessionRefreshRetryDelayMs } from "../src/sessionLifecycle";
+import { mobileSessionTransition, sessionRefreshDelayMs, sessionRefreshRetryDelayMs } from "../src/sessionLifecycle";
 import { clearSession, loadSession, replaceSessionIfTokenMatches } from "../src/store/auth";
 import { loadConsentState } from "../src/store/consent";
 import { colors } from "../src/ui/theme";
@@ -27,6 +27,9 @@ export default function RootLayout() {
   const [sessionRefreshAttempt, setSessionRefreshAttempt] = useState(0);
   const [remoteInputGrant, setRemoteInputGrant] = useState<RemoteInputGrant | null>(null);
   const [consentGate, setConsentGate] = useState<ConsentGateState>("checking");
+  const [sessionLocked, setSessionLocked] = useState(() => AppState.currentState !== "active");
+  const appStateRef = useRef<AppStateStatus | null>(AppState.currentState);
+  const sessionLockEpochRef = useRef(0);
 
   useEffect(() => {
     let isActive = true;
@@ -44,18 +47,61 @@ export default function RootLayout() {
     };
   }, []);
 
+  const resetShellState = useCallback(() => {
+    clearRemoteInputGrantTokens();
+    setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
+    router.replace("/home");
+  }, [router]);
+
   useEffect(() => {
-    if (consentGate !== "done") return undefined;
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      const transition = mobileSessionTransition(appStateRef.current, nextState);
+      appStateRef.current = nextState;
+      if (transition === "lock") {
+        sessionLockEpochRef.current += 1;
+        resetShellState();
+        setSession(null);
+        setSessionLoadState("loading");
+        setSessionLocked(true);
+        return;
+      }
+      if (transition === "unlock") {
+        resetShellState();
+        setSession(null);
+        setSessionLoadState("loading");
+        setSessionLocked(false);
+        setSessionLoadAttempt((attempt) => attempt + 1);
+      }
+    };
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
+    if (AppState.currentState && AppState.currentState !== appStateRef.current) {
+      handleAppStateChange(AppState.currentState);
+    }
+    return () => subscription.remove();
+  }, [resetShellState]);
+
+  useEffect(() => {
+    if (consentGate !== "done" || sessionLocked || appStateRef.current !== "active") return undefined;
     let isActive = true;
+    const lockEpoch = sessionLockEpochRef.current;
+    const canCommitSession = () => (
+      isActive &&
+      appStateRef.current === "active" &&
+      sessionLockEpochRef.current === lockEpoch
+    );
     setSessionLoadState("loading");
     void loadSession()
       .then(async (storedSession) => {
-        if (!isActive) return;
+        if (!canCommitSession()) return;
         let stored = storedSession;
-        if (stored && isExpiredTimestamp(stored.expiresAt)) {
+        if (stored) {
           const refreshed = await refreshMobileSession(stored);
           const replaced = await replaceSessionIfTokenMatches(stored.token, refreshed);
-          if (!replaced || !isActive) return;
+          if (!canCommitSession()) return;
+          if (!replaced) {
+            setSessionLoadAttempt((attempt) => attempt + 1);
+            return;
+          }
           stored = refreshed;
         }
         if (!stored) {
@@ -66,7 +112,7 @@ export default function RootLayout() {
         setSessionLoadState("ready");
       })
       .catch(() => {
-        if (!isActive) return;
+        if (!canCommitSession()) return;
         setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
         setSession(null);
         setSessionLoadState("failed");
@@ -75,7 +121,7 @@ export default function RootLayout() {
     return () => {
       isActive = false;
     };
-  }, [consentGate, router, sessionLoadAttempt]);
+  }, [consentGate, router, sessionLoadAttempt, sessionLocked]);
 
   useEffect(() => {
     if (!remoteInputGrant) return undefined;
@@ -98,12 +144,6 @@ export default function RootLayout() {
     return () => clearTimeout(timeout);
   }, [remoteInputGrant]);
 
-  const resetShellState = useCallback(() => {
-    clearRemoteInputGrantTokens();
-    setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
-    router.replace("/home");
-  }, [router]);
-
   const clearLocalSessionOrShowRecovery = useCallback(() => {
     resetShellState();
     setSession(null);
@@ -125,17 +165,29 @@ export default function RootLayout() {
     const refreshDelay = sessionRefreshDelayMs(baseSession);
     if (refreshDelay === null) return undefined;
     let active = true;
+    const lockEpoch = sessionLockEpochRef.current;
+    const canCommitSession = () => (
+      active &&
+      appStateRef.current === "active" &&
+      sessionLockEpochRef.current === lockEpoch
+    );
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const refreshTimer = setTimeout(() => {
       void refreshMobileSession(baseSession)
         .then(async (nextSession) => {
           const replaced = await replaceSessionIfTokenMatches(baseSession.token, nextSession);
-          if (!active || !replaced) return;
+          if (!canCommitSession()) return;
+          if (!replaced) {
+            setSession(null);
+            setSessionLoadState("loading");
+            setSessionLoadAttempt((attempt) => attempt + 1);
+            return;
+          }
           setSessionRefreshAttempt(0);
           setSession((current) => current?.token === baseSession.token ? nextSession : current);
         })
         .catch((error: unknown) => {
-          if (!active) return;
+          if (!canCommitSession()) return;
           if (error instanceof AuthExpiredError) {
             clearLocalSessionOrShowRecovery();
             return;
@@ -153,16 +205,26 @@ export default function RootLayout() {
     };
   }, [clearLocalSessionOrShowRecovery, session, sessionRefreshAttempt]);
 
+  const callbackLockEpoch = sessionLockEpochRef.current;
   const handlePaired = useCallback((nextSession: PairingSession) => {
+    if (appStateRef.current !== "active" || sessionLockEpochRef.current !== callbackLockEpoch) {
+      setSession(null);
+      setSessionLoadState("loading");
+      if (appStateRef.current === "active") {
+        setSessionLoadAttempt((attempt) => attempt + 1);
+      }
+      return;
+    }
     resetShellState();
     setSessionLoadState("ready");
     setSession(nextSession);
     router.replace("/home");
-  }, [resetShellState, router]);
+  }, [callbackLockEpoch, resetShellState, router]);
 
   const handleRemoteInputGrant = useCallback((grant: RemoteInputGrant) => {
+    if (appStateRef.current !== "active" || sessionLockEpochRef.current !== callbackLockEpoch) return;
     setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "received", grant }));
-  }, []);
+  }, [callbackLockEpoch]);
 
   const handleRemoteInputGrantRevoked = useCallback((grant: RemoteInputGrant) => {
     clearRemoteInputGrantTokens();
@@ -214,11 +276,25 @@ export default function RootLayout() {
     );
   }
 
+  if (sessionLocked) {
+    return (
+      <GestureHandlerRootView style={styles.flex}>
+        <SessionLoadScreen
+          state="loading"
+          locked
+          onPairFresh={clearLocalSessionOrShowRecovery}
+          onRetry={() => setSessionLoadAttempt((attempt) => attempt + 1)}
+        />
+      </GestureHandlerRootView>
+    );
+  }
+
   if (sessionLoadState === "loading") {
     return (
       <GestureHandlerRootView style={styles.flex}>
         <SessionLoadScreen
           state="loading"
+          locked={false}
           onPairFresh={clearLocalSessionOrShowRecovery}
           onRetry={() => setSessionLoadAttempt((attempt) => attempt + 1)}
         />
@@ -231,6 +307,7 @@ export default function RootLayout() {
       <GestureHandlerRootView style={styles.flex}>
         <SessionLoadScreen
           state="failed"
+          locked={false}
           onPairFresh={clearLocalSessionOrShowRecovery}
           onRetry={() => setSessionLoadAttempt((attempt) => attempt + 1)}
         />
@@ -306,16 +383,22 @@ function routeStateFromPath(pathname: string) {
 
 function SessionLoadScreen({
   state,
+  locked,
   onPairFresh,
   onRetry,
 }: {
   state: SessionLoadState;
+  locked: boolean;
   onPairFresh: () => void;
   onRetry: () => void;
 }) {
   const isLoading = state === "loading";
-  const title = isLoading ? "正在准备连接" : "无法恢复上次连接";
-  const detail = isLoading ? "正在安全读取或清理这台手机保存的配对状态。" : "手机没有读到可用的本地会话。你可以重试，或重新和电脑配对。";
+  const title = locked ? "Lengrvis 已锁定" : isLoading ? "正在准备连接" : "无法恢复上次连接";
+  const detail = locked
+    ? "返回应用后，需要验证身份才能恢复与电脑的连接。"
+    : isLoading
+      ? "正在安全读取或清理这台手机保存的配对状态，并更新访问凭据。"
+      : "手机没有读到可用的本地会话。你可以重试，或重新和电脑配对。";
   return (
     <SafeAreaView style={styles.safeArea} testID="app-session-load-screen">
       <StatusBar barStyle="dark-content" backgroundColor={colors.canvas} />

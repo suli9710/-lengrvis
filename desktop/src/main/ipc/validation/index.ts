@@ -24,6 +24,7 @@ export {
 } from "./commonBridge";
 export {
   validateMemoryRecallRequest,
+  validateMemoryReviewRequest,
   validateMemorySaveRequest,
   validateScheduleCreateRequest,
   validateScheduleEnableRequest

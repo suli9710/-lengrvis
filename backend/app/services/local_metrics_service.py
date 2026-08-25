@@ -22,8 +22,8 @@ from typing import Any
 
 from app.core import db
 
-TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
-SUCCESS_TASK_STATUSES = {"completed"}
+TERMINAL_TASK_STATUSES = {"completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"}
+SUCCESS_TASK_STATUSES = {"completed", "rolled_back"}
 
 # finish_reason values that indicate a normal completion across providers.
 OK_FINISH_REASONS = {"", "stop", "end_turn", "completed", "tool_calls", "tool_use", "length", "max_tokens"}
@@ -74,7 +74,7 @@ def _task_metrics(rows: list[Any]) -> dict[str, Any]:
     status_counts: Counter[str] = Counter()
     for row in rows:
         data = _json_dict(row["data"])
-        status = str(data.get("status") or "").strip().lower()
+        status = _effective_task_status(data)
         if status:
             status_counts[status] += 1
     terminal = sum(count for status, count in status_counts.items() if status in TERMINAL_TASK_STATUSES)
@@ -86,6 +86,14 @@ def _task_metrics(rows: list[Any]) -> dict[str, Any]:
         "success_rate": _rate(succeeded, terminal),
         "by_status": dict(sorted(status_counts.items())),
     }
+
+
+def _effective_task_status(data: dict[str, Any]) -> str:
+    status = str(data.get("status") or "").strip().lower()
+    rollback = (data.get("metadata") or {}).get("rollback")
+    if status == "failed" and isinstance(rollback, dict) and rollback:
+        return "rolled_back" if str(rollback.get("state") or "").strip().lower() == "succeeded" else "repair_required"
+    return status
 
 
 def _run_metrics(rows: list[Any]) -> dict[str, Any]:

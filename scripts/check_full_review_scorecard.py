@@ -23,27 +23,51 @@ RELEASE_READINESS_CHECKER = ROOT / "scripts" / "check_release_readiness_dashboar
 REQUIRED_WIRING = (
     (ROOT / "package.json", '"review:scorecard"'),
     (ROOT / ".github" / "workflows" / "ci.yml", "npm run review:scorecard"),
-    (ROOT / ".github" / "workflows" / "release-candidate.yml", "npm run review:scorecard"),
-    (ROOT / ".github" / "workflows" / "release-readiness.yml", "npm run review:scorecard"),
-    (ROOT / ".github" / "workflows" / "release-publish.yml", "npm run review:scorecard"),
+    (
+        ROOT / ".github" / "workflows" / "release-candidate.yml",
+        "npm run review:scorecard",
+    ),
+    (
+        ROOT / ".github" / "workflows" / "release-readiness.yml",
+        "npm run review:scorecard",
+    ),
+    (
+        ROOT / ".github" / "workflows" / "release-publish.yml",
+        "npm run review:scorecard",
+    ),
     (
         ROOT / "docs" / "release" / "delivery-pipeline.md",
         "`npm run review:scorecard` verifies the full-review scorecard before any",
     ),
-    (ROOT / "docs" / "release" / "release-readiness-dashboard.md", "npm run review:scorecard"),
-    (ROOT / "docs" / "qa" / "release-gate.md", "maintainability gate, `review:scorecard`, real-LLM eval"),
+    (
+        ROOT / "docs" / "release" / "release-readiness-dashboard.md",
+        "npm run review:scorecard",
+    ),
+    (
+        ROOT / "docs" / "qa" / "release-gate.md",
+        "candidate-bound MCP and real-LLM quality evidence, maintainability gate, `review:scorecard`",
+    ),
     (ROOT / "scripts" / "delivery_pipeline.py", '"review-scorecard"'),
-    (ROOT / "scripts" / "generate_current_release_evidence.ps1", "npm run review:scorecard"),
+    (
+        ROOT / "scripts" / "generate_current_release_evidence.ps1",
+        "npm run review:scorecard",
+    ),
 )
 
-SCORE_RE = re.compile(r"^\| (?P<area>[^|]+) \| (?P<score>\d+)\s*/\s*(?P<max>\d+) \|", re.MULTILINE)
+SCORE_RE = re.compile(
+    r"^\| (?P<area>[^|]+) \| (?P<score>\d+)\s*/\s*(?P<max>\d+) \|", re.MULTILINE
+)
 TOTAL_RE = re.compile(r"^Total:\s*(?P<score>\d+)\s*/\s*(?P<max>\d+)\.", re.MULTILINE)
-RR_P0_RE = re.compile(r"^\| (?P<id>RR-P0-\d+) \| [^|]+ \| [^|]+ \| (?P<status>[^|]+) \|", re.MULTILINE)
+RR_P0_RE = re.compile(
+    r"^\| (?P<id>RR-P0-\d+) \| [^|]+ \| [^|]+ \| (?P<status>[^|]+) \|", re.MULTILINE
+)
 NUMBERED_STEP_RE = re.compile(r"^\d+\.\s+", re.MULTILINE)
 
 
 def _load_release_readiness_checker():
-    spec = importlib.util.spec_from_file_location("check_release_readiness_dashboard", RELEASE_READINESS_CHECKER)
+    spec = importlib.util.spec_from_file_location(
+        "check_release_readiness_dashboard", RELEASE_READINESS_CHECKER
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load {RELEASE_READINESS_CHECKER}")
     module = importlib.util.module_from_spec(spec)
@@ -134,7 +158,10 @@ def validate_scorecard(
     if "Do not mark this scorecard 100/100" not in scorecard_text:
         errors.append("scorecard must keep a fail-closed 100/100 warning")
 
-    rr_p0_statuses = {match.group("id"): match.group("status").strip() for match in RR_P0_RE.finditer(readiness_text)}
+    rr_p0_statuses = {
+        match.group("id"): match.group("status").strip()
+        for match in RR_P0_RE.finditer(readiness_text)
+    }
     release_checker = _load_release_readiness_checker()
     missing_p0_rows = sorted(
         release_checker.REQUIRED_PUBLIC_BETA_P0_IDS - set(rr_p0_statuses)
@@ -144,10 +171,16 @@ def validate_scorecard(
             "release readiness dashboard is missing required public Beta P0 rows: "
             + ", ".join(missing_p0_rows)
         )
-    unfinished = {key: value for key, value in rr_p0_statuses.items() if value != "passed"}
+    unfinished = {
+        key: value for key, value in rr_p0_statuses.items() if value != "passed"
+    }
     if total_score == 100 and unfinished:
-        blocked = ", ".join(f"{key}={value}" for key, value in sorted(unfinished.items()))
-        errors.append(f"scorecard cannot claim 100/100 while release P0 rows are unfinished: {blocked}")
+        blocked = ", ".join(
+            f"{key}={value}" for key, value in sorted(unfinished.items())
+        )
+        errors.append(
+            f"scorecard cannot claim 100/100 while release P0 rows are unfinished: {blocked}"
+        )
     if total_score == 100 and not unfinished:
         release_errors, _release_warnings = release_checker.validate(
             release_checker.parse_rows(readiness_text),
@@ -199,7 +232,14 @@ def validate_repo_wiring(root: Path = ROOT) -> list[str]:
 def validate_worktree(root: Path = ROOT) -> list[str]:
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -216,7 +256,9 @@ def validate_worktree(root: Path = ROOT) -> list[str]:
     preview = "; ".join(changes[:5])
     if len(changes) > 5:
         preview += "; ..."
-    return [f"full-review scorecard requires a clean worktree; found {len(changes)} change(s): {preview}"]
+    return [
+        f"full-review scorecard requires a clean worktree; found {len(changes)} change(s): {preview}"
+    ]
 
 
 def main() -> int:
@@ -242,7 +284,9 @@ def main() -> int:
         readiness_text = ""
         errors.append(f"could not read readiness dashboard: {exc}")
     if not errors:
-        errors.extend(validate_scorecard(scorecard_text, readiness_text, artifact_root=ROOT))
+        errors.extend(
+            validate_scorecard(scorecard_text, readiness_text, artifact_root=ROOT)
+        )
         errors.extend(validate_repo_wiring(ROOT))
         if not args.allow_dirty:
             errors.extend(validate_worktree(ROOT))

@@ -43,13 +43,24 @@ def normalize_mcp_servers(value: Any) -> list[dict]:
                         "name": str(item.get("name") or item.get("id") or "mcp"),
                         "url": str(item.get("url") or ""),
                         "command": str(item.get("command") or ""),
-                        "args": list(item.get("args") or []),
+                        "args": _normalize_string_list(item.get("args")),
                         "transport": str(item.get("transport", "http")),
                         "enabled": bool(item.get("enabled", True)),
                         "auth": dict(item.get("auth") or {}),
+                        "env": _normalize_string_mapping(item.get("env")),
+                        "inherit_env": _normalize_string_list(item.get("inherit_env") or item.get("inheritEnv")),
                         "owner": str(item.get("owner") or item.get("review_owner") or item.get("reviewOwner") or ""),
                         "policy_id": str(item.get("policy_id") or item.get("policyId") or ""),
                         "allowed_tools": allowed_tools,
+                        "protocol_version": str(
+                            item.get("protocol_version") or item.get("protocolVersion") or "2025-11-25"
+                        ),
+                        "strict_lifecycle": _normalize_bool(
+                            item.get("strict_lifecycle", item.get("strictLifecycle", True)),
+                            default=True,
+                        ),
+                        "client_name": str(item.get("client_name") or item.get("clientName") or "Lengrvis"),
+                        "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.2"),
                     }
                 )
         return result
@@ -64,6 +75,23 @@ def _normalize_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _normalize_string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip(): str(item) for key, item in value.items() if str(key).strip()}
+
+
+def _normalize_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def normalize_skill_trusted_public_keys(value: Any) -> dict[str, str]:
@@ -106,6 +134,7 @@ def normalize_skill_trusted_public_keys(value: Any) -> dict[str, str]:
 
 SECRET_FIELD_TOKENS = ("auth", "authorization", "api_key", "token", "password", "secret", "credential")
 SECRET_CONTAINER_KEYS = {"headers"}
+SECRET_VALUE_MAP_KEYS = {"env"}
 
 
 def redact_secret_fields(value: Any) -> Any:
@@ -119,7 +148,9 @@ def redact_secret_fields(value: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key).replace("-", "_").casefold()
-            if key_text in SECRET_CONTAINER_KEYS:
+            if key_text in SECRET_VALUE_MAP_KEYS and isinstance(item, dict):
+                redacted[key] = {str(name): "***" for name in item}
+            elif key_text in SECRET_CONTAINER_KEYS:
                 redacted[key] = redact_secret_fields(item)
             else:
                 redacted[key] = (

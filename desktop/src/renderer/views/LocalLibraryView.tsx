@@ -13,7 +13,7 @@ import {
   UserRound,
   type LucideIcon
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../shared/fileLibraryTypes";
 import { absoluteRendererLoopbackBackendUrl, type LengrvisApiClient } from "../lib/apiClient";
@@ -24,6 +24,13 @@ import {
   sectionForView,
   type LocalLibrarySection
 } from "./localLibrarySections";
+import {
+  initialLocalLibraryLoadState,
+  localLibraryContextKey,
+  localLibraryLoadReducer,
+  LocalLibraryLoadCoordinator,
+  localLibraryStateForContext
+} from "./localLibraryLoadCoordinator";
 
 interface LocalLibraryViewProps {
   api: LengrvisApiClient;
@@ -165,81 +172,108 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
     return SECTIONS.filter((section) => keys.includes(section.id));
   }, [sectionMeta.id]);
   const [query, setQuery] = useState("");
-  const [library, setLibrary] = useState<LocalLibraryResponse | null>(null);
-  const [selectedItem, setSelectedItem] = useState<LocalLibraryItem | null>(null);
+  const [submittedQuery, setSubmittedQuery] = useState("");
+  const [loadState, dispatchLoadState] = useReducer(localLibraryLoadReducer, initialLocalLibraryLoadState);
   const [fileIcons, setFileIcons] = useState<Record<string, string>>({});
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const iconLoadRef = useRef({
+    contextKey: "",
+    pendingPaths: new Set<string>(),
+    resolvedPaths: new Set<string>()
+  });
+  const iconMountedRef = useRef(true);
+  const requestCoordinatorRef = useRef<LocalLibraryLoadCoordinator | null>(null);
+  if (!requestCoordinatorRef.current) {
+    requestCoordinatorRef.current = new LocalLibraryLoadCoordinator();
+  }
+  const requestCoordinator = requestCoordinatorRef.current;
+  const contextKey = localLibraryContextKey(sectionMeta.apiSection, submittedQuery);
+  const currentLoadState = localLibraryStateForContext(loadState, contextKey);
+  const { library, selectedItem, isLoading, error } = currentLoadState;
 
-  const loadLibrary = async () => {
-    setIsLoading(true);
-    setError(null);
-    const response = await api.listLocalLibrary(sectionMeta.apiSection, query.trim(), 260);
-    if (response.ok && response.data) {
-      setLibrary(response.data);
-      setSelectedItem((current) => {
-        if (current && response.data?.items.some((item) => item.id === current.id)) return current;
-        return response.data?.items[0] ?? null;
-      });
-    } else {
-      setLibrary(null);
-      setSelectedItem(null);
-      setError(response.error?.message ?? "读取本地内容失败");
-    }
-    setIsLoading(false);
+  const loadLibrary = async (requestedQuery = query) => {
+    const normalizedQuery = requestedQuery.trim();
+    const requestContextKey = localLibraryContextKey(sectionMeta.apiSection, normalizedQuery);
+    setSubmittedQuery(normalizedQuery);
+    await requestCoordinator.load({
+      contextKey: requestContextKey,
+      preferredItemId: requestContextKey === contextKey ? selectedItem?.id : null,
+      request: () => api.listLocalLibrary(sectionMeta.apiSection, normalizedQuery, 260),
+      dispatch: dispatchLoadState
+    });
   };
 
   useEffect(() => {
-    void loadLibrary();
-  }, [sectionMeta.apiSection]);
+    requestCoordinator.activate();
+    iconMountedRef.current = true;
+    return () => requestCoordinator.dispose();
+  }, [requestCoordinator]);
+
+  useEffect(() => () => {
+    iconMountedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const normalizedQuery = query.trim();
+    const requestContextKey = localLibraryContextKey(sectionMeta.apiSection, normalizedQuery);
+    setSubmittedQuery(normalizedQuery);
+    void requestCoordinator.load({
+      contextKey: requestContextKey,
+      preferredItemId: localLibraryStateForContext(loadState, requestContextKey).selectedItem?.id,
+      request: () => api.listLocalLibrary(sectionMeta.apiSection, normalizedQuery, 260),
+      dispatch: dispatchLoadState
+    });
+    // Query changes remain explicit through Enter/refresh; section changes load automatically.
+  }, [api, requestCoordinator, sectionMeta.apiSection]);
 
   const items = library?.items ?? [];
   const backendBaseUrl = window.lengrvis?.backendBaseUrl;
   const selectedIconUrl = selectedItem ? fileIcons[selectedItem.path] || selectedItem.iconUrl || "" : "";
   const indexSummary = libraryIndexSummary(library?.indexStatus);
   const scopeLabel = library?.scopeSummary?.displayLabel ?? (library?.roots.length ? `${library.roots.length} 个授权范围` : "未选择授权目录");
-  const emptyGuide = libraryEmptyGuide(library, query, sectionMeta);
+  const emptyGuide = libraryEmptyGuide(library, submittedQuery, sectionMeta);
 
   useEffect(() => {
+    if (iconLoadRef.current.contextKey !== contextKey) {
+      iconLoadRef.current = {
+        contextKey,
+        pendingPaths: new Set<string>(),
+        resolvedPaths: new Set<string>()
+      };
+      setFileIcons({});
+    }
     if (!window.lengrvis?.shell.getFileIcon) return;
+    if (!items.length) return;
+    const iconLoad = iconLoadRef.current;
     const targets = items
       .filter((item) => item.kind === "app" || item.extension === ".lnk" || item.extension === ".exe")
-      .filter((item) => !fileIcons[item.path])
+      .filter((item) => !iconLoad.pendingPaths.has(item.path) && !iconLoad.resolvedPaths.has(item.path))
       .slice(0, 80);
     if (!targets.length) return;
+    for (const item of targets) iconLoad.pendingPaths.add(item.path);
 
-    let cancelled = false;
     void Promise.all(
       targets.map(async (item) => {
         const iconUrl = await window.lengrvis.shell.getFileIcon(item.path).catch(() => null);
         return iconUrl ? [item.path, iconUrl] as const : null;
       })
     ).then((entries) => {
-      if (cancelled) return;
+      for (const item of targets) iconLoad.pendingPaths.delete(item.path);
+      if (!iconMountedRef.current || iconLoadRef.current !== iconLoad) return;
       const nextEntries = entries.filter((entry): entry is readonly [string, string] => Boolean(entry));
       if (!nextEntries.length) return;
-      setFileIcons((current) => {
-        const next = { ...current };
-        for (const [path, iconUrl] of nextEntries) {
-          next[path] = iconUrl;
-        }
-        return next;
-      });
+      for (const [path] of nextEntries) iconLoad.resolvedPaths.add(path);
+      setFileIcons((current) => ({ ...current, ...Object.fromEntries(nextEntries) }));
     });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [items, fileIcons]);
+  }, [contextKey, isLoading, items]);
 
   return (
     <section className="local-library-view">
-      <main className="library-stage">
+      <section className="library-stage" aria-labelledby="local-library-title" aria-busy={isLoading}>
         <div className="library-toolbar">
           <div className="library-toolbar__title">
             <sectionMeta.icon size={20} aria-hidden="true" />
             <div>
-              <h2>{sectionMeta.title}</h2>
+              <h2 id="local-library-title">{sectionMeta.title}</h2>
               <p>{sectionMeta.subtitle}</p>
             </div>
           </div>
@@ -247,15 +281,18 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
             <label className="library-search">
               <Search size={16} aria-hidden="true" />
               <input
+                aria-label="搜索本地内容"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => setQuery(event.currentTarget.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") void loadLibrary();
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    void loadLibrary(event.currentTarget.value);
+                  }
                 }}
                 placeholder="搜索本地内容"
               />
             </label>
-            <button className="icon-button" type="button" aria-label="刷新本地内容" onClick={() => void loadLibrary()}>
+            <button className="icon-button" type="button" aria-label="刷新本地内容" disabled={isLoading} onClick={() => void loadLibrary()}>
               <RefreshCw size={16} aria-hidden="true" className={isLoading ? "spin-icon" : ""} />
             </button>
           </div>
@@ -268,6 +305,7 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
                 key={section.id}
                 type="button"
                 className={section.id === sectionMeta.id ? "library-tab library-tab--active" : "library-tab"}
+                aria-current={section.id === sectionMeta.id ? "page" : undefined}
                 onClick={() => onSectionChange(section.id)}
               >
                 <section.icon size={14} aria-hidden="true" />
@@ -277,7 +315,7 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
           </nav>
         ) : null}
 
-        <div className="library-summary">
+        <div className="library-summary" aria-live="polite">
           <span>{items.length} 项</span>
           <span>{formatBytes(library?.stats.size ?? 0)}</span>
           <span>{scopeLabel}</span>
@@ -285,7 +323,7 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
           {library?.truncated ? <span>仅显示前 {items.length} 项</span> : null}
         </div>
 
-        {error ? <div className="library-empty">{error}</div> : null}
+        {error ? <div className="library-empty" role="alert">{error}</div> : null}
         {!error && !isLoading && items.length === 0 ? (
           <LibraryEmptyState guide={emptyGuide} />
         ) : null}
@@ -297,7 +335,8 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
                 className={selectedItem?.id === item.id ? "library-tile library-tile--active" : "library-tile"}
                 key={item.id}
                 type="button"
-                onClick={() => setSelectedItem(item)}
+                aria-pressed={selectedItem?.id === item.id}
+                onClick={() => dispatchLoadState({ type: "select", contextKey, selectedItem: item })}
                 title={item.name}
               >
                 <img src={absolutePreviewUrl(backendBaseUrl, item.previewUrl)} alt={item.name} loading="lazy" />
@@ -311,7 +350,8 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
                 className={selectedItem?.id === item.id ? "library-row library-row--active" : "library-row"}
                 key={item.id}
                 type="button"
-                onClick={() => setSelectedItem(item)}
+                aria-pressed={selectedItem?.id === item.id}
+                onClick={() => dispatchLoadState({ type: "select", contextKey, selectedItem: item })}
                 title={item.name}
               >
                 <FileIcon item={item} iconUrl={fileIcons[item.path] || item.iconUrl} />
@@ -325,7 +365,7 @@ export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDoc
             ))}
           </div>
         )}
-      </main>
+      </section>
 
       <aside className="library-inspector">
         {selectedItem ? (

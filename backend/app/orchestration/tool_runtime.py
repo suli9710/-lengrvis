@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.core.content_provenance import (
     collect_content_envelopes,
     content_binding_payload,
     content_envelope_for_tool_output,
+    propagate_content_envelope,
 )
 from app.core.schemas import (
     PlanStep,
@@ -19,15 +21,28 @@ from app.core.schemas import (
     TaskStatus,
     ToolResult,
 )
+from app.observability.tracing import span
 from app.orchestration.automation_runtime_guard import (
     AutomationExecutionDenied,
     authorize_automation_execution,
 )
-from app.orchestration.result_budget import apply_result_budget
+from app.orchestration.result_budget import apply_result_budget, reviewed_large_result_artifact_valid
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.tool_execution_journal import (
+    durable_post_tool_denial_reason,
+    is_durable_post_tool_denial,
+    load_tool_call,
+    load_tool_result,
+    mark_tool_call_committed,
+    mark_tool_call_executing,
+    mark_tool_call_outcome_unknown,
+    quarantine_result_for_reuse,
+    runtime_review_allows_result_reuse,
+)
 from app.orchestration.tool_runtime_approval_flow import ToolRuntimeApprovalFlowMixin
 from app.orchestration.tool_runtime_execution import ToolRuntimeExecutionMixin
+from app.orchestration.tool_runtime_execution_review import ToolRuntimeExecutionReviewMixin
 from app.orchestration.tool_runtime_lifecycle import ToolRuntimeLifecycleMixin
 from app.orchestration.tool_runtime_paths import (
     authorized_path_error,
@@ -36,6 +51,9 @@ from app.orchestration.tool_runtime_paths import (
 from app.orchestration.tool_runtime_review import ToolRuntimeReviewMixin
 from app.orchestration.tool_runtime_support import (
     RuntimeExecutionResult,
+    _discard_persisted_result,
+    _pending_review_result_stub,
+    _persistable_tool_result,
     _safe_runtime_error_text,
     _withheld_tool_result,
 )
@@ -45,6 +63,7 @@ from app.orchestration.tool_runtime_support import (
 from app.orchestration.tool_runtime_support import (
     _exception_error_text as _exception_error_text,
 )
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.model_boundary import model_control_arg_error
 from app.policy.risk import SafetyVerdict
 from app.tools.schemas import ToolDefinition
@@ -55,6 +74,7 @@ logger = logging.getLogger(__name__)
 class ToolRuntime(
     ToolRuntimeApprovalFlowMixin,
     ToolRuntimeExecutionMixin,
+    ToolRuntimeExecutionReviewMixin,
     ToolRuntimeLifecycleMixin,
     ToolRuntimeReviewMixin,
 ):
@@ -158,6 +178,13 @@ class ToolRuntime(
             orchestrator._supervise_new_agent_messages(task.id, "tool_call_denied")
             return RuntimeExecutionResult("step_denied")
 
+        risk_reviews = [review]
+        if browser_review is not None:
+            risk_reviews.append(browser_review)
+        declared_risk = review.declared_risk_level or tool.risk_level
+        risk_binding = build_effective_risk_binding(declared_risk, risk_reviews)
+        runtime.extra_context["effective_risk_binding"] = risk_binding
+
         # Single-source user-policy backstop (P0-18 convergence): the safety
         # review above already evaluates the PermissionStore and records the
         # deny; this re-check only fires if the review rail ever drifts and
@@ -192,11 +219,87 @@ class ToolRuntime(
                 tool,
                 runtime,
                 confirmation_message,
+                risk_binding,
                 threaded_tools=threaded_tools,
             )
         return RuntimeExecutionResult("allowed")
 
     async def execute_allowed(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
+        *,
+        threaded_tools: bool = False,
+        approved_args: dict[str, Any] | None = None,
+        approval_id: str | None = None,
+    ) -> RuntimeExecutionResult:
+        """Execute a tool while emitting a safe lifecycle span.
+
+        The span intentionally records only stable identifiers and result
+        status.  Prompt text, tool arguments, and tool output bodies remain
+        outside the observability payload even when a caller passes them in.
+        """
+
+        args = approved_args if approved_args is not None else step.args
+        reviews, declared_risk = self._fresh_execution_reviews(task, step, tool, runtime, args)
+        # The execution boundary owns this value. A caller-supplied or stale
+        # binding must never authorize a live tool call.
+        runtime.extra_context.pop("effective_risk_binding", None)
+        if approval_id:
+            risk_binding, binding_error = self._approved_execution_risk_binding(
+                approval_id,
+                task,
+                step,
+                tool,
+                reviews,
+                declared_risk,
+            )
+            if binding_error:
+                return self._block_stale_execution_review(task, step, runtime, binding_error)
+            runtime.extra_context["effective_risk_binding"] = risk_binding
+        else:
+            blocked_review = next((review for review in reviews if review.verdict != SafetyVerdict.ALLOW), None)
+            if blocked_review is not None or self._requires_runtime_approval(step, tool, runtime):
+                reason = (
+                    "; ".join(blocked_review.reasons)
+                    if blocked_review is not None
+                    else "Tool execution requires a fresh preview and explicit user approval."
+                )
+                return self._block_stale_execution_review(task, step, runtime, reason)
+            runtime.extra_context["effective_risk_binding"] = build_effective_risk_binding(
+                declared_risk,
+                reviews,
+            )
+
+        attributes: dict[str, object] = {
+            "task.id": task.id,
+            "step.id": step.id,
+            "tool.name": tool.name,
+            "tool.approval": bool(approval_id),
+        }
+        with span("tool.execute", attributes) as tool_span:
+            result = await self._execute_allowed_impl(
+                task,
+                step,
+                tool,
+                runtime,
+                threaded_tools=threaded_tools,
+                approved_args=approved_args,
+                approval_id=approval_id,
+            )
+            tool_span.set_attribute("tool.result_kind", result.kind)
+            if result.result is not None:
+                tool_span.set_attribute("tool.call_id", result.result.tool_call_id)
+                tool_span.set_attribute("tool.ok", result.result.ok)
+                unknown = bool((result.result.output or {}).get("outcome_unknown"))
+                if unknown:
+                    tool_span.mark_outcome_unknown()
+                    tool_span.set_status("error")
+            return result
+
+    async def _execute_allowed_impl(
         self,
         task: Task,
         step: PlanStep,
@@ -285,7 +388,18 @@ class ToolRuntime(
             runtime.extra_context["automation_intent_capsule_id"] = authorization.capsule_id
             runtime.extra_context["automation_budget_version"] = authorization.budget_version
             runtime.extra_context["automation_budget_soft_exceeded"] = authorization.soft_exceeded
-        call = self._publish_tool_call_proposal(task, step, tool, args, approval_id=approval_id)
+        call, created = self._publish_tool_call_proposal(
+            task,
+            step,
+            tool,
+            runtime,
+            args,
+            approval_id=approval_id,
+        )
+        if not created:
+            existing = await self._handle_existing_tool_execution(task, step, tool, runtime, call, approval_id)
+            if existing is not None:
+                return existing
         stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
@@ -296,23 +410,46 @@ class ToolRuntime(
             )
             return RuntimeExecutionResult("fatal_denied")
 
-        result = await self._execute_tool_call(
-            task,
-            step,
-            tool,
-            runtime,
-            call,
-            args,
-            threaded_tools=threaded_tools,
-            approval_id=approval_id,
-        )
+        claimed_call = mark_tool_call_executing(call)
+        if claimed_call is None:
+            current_call = load_tool_call(call.id) or call
+            existing = await self._handle_existing_tool_execution(
+                task,
+                step,
+                tool,
+                runtime,
+                current_call,
+                approval_id,
+            )
+            if existing is not None:
+                return existing
+            return self._block_duplicate_tool_execution(task, step, current_call)
+        call = claimed_call
 
-        result = apply_result_budget(
-            result,
-            tool_name=step.tool_name,
-            max_result_size=tool.max_result_size,
-            runtime=runtime,
-        )
+        try:
+            result = await self._execute_tool_call(
+                task,
+                step,
+                tool,
+                runtime,
+                call,
+                args,
+                threaded_tools=threaded_tools,
+                approval_id=approval_id,
+            )
+        except asyncio.CancelledError:
+            # A cancelled in-flight tool must not leave the ToolCall row stuck in
+            # "executing": that row would block every future resume of the same
+            # step (same execution_key) as a duplicate until the process
+            # restarts. Record the outcome as unknown (the side effect may or may
+            # not have applied) so replay is deliberately gated instead of the
+            # step being permanently wedged.
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+            raise
+
+        upstream_envelopes = collect_content_envelopes(runtime.extra_context.get("upstream_content_envelopes"))
+        if result.content_envelope is not None:
+            upstream_envelopes.append(result.content_envelope)
         result.content_envelope = content_envelope_for_tool_output(
             step.tool_name,
             result.output,
@@ -321,16 +458,79 @@ class ToolRuntime(
             trust_tier=tool.trust_tier,
             external_network=tool.external_network,
             resource_kinds=tool.resource_kinds,
-            upstream=[result.content_envelope],
+            upstream=upstream_envelopes,
+            output_provenance=result._output_provenance,  # noqa: SLF001 - in-process lifecycle handoff.
         )
-        db.upsert_model("tool_results", result)
-        post_tool_review = self._review_tool_result(task, step, tool, result)
+        # Keep raw output in memory until post-tool review has inspected it in
+        # full. The pending stub preserves rollback evidence and also gives
+        # crash recovery a deterministic artifact identity to clean up if the
+        # process stops after review while publishing a large allowed result.
+        pending_result = _pending_review_result_stub(result)
+        db.upsert_model("tool_results", pending_result)
+        try:
+            post_tool_review = self._review_tool_result(task, step, tool, result, call.risk_level)
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: review failure makes outcome unknown
+            _discard_persisted_result(result, runtime, tool_name=step.tool_name)
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+            raise
+        result = result.model_copy(
+            update={
+                "runtime_review_id": post_tool_review.id,
+                "runtime_review_verdict": post_tool_review.verdict.value,
+                "runtime_review_completed": True,
+            },
+            deep=True,
+        )
         if post_tool_review.verdict == SafetyVerdict.DENY:
-            result = _withheld_tool_result(result, post_tool_review, runtime)
+            result = _withheld_tool_result(result, post_tool_review, runtime, tool_name=step.tool_name)
             db.upsert_model("tool_results", result)
+            if bool(result.output.get("outcome_unknown")):
+                mark_tool_call_outcome_unknown(call, expected_status="executing")
+            else:
+                mark_tool_call_committed(call)
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
+            if result.output.get("artifact_cleanup_required"):
+                self._require_artifact_cleanup(
+                    task,
+                    call,
+                    "A withheld result artifact requires manual cleanup before this denial is settled.",
+                )
             return RuntimeExecutionResult("fatal_denied", result)
+
+        reviewed_output = result.output
+        result = _persistable_tool_result(result)
+        if result.output is not reviewed_output and result.content_envelope is not None:
+            result.content_envelope = propagate_content_envelope(
+                result.content_envelope,
+                result.output,
+                sanitizer="rollback_evidence",
+            )
+        raw_envelope = result.content_envelope
+        raw_output = result.output
+        try:
+            result = apply_result_budget(
+                result,
+                tool_name=step.tool_name,
+                max_result_size=tool.max_result_size,
+                runtime=runtime,
+                review_completed=True,
+            )
+            if result.output is not raw_output and raw_envelope is not None:
+                result.content_envelope = propagate_content_envelope(
+                    raw_envelope,
+                    result.output,
+                    sanitizer="result_budget",
+                )
+            db.upsert_model("tool_results", result)
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: persistence failure makes outcome unknown
+            _discard_persisted_result(result, runtime, tool_name=step.tool_name)
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+            raise
+        if bool(result.output.get("outcome_unknown")):
+            mark_tool_call_outcome_unknown(call, expected_status="executing")
+        else:
+            mark_tool_call_committed(call)
 
         return await self._publish_result_and_finish(
             task,
@@ -340,6 +540,176 @@ class ToolRuntime(
             approval_id=approval_id,
             post_tool_review=post_tool_review,
         )
+
+    async def _handle_existing_tool_execution(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
+        call,
+        approval_id: str | None,
+    ) -> RuntimeExecutionResult | None:
+        if call.status == "prepared":
+            return None
+        result = load_tool_result(call.id)
+        if result is not None and is_durable_post_tool_denial(result):
+            if bool((result.output or {}).get("artifact_cleanup_required")):
+                self._require_artifact_cleanup(
+                    task,
+                    call,
+                    "A withheld result artifact requires manual cleanup before this denial can be replayed.",
+                )
+                set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+                record(
+                    "tool.execution_replay_blocked",
+                    "ToolRuntime",
+                    {
+                        "tool_call_id": call.id,
+                        "execution_key": call.execution_key,
+                        "tool_name": call.tool_name,
+                        "reason": "artifact_cleanup_required",
+                    },
+                    task_id=task.id,
+                )
+                return RuntimeExecutionResult("fatal_failed", result)
+            return self._replay_durable_post_tool_denial(task, step, call, result)
+        if call.status != "committed":
+            return self._block_duplicate_tool_execution(task, step, call)
+        if result is None:
+            call = mark_tool_call_outcome_unknown(call, expected_status="committed")
+            return self._block_duplicate_tool_execution(task, step, call)
+        if bool((result.output or {}).get("review_pending") or (result.output or {}).get("outcome_unknown")):
+            call = mark_tool_call_outcome_unknown(call, expected_status="committed")
+            return self._block_duplicate_tool_execution(task, step, call)
+        reusable = runtime_review_allows_result_reuse(result)
+        if reusable and bool((result.output or {}).get("persisted_result")):
+            reusable = reviewed_large_result_artifact_valid(
+                result,
+                data_dir=runtime.settings.data_dir,
+                task_id=task.id,
+                tool_name=step.tool_name,
+            )
+        if not reusable:
+            call, result = quarantine_result_for_reuse(call, result)
+            return self._block_duplicate_tool_execution(task, step, call, result=result)
+        record(
+            "tool.execution_result_reused",
+            "ToolRuntime",
+            {"tool_call_id": call.id, "execution_key": call.execution_key, "tool_name": call.tool_name},
+            task_id=task.id,
+        )
+        post_tool_review = self._review_tool_result(task, step, tool, result, call.risk_level)
+        if post_tool_review.verdict == SafetyVerdict.DENY:
+            result = _withheld_tool_result(result, post_tool_review, runtime, tool_name=step.tool_name)
+            db.upsert_model("tool_results", result)
+            if bool(result.output.get("outcome_unknown")):
+                mark_tool_call_outcome_unknown(call, expected_status="committed")
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            self.orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
+            if result.output.get("artifact_cleanup_required"):
+                self._require_artifact_cleanup(
+                    task,
+                    call,
+                    "A withheld result artifact requires manual cleanup before this denial is settled.",
+                )
+            return RuntimeExecutionResult("fatal_denied", result)
+        return await self._publish_result_and_finish(
+            task,
+            step,
+            call,
+            result,
+            approval_id=approval_id,
+            post_tool_review=post_tool_review,
+        )
+
+    def _replay_durable_post_tool_denial(self, task: Task, step: PlanStep, call, result: ToolResult):
+        reason = durable_post_tool_denial_reason(result)
+        set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+        self.orchestrator._set_status(task, TaskStatus.DENIED, final_summary=reason)
+        record(
+            "tool.execution_denial_reused",
+            "ToolRuntime",
+            {"tool_call_id": call.id, "execution_key": call.execution_key, "tool_name": call.tool_name},
+            task_id=task.id,
+        )
+        return RuntimeExecutionResult("fatal_denied", result)
+
+    def _require_artifact_cleanup(self, task: Task, call, _summary: str) -> None:
+        task.metadata = {
+            **task.metadata,
+            "execution_recovery": {
+                "version": 1,
+                "state": "artifact_cleanup_required",
+                "issues": [
+                    {"code": "artifact_cleanup_required", "tool_call_id": call.id},
+                    {"code": "outcome_unknown", "tool_call_id": call.id},
+                ],
+                "tool_call_ids": [call.id],
+                "requires_user_review": True,
+                "automatic_replay_blocked": True,
+            },
+        }
+        self.orchestrator._set_status(
+            task,
+            TaskStatus.REPAIR_REQUIRED,
+            final_summary=(
+                "A withheld tool-result artifact could not be deleted. "
+                "Automatic replay is blocked; manual repair is required."
+            ),
+        )
+
+    def _block_duplicate_tool_execution(
+        self,
+        task: Task,
+        step: PlanStep,
+        call,
+        *,
+        result: ToolResult | None = None,
+    ) -> RuntimeExecutionResult:
+        outcome_unknown = call.status == "outcome_unknown"
+        detail = (
+            "A prior execution may already have applied its side effect; automatic replay is blocked."
+            if outcome_unknown
+            else "The same tool execution is already in progress; a duplicate side effect was blocked."
+        )
+        if outcome_unknown:
+            task.metadata = {
+                **task.metadata,
+                "execution_recovery": {
+                    "version": 1,
+                    "state": "outcome_unknown",
+                    "issues": [{"code": "outcome_unknown", "tool_call_id": call.id}],
+                    "tool_call_ids": [call.id],
+                    "requires_user_review": True,
+                    "automatic_replay_blocked": True,
+                },
+            }
+        set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
+        self.orchestrator._set_status(
+            task,
+            TaskStatus.REPAIR_REQUIRED if outcome_unknown else TaskStatus.FAILED,
+            final_summary=detail,
+        )
+        record(
+            "tool.execution_replay_blocked",
+            "ToolRuntime",
+            {
+                "tool_call_id": call.id,
+                "execution_key": call.execution_key,
+                "tool_name": call.tool_name,
+                "status": call.status,
+            },
+            task_id=task.id,
+        )
+        result = result or ToolResult(
+            tool_call_id=call.id,
+            ok=False,
+            output={"outcome_unknown": outcome_unknown, "automatic_replay_blocked": True},
+            error=detail,
+            observation=detail,
+        )
+        return RuntimeExecutionResult("fatal_failed", result)
 
     def _validate_input(self, tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> str:
         if not tool.validate_input:

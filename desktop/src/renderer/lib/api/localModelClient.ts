@@ -1,5 +1,6 @@
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
 import type { LocalLLMHealth, LocalModelSetupPlan } from "../../../shared/localModelTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import { compactLocalModelRequest } from "./mappers";
 import type { BackendLocalLlmHealth, BackendLocalModelSetupPlan } from "./localModelBackendTypes";
 import { mapLocalLlmHealth, mapLocalModelSetupPlan } from "./localModelMappers";
@@ -36,7 +37,9 @@ export function installLocalModelEndpoint(
 ): Promise<ApiResponse<LocalModelInstallResponse>> {
   const body = compactLocalModelRequest(installRequest);
   if (window.lengrvis?.localModel) {
-    return window.lengrvis.localModel.install(body) as Promise<ApiResponse<LocalModelInstallResponse>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.localModel.install(body) as Promise<ApiResponse<LocalModelInstallResponse>>
+    );
   }
   return request<LocalModelInstallResponse, LocalModelInstallRequest>({
     endpoint: "/api/settings/install-local-model",
@@ -50,7 +53,9 @@ export function installOllamaEndpoint(
   request: LocalModelEndpointRequest
 ): Promise<ApiResponse<OllamaActionResponse>> {
   if (window.lengrvis?.ollama) {
-    return window.lengrvis.ollama.install() as Promise<ApiResponse<OllamaActionResponse>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.ollama.install() as Promise<ApiResponse<OllamaActionResponse>>
+    );
   }
   return request<OllamaActionResponse>({
     endpoint: "/api/settings/ollama/install",
@@ -63,7 +68,9 @@ export function startOllamaEndpoint(
   request: LocalModelEndpointRequest
 ): Promise<ApiResponse<OllamaActionResponse>> {
   if (window.lengrvis?.ollama) {
-    return window.lengrvis.ollama.start() as Promise<ApiResponse<OllamaActionResponse>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.ollama.start() as Promise<ApiResponse<OllamaActionResponse>>
+    );
   }
   return request<OllamaActionResponse>({
     endpoint: "/api/settings/ollama/start",
@@ -78,7 +85,9 @@ export function pullOllamaEndpoint(
 ): Promise<ApiResponse<OllamaActionResponse>> {
   const body = compactLocalModelRequest({ model });
   if (window.lengrvis?.ollama) {
-    return window.lengrvis.ollama.pull(body) as Promise<ApiResponse<OllamaActionResponse>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.ollama.pull(body) as Promise<ApiResponse<OllamaActionResponse>>
+    );
   }
   return request<OllamaActionResponse, LocalModelInstallRequest>({
     endpoint: "/api/settings/ollama/pull",

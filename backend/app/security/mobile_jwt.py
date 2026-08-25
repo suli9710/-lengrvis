@@ -8,6 +8,7 @@ from typing import Any
 import jwt
 from fastapi import Header, HTTPException, Query, WebSocket
 
+from app.config_sources import env_flag
 from app.core import db
 from app.llm.registry import get_effective_settings
 from app.security.websocket_origin import is_trusted_websocket_origin
@@ -46,6 +47,7 @@ def issue_mobile_token(
     token_id: str = "",
     token_epoch: int = 0,
     family_id: str = "",
+    family_generation: int | None = None,
     credential_id: str = "",
     step_up_method: str = "",
     step_up_expires_in_seconds: int = MOBILE_STEP_UP_TTL_SECONDS,
@@ -77,8 +79,21 @@ def issue_mobile_token(
         payload["source"] = source
     if grant_id:
         payload["grant_id"] = grant_id
+    if family_generation is not None and not family_id:
+        raise ValueError("Mobile token family generation requires a family id")
     if family_id:
         payload["family_id"] = family_id
+        if family_generation is None:
+            # Production family-bound access tokens must always be revocable by
+            # refresh-family rotation.  Tests may still mint the legacy shape
+            # explicitly while migration/fail-closed behavior is exercised.
+            if not env_flag("LENGRVIS_TEST"):
+                raise ValueError("Mobile family-bound token requires a family generation")
+        else:
+            normalized_generation = _normalized_family_generation(family_generation)
+            if normalized_generation is None:
+                raise ValueError("Mobile token family generation is invalid")
+            payload["family_generation"] = normalized_generation
     if credential_id:
         payload["credential_id"] = credential_id
     normalized_step_up_method = str(step_up_method or "").strip().lower()
@@ -335,7 +350,7 @@ def _raise_if_session_binding_inactive(payload: dict[str, Any]) -> None:
     device_id = str(payload.get("device_id") or "").strip()
     with db.connect() as conn:
         family = conn.execute(
-            "SELECT device_id, credential_id, status, expires_at FROM token_families WHERE id = ?",
+            "SELECT device_id, credential_id, status, current_generation, expires_at FROM token_families WHERE id = ?",
             (family_id,),
         ).fetchone()
         credential = conn.execute(
@@ -348,6 +363,22 @@ def _raise_if_session_binding_inactive(payload: dict[str, Any]) -> None:
         raise HTTPException(status_code=401, detail="Mobile session binding is invalid")
     if str(family["credential_id"]) != credential_id:
         raise HTTPException(status_code=401, detail="Mobile session binding is invalid")
+    token_generation = _normalized_family_generation(payload.get("family_generation"))
+    if token_generation is None:
+        if not env_flag("LENGRVIS_TEST"):
+            raise HTTPException(
+                status_code=401,
+                detail="Mobile access token family generation is missing; refresh is required",
+            )
+    else:
+        current_generation = _normalized_family_generation(family["current_generation"])
+        if current_generation is None:
+            raise HTTPException(status_code=401, detail="Mobile token family generation is invalid")
+        if token_generation != current_generation:
+            raise HTTPException(
+                status_code=401,
+                detail="Mobile access token family generation is stale; refresh is required",
+            )
     if str(family["status"] or "").lower() != "active":
         raise HTTPException(status_code=401, detail="Mobile token family has been revoked")
     if str(credential["status"] or "").lower() != "active":
@@ -360,6 +391,12 @@ def _raise_if_session_binding_inactive(payload: dict[str, Any]) -> None:
         family_expires_at = family_expires_at.replace(tzinfo=UTC)
     if family_expires_at.astimezone(UTC) <= datetime.now(UTC):
         raise HTTPException(status_code=401, detail="Mobile token family has expired")
+
+
+def _normalized_family_generation(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
 
 
 def _token_epoch(payload: dict[str, Any]) -> int:

@@ -253,7 +253,6 @@ def _init_db_schema() -> None:
     with connect() as conn:
         initialize_schema(conn, _ensure_columns)
         apply_schema_migrations(conn)
-        _ensure_sensitive_record_integrity_schema(conn)
 
 
 def _ensure_cached_schema() -> None:
@@ -268,6 +267,63 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
     from app.core.db_upserts import upsert_model as _upsert_model
 
     _upsert_model(table, model, task_id=task_id, status=status)
+
+
+def reserve_tool_call(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    from app.core.db_tool_calls import reserve_tool_call as _reserve_tool_call
+
+    return _reserve_tool_call(data)
+
+
+def fetch_tool_call(call_id: str) -> dict[str, Any] | None:
+    from app.core.db_tool_calls import fetch_tool_call as _fetch_tool_call
+
+    return _fetch_tool_call(call_id)
+
+
+def list_tool_calls_for_task(task_id: str, *, limit: int = 5000) -> list[dict[str, Any]]:
+    from app.core.db_tool_calls import list_tool_calls_for_task as _list_tool_calls_for_task
+
+    return _list_tool_calls_for_task(task_id, limit=limit)
+
+
+def list_tool_call_ids_by_status(status: str) -> list[str]:
+    from app.core.db_tool_calls import list_tool_call_ids_by_status as _list_tool_call_ids_by_status
+
+    return _list_tool_call_ids_by_status(status)
+
+
+def claim_tool_call_execution(call_id: str, started_at: str) -> dict[str, Any] | None:
+    from app.core.db_tool_calls import claim_tool_call_execution as _claim_tool_call_execution
+
+    return _claim_tool_call_execution(call_id, started_at)
+
+
+def commit_tool_call_execution(call_id: str, committed_at: str) -> dict[str, Any] | None:
+    from app.core.db_tool_calls import commit_tool_call_execution as _commit_tool_call_execution
+
+    return _commit_tool_call_execution(call_id, committed_at)
+
+
+def recover_tool_call_execution(call_id: str, recovered_at: str) -> dict[str, Any] | None:
+    from app.core.db_tool_calls import recover_tool_call_execution as _recover_tool_call_execution
+
+    return _recover_tool_call_execution(call_id, recovered_at)
+
+
+def mark_tool_call_outcome_unknown(
+    call_id: str,
+    outcome_unknown_at: str,
+    *,
+    expected_status: str,
+) -> dict[str, Any] | None:
+    from app.core.db_tool_calls import mark_tool_call_outcome_unknown as _mark_tool_call_outcome_unknown
+
+    return _mark_tool_call_outcome_unknown(
+        call_id,
+        outcome_unknown_at,
+        expected_status=expected_status,
+    )
 
 
 def register_read_barrier(table: str, barrier: Callable[[], None]) -> None:
@@ -619,6 +675,12 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
     return _claim_approval_for_execution(approval_id, consumed_at)
 
 
+def expire_stale_approvals(expired_at: str) -> list[dict[str, Any]]:
+    from app.core.db_approvals import expire_stale_approvals as _expire_stale_approvals
+
+    return _expire_stale_approvals(expired_at)
+
+
 def expire_approval_if_pending(approval_id: str, expired_at: str, reason: str = "") -> dict[str, Any] | None:
     from app.core.db_approvals import expire_approval_if_pending as _expire_approval_if_pending
 
@@ -649,10 +711,33 @@ def count_pending_remote_input_approvals(grant_id: str, device_id: str) -> int:
     return _count_pending_remote_input_approvals(grant_id, device_id)
 
 
-def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -> dict[str, Any] | None:
+def decide_approval_atomically(
+    approval_id: str,
+    status: str,
+    decided_at: str,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     from app.core.db_approvals import decide_approval_atomically as _decide_approval_atomically
 
-    return _decide_approval_atomically(approval_id, status, decided_at)
+    return _decide_approval_atomically(
+        approval_id,
+        status,
+        decided_at,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
+
+
+def reauthorize_approval_atomically(
+    approval_id: str,
+    authorized_at: str,
+    auth_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    from app.core.db_approvals import reauthorize_approval_atomically as _reauthorize_approval_atomically
+
+    return _reauthorize_approval_atomically(approval_id, authorized_at, auth_context)
 
 
 def set_setting(key: str, value: Any) -> None:
@@ -798,25 +883,17 @@ def _sensitive_record_digest(table: str, record_id: str, data: str) -> str:
     return sensitive_record_digest(table, record_id, data)
 
 
-def upsert_memory(payload: dict[str, Any]) -> None:
-    from app.core.db_memory import upsert_memory as _upsert_memory
+def _lazy_memory_api(name: str) -> Callable[..., Any]:
+    def invoke(*args: Any, **kwargs: Any) -> Any:
+        from app.core import db_memory
 
-    return _upsert_memory(payload)
+        return getattr(db_memory, name)(*args, **kwargs)
 
-
-def get_memory(memory_id: str) -> dict[str, Any] | None:
-    from app.core.db_memory import get_memory as _get_memory
-
-    return _get_memory(memory_id)
+    invoke.__name__ = name
+    return invoke
 
 
-def list_memories(*, tags: list[str] | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    from app.core.db_memory import list_memories as _list_memories
-
-    return _list_memories(tags=tags, limit=limit)
-
-
-def delete_memory(memory_id: str) -> bool:
-    from app.core.db_memory import delete_memory as _delete_memory
-
-    return _delete_memory(memory_id)
+delete_memory = _lazy_memory_api("delete_memory")
+get_memory = _lazy_memory_api("get_memory")
+list_memories = _lazy_memory_api("list_memories")
+upsert_memory = _lazy_memory_api("upsert_memory")

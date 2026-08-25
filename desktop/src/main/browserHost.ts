@@ -1,7 +1,5 @@
 import {
-  BrowserView,
   BrowserWindow,
-  WebContentsView,
   ipcMain,
   type Rectangle,
   type WebContents
@@ -45,6 +43,14 @@ import {
 } from "./browserCredentialIpcHandlers";
 import { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 import {
+  createBrowserContainer,
+  delay,
+  destroyWebContents,
+  runDomAction,
+  safeCredentialErrorMessage,
+  type BrowserContainer
+} from "./browserHostRuntime";
+import {
   browserHostErrorMessage,
   browserHostTimestamp,
   normalizeBrowserHostBounds,
@@ -67,16 +73,6 @@ export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBac
 export { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
 export { registerBrowserCredentialIpcHandlers } from "./browserCredentialIpcHandlers";
 export { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
-
-type BrowserContainer =
-  | {
-      kind: "webContentsView";
-      view: WebContentsView;
-    }
-  | {
-      kind: "browserView";
-      view: BrowserView;
-    };
 
 interface HostedBrowserSession {
   container: BrowserContainer;
@@ -133,19 +129,19 @@ export class BrowserHost {
       try {
         await entry.container.view.webContents.session.clearStorageData();
         await this.stop(entry.session.id);
-      } catch (error) {
+      } catch (error) { // broad-exception-boundary: collect every local erasure failure before reporting an incomplete wipe.
         failures.push(error);
       }
     }
     try {
       await this.screenshotStore.clear();
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary: screenshot cleanup failure must fail the coordinated privacy erase.
       failures.push(error);
     }
     try {
       this.credentialTickets.clear();
       this.credentialVault.clear();
-    } catch (error) {
+    } catch (error) { // broad-exception-boundary: credential cleanup failure must fail the coordinated privacy erase.
       failures.push(error);
     }
     if (failures.length) throw new Error("Electron private browser data could not be fully erased");
@@ -262,6 +258,10 @@ export class BrowserHost {
   resume(sessionId: string): BrowserHostActionResult {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
+    if (entry.session.takeover) return this.fail("Return manual control before resuming the agent", entry);
+    if (entry.session.status === "awaiting_observation") {
+      return this.fail("Observe the current page before resuming the agent", entry);
+    }
     entry.session.paused = false;
     entry.session.status = entry.container.view.webContents.isLoading() ? "loading" : "idle";
     entry.session.updated_at = browserHostTimestamp();
@@ -273,8 +273,10 @@ export class BrowserHost {
   takeover(sessionId: string): BrowserHostActionResult {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
+    entry.session.paused = true;
     entry.session.takeover = true;
     entry.session.mode = "takeover";
+    entry.session.status = "paused";
     entry.session.updated_at = browserHostTimestamp();
     this.setInteractionBlocked(entry, false);
     this.show(sessionId);
@@ -288,6 +290,8 @@ export class BrowserHost {
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.takeover = false;
     entry.session.mode = "watch";
+    entry.session.paused = true;
+    entry.session.status = "awaiting_observation";
     entry.session.updated_at = browserHostTimestamp();
     this.setInteractionBlocked(entry, true);
     const event = this.addEvent(entry, { type: "session.release", ok: true });
@@ -332,6 +336,10 @@ export class BrowserHost {
 
     try {
       const event = await this.executeAction(entry, action);
+      if (action.kind === "observe" && entry.session.status === "awaiting_observation") {
+        entry.session.status = "paused";
+        entry.session.updated_at = browserHostTimestamp();
+      }
       this.updateSessionFromWebContents(entry);
       this.emitSnapshot();
       return this.ok(entry, event, action.kind === "screenshot");
@@ -586,7 +594,7 @@ export class BrowserHost {
         this.addEvent(entry, {
           type: "download.blocked",
           ok: false,
-          url: url || entry.session.current_url,
+          url,
           error: "BrowserHost downloads require an explicit desktop broker"
         });
         this.emitSnapshot();
@@ -887,67 +895,4 @@ export class BrowserHost {
     if (!window || window.isDestroyed()) return;
     window.webContents.send(IPC_CHANNELS.browserHostSnapshotChanged, snapshot);
   }
-}
-
-function safeCredentialErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
-  const safePrefixes = [
-    "Browser page domain changed",
-    "Browser page or credential fields changed",
-    "Browser session is no longer available",
-    "Credential purpose is not allowed",
-    "Credential task binding does not match",
-    "Credential use requires",
-    "Credential use ticket",
-    "Exactly one filled password field",
-    "Invalid credential ref id",
-    "Invalid run id",
-    "Invalid session id",
-    "Invalid task id",
-    "MFA, passcodes, and verification fields",
-    "Saved credential",
-    "Saved credentials",
-    "Secure OS credential storage",
-    "The page did not provide"
-  ];
-  return safePrefixes.some((prefix) => message.startsWith(prefix))
-    ? message
-    : "Credential operation failed";
-}
-
-function createBrowserContainer(partition: string): BrowserContainer {
-  const webPreferences = {
-    contextIsolation: true,
-    nodeIntegration: false,
-    sandbox: true,
-    partition
-  };
-
-  if (typeof WebContentsView === "function") {
-    return {
-      kind: "webContentsView",
-      view: new WebContentsView({ webPreferences })
-    };
-  }
-
-  return {
-    kind: "browserView",
-    view: new BrowserView({ webPreferences })
-  };
-}
-
-function destroyWebContents(webContents: WebContents): void {
-  if (!webContents.isDestroyed()) {
-    webContents.close({ waitForBeforeUnload: false });
-  }
-}
-
-function runDomAction(webContents: WebContents, script: string): Promise<unknown> {
-  return webContents.executeJavaScript(script, true);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, Math.max(0, Math.min(ms, 30_000)));
-  });
 }

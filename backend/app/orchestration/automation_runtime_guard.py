@@ -16,6 +16,7 @@ from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.tool_runtime_paths import candidate_authorized_paths
 from app.policy.approval_binding import permission_policy_version
 from app.policy.permissions import PermissionStore
+from app.policy.risk import is_modifying_or_higher
 from app.tools.schemas import ToolDefinition
 
 _RUNTIME_CONTROL_ARG_KEYS = {
@@ -281,11 +282,7 @@ def authorize_automation_execution(
             tool=tool,
             reason=budget.reason
             or ("automation run budget is exhausted" if hard_stop else "automation run budget requires user review"),
-            event_type=(
-                "automation_runtime.budget_hard_stopped"
-                if hard_stop
-                else "automation_runtime.budget_paused"
-            ),
+            event_type=("automation_runtime.budget_hard_stopped" if hard_stop else "automation_runtime.budget_paused"),
             hard_stop=hard_stop,
             details={
                 "action_fingerprint": action_fingerprint,
@@ -374,9 +371,7 @@ def _budget_events(
     events = [
         BudgetConsumeRequest(
             kind="tool_call",
-            action_fingerprint=(
-                action_fingerprint if args.get("dry_run") is not True and has_side_effect else ""
-            ),
+            action_fingerprint=(action_fingerprint if args.get("dry_run") is not True and has_side_effect else ""),
         )
     ]
     if write:
@@ -461,8 +456,9 @@ def _is_write(tool: ToolDefinition, args: dict[str, Any]) -> bool:
     effects = _effect_tokens(tool)
     if effects & _WRITE_EFFECTS or tool.destructive:
         return True
-    risk = str(getattr(tool.risk_level, "value", tool.risk_level) or "")
-    return not tool.is_read_only() and risk.startswith(("R2", "R3"))
+    # >= R2 (includes R4) so a forbidden/handoff-risk tool is not silently
+    # treated as a non-write by this egress backstop.
+    return not tool.is_read_only() and is_modifying_or_higher(tool.risk_level)
 
 
 def _is_external_send(tool: ToolDefinition, args: dict[str, Any]) -> bool:

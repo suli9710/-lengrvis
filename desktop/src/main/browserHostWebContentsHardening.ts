@@ -22,6 +22,8 @@ interface BrowserHostDownloadItem {
   getURL(): string;
 }
 
+const REDACTED_URL_VALUE = "[redacted]";
+
 export function hardenEmbeddedWebContents(
   webContents: WebContents,
   options: BrowserHostWebContentsHardeningOptions = {}
@@ -62,7 +64,7 @@ export function blockBrowserHostDownload(
   if (!onDownloadBlocked) return;
   let url = "";
   try {
-    url = item.getURL();
+    url = redactBrowserHostEventUrl(item.getURL());
   } catch {
     // The item may already be invalid after cancellation.
   }
@@ -70,6 +72,25 @@ export function blockBrowserHostDownload(
     onDownloadBlocked({ url });
   } catch {
     // Observability must never reopen or destabilize the blocked download.
+  }
+}
+
+function redactBrowserHostEventUrl(value: string): string {
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) parsed.username = REDACTED_URL_VALUE;
+    if (parsed.password) parsed.password = REDACTED_URL_VALUE;
+    for (const key of [...parsed.searchParams.keys()]) {
+      parsed.searchParams.set(key, REDACTED_URL_VALUE);
+    }
+    if (parsed.hash) parsed.hash = `#${REDACTED_URL_VALUE}`;
+    return parsed.toString();
+  } catch {
+    const metadataStart = value.search(/[?#]/);
+    return metadataStart >= 0
+      ? `${value.slice(0, metadataStart)}?${REDACTED_URL_VALUE}`
+      : value;
   }
 }
 

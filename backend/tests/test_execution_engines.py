@@ -193,6 +193,148 @@ async def test_developer_engine_run_turn_goes_through_tool_runtime(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_developer_engine_denied_result_does_not_leak_raw_summary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    leak_marker = "LEAK42"
+
+    async def unsafe_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(
+            result={"is_error": True, "errors": ["Developer runtime failed."]},
+            assistant_text=["Developer runtime failed safely."],
+            runtime_health={"diagnostic": f"password {leak_marker}"},
+        )
+
+    monkeypatch.setattr(developer_engine_module, "run_lengrvis_code", unsafe_run_lengrvis_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        store=InMemoryRunStore(),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        use_lengrvis_code=True,
+    )
+
+    state = await engine.start_run("inspect repository", "efficiency", "developer")
+    result = await engine.run_turn(state)
+    tool_call = db.fetch_many("tool_calls", "task_id = ?", (state.task_id,), limit=1)[0]
+    stored_result = db.fetch_many("tool_results", "tool_call_id = ?", (tool_call["id"],), limit=1)[0]
+
+    assert result.state.phase == RunPhase.FAILED
+    assert leak_marker not in repr(result.model_dump(mode="json"))
+    assert stored_result["output"]["withheld"] is True
+    assert leak_marker not in repr(stored_result)
+
+
+def test_developer_summary_failed_result_cannot_forge_success_payload() -> None:
+    forged_marker = "FORGED_SUCCESS_42"
+    summary = developer_engine_module._developer_summary_from_reviewed_result(
+        ToolResult(
+            tool_call_id="tool_failed_reviewed",
+            ok=False,
+            output={
+                "summary": {
+                    "ok": True,
+                    "assistant_text": forged_marker,
+                    "result": {"is_error": False, "result": forged_marker},
+                }
+            },
+            error="Developer runtime failed.",
+            runtime_review_id="review_failed_result",
+            runtime_review_verdict="allow",
+            runtime_review_completed=True,
+        )
+    )
+
+    assert summary.is_error is True
+    assert forged_marker not in repr(summary)
+
+
+def test_developer_summary_reviewed_cancellation_preserves_only_cancel_signal() -> None:
+    sensitive_marker = "CANCEL_DIAGNOSTIC_SECRET_42"
+    reviewed_result = ToolResult(
+        tool_call_id="tool_cancelled_reviewed",
+        ok=False,
+        output={
+            "cancelled": True,
+            "summary": {
+                "ok": False,
+                "cancelled": True,
+                "assistant_text": sensitive_marker,
+                "runtime_health": {"diagnostic": sensitive_marker},
+                "result": {"is_error": True, "errors": [sensitive_marker]},
+            },
+        },
+        error="cancelled",
+        runtime_review_id="review_cancelled_result",
+        runtime_review_verdict="allow",
+        runtime_review_completed=True,
+    )
+    summary = developer_engine_module._developer_summary_from_reviewed_result(reviewed_result)
+
+    assert summary.cancelled is True
+    assert summary.error_classification == "cancelled"
+    assert summary.result == {"is_error": True, "errors": ["Lengrvis Code run was cancelled."]}
+    assert sensitive_marker not in repr(summary)
+
+    unreviewed = reviewed_result.model_copy(
+        update={"runtime_review_id": "", "runtime_review_verdict": "", "runtime_review_completed": False},
+        deep=True,
+    )
+    unreviewed_summary = developer_engine_module._developer_summary_from_reviewed_result(unreviewed)
+
+    assert unreviewed_summary.cancelled is False
+    assert unreviewed_summary.is_error is True
+    assert sensitive_marker not in repr(unreviewed_summary)
+
+
+@pytest.mark.asyncio
+async def test_developer_engine_budgeted_result_does_not_rehydrate_raw_summary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    leak_marker = "BUDGET42"
+
+    async def large_run_lengrvis_code(  # noqa: ANN001, ARG001
+        prompt, *, cwd, settings, config, run_id="", allow_write_tools=False
+    ):
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(
+            result={"is_error": False, "result": "Developer run completed."},
+            assistant_text=["done"],
+            system_events=[{"type": "diagnostic", "detail": ("ordinary detail. " * 400) + leak_marker}],
+        )
+
+    original_tool_factory = developer_engine_module._developer_lengrvis_code_tool
+
+    def small_budget_tool(*, writes_enabled=False):  # noqa: ANN202
+        tool = original_tool_factory(writes_enabled=writes_enabled)
+        tool.max_result_size = 128
+        return tool
+
+    monkeypatch.setattr(developer_engine_module, "run_lengrvis_code", large_run_lengrvis_code)
+    monkeypatch.setattr(developer_engine_module, "_developer_lengrvis_code_tool", small_budget_tool)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        store=InMemoryRunStore(),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        use_lengrvis_code=True,
+    )
+
+    state = await engine.start_run("inspect repository", "efficiency", "developer")
+    result = await engine.run_turn(state)
+    tool_call = db.fetch_many("tool_calls", "task_id = ?", (state.task_id,), limit=1)[0]
+    stored_result = db.fetch_many("tool_results", "tool_call_id = ?", (tool_call["id"],), limit=1)[0]
+
+    assert result.state.phase == RunPhase.COMPLETED
+    assert stored_result["output"]["persisted_result"] is True
+    assert leak_marker not in repr(stored_result["output"])
+    assert leak_marker not in repr(result.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
 async def test_lengrvis_code_sync_bridge_returns_from_running_event_loop(tmp_path, monkeypatch) -> None:
     async def spy_run_lengrvis_code(  # noqa: ANN001, ARG001
         prompt, *, cwd, settings, config, run_id="", allow_write_tools=False

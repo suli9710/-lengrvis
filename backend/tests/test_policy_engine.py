@@ -126,7 +126,32 @@ def test_policy_denies_forbidden_shell_or_secret_tool_call():
     assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
 
 
-def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
+@pytest.mark.parametrize(
+    ("ok", "hidden_output", "reason_fragment"),
+    [
+        (True, {"runtime_health": {"diagnostic": "password LEAK42"}}, "restricted material"),
+        (
+            False,
+            {
+                "content_trust": BROWSER_CONTENT_TRUST,
+                "browser_content_warnings": [BROWSER_CONTENT_PROMPT_INJECTION_WARNING],
+            },
+            "prompt-injection",
+        ),
+    ],
+    ids=["hidden-sensitive-content", "hidden-prompt-injection"],
+)
+def test_policy_reviews_full_tool_result_when_summarizer_hides_unsafe_content(
+    ok: bool,
+    hidden_output: dict[str, object],
+    reason_fragment: str,
+):
+    summary_calls: list[dict[str, object]] = []
+
+    def summarize(output: dict[str, object]) -> str:
+        summary_calls.append(output)
+        return str(output.get("assistant_text") or "completed")
+
     tool = ToolDefinition(
         name="developer.lengrvis_code",
         description="Run a trusted developer subprocess.",
@@ -142,15 +167,16 @@ def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
         effects=["read", "execute_subprocess"],
         resource_kinds=["workspace", "developer_runtime"],
         trust_tier="builtin",
-        result_summary=lambda output: str(output.get("assistant_text") or "completed"),
+        result_summary=summarize,
     )
     result = ToolResult(
         tool_call_id="tool_dev",
-        ok=True,
+        ok=ok,
         output={
             "assistant_text": "Repository inspection completed.",
-            "runtime_health": {"command": ["python", "fake.py"], "token_metadata": "internal key name"},
+            "hidden": hidden_output,
         },
+        error="Developer runtime failed." if not ok else "",
     )
 
     review = PolicyEngine().review_tool_result(
@@ -162,7 +188,9 @@ def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
         tool_definition=tool,
     )
 
-    assert review.verdict == SafetyVerdict.ALLOW
+    assert review.verdict == SafetyVerdict.DENY
+    assert reason_fragment in " ".join(review.reasons)
+    assert summary_calls == []
 
 
 def test_policy_denies_browser_tool_result_with_prompt_injection_warning():
@@ -307,3 +335,32 @@ def test_permission_mode_default_still_requires_approval_for_write():
     )
 
     assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+
+
+def test_trusted_edit_path_guard_canonicalizes_traversal():
+    from app.policy.permission_modes import _contains_runtime_or_sensitive_path
+
+    # A `..` traversal into a system directory must be flagged as sensitive even
+    # though the literal string starts under a user directory.
+    assert (
+        _contains_runtime_or_sensitive_path({"path": r"C:\Users\me\..\..\Windows\System32\drivers\etc\hosts"}) is True
+    )
+    assert _contains_runtime_or_sensitive_path({"path": "../../etc/shadow"}) is True
+    assert _contains_runtime_or_sensitive_path({"path": "/etc/passwd"}) is True
+    # A normal in-user-space path and ordinary prose are not flagged.
+    assert _contains_runtime_or_sensitive_path({"path": r"C:\Users\me\notes.txt"}) is False
+    assert _contains_runtime_or_sensitive_path({"message": "hold on... let me check"}) is False
+
+
+def test_is_modifying_or_higher_covers_r4():
+    from app.policy.risk import RiskLevel, is_modifying_or_higher
+
+    assert is_modifying_or_higher(RiskLevel.R0_READ_ONLY) is False
+    assert is_modifying_or_higher(RiskLevel.R1_OPEN_ONLY) is False
+    assert is_modifying_or_higher(RiskLevel.R2_REVERSIBLE_MODIFY) is True
+    assert is_modifying_or_higher(RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM) is True
+    # R4 must count as modifying-or-higher so runtime backstops fail closed
+    # rather than treating it as a non-write.
+    assert is_modifying_or_higher(RiskLevel.R4_FORBIDDEN_OR_HANDOFF) is True
+    assert is_modifying_or_higher("R4_FORBIDDEN_OR_HANDOFF") is True
+    assert is_modifying_or_higher(None) is False

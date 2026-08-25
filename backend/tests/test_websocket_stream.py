@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.routes_chat import _SENT_MESSAGE_ID_LIMIT, _remember_sent_message_id, ws_router
 from app.api.routes_chat import bus as chat_bus
-from app.api.routes_chat import ws_router
 from app.core import db
 from app.core.schemas import MessageType
 from app.orchestration.agent_bus import AgentBus
@@ -17,6 +18,23 @@ def _test_app() -> FastAPI:
     app.include_router(ws_router)
     app.include_router(ws_router, prefix="/api")
     return app
+
+
+def test_websocket_sent_message_deduplication_is_memory_bounded() -> None:
+    sent_ids: set[str] = set()
+    sent_order: deque[str] = deque()
+
+    for index in range(_SENT_MESSAGE_ID_LIMIT + 32):
+        _remember_sent_message_id(sent_ids, sent_order, f"message-{index}")
+
+    assert len(sent_ids) == _SENT_MESSAGE_ID_LIMIT
+    assert len(sent_order) == _SENT_MESSAGE_ID_LIMIT
+    assert "message-0" not in sent_ids
+    assert f"message-{_SENT_MESSAGE_ID_LIMIT + 31}" in sent_ids
+
+    latest_order = tuple(sent_order)
+    _remember_sent_message_id(sent_ids, sent_order, latest_order[-1])
+    assert tuple(sent_order) == latest_order
 
 
 def test_task_websocket_receives_agent_bus_messages(monkeypatch, tmp_path):

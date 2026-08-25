@@ -11,11 +11,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_fie
 
 from app.core import db
 from app.core.schemas import now_iso
+from app.policy.policy_helpers import candidate_paths, canonicalize_path
 from app.security.capability_manifest import assert_capability_allowed, permission_policy_capability_payload
 
 PermissionEffect = Literal["allow", "deny"]
 BUILTIN_BASELINE_DENY_RULE_ID = "builtin_high_risk_baseline"
 BUILTIN_BASELINE_DENY_RULE_NAME = "Built-in high-risk baseline"
+BUILTIN_AMBIGUOUS_PATH_RULE_ID = "builtin_ambiguous_path"
+BUILTIN_AMBIGUOUS_PATH_RULE_NAME = "Ambiguous path rejected"
 _BUILTIN_BASELINE_DENY_PATTERNS: tuple[str, ...] = (
     "mcp.*",
     "external.*",
@@ -190,19 +193,34 @@ class PermissionStore:
     def get_policy(self) -> PermissionPolicy:
         self._ensure_schema()
         with db.connect() as conn:
-            row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
+            try:
+                row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
+            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: sensitive schema failures fail closed.
+                raise db.SensitiveRecordIntegrityError("Sensitive permission policy table is unavailable") from exc
+            proof_exists = db._sensitive_record_integrity_row_exists(conn, "permission_policies", self.policy_id)
+            presence_exists = _permission_policy_presence_exists(conn, self.policy_id)
+            anchor_complete = _sensitive_integrity_anchor_complete(conn)
         if not row:
+            if proof_exists or presence_exists or (anchor_complete and self.policy_id == "default"):
+                raise db.SensitiveRecordIntegrityError(
+                    f"Sensitive permission policy record is missing for {self.policy_id}"
+                )
             return PermissionPolicy(id=self.policy_id)
         db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
-        try:
-            return PermissionPolicy.model_validate(json.loads(row["data"]))
-        except (json.JSONDecodeError, TypeError, ValidationError):
-            return PermissionPolicy()
+        return _parse_stored_permission_policy(str(row["data"]), policy_id=self.policy_id)
 
     def updated_at(self) -> str:
         self._ensure_schema()
         with db.connect() as conn:
             row = conn.execute("SELECT updated_at FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
+            if row is None and (
+                db._sensitive_record_integrity_row_exists(conn, "permission_policies", self.policy_id)
+                or _permission_policy_presence_exists(conn, self.policy_id)
+                or (_sensitive_integrity_anchor_complete(conn) and self.policy_id == "default")
+            ):
+                raise db.SensitiveRecordIntegrityError(
+                    f"Sensitive permission policy record is missing for {self.policy_id}"
+                )
         return str(row["updated_at"]) if row else ""
 
     def save_policy(self, policy: PermissionPolicy | dict[str, Any]) -> PermissionPolicy:
@@ -237,11 +255,16 @@ class PermissionStore:
             row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
             if row:
                 db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
-                try:
-                    policy = PermissionPolicy.model_validate(json.loads(row["data"]))
-                except (json.JSONDecodeError, TypeError, ValidationError):
-                    policy = PermissionPolicy(id=self.policy_id)
+                policy = _parse_stored_permission_policy(str(row["data"]), policy_id=self.policy_id)
             else:
+                if (
+                    db._sensitive_record_integrity_row_exists(conn, "permission_policies", self.policy_id)
+                    or _permission_policy_presence_exists(conn, self.policy_id)
+                    or (_sensitive_integrity_anchor_complete(conn) and self.policy_id == "default")
+                ):
+                    raise db.SensitiveRecordIntegrityError(
+                        f"Sensitive permission policy record is missing for {self.policy_id}"
+                    )
                 policy = PermissionPolicy(id=self.policy_id)
             policy.id = self.policy_id
             policy.rules = [existing for existing in policy.rules if existing.id != model.id]
@@ -288,15 +311,31 @@ class PermissionStore:
     def _ensure_schema(self) -> None:
         db.init_db()
         with db.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS permission_policies (
-                    id TEXT PRIMARY KEY,
-                    data TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'permission_policies'"
+            ).fetchone()
+            proof_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (db.SENSITIVE_RECORD_INTEGRITY_TABLE,),
+            ).fetchone()
+            presence_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sensitive_record_presence'"
+            ).fetchone()
+            if table is None or proof_table is None or presence_table is None:
+                raise db.SensitiveRecordIntegrityError("Sensitive permission policy schema is unavailable")
+
+
+def _permission_policy_presence_exists(conn: Any, policy_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sensitive_record_presence WHERE table_name = 'permission_policies' AND record_id = ?",
+        (policy_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _sensitive_integrity_anchor_complete(conn: Any) -> bool:
+    row = conn.execute("SELECT state FROM sensitive_integrity_bootstrap_anchor WHERE id = 1").fetchone()
+    return row is not None and str(row["state"] or "") == "complete"
 
 
 def evaluate_permission_policy(
@@ -314,6 +353,17 @@ def evaluate_permission_policy(
     )
     context = context or {}
     current_time = now or _context_datetime(context)
+    raw_paths = list(_candidate_paths(args))
+    _, invalid_paths = _canonical_candidate_paths(raw_paths)
+    if invalid_paths:
+        return PermissionDecision(
+            allowed=False,
+            matched=True,
+            effect="deny",
+            rule_id=BUILTIN_AMBIGUOUS_PATH_RULE_ID,
+            rule_name=BUILTIN_AMBIGUOUS_PATH_RULE_NAME,
+            reason="Ambiguous or unsafe path argument rejected before permission matching.",
+        )
     matching: list[PermissionRule] = []
     for rule in policy.rules:
         if not rule.enabled:
@@ -347,6 +397,16 @@ def evaluate_permission_policy(
         matched=False,
         reason="No deny rule matched; default allow.",
     )
+
+
+def _parse_stored_permission_policy(data: str, *, policy_id: str) -> PermissionPolicy:
+    try:
+        policy = PermissionPolicy.model_validate(json.loads(data))
+    except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+        raise db.SensitiveRecordIntegrityError(
+            f"Sensitive permission policy payload is invalid for {policy_id}"
+        ) from exc
+    return policy
 
 
 def _builtin_baseline_deny_decision(tool_name: str) -> PermissionDecision | None:
@@ -437,15 +497,24 @@ def _tool_matches(rule: PermissionRule, tool_name: str) -> bool:
 def _path_matches(rule: PermissionRule, args: dict[str, Any]) -> bool:
     if not rule.path_patterns:
         return True
-    paths = list(_candidate_paths(args))
+    paths, invalid_paths = _canonical_candidate_paths(_candidate_paths(args))
+    if invalid_paths:
+        return False
     if not paths:
-        return any(pattern in {"*", "**"} for pattern in rule.path_patterns)
-    normalized_patterns = [pattern.replace("\\", "/").casefold() for pattern in rule.path_patterns]
-    for path in paths:
-        normalized = path.replace("\\", "/").casefold()
-        if any(fnmatch.fnmatchcase(normalized, pattern) for pattern in normalized_patterns):
-            return True
-    return False
+        return any(canonicalize_path(pattern, allow_glob=True) in {"*", "**"} for pattern in rule.path_patterns)
+    normalized_patterns = [
+        normalized
+        for pattern in rule.path_patterns
+        if (normalized := canonicalize_path(pattern, allow_glob=True)) is not None
+    ]
+    if not normalized_patterns:
+        return False
+    matches = [any(fnmatch.fnmatchcase(path, pattern) for pattern in normalized_patterns) for path in paths]
+    # A deny rule is triggered by any covered resource.  An allow rule grants
+    # the operation only when every resource argument is covered; otherwise a
+    # second source/destination can smuggle an out-of-scope path through an
+    # "any match" check.
+    return all(matches) if rule.effect == "allow" else any(matches)
 
 
 def _time_matches(rule: PermissionRule, now: datetime) -> bool:
@@ -537,21 +606,19 @@ def _day_matches(days: list[int | str], weekday: int) -> bool:
 
 
 def _candidate_paths(value: Any) -> list[str]:
-    result: list[str] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if "path" in str(key).casefold() or str(key) in {"source", "destination", "target", "folder", "directory"}:
-                result.extend(_candidate_paths(item))
-            elif isinstance(item, dict | list | tuple):
-                result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, list | tuple | set):
-        for item in value:
-            result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, str) and value.strip():
-        result.append(value.strip())
-    return result
+    return candidate_paths(value)
+
+
+def _canonical_candidate_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    canonical: list[str] = []
+    invalid: list[str] = []
+    for path in paths:
+        normalized = canonicalize_path(path)
+        if normalized is None:
+            invalid.append(path)
+        else:
+            canonical.append(normalized)
+    return canonical, invalid
 
 
 def _context_datetime(context: dict[str, Any]) -> datetime:

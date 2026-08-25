@@ -155,6 +155,35 @@ async def test_provider_chat_decision_is_not_overridden_by_keyword_heuristic(mon
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "当前没有提供任务 ID。请不要创建或执行新任务，只说明查看状态需要先提供任务 ID。",
+        "当前没有绑定任务 ID。这句补充短文本“只检查已授权的 2026 年发票目录”不能安全附加；请不要创建新任务，只说明需要先选择任务 ID。",
+    ],
+)
+async def test_unbound_task_context_request_never_creates_a_new_task(monkeypatch, tmp_path, message):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    provider = RecordingSupervisorProvider(
+        {
+            "delegate": True,
+            "reply": "I will create a new task.",
+            "agent_hint": "FileAgent",
+        }
+    )
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
+
+    response = await handle_chat(message, "efficiency")
+
+    assert provider.calls == 0
+    assert response.delegated is False
+    assert response.task_id is None
+    assert "任务 ID" in response.message
+    assert db.fetch_many("tasks") == []
+
+
+@pytest.mark.anyio
 async def test_short_conversation_uses_natural_fallback_when_model_is_unhelpful(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()

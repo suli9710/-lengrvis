@@ -350,6 +350,13 @@ function licenseImportUnavailableReason(license: CommerceLicenseStatus | null): 
 
 function quotaSummary(quota: CommerceQuotaStatus | null): string {
   if (!quota) return "读取中";
+  if (
+    !quota.available ||
+    quota.state === "metering_unavailable" ||
+    quota.windows.some((window) => !window.available || (!quota.unlimited && window.usage === null))
+  ) {
+    return "计量不可用，云调用已暂停";
+  }
   if (quota.unlimited) return "不设产品内上限";
   const windows =
     quota.windows.length > 0
@@ -358,6 +365,7 @@ function quotaSummary(quota: CommerceQuotaStatus | null): string {
           {
             key: `${quota.windowHours}h`,
             windowHours: quota.windowHours,
+            available: quota.available,
             limits: quota.limits,
             usage: quota.usage,
             exceeded: quota.exceeded
@@ -369,7 +377,8 @@ function quotaSummary(quota: CommerceQuotaStatus | null): string {
 }
 
 function formatQuotaWindow(window: CommerceQuotaWindow): string {
-  const used = window.usage?.totalTokens ?? 0;
+  if (!window.available || window.usage === null) return "计量不可用，云调用已暂停";
+  const used = window.usage.totalTokens;
   const limit = window.limits.totalTokens;
   if (limit === null) return `${formatQuotaWindowLabel(window.windowHours)} 不设上限`;
   const suffix = window.exceeded.length > 0 ? " 已达上限" : "";

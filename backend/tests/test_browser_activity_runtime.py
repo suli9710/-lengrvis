@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from app.services.browser_activity_runtime import (
     _read_limited_http_response,
 )
 from app.tools import browser_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 def _stub_public_dns(monkeypatch) -> None:
@@ -232,6 +234,107 @@ def test_runtime_starts_session_observes_and_records_redacted_events() -> None:
     audit_events = db.fetch_many("audit_events", "task_id = ?", ("task-1",), limit=10)
     assert any(event["event_type"] == "browser_activity.observe" for event in audit_events)
     assert "secret-token" not in str(audit_events)
+
+
+def test_cancel_task_sessions_closes_only_matching_active_sessions() -> None:
+    runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
+    first = runtime.session_start({"task_id": "task-1"}, _context())["session"]["id"]
+    second = runtime.session_start({"task_id": "task-2"}, _context())["session"]["id"]
+
+    result = runtime.cancel_task_sessions("task-1")
+
+    assert result == {"ok": True, "closed": 1, "session_ids": [first]}
+    assert runtime.session_info({"session_id": first})["session"]["status"] == "closed"
+    assert runtime.session_info({"session_id": first})["session"]["paused"] is True
+    assert runtime.session_info({"session_id": second})["session"]["status"] == "active"
+    events = runtime.events({"task_id": "task-1"})["events"]
+    assert events[-1]["type"] == "session.cancelled"
+
+
+@pytest.mark.parametrize(
+    ("task_id", "account_id", "error_fragment"),
+    [
+        ("task-2", "account-1", "different task"),
+        ("task-1", "account-2", "different account"),
+    ],
+)
+def test_runtime_rejects_cross_task_or_account_session_rebinding(
+    task_id: str,
+    account_id: str,
+    error_fragment: str,
+) -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    owner_context = {**_context(), "task_id": "task-1", "account_id": "account-1"}
+    started = runtime.session_start({"url": "https://example.test/start"}, owner_context)
+
+    result = runtime.observe(
+        {"session_id": started["session"]["id"]},
+        {**_context(), "task_id": task_id, "account_id": account_id},
+    )
+    session = runtime.session_info({"session_id": started["session"]["id"]})["session"]
+
+    assert result["ok"] is False
+    assert error_fragment in result["error"]
+    assert adapter.calls == []
+    assert session["task_id"] == "task-1"
+    assert session["account_id"] == "account-1"
+
+
+def test_runtime_enforces_session_allowed_origins_and_actions() -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    context = {**_context(), "task_id": "task-scope", "account_id": "account-scope"}
+    started = runtime.session_start(
+        {
+            "url": "https://example.test/start",
+            "allowed_origins": ["https://EXAMPLE.test"],
+            "allowed_actions": ["observe"],
+        },
+        context,
+    )
+    session_id = started["session"]["id"]
+
+    same_origin = runtime.observe({"session_id": session_id}, context)
+    cross_origin = runtime.observe(
+        {"session_id": session_id, "url": "https://other.example.test/page"},
+        context,
+    )
+    disallowed_action = runtime.act(
+        {"session_id": session_id, "action": {"kind": "click", "url": "https://example.test/start"}},
+        context,
+    )
+
+    assert started["session"]["allowed_origins"] == ["https://example.test:443"]
+    assert started["session"]["allowed_actions"] == ["observe"]
+    assert same_origin["ok"] is True
+    assert cross_origin["ok"] is False
+    assert "allowed_origins" in cross_origin["error"]
+    assert disallowed_action["ok"] is False
+    assert "allowed_actions" in disallowed_action["error"]
+    assert len(adapter.calls) == 1
+
+
+def test_runtime_rejects_cross_origin_adapter_final_url() -> None:
+    class CrossOriginRedirectAdapter(FakeBrowserAdapter):
+        def perform(self, session, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
+            return {
+                "ok": True,
+                "url": "https://login.example.test/final",
+                "title": "Unexpected redirect",
+                "text": "",
+                "links": [],
+            }
+
+    runtime = BrowserActivityRuntime(adapter=CrossOriginRedirectAdapter())
+    started = runtime.session_start({"url": "https://example.test/start"}, _context())
+
+    result = runtime.observe({"session_id": started["session"]["id"]}, _context())
+    session = runtime.session_info({"session_id": started["session"]["id"]})["session"]
+
+    assert result["ok"] is False
+    assert "same-origin" in result["error"]
+    assert session["current_url"] == "https://example.test/start"
 
 
 def test_runtime_event_titles_use_public_redaction() -> None:
@@ -534,6 +637,28 @@ def test_httpx_observe_reads_response_with_hard_byte_limit(monkeypatch) -> None:
     assert "a" * 128 not in html
 
 
+def test_httpx_observe_aborts_before_network_request(monkeypatch) -> None:
+    _stub_public_dns(monkeypatch)
+    abort = threading.Event()
+    abort.set()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"ok", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ToolAbortedError):
+            _read_limited_http_response(
+                client,
+                "https://example.test/page",
+                64,
+                abort_context={"_tool_abort_event": abort},
+            )
+
+    assert calls == []
+
+
 def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
     # SEC-008 regression: redirects are followed manually and re-validated, so a
     # 3xx to an internal/metadata host is rejected instead of fetched.
@@ -547,6 +672,21 @@ def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
             _read_limited_http_response(client, "https://example.test/page", 64)
 
 
+def test_httpx_observe_rejects_redirect_to_different_public_origin(monkeypatch) -> None:
+    _stub_public_dns(monkeypatch)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"Location": "https://other.example.test/final"}, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="same-origin"):
+            _read_limited_http_response(client, "https://example.test/page", 64)
+
+    assert len(calls) == 1
+
+
 def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_errors(monkeypatch) -> None:
     def failing_sync_playwright():
         raise RuntimeError("playwright launch failed")
@@ -555,7 +695,11 @@ def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_error
     monkeypatch.setattr(
         browser_activity_runtime,
         "_read_limited_http_response",
-        lambda _client, url, _max_chars: ("<html><title>Fallback</title><main>Hello</main></html>", url, False),
+        lambda _client, url, _max_chars, **_kwargs: (
+            "<html><title>Fallback</title><main>Hello</main></html>",
+            url,
+            False,
+        ),
     )
 
     result = LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page", "max_chars": 100}, _context())
@@ -574,6 +718,97 @@ def test_local_adapter_observe_does_not_swallow_unexpected_playwright_bugs(monke
 
     with pytest.raises(AssertionError, match="playwright bug"):
         LocalBrowserActivityAdapter()._observe({"url": "https://example.test/page"}, _context())
+
+
+def test_local_adapter_screenshot_validates_origin_then_persists_encrypted_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.security.sensitive_data_crypto import is_encrypted_payload
+    from app.services.task_recording_service import read_recording_image
+
+    _stub_public_dns(monkeypatch)
+    png = b"\x89PNG\r\n\x1a\nprivate-browser-frame"
+
+    class Page:
+        url = "https://example.test/screen"
+
+        def goto(self, url: str, **_kwargs) -> None:  # noqa: ANN003
+            self.url = url
+
+        def screenshot(self, **_kwargs) -> bytes:  # noqa: ANN003
+            return png
+
+        def title(self) -> str:
+            return "Example"
+
+    browser = _GuardedFakeBrowser(blocked_on="")
+    page = Page()
+    _install_fake_playwright(monkeypatch, lambda: _GuardedFakeSyncPlaywright(browser), error_type=RuntimeError)
+    monkeypatch.setattr(
+        browser_activity_runtime,
+        "_new_guarded_playwright_page",
+        lambda _browser, **_options: (page, _PlaywrightRouteGuard()),
+    )
+    context = _context()
+    context.update({"task_id": "task-screenshot", "step_id": "step-screenshot"})
+    context["settings"] = context["settings"].model_copy(
+        update={"data_dir": str(tmp_path), "browser_screenshot_dir": str(tmp_path / "plaintext")}
+    )
+
+    result = LocalBrowserActivityAdapter()._screenshot(
+        {"url": "https://example.test/screen", "width": 640, "height": 480},
+        context,
+    )
+
+    assert result["ok"] is True
+    assert result["path"] == ""
+    assert result["screenshot_url"].startswith("/api/tasks/task-screenshot/recordings/shot-")
+    assert not (tmp_path / "plaintext").exists()
+    with db.connect() as conn:
+        row = conn.execute("SELECT image, data FROM task_recordings WHERE id = ?", (result["recording_id"],)).fetchone()
+    assert row is not None
+    assert is_encrypted_payload(bytes(row["image"]))
+    assert png not in bytes(row["image"])
+    restored, media_type = read_recording_image("task-screenshot", result["screenshot_url"].rsplit("/", 1)[-1])
+    assert restored == png
+    assert media_type == "image/png"
+
+
+def test_local_adapter_screenshot_rejects_cross_origin_redirect_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_public_dns(monkeypatch)
+    captures: list[str] = []
+
+    class Page:
+        url = "https://other.example.test/screen"
+
+        def goto(self, _url: str, **_kwargs) -> None:  # noqa: ANN003
+            self.url = "https://other.example.test/screen"
+
+        def screenshot(self, **_kwargs) -> bytes:  # noqa: ANN003
+            captures.append(self.url)
+            return b"not-reached"
+
+        def title(self) -> str:
+            return "Other"
+
+    browser = _GuardedFakeBrowser(blocked_on="")
+    _install_fake_playwright(monkeypatch, lambda: _GuardedFakeSyncPlaywright(browser), error_type=RuntimeError)
+    monkeypatch.setattr(
+        browser_activity_runtime,
+        "_new_guarded_playwright_page",
+        lambda _browser, **_options: (Page(), _PlaywrightRouteGuard()),
+    )
+    context = _context()
+    context.update({"task_id": "task-screenshot", "step_id": "step-screenshot"})
+
+    result = LocalBrowserActivityAdapter()._screenshot({"url": "https://example.test/screen"}, context)
+
+    assert result["ok"] is False
+    assert "same-origin" in result["error"]
+    assert captures == []
 
 
 @pytest.mark.parametrize(
@@ -832,4 +1067,4 @@ def test_safe_url_redacts_query_and_handles_invalid_url() -> None:
     from app.services.browser_activity_runtime import _safe_url
 
     assert _safe_url("https://example.test/path?token=secret") == "https://example.test/path?***"
-    assert _safe_url("http://[bad?token=secret-token-value") == "http://[bad?token=[REDACTED]"
+    assert _safe_url("http://[bad?token=secret-token-value") == "[REDACTED_URL]"

@@ -6,6 +6,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.agents.delegation_metadata import (
+    is_explicit_memory_mutation_goal,
+    is_memory_non_persistence_goal,
+)
 from app.agents.delegation_rules import (
     DELEGATION_RULES,
     FILE_ACTION_TERMS,
@@ -55,6 +59,30 @@ CHAT_ONLY_HINTS = (
     "旅途",
 )
 
+_MISSING_TASK_ID_RE = re.compile(
+    r"(?:没有|未)(?:提供|绑定|指定|选择)?\s*任务\s*id|\b(?:no|without)\s+(?:bound\s+)?task\s+id\b",
+    re.IGNORECASE,
+)
+_NO_NEW_TASK_RE = re.compile(
+    r"(?:不要|不得|不能).{0,24}创建.{0,12}新任务|\bdo\s+not\s+create\s+(?:a\s+)?new\s+task\b",
+    re.IGNORECASE,
+)
+
+
+def _is_unbound_task_context_request(message: str) -> bool:
+    return bool(_MISSING_TASK_ID_RE.search(message) and _NO_NEW_TASK_RE.search(message))
+
+
+def _is_expired_memory_reconfirmation_request(message: str) -> bool:
+    normalized = message.casefold()
+    memory_scope = any(term in normalized for term in ("偏好", "记忆", "preference", "memory"))
+    expiry_scope = any(term in normalized for term in ("超过 ttl", "过期", "失效", "expired", "past its ttl"))
+    review_scope = any(
+        term in normalized
+        for term in ("是否仍有效", "重新确认", "再次确认", "still valid", "reconfirm", "confirm again")
+    )
+    return memory_scope and expiry_scope and review_scope
+
 
 @dataclass(frozen=True, slots=True)
 class SupervisorDecision:
@@ -68,6 +96,13 @@ class SupervisorAgent:
 
     async def decide(self, message: str, mode: str) -> SupervisorDecision:
         fallback = self.quick_decision(message)
+        if (
+            _is_unbound_task_context_request(message)
+            or _is_expired_memory_reconfirmation_request(message)
+            or is_memory_non_persistence_goal(message)
+            or is_explicit_memory_mutation_goal(message)
+        ):
+            return fallback
 
         try:
             provider = get_provider(task="supervisor")
@@ -212,6 +247,28 @@ class SupervisorAgent:
         if not text:
             return SupervisorDecision(False, "我在，直接告诉我你想做什么就行。")
 
+        if _is_unbound_task_context_request(text):
+            return SupervisorDecision(
+                False,
+                "当前没有可绑定的任务 ID。请先提供或选择任务 ID；在此之前我不会创建或执行新任务。",
+            )
+
+        if is_memory_non_persistence_goal(text):
+            return SupervisorDecision(False, "好的，这条内容不会写入或变更长期记忆。")
+
+        if is_explicit_memory_mutation_goal(text):
+            return SupervisorDecision(
+                delegate=True,
+                reply=self._delegation_reply("MemoryAgent", normalized),
+                agent_hint="MemoryAgent",
+            )
+
+        if _is_expired_memory_reconfirmation_request(text):
+            return SupervisorDecision(
+                False,
+                "当前不会使用或复述可能已过期的偏好值。请重新确认该偏好后再继续。",
+            )
+
         if any(hint in normalized for hint in CHAT_ONLY_HINTS):
             return SupervisorDecision(False, self._chat_reply(text))
 
@@ -284,6 +341,7 @@ class SupervisorAgent:
             "SearchAgent": "搜索 Agent",
             "AppAgent": "应用 Agent",
             "DocumentAgent": "文档 Agent",
+            "MemoryAgent": "记忆 Agent",
         }
         return labels.get(agent, agent)
 
@@ -295,6 +353,7 @@ class SupervisorAgent:
             "SearchAgent": "搜索",
             "AppAgent": "应用",
             "DocumentAgent": "文档",
+            "MemoryAgent": "长期记忆",
         }
         reply = f"好的，这个任务和{topics.get(agent, '执行')}有关，我将分配给{self._zh_agent(agent)}。"
         if agent == "FileAgent" and any(term in normalized_message for term in ("删除", "删掉", "移除", "清理")):

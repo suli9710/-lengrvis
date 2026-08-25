@@ -11,6 +11,7 @@ import pytest
 from app.core import db
 from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration import resource_state as rs
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.handlers.step_scheduler_handler import StepSchedulerHandler, _ScheduleState
 from app.orchestration.os_execution_engine import OSExecutionEngine
@@ -380,6 +381,70 @@ async def test_parallel_scheduler_steps_execute_on_isolated_step_snapshots_and_w
         assert step.status == StepStatus.SUCCEEDED
         assert step.args["touched_by"] == step.id
         assert step.description == f"{step.id} executed"
+
+
+@pytest.mark.asyncio
+async def test_parallel_scheduler_preserves_waiting_approval_before_recovery_revision() -> None:
+    recovery_calls: list[str] = []
+
+    async def fake_execute(
+        task: Task,
+        plan: Plan,
+        step: PlanStep,
+        context: dict[str, Any],
+        observation: ToolResult | None,
+        *,
+        threaded_tools: bool,
+    ) -> StepExecutionOutcome:
+        if step.id == "A":
+            await asyncio.sleep(0.03)
+            step.status = StepStatus.WAITING_USER_APPROVAL
+            return StepExecutionOutcome("waiting_user_approval")
+        step.status = StepStatus.FAILED
+        return StepExecutionOutcome(
+            "failed",
+            ToolResult(tool_call_id=step.id, ok=False, error="planned failure"),
+        )
+
+    async def fake_recover(*args, **kwargs) -> StepExecutionOutcome:
+        recovery_calls.append(args[2].id)
+        return StepExecutionOutcome("recovered")
+
+    def set_status(task: Task, status, *, final_summary: str | None = None) -> Task:
+        if status == TaskStatus.WAITING_USER_APPROVAL:
+            task.status = task.phase = TaskStatus.EXECUTION
+            task.execution_stage = ExecutionStage.AWAITING_APPROVAL
+        if final_summary is not None:
+            task.final_summary = final_summary
+        return task
+
+    task = Task(id="task_waiting_batch", user_goal="preserve approval", status=TaskStatus.EXECUTION)
+    steps = _parallel_steps(task.id)
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=steps)
+    orchestrator = SimpleNamespace(
+        _execute_step=fake_execute,
+        _tool_context=lambda: {"task_id": task.id},
+        _set_status=set_status,
+        _persist_plan_update=lambda *args, **kwargs: None,
+        _friendly_tool_error=str,
+        name="TestOrchestrator",
+        parallel_review=SimpleNamespace(
+            review_parallel_batch=lambda *args, **kwargs: SimpleNamespace(verdict=SafetyVerdict.ALLOW, reasons=[]),
+        ),
+        registry=SimpleNamespace(),
+        safety=SimpleNamespace(),
+        recovery_handler=SimpleNamespace(recover_failed_step=fake_recover),
+    )
+
+    await StepSchedulerHandler(orchestrator).process_steps(task, plan)
+
+    assert recovery_calls == []
+    assert task.status == TaskStatus.EXECUTION
+    assert task.execution_stage == ExecutionStage.AWAITING_APPROVAL
+    assert {step.id: step.status for step in plan.steps} == {
+        "A": StepStatus.WAITING_USER_APPROVAL,
+        "B": StepStatus.FAILED,
+    }
 
 
 @pytest.mark.asyncio

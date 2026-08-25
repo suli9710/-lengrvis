@@ -111,6 +111,9 @@ if (Test-Path "mobile\package.json") {
         Pop-Location
     }
 
+    npm --prefix mobile run smoke:eas-cli-compat
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     npm --prefix mobile run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -1,4 +1,5 @@
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   MobileDevice,
   MobileDeviceList,
@@ -15,7 +16,9 @@ export function createMobilePairingCodeEndpoint(
   request: MobilePairingEndpointRequest
 ): Promise<ApiResponse<MobilePairingCode>> {
   if (window.lengrvis?.mobilePairing) {
-    return window.lengrvis.mobilePairing.createCode() as Promise<ApiResponse<MobilePairingCode>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.mobilePairing.createCode() as Promise<ApiResponse<MobilePairingCode>>
+    );
   }
   return request<MobilePairingCode>({ endpoint: "/api/pair/request", method: "POST" });
 }
@@ -24,7 +27,9 @@ export function listMobileDevicesEndpoint(
   request: MobilePairingEndpointRequest
 ): Promise<ApiResponse<MobileDeviceList>> {
   if (window.lengrvis?.mobilePairing) {
-    return window.lengrvis.mobilePairing.listDevices() as Promise<ApiResponse<MobileDeviceList>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.mobilePairing.listDevices() as Promise<ApiResponse<MobileDeviceList>>
+    );
   }
   return request<MobileDeviceList>({ endpoint: "/api/pair/devices" });
 }
@@ -34,7 +39,9 @@ export function revokeMobileDeviceEndpoint(
   deviceId: string
 ): Promise<ApiResponse<MobileDevice>> {
   if (window.lengrvis?.mobilePairing) {
-    return window.lengrvis.mobilePairing.revokeDevice(deviceId) as Promise<ApiResponse<MobileDevice>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.mobilePairing.revokeDevice(deviceId) as Promise<ApiResponse<MobileDevice>>
+    );
   }
   return request<MobileDevice>({
     endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}`,
@@ -48,10 +55,12 @@ export function createRemoteInputGrantEndpoint(
   expiresInSeconds = 300
 ): Promise<ApiResponse<RemoteInputGrantIssueResult>> {
   if (window.lengrvis?.mobilePairing) {
-    return window.lengrvis.mobilePairing.createRemoteInputGrant({
-      deviceId,
-      expiresInSeconds
-    }) as Promise<ApiResponse<RemoteInputGrantIssueResult>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.mobilePairing.createRemoteInputGrant({
+        deviceId,
+        expiresInSeconds
+      }) as Promise<ApiResponse<RemoteInputGrantIssueResult>>
+    );
   }
   return request<RemoteInputGrantIssueResult, { expires_in: number }>({
     endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants`,
@@ -66,10 +75,12 @@ export function revokeRemoteInputGrantEndpoint(
   grantId: string
 ): Promise<ApiResponse<RemoteInputGrant>> {
   if (window.lengrvis?.mobilePairing) {
-    return window.lengrvis.mobilePairing.revokeRemoteInputGrant({
-      deviceId,
-      grantId
-    }) as Promise<ApiResponse<RemoteInputGrant>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.mobilePairing.revokeRemoteInputGrant({
+        deviceId,
+        grantId
+      }) as Promise<ApiResponse<RemoteInputGrant>>
+    );
   }
   return request<RemoteInputGrant>({
     endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants/${encodeURIComponent(grantId)}`,

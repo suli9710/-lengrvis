@@ -18,11 +18,22 @@ from app.core.content_provenance import (
     create_content_envelope,
     revalidate_content_envelope,
 )
-from app.core.schemas import Approval, ApprovalStatus, ExecutionStage, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import (
+    Approval,
+    ApprovalStatus,
+    ExecutionStage,
+    Plan,
+    PlanStep,
+    StepStatus,
+    Task,
+    TaskStatus,
+    now_iso,
+)
 from app.orchestration.automation_runtime_guard import authorize_automation_execution
 from app.orchestration.tool_runtime import ToolRuntime
 from app.orchestration.tool_runtime_dry_run_execution import build_approval_dry_run_preview_result
 from app.policy.approval_binding import permission_policy_version
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.permissions import PermissionPolicy, PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -109,6 +120,48 @@ def _tool(
     )
 
 
+def _execute_with_consumed_approval(
+    orchestrator: OrchestratorAgent,
+    task: Task,
+    step: PlanStep,
+    tool: ToolDefinition,
+    runtime,
+    *,
+    threaded_tools: bool = False,
+):
+    tool_runtime = ToolRuntime(orchestrator)
+    reviews, declared_risk = tool_runtime._fresh_execution_reviews(
+        task,
+        step,
+        tool,
+        runtime,
+        dict(step.args),
+    )
+    binding = build_effective_risk_binding(declared_risk, reviews)
+    approval = Approval(
+        task_id=task.id,
+        step_id=step.id,
+        message="Approve automation runtime test action.",
+        tool_name=tool.name,
+        risk_level=binding["effective_risk_level"],
+        engineering_boundary={"risk_provenance": binding},
+        status=ApprovalStatus.APPROVED,
+        consumed_at=now_iso(),
+    )
+    db.upsert_model("approvals", approval)
+    return asyncio.run(
+        tool_runtime.execute_allowed(
+            task,
+            step,
+            tool,
+            runtime,
+            approved_args=dict(step.args),
+            approval_id=approval.id,
+            threaded_tools=threaded_tools,
+        )
+    )
+
+
 def test_core_runtime_receives_server_issued_capsule_and_budget() -> None:
     calls: list[str] = []
     orchestrator = OrchestratorAgent()
@@ -117,7 +170,7 @@ def test_core_runtime_receives_server_issued_capsule_and_budget() -> None:
     tool = _tool("test.manual_write", lambda args, context: calls.append("execute") or {"ok": True})
     runtime = orchestrator.step_execution_handler._runtime_context(task)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "succeeded"
     assert calls == ["execute"]
@@ -166,7 +219,7 @@ def test_tainted_content_blocks_side_effect_tool_before_execution() -> None:
     tool = _tool("test.tainted_write", lambda args, context: calls.append("execute") or {"ok": True})
     runtime = orchestrator.step_execution_handler._runtime_context(task)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "fatal_denied"
     assert outcome.result is not None
@@ -190,7 +243,7 @@ def test_server_propagated_tainted_content_blocks_write_without_embedded_envelop
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     runtime.extra_context["upstream_content_envelopes"] = [envelope.model_dump(mode="json")]
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "fatal_denied"
     assert outcome.result is not None
@@ -219,7 +272,7 @@ def test_revalidated_benign_envelope_cannot_authorize_different_payload() -> Non
     tool = _tool("test.payload_swap", lambda args, context: calls.append("execute") or {"ok": True})
     runtime = orchestrator.step_execution_handler._runtime_context(task)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "fatal_denied"
     assert outcome.result is not None
@@ -246,7 +299,7 @@ def test_task_scoped_content_revalidation_allows_side_effect_tool() -> None:
     tool = _tool("test.revalidated_write", lambda args, context: calls.append("execute") or {"ok": True})
     runtime = orchestrator.step_execution_handler._runtime_context(task)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "succeeded"
     assert calls == ["execute"]
@@ -336,7 +389,7 @@ def test_expired_capsule_denies_before_lifecycle_hook_or_tool_execution(
 
     monkeypatch.setattr(intent_capsule_module, "datetime", ExpiredClock)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "fatal_denied"
     assert outcome.result is not None
@@ -371,7 +424,7 @@ def test_hard_budget_denial_occurs_before_lifecycle_hook_or_tool_execution() -> 
     create_run_budget("run-no-writes", limits=RunBudgetLimits(max_writes=0))
     runtime = _automation_runtime(orchestrator, task, run_id="run-no-writes", token=issued.token)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     ledger = get_run_budget("run-no-writes")
     assert outcome.kind == "fatal_denied"
@@ -413,13 +466,16 @@ def test_soft_budget_pause_blocks_execution_without_hard_stopping_runtime() -> N
         limits=RunBudgetLimits(max_tool_calls=5, max_duplicate_actions=10),
     )
     for _ in range(3):
-        assert consume_run_budget(
-            "run-soft-pause",
-            BudgetConsumeRequest(kind="tool_call"),
-        ).allowed is True
+        assert (
+            consume_run_budget(
+                "run-soft-pause",
+                BudgetConsumeRequest(kind="tool_call"),
+            ).allowed
+            is True
+        )
     runtime = _automation_runtime(orchestrator, task, run_id="run-soft-pause", token=issued.token)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     ledger = get_run_budget("run-soft-pause")
     assert outcome.kind == "fatal_denied"
@@ -457,7 +513,7 @@ def test_policy_change_invalidates_previously_issued_capsule_before_execution() 
     PermissionStore().save_policy(PermissionPolicy())
     runtime = _automation_runtime(orchestrator, task, run_id="run-stale-policy", token=issued.token)
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
 
     assert outcome.kind == "fatal_denied"
     assert outcome.result is not None
@@ -554,7 +610,14 @@ def test_allowed_automation_consumes_all_classified_budget_before_execution() ->
     runtime = _automation_runtime(orchestrator, task, run_id="run-full", token=issued.token)
     runtime.extra_context["automation_parallel_fanout"] = 3
 
-    outcome = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime, threaded_tools=True))
+    outcome = _execute_with_consumed_approval(
+        orchestrator,
+        task,
+        step,
+        tool,
+        runtime,
+        threaded_tools=True,
+    )
 
     ledger = get_run_budget("run-full")
     assert outcome.kind == "succeeded"

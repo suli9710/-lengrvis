@@ -167,7 +167,7 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     calls: list[dict[str, Any]] = []
     trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
-    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:
         calls.append({"command": command, "cwd": cwd, "shell": shell})
         return {
             "returncode": 0,
@@ -302,7 +302,7 @@ def test_shell_readonly_normalizes_executable_tokens_before_trusted_lookup(
     calls: list[dict[str, Any]] = []
     trusted_git = _trusted_test_executable(tmp_path, "GIT.EXE")
 
-    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:
         calls.append({"command": command, "cwd": cwd, "shell": shell})
         return {
             "returncode": 0,
@@ -591,7 +591,7 @@ def test_run_command_marks_truncated_stdout_and_stderr(monkeypatch: pytest.Monke
         stdout = "o" * (developer_tools.COMMAND_STDOUT_LIMIT + 1)
         stderr = "e" * (developer_tools.COMMAND_STDERR_LIMIT + 1)
 
-    monkeypatch.setattr(developer_tools.subprocess, "run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(developer_tools, "run_process_tree", lambda *args, **kwargs: Completed())
 
     result = developer_tools._run_command(["git", "status"], cwd=tmp_path)
 
@@ -607,7 +607,7 @@ def test_run_command_decodes_non_utf8_windows_output(monkeypatch: pytest.MonkeyP
         stdout = "你好".encode("gbk")
         stderr = "错误".encode("gbk")
 
-    monkeypatch.setattr(developer_tools.subprocess, "run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(developer_tools, "run_process_tree", lambda *args, **kwargs: Completed())
 
     result = developer_tools._run_command(["where", "python"], cwd=tmp_path)
 
@@ -624,7 +624,7 @@ def test_decode_process_output_detects_utf16_without_bom() -> None:
 
 def test_dev_test_run_dry_run_does_not_execute(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[Any] = []
-    monkeypatch.setattr(developer_tools.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(developer_tools, "run_process_tree", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     result = developer_tools.test_run(
         {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 7, "dry_run": True},
@@ -733,7 +733,7 @@ def test_diff_preview_returns_summary_and_truncation_marker(monkeypatch: pytest.
     calls: list[list[str]] = []
     trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
-    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:  # noqa: ARG001
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": diff, "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 
@@ -757,7 +757,7 @@ def test_shell_readonly_wraps_git_diff_with_external_execution_guards(
     calls: list[list[str]] = []
     trusted_git = _trusted_test_executable(tmp_path, "git.exe")
 
-    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:  # noqa: ARG001
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001
         calls.append(command)
         return {"returncode": 0, "stdout": "", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
 

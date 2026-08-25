@@ -1,6 +1,6 @@
 # Lengrvis Release Gate
 
-Last reviewed: 2026-06-09
+Last reviewed: 2026-08-25
 
 This release gate turns the end-to-end acceptance matrix into a repeatable decision checklist. It is intentionally split into fast preflight, demo-before-release readiness, artifact verification, and manual sign-off so development builds do not need release artifacts while release candidates still verify the package that will ship.
 
@@ -16,13 +16,38 @@ Beginner evidence map:
 
 | Surface | Helper or preflight output | Strict evidence before a pass claim |
 | --- | --- | --- |
-| Android gate | `npm run android:release-gate -- -PreflightOnly` proves source/config readiness only; `npm run evidence:android-real-device-template` creates a fail-closed evidence JSON starting point only. | Installable QA APK plus sealed, HMAC-signed Android/emulator evidence JSON bound to the immutable candidate; strict `android:release-gate` must see APK install, camera QR or documented emulator scan, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, input approval checks, and artifact redaction. |
+| Android gate | `npm run android:release-gate -- -PreflightOnly` proves source/config readiness only; `npm run evidence:android-real-device-template` creates a fail-closed evidence JSON starting point only. | Installable QA APK plus sealed, Ed25519-signed Android/emulator evidence JSON bound to the immutable candidate; strict `android:release-gate` must see APK install, camera QR or documented emulator scan, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, input approval checks, and artifact redaction. |
 | Real-device/WSS | `npm run evidence:mobile-lan-wss` proves only no-phone prerequisite/config readiness. | Real phone/emulator artifacts for camera QR, approval WSS, remote screen WSS, remote input WSS, explicit Android/emulator certificate trust, revoke/expiry behavior, and screenshot/log review. |
 | Local model | `npm run evidence:local-model-template` is a clean-machine handoff template. | Fresh machine/profile artifact/build/profile plus runtime/model/version/status and install/start/pull/task-smoke outcome, or a precise blocked reason. |
 | IPC / Skill / MCP / settings security | `npm run security:extensions` runs IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests, trusted-key Ed25519 Skill signature verification, release-profile Skill/MCP supply-chain controls, sensitive Settings API server-side enforcement, and writes evidence artifacts. | Candidate profile still needs release-owner review of the generated artifacts and any real third-party Skill/MCP packages or servers before release sign-off. |
 | Distribution install/upgrade | `npm run evidence:distribution-template` creates a fail-closed handoff template only; `npm run evidence:distribution-verify` validates a reviewed evidence JSON. | Clean Windows machine/profile install, signed installer verification, installer hash, upgrade from previous version, rollback to previous version, uninstall, real-device evidence if claimed, reviewer, timestamp, and attached logs. |
 | Diagnostics | `npm run evidence:diagnostics-review` is an external-review checklist template. | Human review of the actual exported diagnostics package contents with package label, reviewed logs/path labels/task traces/model traces/device identifiers, reviewer, timestamp, and sharing decision, then `npm run evidence:diagnostics-verify` against signed `diagnostics-external-review-evidence-reviewed`; keep `public_safe=false` unless a separate approval process explicitly changes it. |
 | RC handoff | `npm run evidence:release` and `npm run evidence:rc-handoff` organize missing evidence and handoff fields. | Candidate commit/build/platform, packaged artifact labels, exact gate commands and full exits, strict-state source, manual P1 evidence, waiver/residual-risk review, and release-owner approval. |
+
+Before uploading the five reviewed JSON files to the immutable review-input bundle, generate an Ed25519 pair with explicit private/public output paths, import the private value into reviewer-only secret storage, and configure the public value as `LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY` for verification. Keep both key files outside the repository and remove the temporary private-key file after the protected-store import is confirmed:
+
+```powershell
+npm run evidence:keypair -- `
+  --private-key-output "$env:TEMP\lengrvis-reviewed-evidence-private.key" `
+  --public-key-output "$env:TEMP\lengrvis-reviewed-evidence-public.key"
+$env:LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-private.key" -Raw
+$env:LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY = Get-Content "$env:TEMP\lengrvis-reviewed-evidence-public.key" -Raw
+```
+
+With both key values and the five immutable candidate environment fields present in the reviewer's protected environment, seal the four non-Android drafts through their artifact-specific verifier entrypoints:
+
+These sealing commands are not a pass and not release sign-off.
+
+```powershell
+npm run evidence:distribution-seal -- --input "<completed distribution draft.json>"
+npm run evidence:clean-machine-seal -- --input "<completed clean-machine draft.json>"
+npm run evidence:result-quality-seal -- --input "<completed result-quality draft.json>"
+npm run evidence:diagnostics-seal -- --input "<completed diagnostics draft.json>"
+```
+
+Each command refuses templates, overwrites only with `--force`, binds the exact candidate identity, emits `reviewed-evidence-ed25519/v3`, and validates the sealed artifact before publishing it atomically. Remove `LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY` from the shell environment after sealing. Candidate, review, and publish workflows must never receive that private key; they verify with the public key only. Sealing records reviewed evidence, not release-owner sign-off.
+
+Keep the repository default branch frozen at the candidate commit from candidate generation through reviewed-evidence sealing and final publication. The publish workflow rejects a dispatch SHA, candidate run, reviewed-evidence run, or remote tag that does not resolve to that exact full commit. Its repository-code preflight is read-only; the only `contents: write` capability belongs to a fresh runner that performs no checkout or dependency installation, executes no repository script, independently re-verifies the attested candidate bytes, and checks the remote tag before and after publication. If the default branch advances, generate and review a new candidate rather than reusing the old run IDs.
 
 ## 1. Preflight Gate
 
@@ -101,12 +126,12 @@ $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER = "rc-$($env:LENGRVIS_RELEASE_CANDIDATE_R
 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 = "<controlled release certificate SHA-256>"
 # This creates a fail-closed template, not a pass and not a release sign-off.
 npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk label>" -ArtifactSha256 "<sha256 if known>" -SignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 -BuilderId "<reviewed builder label>" -BuildInvocationId "<reviewed build invocation label>" -BuiltAtUtc "<UTC build timestamp>" -DeviceLabel "<redacted device label>" -BackendBuildLabel "<redacted backend/build label>" -CandidateCommit $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT -CandidateBuildIdentifier $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER -CandidateRepository $env:LENGRVIS_RELEASE_CANDIDATE_REPOSITORY -CandidateRunId $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID -CandidateRunAttempt $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
-# After a reviewer fills every required field, keep the HMAC secret in the protected environment and seal the draft.
+# After a reviewer fills every required field, keep the Ed25519 private key in the protected reviewer environment and seal the draft.
 npm run evidence:android-real-device-seal -- --input "<completed reviewed draft.json>" --output build/android-real-device-evidence-reviewed.json
 npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath build/android-real-device-evidence-reviewed.json -ExpectedSignerCertificateSha256 $env:LENGRVIS_ANDROID_RELEASE_CERTIFICATE_SHA256 -RequireCandidateBinding
 ```
 
-The template helper creates a fail-closed starting JSON under `.tmp\android-real-device-evidence-template`; it is not pass evidence. Strict validation does not trust `PATH` or individually supplied SDK tools: it requires one approved `build-tools/<version>` root, the expected version, and protected SHA-256 values for `apksigner.bat`, `apksigner.jar`, and `aapt2.exe`. Only that verified toolchain may run `apksigner verify --verbose --print-certs` and `aapt` inspection. APK Signature Scheme v2 and v3 must both verify, exactly one signer certificate must match the protected release SHA-256, package/version must match `mobile/app.json`, and the final binary manifest must reject debug/test-only builds, backup or cleartext enablement, and unsafe exported components. The reviewed Android/emulator JSON must contain the same APK digest, package/version, signer digest, and an `app.provenance` record binding the candidate source plus reviewed builder invocation and timestamp; all of that is sealed by `LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET`. This secret must be generated from a cryptographically secure source, contain at least 32 bytes, and must not be a human password or development/CI placeholder. The gate also requires `artifact_type=android-real-device-remote-control-evidence`, `real_device_result=passed`, true claim-control flags for APK install, camera QR, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, and artifact redaction, plus passed checks for click, text, and key/PageDown input approval. The signed `candidate` object must exactly match the five immutable candidate fields above; a previous candidate's valid signature is not reusable, and a valid evidence HMAC is not a substitute for APK code-signature verification. AAB/store bundles may support store distribution, but they do not satisfy the installable APK gate by themselves. Without the controlled signer identity, verified toolchain, matching provenance, APK, and sealed candidate-bound real-device evidence, the script exits blocked and must not be recorded as Android release pass evidence.
+The template helper creates a fail-closed starting JSON under `.tmp\android-real-device-evidence-template`; it is not pass evidence. Strict validation does not trust `PATH` or individually supplied SDK tools: it requires one approved `build-tools/<version>` root, the expected version, and protected SHA-256 values for `apksigner.bat`, `apksigner.jar`, and `aapt2.exe`. Only that verified toolchain may run `apksigner verify --verbose --print-certs` and `aapt` inspection. APK Signature Scheme v2 and v3 must both verify, exactly one signer certificate must match the protected release SHA-256, package/version must match `mobile/app.json`, and the final binary manifest must reject debug/test-only builds, backup or cleartext enablement, and unsafe exported components. The reviewed Android/emulator JSON must contain the same APK digest, package/version, signer digest, and an `app.provenance` record binding the candidate source plus reviewed builder invocation and timestamp. It must also contain a `sha256-manifest/v1` artifact manifest whose redacted labels exactly match `evidence_artifacts_redacted` and bind device screenshot/video, backend/mobile logs, and adb install-status evidence to SHA-256 plus byte size. All of that is sealed by the reviewer-only `LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY` using `reviewed-evidence-ed25519/v3`. Strict validation receives only `LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY`, recomputes its full SHA-256 fingerprint, and verifies that the fingerprint, candidate identity, artifact manifest, and artifact hashes are covered by the canonical signature payload. The gate also requires `artifact_type=android-real-device-remote-control-evidence`, `real_device_result=passed`, true claim-control flags for APK install, camera QR, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, and artifact redaction, plus passed checks for click, text, and key/PageDown input approval. The signed `candidate` object must exactly match the five immutable candidate fields above; a previous candidate's valid signature is not reusable, and a valid reviewed-evidence signature is not a substitute for APK code-signature verification. AAB/store bundles may support store distribution, but they do not satisfy the installable APK gate by themselves. Without the controlled signer identity, verified toolchain, matching provenance, APK, and sealed candidate-bound real-device evidence, the script exits blocked and must not be recorded as Android release pass evidence.
 
 The Android gate never submits or publishes to Play. `mobile/eas.json` `preview` builds produce the installable QA APK used by the strict gate; `production` builds produce an AAB for store distribution, but EAS submit/Play Console review/rollout needs separate credentials, logs, and release-owner approval before any submitted or published claim.
 
@@ -126,20 +151,24 @@ Record the emitted `.tmp\release-evidence-packet\...\release-evidence-packet.red
 
 After generating the packet, open the `.redacted.md` first and work through `release_readiness_blockers` one by one: clean-machine local model, real-device LAN/WSS, natural-language result-quality review, actual diagnostics package content review, and RC handoff. Do not tag, publish, announce, or share diagnostics externally until the missing evidence is attached and the release owner has explicitly approved the separate human sign-off.
 
-For paid/public launch evidence, run the reviewed-evidence validators only after the support/privacy operations rehearsal and public claims review JSON files have been filled from real artifacts. They are fail-closed evidence contract checks; missing JSON keeps paid launch blocked, and they are not release sign-off by themselves:
+For paid/public launch evidence, run the reviewed-evidence validators only after the commercial loop, support/privacy operations rehearsal, public claims review, and commercial operations JSON files have been filled from real artifacts. They are fail-closed evidence contract checks; missing JSON keeps paid launch blocked, and they are not release sign-off by themselves:
 
 ```powershell
 npm run evidence:paid-launch-template
+npm run evidence:commercial-loop
 npm run evidence:support-privacy-verify
 npm run evidence:claims-launch-verify
+npm run evidence:commercial-operations-verify
 ```
 
 Raw PowerShell equivalent:
 
 ```powershell
 python scripts\collect_paid_launch_evidence_templates.py --candidate-commit $env:LENGRVIS_RELEASE_CANDIDATE_COMMIT --build-identifier $env:LENGRVIS_RELEASE_BUILD_IDENTIFIER --candidate-repository $env:LENGRVIS_RELEASE_CANDIDATE_REPOSITORY --candidate-run-id $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID --candidate-run-attempt $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
+python scripts\verify_commercial_loop_evidence.py
 python scripts\verify_support_privacy_rehearsal_evidence.py
 python scripts\verify_launch_claims_reviewed_evidence.py
+python scripts\verify_commercial_operations_evidence.py
 ```
 
 When a natural-language task/result is ready for human quality review, scaffold the redacted manual review fields with:
@@ -241,7 +270,7 @@ Pass criteria:
 - Remote WS client-error privacy remains green: targeted backend tests for all screen/input auth, close behavior, and generic error branches pass before any remote UX claim is made.
 - Desktop token-bearing bridges remain loopback-only, and preload API requests reject non-plain or prototype-polluting data before IPC.
 - Mobile smoke commands exit 0, including token subprotocol, task Companion list/start/follow-up/pause/resume/cancel, and remote-input grant lifecycle checks.
-- Dependency lock verification passes when run with `npm run deps:verify`: `backend/requirements-lock.txt` is a fully resolved transitive Python lock with pinned `==` entries, resolver provenance, and `sha256` hashes for every package; every direct backend requirement is present in that lock, and desktop/mobile npm lockfiles exist with matching root package name and version. SBOM generation passes when `npm run sbom:generate` writes CycloneDX JSON to `.tmp/sbom/lengrvis-sbom.cdx.json` with Python hashes and npm integrity hashes; this is inventory evidence, not vulnerability, license approval, provenance, RC, or release sign-off.
+- Dependency lock verification passes when run with `npm run deps:verify`: `backend/requirements-lock.txt` is a fully resolved transitive Python lock with pinned `==` entries, resolver provenance, and `sha256` hashes for every package; every direct backend requirement is present in that lock; and the workspace QA, desktop, and mobile npm lockfiles match their manifests, cover direct dependencies, and carry SRI integrity plus allowlisted HTTPS registry sources for every transitive non-link package. SBOM generation passes when `npm run sbom:generate` writes CycloneDX JSON to `.tmp/sbom/lengrvis-sbom.cdx.json` from the Python locks and all three npm locks, with root toolchain components labeled `lengrvis:npm_project=workspace-qa`. This is inventory evidence, not vulnerability, license approval, provenance, RC, or release sign-off.
 - Mobile LAN/WSS prerequisite preflight, when applicable, exits 0 only for an HTTPS/WSS-ready advertised origin with LAN TLS env, cert/key material, and certificate host coverage that can be validated without starting the backend. It writes a redacted evidence summary path and still requires separate real phone/emulator camera/QR, WSS, and certificate trust evidence before any Android/WSS pass claim.
 - Diagnostics export tests, packet helpers, and evidence templates are contract/template evidence only. Before any diagnostics package is shared externally, a human must review the actual package contents, record the actual exported package path label plus logs/path labels/task traces/model traces/device identifiers, reviewer/timestamp, decision status, and blocked reason, and keep `public_safe=false`, `external_sharing_allowed=false`, and `claim_allowed=false` until that separate human artifact exists. That external content review is still not public-safe approval, clean-machine validation, RC sign-off, or release sign-off.
 - Any skipped backend tests are expected platform skips and are recorded.
@@ -294,12 +323,52 @@ Run the independent portable launcher/backend diagnostics smoke when Windows por
 npm run smoke:portable-first-screen
 ```
 
-`delivery:rc` runs the strict release-candidate pipeline: `qa:gate`, `golden:gate`, maintainability gate, `review:scorecard`, real-LLM eval, `security:threat-model`, supply-chain verification, dependency audit, secret scan, extension security, release safety, packaging verification, Windows signature verification, distribution/clean-machine/result-quality/diagnostics/Android evidence validators, market readiness, current release evidence generation, and release readiness. Enable the strict state machine through `config.yaml` or the shell environment before running it:
+`delivery:rc` runs the strict release-candidate pipeline: `qa:gate`, `golden:gate`, candidate-bound MCP and real-LLM quality evidence, maintainability gate, `review:scorecard`, `security:threat-model`, supply-chain verification, dependency audit, secret scan, extension security, release safety, packaging verification, Windows signature verification, distribution/clean-machine/result-quality/diagnostics/Android evidence validators, market readiness, current release evidence generation, and release readiness. The candidate workflow uses four jobs: an unprivileged MCP producer and clean sealer, plus a protected real-provider producer and clean secret-free sealer. The provider credential is scoped only to the evaluation step. Formal real-LLM evaluation uses `--quality-gate --release-evidence`, runs the complete unfiltered current corpus (25 eligible golden plus 105 benchmark tasks), and forbids release-profile overrides.
+
+A manual diagnostic strict run must download both original attempt-bound artifacts:
+`mcp-conformance-evidence-<run-id>-<run-attempt>` into
+`.tmp/qa-evidence/mcp-conformance-job/`, and
+`real-llm-quality-evidence-<run-id>-<run-attempt>` into
+`.tmp/qa-evidence/real-llm-eval/`. Set the matching
+`LENGRVIS_RELEASE_CANDIDATE_*` identity and never synthesize either formal evidence
+file locally. Normal PR/non-default-branch CI skips the advisory real-provider call;
+that skip is not formal release evidence. Enable the strict state machine through
+`config.yaml` or the shell environment before running it:
 
 ```powershell
+npm ci --ignore-scripts --engine-strict
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
 npm run release:check
 ```
+
+If a candidate workflow is rerun, use **rerun all jobs**. Both machine-quality
+evidence artifacts are bound to `github.run_attempt`; rerunning only a failed job
+without all producers and sealers intentionally leaves the release gate blocked.
+
+Once a candidate succeeds, apply a release freeze: the repository default branch
+must remain at that exact candidate commit through reviewed-evidence sealing and final
+publication. GitHub `workflow_dispatch` derives `GITHUB_SHA` from
+the selected branch or tag; the reviewed-evidence job accepts only the default branch
+and requires that SHA to equal the candidate run's head SHA. If the branch advances,
+produce and review a new candidate. Protected branch/tag rulesets, named release owners,
+CODEOWNERS review, production-environment reviewers, an immutable release-tag policy,
+and the freeze record are external governance conditions; workflow code and automated
+tests do not create or prove them.
+
+Promotion-input artifact names bind the producer run ID and run attempt: the candidate
+bundle, sealed MCP evidence, sealed real-LLM evidence, and reviewed-evidence bundle.
+All four are retained for 30 days; raw MCP and real-LLM producer outputs are retained
+for 14 days. `release-publish-preflight-diagnostics-<run-id>-<run-attempt>` is
+attempt-bound diagnostic output from the publish run, not a promotion input.
+`current-release-evidence.md` keeps the candidate run ID and candidate run attempt as
+its identity even when regenerated by the publish preflight; the publish run attempt
+must never be used as a fallback for a missing candidate attempt. Repository/environment
+secrets and explicit `GH_TOKEN` injection are limited to the steps that need them. The
+GitHub-created `GITHUB_TOKEN` is instead bounded by each job's minimum `permissions`,
+and actions can access the `github.token` context even when `GH_TOKEN` is not exported
+to a shell step. The publish workflow's before/after tag checks detect drift but cannot
+make a mutable tag immutable; protected tag rulesets and restricted `contents: write`
+governance remain release prerequisites.
 
 For a release runner, start from `config.release.example.yaml` as a private
 `config.yaml` overlay. It keeps the development default unchanged while making

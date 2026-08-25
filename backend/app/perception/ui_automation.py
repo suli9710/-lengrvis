@@ -6,9 +6,13 @@ import logging
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
+import psutil
+
 from app.core.schemas import Approval, SafetyReview
+from app.perception import ui_automation_identity as _identity
 from app.perception.app_context import get_current_app_context
 from app.perception.schemas import AppContext
 from app.perception.ui_automation_actions import (
@@ -87,6 +91,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 
 logger = logging.getLogger(__name__)
+_element_action_fingerprint = _identity.element_action_fingerprint
 
 
 _UI_ACTION_ERROR_BASE = (
@@ -115,6 +120,34 @@ def _com_exception_types() -> tuple[type[BaseException], ...]:
 
 def _ui_provider_activation_error_types() -> tuple[type[BaseException], ...]:
     return (*_OPTIONAL_UI_PROVIDER_ERRORS, *_com_exception_types())
+
+
+def _process_identity_fingerprint(process_id: int | None) -> dict[str, str] | None:
+    """Sample one process twice so PID reuse cannot cross the approval seam."""
+
+    if not isinstance(process_id, int) or process_id <= 0:
+        return None
+    try:
+        process = psutil.Process(process_id)
+        created_at = float(process.create_time())
+        executable = str(process.exe() or "")
+        if created_at != float(process.create_time()):
+            return None
+    except (psutil.Error, OSError, TypeError, ValueError):
+        return None
+    return _identity.process_identity_fingerprint(
+        process_id=process_id,
+        created_at=created_at,
+        executable=executable,
+    )
+
+
+def _native_window_handle(native: Any) -> int | None:
+    try:
+        value = getattr(native, "CurrentNativeWindowHandle", None)
+        return int(value) if value else None
+    except (*_ui_action_error_types(), OverflowError):
+        return None
 
 
 def _pyautogui_exception_types() -> tuple[type[BaseException], ...]:
@@ -155,6 +188,15 @@ class UIAutomationTarget(ABC):
         control_type: str = "",
         automation_id: str = "",
     ) -> UIAutomationElement | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def inspect_selector(
+        self,
+        selector: UIAutomationSelector | dict[str, Any] | None = None,
+        *,
+        max_candidates: int = 10,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -341,9 +383,20 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         control_type: str = "",
         automation_id: str = "",
     ) -> UIAutomationElement | None:
+        normalized = _coerce_selector(selector, name=name, control_type=control_type, automation_id=automation_id)
+        element, match_count, search_truncated = await asyncio.to_thread(self._find_unique_element_sync, normalized)
+        return element if match_count == 1 and not search_truncated else None
+
+    async def inspect_selector(
+        self,
+        selector: UIAutomationSelector | dict[str, Any] | None = None,
+        *,
+        max_candidates: int = 10,
+    ) -> dict[str, Any]:
         return await asyncio.to_thread(
-            self._find_element_sync,
-            _coerce_selector(selector, name=name, control_type=control_type, automation_id=automation_id),
+            self._inspect_selector_sync,
+            _coerce_selector(selector),
+            _bounded_int(max_candidates, default=10, minimum=1, maximum=100),
         )
 
     async def wait_for_element(
@@ -390,11 +443,16 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "denied": True, "reasons": review.reasons}
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
-        target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(normalized)
-        if target_element is None:
-            return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
+        target_element, target_error = await self._resolve_action_target(element, normalized)
+        if target_error:
+            return target_error
         try:
-            await asyncio.to_thread(self._click_sync, target_element.native)
+            target_element = await asyncio.to_thread(
+                self._click_revalidated_sync,
+                target_element,
+                normalized,
+                True,
+            )
         except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "click", "element": target_element.to_dict()}
@@ -428,22 +486,33 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "denied": True, "reasons": review.reasons}
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
-        target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(normalized)
-        if target_element is None:
-            return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
+        target_element, target_error = await self._resolve_action_target(element, normalized)
+        if target_error:
+            return target_error
         try:
-            await asyncio.to_thread(self._type_text_sync, target_element.native, text)
+            target_element = await asyncio.to_thread(
+                self._type_text_revalidated_sync,
+                target_element,
+                normalized,
+                True,
+                text,
+            )
         except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "type_text", "characters": len(text), "element": target_element.to_dict()}
 
     async def focus(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> dict[str, Any]:
         normalized = _selector_from_element(element)
-        target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(normalized)
-        if target_element is None:
-            return {"ok": False, "error": "UI element not found.", "selector": normalized.as_query()}
+        target_element, target_error = await self._resolve_action_target(element, normalized)
+        if target_error:
+            return target_error
         try:
-            await asyncio.to_thread(self._focus_sync, target_element.native)
+            target_element = await asyncio.to_thread(
+                self._focus_revalidated_sync,
+                target_element,
+                normalized,
+                True,
+            )
         except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "focus", "element": target_element.to_dict()}
@@ -716,6 +785,269 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         root = getattr(self._automation, "GetRootElement", lambda: None)()
         return self._find_in_tree(root, selector)
 
+    async def _resolve_action_target(
+        self,
+        element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
+        selector: UIAutomationSelector,
+    ) -> tuple[UIAutomationElement | None, dict[str, Any] | None]:
+        target, match_count, search_truncated = await asyncio.to_thread(self._find_unique_element_sync, selector)
+        if search_truncated:
+            return None, {
+                "ok": False,
+                "error": "UI selector search exceeded the safe traversal limit; refine the selector.",
+                "selector": selector.as_query(),
+                "match_count": match_count,
+                "search_truncated": True,
+            }
+        if match_count > 1:
+            return None, {
+                "ok": False,
+                "error": "UI selector matched multiple elements; refine the selector before executing the action.",
+                "selector": selector.as_query(),
+                "match_count": match_count,
+            }
+        if target is None:
+            return None, {"ok": False, "error": "UI element not found.", "selector": selector.as_query()}
+        target_changed = isinstance(element, UIAutomationElement) and (
+            _element_action_fingerprint(target) != _element_action_fingerprint(element)
+        )
+        if target_changed:
+            return None, {
+                "ok": False,
+                "error": "UI target changed after lookup; action was not performed.",
+                "selector": selector.as_query(),
+            }
+        expected_window, has_approved_state = _identity.approved_window_identity(
+            self.approval_context.get("_expected_resource_state")
+        )
+        if expected_window is not None:
+            current_window = self._owning_window_fingerprint(target)
+            if current_window != expected_window:
+                return None, {
+                    "ok": False,
+                    "error": "UI target window or account context changed after approval; action was not performed.",
+                    "selector": selector.as_query(),
+                }
+        elif has_approved_state:
+            return None, {
+                "ok": False,
+                "error": "Approved UI target is missing a complete window identity; action was not performed.",
+                "selector": selector.as_query(),
+            }
+        return target, None
+
+    def _inspect_selector_sync(self, selector: UIAutomationSelector, max_candidates: int) -> dict[str, Any]:
+        if not self.available:
+            return {
+                "ok": False,
+                "available": False,
+                "error": self.unavailable_reason or "UIAutomation provider is unavailable.",
+                "selector": selector.as_query(),
+                "match_count": 0,
+                "candidates": [],
+            }
+        root = getattr(self._automation, "GetRootElement", lambda: None)()
+        visited = [0, 0]
+        matches = self._find_matches_in_tree(root, selector, visited=visited, limit=5000)
+        search_truncated = bool(visited[1])
+        candidates = [item.to_dict() for item in matches[:max_candidates]]
+        payload: dict[str, Any] = {
+            "ok": len(matches) == 1 and not search_truncated,
+            "available": True,
+            "selector": selector.as_query(),
+            "match_count": len(matches),
+            "candidates": candidates,
+            "truncated": len(matches) > max_candidates,
+            "search_truncated": search_truncated,
+        }
+        if search_truncated:
+            payload["error"] = "UI selector search exceeded the safe traversal limit; refine the selector."
+        elif len(matches) == 1:
+            element = matches[0]
+            payload["element"] = element.to_dict()
+            target_window = self._owning_window_fingerprint(element)
+            payload["resource_state"] = _identity.semantic_resource_state(
+                selector=selector.as_query(),
+                element=element,
+                target_window=target_window,
+            )
+        elif matches:
+            payload["error"] = "UI selector matched multiple elements; refine the selector before continuing."
+        else:
+            payload["error"] = "UI element not found."
+        return payload
+
+    def _owning_window_fingerprint(self, element: UIAutomationElement) -> dict[str, Any] | None:
+        process_id = element.process_id
+        process_identity = _process_identity_fingerprint(process_id)
+        if process_identity is None:
+            return None
+        try:
+            walker = getattr(self._automation, "ControlViewWalker", None)
+            get_parent = getattr(walker, "GetParentElement", None) if walker is not None else None
+        except _ui_action_error_types():
+            return None
+        if not callable(get_parent):
+            return None
+
+        current = element.native
+        candidate = element if element.control_type.casefold() == "window" or _native_window_handle(current) else None
+        parent_chain: list[dict[str, Any]] = []
+        candidate_parent_chain: list[dict[str, Any]] = []
+        for _ in range(64):
+            try:
+                current = get_parent(current)
+            except _ui_action_error_types():
+                return None
+            if current is None:
+                break
+            try:
+                ancestor = _element_from_native(current)
+            except _ui_action_error_types():
+                return None
+            if not isinstance(ancestor.process_id, int):
+                return None
+            if ancestor.process_id != process_id:
+                break
+            native_handle = _native_window_handle(current)
+            parent_chain.append(
+                _identity.accessibility_identity(
+                    ancestor,
+                    native_window_handle=native_handle,
+                )
+            )
+            if ancestor.control_type.casefold() == "window" or native_handle is not None:
+                candidate = ancestor
+                candidate_parent_chain = list(parent_chain)
+        else:
+            # A cyclic or unexpectedly deep provider tree cannot establish a
+            # complete, stable top-level ancestry proof.
+            return None
+        if candidate is None:
+            return None
+        return _identity.window_action_fingerprint(
+            candidate,
+            parent_chain=candidate_parent_chain,
+            process_identity=process_identity,
+            native_window_handle=_native_window_handle(candidate.native),
+        )
+
+    def _find_unique_element_sync(
+        self,
+        selector: UIAutomationSelector,
+    ) -> tuple[UIAutomationElement | None, int, bool]:
+        if not self.available:
+            return None, 0, False
+        root = getattr(self._automation, "GetRootElement", lambda: None)()
+        visited = [0, 0]
+        matches = self._find_matches_in_tree(root, selector, visited=visited, limit=5000)
+        search_truncated = bool(visited[1])
+        return (matches[0] if len(matches) == 1 and not search_truncated else None), len(matches), search_truncated
+
+    def _find_matches_in_tree(
+        self,
+        native: Any,
+        selector: UIAutomationSelector,
+        *,
+        depth: int = 0,
+        max_depth: int = 12,
+        visited: list[int] | None = None,
+        limit: int = 5000,
+    ) -> list[UIAutomationElement]:
+        if native is None:
+            return []
+        visited = visited if visited is not None else [0, 0]
+        visited[0] += 1
+        if visited[0] > limit:
+            if len(visited) < 2:
+                visited.append(1)
+            else:
+                visited[1] = 1
+            return []
+        element = _element_from_native(native)
+        matches = [element] if _matches_selector(element, selector) else []
+        if depth >= max_depth:
+            return matches
+        for child in self._children_sync(native):
+            matches.extend(
+                self._find_matches_in_tree(
+                    child.native,
+                    selector,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    visited=visited,
+                    limit=limit,
+                )
+            )
+        return matches
+
+    def _revalidate_action_target_sync(
+        self,
+        expected: UIAutomationElement,
+        selector: UIAutomationSelector,
+        selector_based: bool,
+    ) -> UIAutomationElement:
+        if selector_based:
+            current, match_count, search_truncated = self._find_unique_element_sync(selector)
+            if search_truncated or match_count != 1 or current is None:
+                raise UIAutomationUnavailable(
+                    "UI target changed before execution; the selector no longer has exactly one match."
+                )
+        else:
+            current = _element_from_native(expected.native)
+        if _element_action_fingerprint(current) != _element_action_fingerprint(expected):
+            raise UIAutomationUnavailable("UI target changed before execution; action was not performed.")
+        expected_window, has_approved_state = _identity.approved_window_identity(
+            self.approval_context.get("_expected_resource_state")
+        )
+        if expected_window is not None:
+            current_window = self._owning_window_fingerprint(current)
+            if current_window != expected_window:
+                raise UIAutomationUnavailable(
+                    "UI target window, process, parent chain, or account context changed after approval; "
+                    "action was not performed."
+                )
+        elif has_approved_state:
+            raise UIAutomationUnavailable(
+                "Approved UI target is missing a complete window identity; action was not performed."
+            )
+        if current.properties.get("is_enabled") is False:
+            raise UIAutomationUnavailable("UI target is disabled; action was not performed.")
+        if current.properties.get("is_offscreen") is True:
+            raise UIAutomationUnavailable("UI target is offscreen; action was not performed.")
+        return current
+
+    def _click_revalidated_sync(
+        self,
+        expected: UIAutomationElement,
+        selector: UIAutomationSelector,
+        selector_based: bool,
+    ) -> UIAutomationElement:
+        current = self._revalidate_action_target_sync(expected, selector, selector_based)
+        self._click_sync(current.native)
+        return current
+
+    def _type_text_revalidated_sync(
+        self,
+        expected: UIAutomationElement,
+        selector: UIAutomationSelector,
+        selector_based: bool,
+        text: str,
+    ) -> UIAutomationElement:
+        current = self._revalidate_action_target_sync(expected, selector, selector_based)
+        self._type_text_sync(current.native, text)
+        return current
+
+    def _focus_revalidated_sync(
+        self,
+        expected: UIAutomationElement,
+        selector: UIAutomationSelector,
+        selector_based: bool,
+    ) -> UIAutomationElement:
+        current = self._revalidate_action_target_sync(expected, selector, selector_based)
+        self._focus_sync(current.native)
+        return current
+
     def _find_in_tree(
         self,
         native: Any,
@@ -867,6 +1199,21 @@ class UnavailableUIAutomationTarget(UIAutomationTarget):
     ) -> UIAutomationElement | None:
         return None
 
+    async def inspect_selector(
+        self,
+        selector: UIAutomationSelector | dict[str, Any] | None = None,
+        *,
+        max_candidates: int = 10,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "available": False,
+            "error": self.reason,
+            "selector": _coerce_selector(selector).as_query(),
+            "match_count": 0,
+            "candidates": [],
+        }
+
     async def wait_for_element(
         self,
         selector: UIAutomationSelector | dict[str, Any] | None = None,
@@ -1006,6 +1353,7 @@ def _ui_automation_approval_binding_error(
     *,
     context: dict[str, Any] | None,
     settings: Any,
+    now_provider: Callable[[], Any] | None,
     task_id: str,
     step_id: str | None,
     allow_consumed: bool,
@@ -1016,6 +1364,7 @@ def _ui_automation_approval_binding_error(
         args,
         context=context,
         settings=settings,
+        now_provider=now_provider,
         task_id=task_id,
         step_id=step_id,
         allow_consumed=allow_consumed,

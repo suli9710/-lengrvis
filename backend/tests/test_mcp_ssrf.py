@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from app.mcp.client import MCPClient, MCPServerConfig
@@ -29,14 +30,20 @@ def test_mcp_client_sends_authorization_when_token_present() -> None:
     config = MCPServerConfig(
         name="authed",
         url="https://api.example.com/mcp",
-        auth={"token": "secret-token"},
+        auth={"token": "secret-token", "resource": "https://api.example.com/mcp"},
+        strict_lifecycle=False,
     )
     client = MCPClient(config)
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json.return_value = {"result": {"tools": []}}
     mock_http = AsyncMock()
-    mock_http.post = AsyncMock(return_value=mock_response)
+
+    async def mock_post(_url, *, json, **_kwargs):
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": json["id"], "result": {"tools": []}},
+        )
+
+    mock_http.post = AsyncMock(side_effect=mock_post)
     pinned = type(
         "Pinned",
         (),
@@ -62,8 +69,32 @@ def test_mcp_client_sends_authorization_when_token_present() -> None:
     assert headers["Content-Type"] == "application/json"
 
 
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"token": "secret-token"},
+        {"token": "secret-token", "resource": "https://other.example/mcp"},
+    ],
+)
+def test_mcp_client_refuses_unbound_or_wrong_audience_bearer_tokens(auth) -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="authed",
+            url="https://api.example.com/mcp",
+            auth=auth,
+            strict_lifecycle=False,
+        )
+    )
+
+    with patch("app.mcp.client.httpx.AsyncClient") as async_client_cls:
+        assert asyncio.run(client.list_tools(force_refresh=True)) == []
+
+    async_client_cls.assert_not_called()
+    assert "resource" in client.status()["error"].casefold()
+
+
 def test_mcp_client_uses_follow_redirects_false() -> None:
-    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp", strict_lifecycle=False)
     client = MCPClient(config)
     pinned = type(
         "Pinned",
@@ -80,10 +111,15 @@ def test_mcp_client_uses_follow_redirects_false() -> None:
         patch("app.mcp.client.httpx.AsyncClient") as async_client_cls,
     ):
         instance = AsyncMock()
-        response = MagicMock()
-        response.raise_for_status = MagicMock()
-        response.json.return_value = {"result": {"tools": []}}
-        instance.post = AsyncMock(return_value=response)
+
+        async def mock_post(_url, *, json, **_kwargs):
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                json={"jsonrpc": "2.0", "id": json["id"], "result": {"tools": []}},
+            )
+
+        instance.post = AsyncMock(side_effect=mock_post)
         async_client_cls.return_value.__aenter__ = AsyncMock(return_value=instance)
         async_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 

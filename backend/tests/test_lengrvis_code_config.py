@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.config import AppSettings
 from app.orchestration.lengrvis_code_config import (
     BLOCKED_ENV_KEYS,
+    DEVELOPER_DISALLOWED_TOOLS,
     LengrvisCodeConfig,
     assert_safe_lengrvis_code_invocation,
     build_lengrvis_code_command,
@@ -74,11 +77,35 @@ def test_default_allowed_tools_are_controlled_and_do_not_include_unrestricted_ba
         "Write",
         "Agent",
         "Agent(subagent:*)",
+        # Legacy aliases the vendored CLI folds into Agent before matching.
+        "Task",
+        "task",
+        "Task(subagent:*)",
+        "KillShell",
+        "BashOutputTool",
+        # MCP tools must never be smuggled into the developer allowlist.
+        "mcp__filesystem__write",
+        "Bash(git diff --output=x:*)",
     ],
 )
 def test_allowed_tools_reject_unsafe_bash(tool: str) -> None:
     with pytest.raises(ValueError):
         validate_allowed_tools(["Read", tool])
+
+
+def test_developer_env_neutralizes_git_config_and_pager() -> None:
+    settings = AppSettings(base_url="https://llm.example.test/v1", api_key="k", model="m")
+
+    env = build_lengrvis_code_env(settings, base_env={"PATH": "bin"})
+
+    # ~/.gitconfig and /etc/gitconfig are ignored so a model that writes a git
+    # config (e.g. via `git diff --output=~/.gitconfig`) cannot then trigger
+    # code execution through diff.external / a config pager on a later git read.
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+    assert env["GIT_EXTERNAL_DIFF"] == ""
+    assert env["GIT_PAGER"] == "cat"
 
 
 def test_command_uses_stream_json_allowed_tools_and_never_skip_permissions(tmp_path) -> None:
@@ -97,6 +124,8 @@ def test_command_uses_stream_json_allowed_tools_and_never_skip_permissions(tmp_p
     assert "--permission-mode" in command
     assert command[command.index("--permission-mode") + 1] == "default"
     assert "--allowedTools" in command
+    assert command.index("--disallowedTools") < command.index("--allowedTools")
+    assert command[command.index("--disallowedTools") + 1] == ",".join(DEVELOPER_DISALLOWED_TOOLS)
     allowed_tools = command[command.index("--allowedTools") + 1]
     assert "Read,Grep,Glob" in allowed_tools
     assert "Edit" not in allowed_tools
@@ -156,6 +185,7 @@ def test_explicit_allow_write_tools_allows_write_tool_command(tmp_path) -> None:
     )
 
     assert command[command.index("--allowedTools") + 1] == "Read,NotebookEdit"
+    assert command[command.index("--disallowedTools") + 1] == ",".join(DEVELOPER_DISALLOWED_TOOLS)
     assert_safe_lengrvis_code_invocation(command, build_env={}, allow_write_tools=True)
 
 

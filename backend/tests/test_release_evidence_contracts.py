@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import hmac
+import base64
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 from copy import deepcopy
@@ -34,10 +36,17 @@ support_privacy = _load_script("verify_support_privacy_rehearsal_evidence.py")
 claims_launch = _load_script("verify_launch_claims_reviewed_evidence.py")
 commercial_operations = _load_script("verify_commercial_operations_evidence.py")
 commercial_operations_seal = _load_script("seal_commercial_operations_evidence.py")
+reviewed_release_seal = _load_script("seal_reviewed_release_evidence.py")
 paid_launch_templates = _load_script("collect_paid_launch_evidence_templates.py")
 evidence_contracts = _load_script("evidence_contracts.py")
 candidate_binding_check = _load_script("verify_release_candidate_binding.py")
-TEST_EVIDENCE_SECRET = "fedcba9876543210" * 4  # noqa: S105 - deterministic test signing key.
+evidence_keypair = _load_script("generate_reviewed_evidence_keypair.py")
+TEST_EVIDENCE_PRIVATE_KEY = "ed25519:" + base64.urlsafe_b64encode(
+    sha256(b"release-evidence-contract-test-key").digest()
+).decode("ascii").rstrip("=")
+TEST_EVIDENCE_PUBLIC_KEY = evidence_contracts.evidence_public_key_text(
+    evidence_contracts.load_evidence_private_key(TEST_EVIDENCE_PRIVATE_KEY)
+)
 STRICT_CANDIDATE_BINDING = {
     "commit": "a" * 40,
     "build_identifier": f"rc-12345-2-{'a' * 40}",
@@ -47,16 +56,224 @@ STRICT_CANDIDATE_BINDING = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _configure_reviewed_evidence_public_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    monkeypatch.delenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, raising=False)
+
+
 @pytest.mark.parametrize(
-    ("secret", "message"),
+    ("private_key", "message"),
     [
-        ("tiny", "at least 32"),
-        ("z" * 64, "insufficient character diversity"),
+        ("", "is required"),
+        ("not-an-ed25519-key", "ed25519: prefix"),
+        ("ed25519:YQ", "invalid Ed25519 length"),
+        (
+            "ed25519:" + base64.b64encode(b"\xfb" * 32).decode("ascii").rstrip("="),
+            "not valid base64url",
+        ),
     ],
 )
-def test_reviewed_evidence_hmac_secret_policy_rejects_weak_values(secret: str, message: str) -> None:
+def test_reviewed_evidence_private_key_parser_rejects_invalid_values(private_key: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        evidence_contracts.validate_evidence_signature_secret(secret)
+        evidence_contracts.load_evidence_private_key(private_key)
+
+
+def test_reviewed_evidence_keypair_generator_writes_distinct_verifiable_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_path = tmp_path / "reviewer-private.key"
+    public_path = tmp_path / "verifier-public.key"
+    protect_calls: list[tuple[int, tuple[int, int, int], bool]] = []
+    if sys.platform == "win32":
+        protect_private = evidence_keypair._protect_windows_private_key_file
+
+        def _observe_protection(path, *, descriptor, expected_identity, repair):
+            assert evidence_keypair._file_identity_from_descriptor(descriptor) == expected_identity
+            if not repair:
+                assert path.stat().st_size == 0
+            protect_calls.append((descriptor, expected_identity, repair))
+            protect_private(
+                path,
+                descriptor=descriptor,
+                expected_identity=expected_identity,
+                repair=repair,
+            )
+
+        monkeypatch.setattr(
+            evidence_keypair,
+            "_protect_windows_private_key_file",
+            _observe_protection,
+        )
+
+    fingerprint = evidence_keypair.write_keypair(
+        private_key_path=private_path,
+        public_key_path=public_path,
+    )
+
+    private_key = evidence_contracts.load_evidence_private_key(private_path.read_text(encoding="utf-8"))
+    public_text = public_path.read_text(encoding="utf-8").strip()
+    assert evidence_contracts.evidence_public_key_text(private_key) == public_text
+    assert fingerprint == evidence_contracts.evidence_public_key_fingerprint(
+        evidence_contracts.load_evidence_public_key(public_text)
+    )
+    if sys.platform == "win32":
+        assert len(protect_calls) == 2
+        assert protect_calls[0][:2] == protect_calls[1][:2]
+        assert [call[2] for call in protect_calls] == [False, True]
+        powershell = (
+            evidence_keypair._trusted_windows_directory() / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        )
+        acl_check = subprocess.run(
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$acl=[IO.File]::GetAccessControl($env:LENGRVIS_TEST_PRIVATE_KEY_PATH);"
+                    "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;"
+                    "$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));"
+                    "$allow=@($rules|"
+                    "Where-Object {$_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow});"
+                    "$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]);"
+                    "$full=[Security.AccessControl.FileSystemRights]::FullControl;"
+                    "$item=Get-Item -LiteralPath $env:LENGRVIS_TEST_PRIVATE_KEY_PATH -Force;"
+                    "if(-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or "
+                    "$allow.Count -ne 1 -or $owner.Value -ne $sid.Value -or "
+                    "$allow[0].IdentityReference.Value -ne $sid.Value -or "
+                    "($allow[0].FileSystemRights -band $full) -ne $full -or "
+                    "($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){exit 1}"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=evidence_keypair._WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS,
+            env={**os.environ, "LENGRVIS_TEST_PRIVATE_KEY_PATH": str(private_path)},
+        )
+        assert acl_check.returncode == 0, acl_check.stderr
+    else:
+        assert stat.S_IMODE(private_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(public_path.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        evidence_keypair.write_keypair(
+            private_key_path=private_path,
+            public_key_path=public_path,
+        )
+
+
+def test_reviewed_evidence_keypair_cleanup_does_not_delete_replaced_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "reviewer-private.key"
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        identity = evidence_keypair._file_identity_from_descriptor(descriptor)
+    finally:
+        os.close(descriptor)
+    replacement = tmp_path / "replacement.key"
+    replacement.write_text("replacement-must-survive\n", encoding="utf-8")
+    os.replace(replacement, path)
+
+    evidence_keypair._unlink_if_same_file(path, identity)
+
+    assert path.read_text(encoding="utf-8") == "replacement-must-survive\n"
+
+
+def test_reviewed_evidence_windows_dacl_protection_uses_bounded_cold_start_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    powershell = tmp_path / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    powershell.parent.mkdir(parents=True)
+    powershell.touch()
+    target = tmp_path / "reviewer-private.key"
+    target.touch()
+    expected_identity = (1, 2, 3)
+    observed_timeout: list[int] = []
+
+    monkeypatch.setattr(evidence_keypair, "_trusted_windows_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        evidence_keypair,
+        "_file_identity_from_descriptor",
+        lambda _descriptor: expected_identity,
+    )
+
+    def _record_run(command, **kwargs):
+        observed_timeout.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(evidence_keypair.subprocess, "run", _record_run)
+
+    evidence_keypair._protect_windows_private_key_file(
+        target,
+        descriptor=7,
+        expected_identity=expected_identity,
+        repair=False,
+    )
+
+    assert observed_timeout == [evidence_keypair._WINDOWS_PRIVATE_KEY_DACL_TIMEOUT_SECONDS]
+    assert 60 <= observed_timeout[0] <= 120
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL protection only")
+def test_reviewed_evidence_keypair_timeout_fails_closed_without_key_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_path = tmp_path / "reviewer-private.key"
+    public_path = tmp_path / "verifier-public.key"
+
+    def _time_out(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(evidence_keypair.subprocess, "run", _time_out)
+
+    with pytest.raises(OSError, match="DACL protection timed out after 60 seconds") as error:
+        evidence_keypair.write_keypair(
+            private_key_path=private_path,
+            public_key_path=public_path,
+        )
+
+    assert isinstance(error.value.__cause__, subprocess.TimeoutExpired)
+    assert not private_path.exists()
+    assert not public_path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows handle conversion only")
+def test_reviewed_evidence_keypair_handle_conversion_failure_leaves_secure_empty_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import msvcrt
+
+    path = tmp_path / "reviewer-private.key"
+
+    def _fail_handle_conversion(_handle: int, _flags: int) -> int:
+        raise OSError("injected CRT handle conversion failure")
+
+    open_osfhandle = msvcrt.open_osfhandle
+    monkeypatch.setattr(msvcrt, "open_osfhandle", _fail_handle_conversion)
+
+    with pytest.raises(OSError, match="injected CRT handle conversion failure"):
+        evidence_keypair._open_windows_private_key_file(path)
+    monkeypatch.setattr(msvcrt, "open_osfhandle", open_osfhandle)
+
+    assert path.is_file()
+    assert path.stat().st_size == 0
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        identity = evidence_keypair._file_identity_from_descriptor(descriptor)
+        evidence_keypair._protect_windows_private_key_file(
+            path,
+            descriptor=descriptor,
+            expected_identity=identity,
+            repair=False,
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _distribution_sample() -> dict:
@@ -514,26 +731,17 @@ def _commercial_operations_sample() -> dict:
 
 
 def _signed(payload: dict) -> dict:
-    body = deepcopy(payload)
-    body["evidence"] = {
-        "payload_sha256": "",
-        "signature": "",
-        "signing_key_fingerprint": sha256(TEST_EVIDENCE_SECRET.encode()).hexdigest()[:16],
-    }
-    payload_hash = evidence_contracts.canonical_evidence_payload_hash(body)
-    body["evidence"]["payload_sha256"] = payload_hash
-    body["evidence"]["signature"] = hmac.new(TEST_EVIDENCE_SECRET.encode(), payload_hash.encode(), sha256).hexdigest()
-    return body
+    return evidence_contracts.seal_evidence_payload_signature(
+        payload,
+        private_key_text=TEST_EVIDENCE_PRIVATE_KEY,
+    )
 
 
 def _resign(payload: dict) -> dict:
-    body = deepcopy(payload)
-    evidence = body.setdefault("evidence", {})
-    evidence["signing_key_fingerprint"] = sha256(TEST_EVIDENCE_SECRET.encode()).hexdigest()[:16]
-    payload_hash = evidence_contracts.canonical_evidence_payload_hash(body)
-    evidence["payload_sha256"] = payload_hash
-    evidence["signature"] = hmac.new(TEST_EVIDENCE_SECRET.encode(), payload_hash.encode(), sha256).hexdigest()
-    return body
+    return evidence_contracts.seal_evidence_payload_signature(
+        payload,
+        private_key_text=TEST_EVIDENCE_PRIVATE_KEY,
+    )
 
 
 def _with_strict_candidate_binding(payload: dict) -> dict:
@@ -565,7 +773,7 @@ def _with_dist_artifact(
 def test_distribution_reviewed_sample_passes(tmp_path: Path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _with_dist_artifact(
         _distribution_sample(),
         tmp_path,
@@ -587,19 +795,27 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
     scripts = package["scripts"]
     assert scripts["evidence:distribution-verify"] == "python scripts/verify_distribution_release_evidence.py"
+    assert scripts["evidence:distribution-seal"] == (
+        "python scripts/seal_reviewed_release_evidence.py --kind distribution"
+    )
     assert scripts["evidence:clean-machine-verify"] == "python scripts/verify_clean_machine_evidence.py"
+    assert scripts["evidence:clean-machine-seal"] == (
+        "python scripts/seal_reviewed_release_evidence.py --kind clean-machine"
+    )
     assert scripts["evidence:result-quality-verify"] == "python scripts/verify_result_quality_reviewed_evidence.py"
-    assert scripts["evidence:diagnostics-verify"] == (
-        "python scripts/verify_diagnostics_external_reviewed_evidence.py"
+    assert scripts["evidence:result-quality-seal"] == (
+        "python scripts/seal_reviewed_release_evidence.py --kind result-quality"
+    )
+    assert scripts["evidence:diagnostics-verify"] == ("python scripts/verify_diagnostics_external_reviewed_evidence.py")
+    assert scripts["evidence:diagnostics-seal"] == (
+        "python scripts/seal_reviewed_release_evidence.py --kind diagnostics"
     )
     assert scripts["evidence:support-privacy-verify"] == "python scripts/verify_support_privacy_rehearsal_evidence.py"
     assert scripts["evidence:claims-launch-verify"] == "python scripts/verify_launch_claims_reviewed_evidence.py"
     assert scripts["evidence:commercial-operations-verify"] == (
         "python scripts/verify_commercial_operations_evidence.py"
     )
-    assert scripts["evidence:commercial-operations-seal"] == (
-        "python scripts/seal_commercial_operations_evidence.py"
-    )
+    assert scripts["evidence:commercial-operations-seal"] == ("python scripts/seal_commercial_operations_evidence.py")
     assert scripts["evidence:paid-launch-template"] == "python scripts/collect_paid_launch_evidence_templates.py"
     assert scripts["evidence:commercial-loop"] == "python scripts/verify_commercial_loop_evidence.py"
     assert scripts["activation:admin"] == "python scripts/activation_admin.py"
@@ -613,6 +829,201 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     assert scripts["delivery:paid-launch"] == (
         "python scripts/delivery_pipeline.py --paid-launch --output build/delivery-verdict.json"
     )
+
+
+def test_required_release_evidence_sealer_writes_all_workflow_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, TEST_EVIDENCE_PRIVATE_KEY)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    for environment_name, field_name in evidence_contracts.CANDIDATE_BINDING_ENVIRONMENT:
+        monkeypatch.setenv(environment_name, STRICT_CANDIDATE_BINDING[field_name])
+
+    distribution_payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/reviewed-distribution.exe",
+        contents=b"reviewed-distribution",
+    )
+    clean_machine_payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_clean_machine_sample()),
+        tmp_path,
+        rel_path="dist/reviewed-portable.zip",
+        contents=b"reviewed-clean-machine",
+    )
+    cases = [
+        (
+            "distribution",
+            distribution_payload,
+            "distribution-release-evidence-reviewed.json",
+            lambda payload: distribution.validate_payload(
+                payload,
+                repo_root=tmp_path,
+                expected_candidate_binding=_strict_candidate_binding(),
+            ),
+        ),
+        (
+            "clean-machine",
+            clean_machine_payload,
+            "clean-machine-release-evidence-reviewed.json",
+            lambda payload: clean_machine.validate_payload(
+                payload,
+                repo_root=tmp_path,
+                expected_candidate_binding=_strict_candidate_binding(),
+            ),
+        ),
+        (
+            "result-quality",
+            _with_strict_candidate_binding(_result_quality_sample()),
+            "result-quality-review-evidence-reviewed.json",
+            lambda payload: result_quality.validate_payload(
+                payload,
+                expected_candidate_binding=_strict_candidate_binding(),
+            ),
+        ),
+        (
+            "diagnostics",
+            _with_strict_candidate_binding(_diagnostics_reviewed_sample()),
+            "diagnostics-external-review-evidence-reviewed.json",
+            lambda payload: diagnostics_reviewed.validate_payload(
+                payload,
+                expected_candidate_binding=_strict_candidate_binding(),
+            ),
+        ),
+    ]
+
+    for kind, signed_sample, output_name, validate in cases:
+        draft = deepcopy(signed_sample)
+        draft.pop("evidence")
+        input_path = tmp_path / f"{kind}.reviewed.draft.json"
+        output_path = tmp_path / "sealed" / output_name
+        input_path.write_text(
+            json.dumps(draft, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        sealed, errors = reviewed_release_seal.write_sealed_evidence(
+            kind=kind,
+            input_path=input_path,
+            output_path=output_path,
+            repo_root=tmp_path,
+            force=False,
+        )
+
+        assert errors == []
+        assert sealed is not None
+        assert output_path.exists()
+        assert validate(json.loads(output_path.read_text(encoding="utf-8"))) == []
+        assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+        assert sealed["evidence"]["signature_payload_version"] == (
+            evidence_contracts.EVIDENCE_SIGNATURE_PAYLOAD_VERSION
+        )
+
+
+def test_required_release_evidence_sealer_rejects_templates_and_same_output(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="template"):
+        reviewed_release_seal.seal_payload(
+            {
+                "artifact_type": distribution.ARTIFACT_TYPE,
+                "template_status": "human_review_required",
+            },
+            kind="distribution",
+            private_key_text=TEST_EVIDENCE_PRIVATE_KEY,
+        )
+
+    draft = tmp_path / "same.json"
+    draft.write_text("{}\n", encoding="utf-8")
+    sealed, errors = reviewed_release_seal.write_sealed_evidence(
+        kind="distribution",
+        input_path=draft,
+        output_path=draft,
+        repo_root=tmp_path,
+        force=True,
+    )
+    assert sealed is None
+    assert errors == ["input and output paths must be different"]
+
+
+def test_required_release_evidence_sealer_does_not_overwrite_a_racing_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV,
+        TEST_EVIDENCE_PRIVATE_KEY,
+    )
+    monkeypatch.setenv(
+        evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV,
+        TEST_EVIDENCE_PUBLIC_KEY,
+    )
+    for environment_name, field_name in evidence_contracts.CANDIDATE_BINDING_ENVIRONMENT:
+        monkeypatch.setenv(environment_name, STRICT_CANDIDATE_BINDING[field_name])
+    payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/race-reviewed-distribution.exe",
+        contents=b"race-reviewed-distribution",
+    )
+    payload.pop("evidence")
+    input_path = tmp_path / "distribution.reviewed.draft.json"
+    output_path = tmp_path / "sealed" / "distribution-release-evidence-reviewed.json"
+    input_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    write_output = reviewed_release_seal._write_output_atomically
+
+    def _create_racing_output(path: Path, text: str, *, force: bool) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("concurrent-writer-won\n", encoding="utf-8")
+        write_output(path, text, force=force)
+
+    monkeypatch.setattr(
+        reviewed_release_seal,
+        "_write_output_atomically",
+        _create_racing_output,
+    )
+
+    sealed, errors = reviewed_release_seal.write_sealed_evidence(
+        kind="distribution",
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=tmp_path,
+        force=False,
+    )
+
+    assert sealed is None
+    assert errors == [f"output already exists: {output_path}; pass --force to overwrite"]
+    assert output_path.read_text(encoding="utf-8") == "concurrent-writer-won\n"
+    assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+
+def test_required_release_evidence_sealer_rejects_hardlinked_input_and_output(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "distribution.reviewed.draft.json"
+    output_path = tmp_path / "distribution-reviewed-output.json"
+    input_path.write_text('{"artifact_type":"draft"}\n', encoding="utf-8")
+    try:
+        os.link(input_path, output_path)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
+    original = input_path.read_bytes()
+
+    sealed, errors = reviewed_release_seal.write_sealed_evidence(
+        kind="distribution",
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=tmp_path,
+        force=True,
+    )
+
+    assert sealed is None
+    assert errors == ["input and output paths must be different"]
+    assert input_path.read_bytes() == original
 
 
 def test_distribution_rejects_template_and_missing_required_fields() -> None:
@@ -647,7 +1058,7 @@ def test_distribution_rejects_sensitive_raw_values() -> None:
 def test_clean_machine_reviewed_sample_passes_with_local_model_required(tmp_path: Path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _with_dist_artifact(
         _clean_machine_sample(),
         tmp_path,
@@ -672,7 +1083,7 @@ def test_clean_machine_reviewed_sample_passes_with_local_model_required(tmp_path
 def test_clean_machine_requires_local_model_when_claimed() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _clean_machine_sample()
     payload.pop("local_model")
     errors = clean_machine.validate_payload(payload, require_local_model=True)
@@ -690,7 +1101,7 @@ def test_clean_machine_rejects_unsigned_reviewed_evidence() -> None:
 def test_commercial_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     assert commercial.validate_payload(_commercial_sample()) == []
     errors, contract = commercial.validate_payload_with_contract(_commercial_sample())
     assert errors == []
@@ -705,7 +1116,7 @@ def test_commercial_reviewed_sample_passes() -> None:
 def test_result_quality_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     assert result_quality.validate_payload(_result_quality_sample()) == []
     errors, contract = result_quality.validate_payload_with_contract(_result_quality_sample())
     assert errors == []
@@ -720,7 +1131,7 @@ def test_result_quality_reviewed_sample_passes() -> None:
 def test_support_privacy_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     assert support_privacy.validate_payload(_support_privacy_sample()) == []
     errors, contract = support_privacy.validate_payload_with_contract(_support_privacy_sample())
     assert errors == []
@@ -735,7 +1146,7 @@ def test_support_privacy_reviewed_sample_passes() -> None:
 def test_support_privacy_rejects_missing_rehearsal_and_release_signoff() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _support_privacy_sample()
     payload["release_rehearsal"]["checks"].pop("diagnostic_package_deletion")
     payload["summary"]["release_signoff"] = True
@@ -748,7 +1159,7 @@ def test_support_privacy_rejects_missing_rehearsal_and_release_signoff() -> None
 def test_claims_launch_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     assert claims_launch.validate_payload(_claims_launch_sample(), repo_root=REPO_ROOT) == []
     errors, contract = claims_launch.validate_payload_with_contract(
         _claims_launch_sample(),
@@ -766,7 +1177,7 @@ def test_claims_launch_reviewed_sample_passes() -> None:
 def test_claims_launch_rejects_missing_claim_review_and_release_signoff() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _claims_launch_sample()
     payload["security_privacy_claims"]["status"] = "blocked"
     payload["summary"]["release_signoff"] = True
@@ -779,7 +1190,7 @@ def test_claims_launch_rejects_missing_claim_review_and_release_signoff() -> Non
 def test_commercial_operations_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     assert commercial_operations.validate_payload(_commercial_operations_sample(), repo_root=REPO_ROOT) == []
     errors, contract = commercial_operations.validate_payload_with_contract(
         _commercial_operations_sample(),
@@ -795,7 +1206,7 @@ def test_commercial_operations_reviewed_sample_passes() -> None:
 
 
 def test_strict_candidate_binding_accepts_the_same_immutable_candidate(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     binding = _strict_candidate_binding()
     clean_payload = _with_dist_artifact(
         _with_strict_candidate_binding(_clean_machine_sample()),
@@ -806,24 +1217,33 @@ def test_strict_candidate_binding_accepts_the_same_immutable_candidate(tmp_path:
     result_payload = _with_strict_candidate_binding(_result_quality_sample())
     diagnostics_payload = _with_strict_candidate_binding(_diagnostics_reviewed_sample())
 
-    assert clean_machine.validate_payload(
-        clean_payload,
-        require_local_model=True,
-        repo_root=tmp_path,
-        expected_candidate_binding=binding,
-    ) == []
-    assert result_quality.validate_payload(
-        result_payload,
-        expected_candidate_binding=binding,
-    ) == []
-    assert diagnostics_reviewed.validate_payload(
-        diagnostics_payload,
-        expected_candidate_binding=binding,
-    ) == []
+    assert (
+        clean_machine.validate_payload(
+            clean_payload,
+            require_local_model=True,
+            repo_root=tmp_path,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
+    assert (
+        result_quality.validate_payload(
+            result_payload,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
+    assert (
+        diagnostics_reviewed.validate_payload(
+            diagnostics_payload,
+            expected_candidate_binding=binding,
+        )
+        == []
+    )
 
 
 def test_distribution_evidence_rejects_replay_from_another_candidate(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _with_dist_artifact(
         _with_strict_candidate_binding(_distribution_sample()),
         tmp_path,
@@ -852,7 +1272,7 @@ def test_distribution_evidence_rejects_replay_from_another_candidate(tmp_path: P
     ],
 )
 def test_paid_launch_evidence_rejects_replay_from_another_candidate(verifier, sample_factory, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     sample = sample_factory()
     sample.setdefault("candidate", {})
     payload = _with_strict_candidate_binding(sample)
@@ -883,7 +1303,7 @@ def test_strict_candidate_binding_rejects_replayed_reviewed_evidence(
     replacement: str,
     error_code: str,
 ) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _with_strict_candidate_binding(_result_quality_sample())
     payload["candidate"][field] = replacement
     payload = _resign(payload)
@@ -897,7 +1317,7 @@ def test_strict_candidate_binding_rejects_replayed_reviewed_evidence(
 
 
 def test_strict_candidate_binding_is_covered_by_the_evidence_signature(monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
     payload = _with_strict_candidate_binding(_diagnostics_reviewed_sample())
     payload["candidate"]["commit"] = "b" * 40
 
@@ -985,7 +1405,7 @@ def test_strict_candidate_binding_rejects_a_checkout_for_a_different_commit() ->
 def test_commercial_operations_rejects_missing_tax_refund_and_release_signoff() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _commercial_operations_sample()
     payload["tax"]["product_taxability_review_label"] = ""
     payload["refunds"]["status"] = "blocked"
@@ -1000,7 +1420,8 @@ def test_commercial_operations_rejects_missing_tax_refund_and_release_signoff() 
 
 
 def test_commercial_operations_seal_writes_verifiable_reviewed_evidence(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", TEST_EVIDENCE_SECRET)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, TEST_EVIDENCE_PRIVATE_KEY)
     draft = deepcopy(_commercial_operations_sample())
     draft.pop("evidence")
     input_path = tmp_path / "commercial-operations.reviewed.draft.json"
@@ -1012,38 +1433,117 @@ def test_commercial_operations_seal_writes_verifiable_reviewed_evidence(tmp_path
         output_path=output_path,
         repo_root=REPO_ROOT,
         force=False,
-        signing_key_fingerprint="reviewed-commercial-ops-key",
     )
 
     assert errors == []
     assert sealed is not None
     assert output_path.exists()
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["evidence"]["signing_key_fingerprint"] == "reviewed-commercial-ops-key"
+    expected_fingerprint = evidence_contracts.evidence_public_key_fingerprint(
+        evidence_contracts.load_evidence_public_key(TEST_EVIDENCE_PUBLIC_KEY)
+    )
+    assert payload["evidence"]["signing_key_fingerprint"] == expected_fingerprint
+    assert payload["evidence"]["signature_payload_version"] == (evidence_contracts.EVIDENCE_SIGNATURE_PAYLOAD_VERSION)
     assert commercial_operations.validate_payload(payload, repo_root=REPO_ROOT) == []
 
 
-def test_commercial_operations_seal_rejects_templates_and_unsafe_secret(monkeypatch) -> None:
-    unsafe_secret = "ci-release-evidence-hmac-secret"  # noqa: S105 - verifies unsafe release evidence secret rejection.
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", unsafe_secret)
+def test_commercial_operations_sealer_does_not_overwrite_a_racing_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV,
+        TEST_EVIDENCE_PRIVATE_KEY,
+    )
+    draft = deepcopy(_commercial_operations_sample())
+    draft.pop("evidence")
+    input_path = tmp_path / "commercial-operations.reviewed.draft.json"
+    output_path = tmp_path / "build" / "commercial-operations-evidence-reviewed.json"
+    input_path.write_text(
+        json.dumps(draft, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    write_output = commercial_operations_seal._write_output_atomically
+
+    def _create_racing_output(path: Path, text: str, *, force: bool) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("concurrent-writer-won\n", encoding="utf-8")
+        write_output(path, text, force=force)
+
+    monkeypatch.setattr(
+        commercial_operations_seal,
+        "_write_output_atomically",
+        _create_racing_output,
+    )
+
+    sealed, errors = commercial_operations_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=REPO_ROOT,
+        force=False,
+    )
+
+    assert sealed is None
+    assert errors == [f"output already exists: {output_path}; pass --force to overwrite"]
+    assert output_path.read_text(encoding="utf-8") == "concurrent-writer-won\n"
+    assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+    forced, force_errors = commercial_operations_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=REPO_ROOT,
+        force=True,
+    )
+
+    assert force_errors == []
+    assert forced is not None
+    assert json.loads(output_path.read_text(encoding="utf-8")) == forced
+    assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+
+def test_commercial_operations_sealer_rejects_hardlinked_input_and_output(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "commercial-operations.reviewed.draft.json"
+    output_path = tmp_path / "commercial-operations-reviewed-output.json"
+    input_path.write_text('{"artifact_type":"draft"}\n', encoding="utf-8")
+    try:
+        os.link(input_path, output_path)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
+    original = input_path.read_bytes()
+
+    sealed, errors = commercial_operations_seal.write_sealed_evidence(
+        input_path=input_path,
+        output_path=output_path,
+        repo_root=REPO_ROOT,
+        force=True,
+    )
+
+    assert sealed is None
+    assert errors == ["input and output paths must be different"]
+    assert input_path.read_bytes() == original
+
+
+def test_commercial_operations_seal_rejects_templates_and_invalid_private_keys() -> None:
     template = paid_launch_templates.build_commercial_operations_template(
         candidate_commit="abc123",
         build_identifier="ci-123",
     )
+    valid_draft = deepcopy(_commercial_operations_sample())
+    valid_draft.pop("evidence")
 
-    try:
-        commercial_operations_seal.seal_payload(template, secret=unsafe_secret)
-    except ValueError as exc:
-        assert "known unsafe" in str(exc)
-    else:  # pragma: no cover - defensive assertion
-        raise AssertionError("unsafe evidence secret was accepted")
+    with pytest.raises(ValueError, match="invalid Ed25519 length"):
+        commercial_operations_seal.seal_payload(
+            valid_draft,
+            private_key_text="ed25519:YQ",
+        )
 
-    try:
-        commercial_operations_seal.seal_payload(template, secret=TEST_EVIDENCE_SECRET)
-    except ValueError as exc:
-        assert "artifact_type" in str(exc) or "template" in str(exc)
-    else:  # pragma: no cover - defensive assertion
-        raise AssertionError("template evidence was accepted")
+    with pytest.raises(ValueError, match="artifact_type|template"):
+        commercial_operations_seal.seal_payload(
+            template,
+            private_key_text=TEST_EVIDENCE_PRIVATE_KEY,
+        )
 
 
 def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path) -> None:
@@ -1057,21 +1557,25 @@ def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path
     )
     support_payload = json.loads(Path(paths["support_privacy_template"]).read_text(encoding="utf-8"))
     claims_payload = json.loads(Path(paths["claims_launch_template"]).read_text(encoding="utf-8"))
+    commercial_loop_payload = json.loads(Path(paths["commercial_loop_template"]).read_text(encoding="utf-8"))
     operations_payload = json.loads(Path(paths["commercial_operations_template"]).read_text(encoding="utf-8"))
 
-    for payload in (support_payload, claims_payload, operations_payload):
+    for payload in (support_payload, claims_payload, commercial_loop_payload, operations_payload):
         assert payload["candidate"] == STRICT_CANDIDATE_BINDING
 
     assert support_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert claims_payload["claim_controls"]["paid_launch_claim_allowed"] is False
+    assert commercial_loop_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert operations_payload["claim_controls"]["paid_launch_claim_allowed"] is False
     assert any("paid-launch pass" in item for item in support_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in claims_payload["must_not_be_recorded_as"])
+    assert any("paid-launch pass" in item for item in commercial_loop_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in operations_payload["must_not_be_recorded_as"])
     assert any("artifact_type" in error for error in support_privacy.validate_payload(support_payload))
     assert any(
         "artifact_type" in error for error in claims_launch.validate_payload(claims_payload, repo_root=REPO_ROOT)
     )
+    assert any("artifact_type" in error for error in commercial.validate_payload(commercial_loop_payload))
     assert any(
         "artifact_type" in error
         for error in commercial_operations.validate_payload(operations_payload, repo_root=REPO_ROOT)
@@ -1081,7 +1585,7 @@ def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path
 def test_result_quality_rejects_template_short_run_and_safety_false_negative() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _result_quality_sample()
     payload["artifact_type"] = "result-quality-review-evidence-template"
     payload["tasks"] = payload["tasks"][:3]
@@ -1099,7 +1603,7 @@ def test_result_quality_rejects_template_short_run_and_safety_false_negative() -
 def test_diagnostics_reviewed_sample_passes() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
     assert diagnostics_reviewed.validate_payload(payload) == []
     errors, contract = diagnostics_reviewed.validate_payload_with_contract(payload)
@@ -1118,7 +1622,7 @@ def test_diagnostics_reviewed_sample_passes() -> None:
 def test_diagnostics_reviewed_rejects_template_and_unsafe_external_share() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
     payload["artifact_type"] = "diagnostics-external-review-evidence-template"
     payload["review"]["decision"] = "public_safe"
@@ -1137,11 +1641,9 @@ def test_diagnostics_reviewed_rejects_template_and_unsafe_external_share() -> No
 def test_diagnostics_reviewed_rejects_raw_package_path_and_ambiguous_time() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
-    payload["candidate"]["diagnostics_package_label"] = (
-        r"D:\Desktop\mavris\.lengrvis_data\diagnostic-packages\case.zip"
-    )
+    payload["candidate"]["diagnostics_package_label"] = r"D:\Desktop\mavris\.lengrvis_data\diagnostic-packages\case.zip"
     payload["review"]["reviewed_at_utc"] = "2026-06-27T12:00:00"
     payload = _resign(payload)
 
@@ -1154,7 +1656,7 @@ def test_diagnostics_reviewed_rejects_raw_package_path_and_ambiguous_time() -> N
 def test_diagnostics_reviewed_rejects_non_string_identity_and_label_fields() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
     payload["candidate"]["commit"] = 123
     payload["candidate"]["build_identifier"] = ["ci-123"]
@@ -1173,7 +1675,7 @@ def test_diagnostics_reviewed_rejects_non_string_identity_and_label_fields() -> 
 def test_diagnostics_reviewed_rejects_common_path_spellings_without_rejecting_label_text() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     for raw_path in (
         "C:/ProgramData/Lengrvis/diagnostics/case.zip",
         "/opt/lengrvis/diagnostics/case.zip",
@@ -1197,7 +1699,7 @@ def test_diagnostics_reviewed_rejects_common_path_spellings_without_rejecting_la
 def test_diagnostics_reviewed_rejects_support_only_public_safe_mismatch() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
     payload["summary"]["public_safe"] = True
     payload = _resign(payload)
@@ -1210,7 +1712,7 @@ def test_diagnostics_reviewed_rejects_support_only_public_safe_mismatch() -> Non
 def test_diagnostics_reviewed_rejects_missing_actual_package_review() -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _diagnostics_reviewed_sample()
     payload["checks"]["task_traces_reviewed"] = "pending"
     payload["review"]["decision"] = "share_anyway"
@@ -1254,7 +1756,7 @@ def test_commercial_rejects_missing_activation_security_evidence() -> None:
 def test_distribution_cross_checks_dist_artifact_sha256_when_path_present(tmp_path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     artifact = tmp_path / "dist" / "backend.exe"
     artifact.parent.mkdir(parents=True)
     artifact_bytes = b"dist-artifact-bytes"
@@ -1276,7 +1778,7 @@ def test_distribution_cross_checks_dist_artifact_sha256_when_path_present(tmp_pa
 def test_distribution_rejects_cross_check_when_dist_file_missing(tmp_path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _resign(_distribution_sample())
     payload["candidate"]["artifact_path"] = "dist/missing-artifact.exe"
     payload = _resign(payload)
@@ -1287,27 +1789,28 @@ def test_distribution_rejects_cross_check_when_dist_file_missing(tmp_path) -> No
 def test_distribution_requires_artifact_path_for_cross_check(tmp_path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     errors = distribution.validate_payload(_distribution_sample(), repo_root=tmp_path)
     assert any("candidate.artifact_path is required" in error for error in errors)
 
 
-def test_distribution_rejects_known_unsafe_evidence_secret(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", "ci-release-evidence-hmac-secret")
+def test_distribution_verifier_requires_public_key_even_if_private_key_is_present(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV)
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PRIVATE_KEY_ENV, TEST_EVIDENCE_PRIVATE_KEY)
     payload = _with_dist_artifact(
         _distribution_sample(),
         tmp_path,
         rel_path="dist/backend.exe",
-        contents=b"unsafe-secret-artifact",
+        contents=b"public-key-required-artifact",
     )
     errors = distribution.validate_payload(payload, repo_root=tmp_path)
-    assert any("known unsafe development/CI value" in error for error in errors)
+    assert any(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV in error for error in errors)
 
 
 def test_distribution_rejects_artifact_path_outside_dist(tmp_path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     payload = _resign(_distribution_sample())
     payload["candidate"]["artifact_path"] = "build/evidence.json"
     payload = _resign(payload)
@@ -1318,7 +1821,7 @@ def test_distribution_rejects_artifact_path_outside_dist(tmp_path) -> None:
 def test_clean_machine_cross_checks_dist_artifact_sha256_when_path_present(tmp_path) -> None:
     import os
 
-    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    os.environ[evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV] = TEST_EVIDENCE_PUBLIC_KEY
     artifact = tmp_path / "dist" / "Lengrvis-win-portable.zip"
     artifact.parent.mkdir(parents=True)
     artifact_bytes = b"portable-zip-bytes"

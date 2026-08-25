@@ -33,7 +33,8 @@ class MCPRegistry:
         self.clients.clear()
         self.require_owner_policy = bool(getattr(settings, "mcp_require_owner_policy", False))
         for entry in settings.mcp_servers:
-            if not entry.get("enabled", True):
+            enabled = _mcp_bool(entry.get("enabled", True), default="enabled" not in entry)
+            if not enabled:
                 continue
             if self.require_owner_policy:
                 _validate_mcp_owner_policy(entry)
@@ -41,13 +42,22 @@ class MCPRegistry:
                 name=str(entry.get("name") or "mcp"),
                 url=str(entry.get("url") or ""),
                 transport=str(entry.get("transport", "http")),
-                enabled=bool(entry.get("enabled", True)),
+                enabled=enabled,
                 command=str(entry.get("command") or ""),
                 args=list(entry.get("args") or []),
+                env=_mcp_env_mapping(entry.get("env")),
+                inherit_env=_mcp_string_list(entry.get("inherit_env") or entry.get("inheritEnv")),
                 auth=dict(entry.get("auth") or {}),
                 owner=str(entry.get("owner") or ""),
                 policy_id=str(entry.get("policy_id") or entry.get("policyId") or ""),
                 allowed_tools=_mcp_string_list(entry.get("allowed_tools") or entry.get("allowedTools")),
+                protocol_version=str(entry.get("protocol_version") or entry.get("protocolVersion") or "2025-11-25"),
+                strict_lifecycle=_mcp_bool(
+                    entry.get("strict_lifecycle", entry.get("strictLifecycle", True)),
+                    default=True,
+                ),
+                client_name=str(entry.get("client_name") or entry.get("clientName") or "Lengrvis"),
+                client_version=str(entry.get("client_version") or entry.get("clientVersion") or "0.1.2"),
             )
             if not config.url and not config.command:
                 continue
@@ -82,6 +92,21 @@ class MCPRegistry:
     def list_servers(self) -> list[dict[str, Any]]:
         return [client.status() for client in self.clients.values()]
 
+    async def close(self) -> None:
+        """Terminate every stateful MCP session owned by this registry."""
+
+        clients = list(self.clients.values())
+        if not clients:
+            return
+        results = await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
+        failures = sum(isinstance(result, BaseException) for result in results)
+        self.clients.clear()
+        record(
+            "mcp.registry_closed",
+            "MCPRegistry",
+            {"server_count": len(clients), "failure_count": failures},
+        )
+
     async def list_all_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
         for server_name, client in self.clients.items():
@@ -92,9 +117,7 @@ class MCPRegistry:
                     "mcp.list_failed",
                     "MCPRegistry",
                     {
-                        "server_config_hash": canonical_content_hash(
-                            mcp_server_capability_payload(client.config)
-                        ),
+                        "server_config_hash": canonical_content_hash(mcp_server_capability_payload(client.config)),
                         "error_type": type(exc).__name__,
                     },
                 )
@@ -113,9 +136,7 @@ class MCPRegistry:
                     "mcp.resources_failed",
                     "MCPRegistry",
                     {
-                        "server_config_hash": canonical_content_hash(
-                            mcp_server_capability_payload(client.config)
-                        ),
+                        "server_config_hash": canonical_content_hash(mcp_server_capability_payload(client.config)),
                         "error_type": type(exc).__name__,
                     },
                 )
@@ -137,9 +158,7 @@ class MCPRegistry:
                     "mcp.tool_not_approved",
                     "MCPRegistry",
                     {
-                        "server_config_hash": canonical_content_hash(
-                            mcp_server_capability_payload(client.config)
-                        ),
+                        "server_config_hash": canonical_content_hash(mcp_server_capability_payload(client.config)),
                         "tool_id_hash": canonical_content_hash({"id": tool["name"]}),
                         "policy_id_hash": canonical_content_hash({"id": client.config.policy_id}),
                     },
@@ -152,6 +171,7 @@ class MCPRegistry:
                     "name": tool.get("name"),
                     "description": tool.get("description"),
                     "input_schema": tool.get("input_schema") or {},
+                    "output_schema": tool.get("output_schema") or {},
                 }
             )
             adapted.append(
@@ -159,7 +179,7 @@ class MCPRegistry:
                     name=name,
                     description=tool.get("description") or name,
                     input_schema=tool.get("input_schema") or {},
-                    output_schema={"type": "object"},
+                    output_schema=tool.get("output_schema") or {"type": "object"},
                     risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                     agent_owner="SearchAgent",
                     supports_dry_run=False,
@@ -201,6 +221,23 @@ def _mcp_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _mcp_env_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip(): str(item) for key, item in value.items() if str(key).strip()}
+
+
+def _mcp_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _build_executor(registry: MCPRegistry, server: str, tool_name: str):

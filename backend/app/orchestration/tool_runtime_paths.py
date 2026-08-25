@@ -8,6 +8,7 @@ from app.core.errors import SecurityError
 from app.core.paths import resolve_task_path
 from app.orchestration.tool_runtime_support import _safe_runtime_error_text
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
+from app.policy.risk import is_modifying_or_higher
 from app.tools.schemas import ToolDefinition
 
 AUTHORIZED_PATH_ARG_KEYS = {
@@ -51,6 +52,7 @@ AUTHORIZED_PATH_ARG_KEYS = {
     "workspace_path",
     "working_directory",
 }
+FILESYSTEM_WRITE_BARRIER_KEY = "filesystem-write:*"
 
 
 def authorized_path_error(tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> str:
@@ -143,8 +145,7 @@ def is_authorized_path_arg_key(key: str, *, top_level: bool) -> bool:
         or normalized.endswith("_files")
         or (
             top_level
-            and normalized
-            in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
+            and normalized in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
         )
     )
 
@@ -156,7 +157,13 @@ def write_lock_keys(tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
     keys: set[str] = set()
     if tool.concurrency_key:
         keys.add(f"tool:{tool.concurrency_key.casefold()}")
-    for value in candidate_write_paths(args):
+    filesystem_write = _is_filesystem_write_tool(tool)
+    if filesystem_write:
+        keys.add(FILESYSTEM_WRITE_BARRIER_KEY)
+    path_candidates = candidate_write_paths(args)
+    if filesystem_write and tool.requires_authorized_path:
+        path_candidates.extend(value for _name, value in candidate_authorized_paths(args))
+    for value in path_candidates:
         path = normalize_lock_path(value)
         if not path:
             continue
@@ -171,6 +178,18 @@ def write_lock_keys(tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
     return sorted(keys)
 
 
+def _is_filesystem_write_tool(tool: ToolDefinition) -> bool:
+    if not is_write_tool(tool):
+        return False
+    capabilities = {str(value).casefold() for value in getattr(tool, "capabilities", [])}
+    resource_kinds = {str(value).casefold() for value in getattr(tool, "resource_kinds", [])}
+    return bool(
+        tool.requires_authorized_path
+        or "filesystem" in capabilities
+        or resource_kinds.intersection({"directory", "document", "file", "workspace"})
+    )
+
+
 def needs_completion_barrier(tool: ToolDefinition, args: dict[str, Any]) -> bool:
     if tool.concurrency_key or is_write_tool(tool):
         return True
@@ -179,15 +198,15 @@ def needs_completion_barrier(tool: ToolDefinition, args: dict[str, Any]) -> bool
 
 def is_write_tool(tool: ToolDefinition) -> bool:
     risk = getattr(tool, "risk_level", None)
-    risk_value = getattr(risk, "value", str(risk or ""))
-    if risk and risk_value.startswith(("R2", "R3")):
+    # >= R2 (includes R4_FORBIDDEN_OR_HANDOFF, e.g. all MCP tools) so a
+    # runtime backstop never treats a higher-risk tool as a non-write.
+    if risk is not None and is_modifying_or_higher(risk):
         return True
     if getattr(tool, "supports_dry_run", False):
         return True
     name = getattr(tool, "name", "")
     return name in BROWSER_WRITE_TOOLS or any(
-        token in name
-        for token in (".copy", ".move", ".rename", ".trash", ".write", ".create", ".delete", ".uninstall")
+        token in name for token in (".copy", ".move", ".rename", ".trash", ".write", ".create", ".delete", ".uninstall")
     )
 
 

@@ -77,6 +77,17 @@ def test_public_lan_health_redacts_local_runtime_details(monkeypatch, tmp_path):
     assert public_payload == {"status": "ok"}
 
 
+def test_http_responses_include_security_headers(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    for response in (client.get("/api/health"), client.get("/api/settings")):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
@@ -560,11 +571,10 @@ def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_
         assert websocket.receive_json()["type"] == "connected"
 
 
+@pytest.mark.desktop_api_token_optional
 def test_loopback_client_keeps_desktop_api_access(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LENGRVIS_TEST", "1")
-    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 

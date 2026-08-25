@@ -27,10 +27,14 @@ export function isSafeFailureEvidence(task: TaskEvent): boolean {
 export function taskDisplayState(task: TaskEvent): string {
   if (isSafeFailureEvidence(task)) return "安全停止";
   if (task.state === "completed") return isVerifiedCompletedResult(task) ? "已完成" : "已结束，待核验";
+  if (task.state === "rolled_back") return "已回滚";
+  if (task.state === "repair_required") return "回滚需修复";
   if (task.state === "running") return "进行中";
   if (task.state === "blocked") return "待审批";
   if (task.state === "paused") return "已暂停";
   if (task.state === "failed") return "未完成";
+  if (task.state === "denied") return "已拒绝";
+  if (task.state === "cancelled") return "已取消";
   return "等待中";
 }
 

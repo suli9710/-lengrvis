@@ -121,6 +121,7 @@ def element_from_native(
         "bounding_box": bounding_box,
         "text": text_reader(native),
         "localized_control_type": getattr(native, "CurrentLocalizedControlType", None),
+        "runtime_id": _runtime_id(native),
     }
     return UIAutomationElement(
         name=str(getattr(native, "CurrentName", "") or ""),
@@ -131,6 +132,27 @@ def element_from_native(
         properties={key: value for key, value in properties.items() if value is not None},
         native=native,
     )
+
+
+def _runtime_id(native: Any) -> list[int] | None:
+    try:
+        value = native.GetRuntimeId()
+    except Exception:  # noqa: BLE001 - broad-exception-boundary: optional COM identity lookup degrades safely.
+        return None
+    if value is None:
+        return None
+    length = getattr(value, "Length", None)
+    if isinstance(length, int):
+        try:
+            return [int(value.GetElement(index)) for index in range(length)]
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: stale COM collections degrade safely.
+            return None
+    if isinstance(value, list | tuple):
+        try:
+            return [int(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def matches_selector(element: UIAutomationElement, selector: UIAutomationSelector) -> bool:

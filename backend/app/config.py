@@ -132,7 +132,7 @@ class AppSettings(BaseSettings):
     structured_output_repair_retries: int = 1
     requires_openai_auth: bool = True
     model_reasoning_effort: str = "medium"
-    disable_response_storage: bool = False
+    disable_response_storage: bool = True
     network_access: str = "disabled"
     model_context_window: int = 128000
     model_auto_compact_token_limit: int = 96000
@@ -399,7 +399,7 @@ class AppSettings(BaseSettings):
             ),
             requires_openai_auth=flag("LENGRVIS_REQUIRES_OPENAI_AUTH", "requires_openai_auth", True),
             model_reasoning_effort=str(value("LENGRVIS_MODEL_REASONING_EFFORT", "model_reasoning_effort", "medium")),
-            disable_response_storage=flag("LENGRVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", False),
+            disable_response_storage=flag("LENGRVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", True),
             network_access=str(value("LENGRVIS_NETWORK_ACCESS", "network_access", "disabled")),
             model_context_window=int_value("LENGRVIS_MODEL_CONTEXT_WINDOW", "model_context_window", 128000, minimum=1),
             model_auto_compact_token_limit=int_value(

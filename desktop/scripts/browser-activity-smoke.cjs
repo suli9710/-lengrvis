@@ -1,14 +1,18 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
+const AxeBuilder = require("@axe-core/playwright").default;
 const { chromium } = require("@playwright/test");
 const { stopProcessTree } = require("./smoke-process-utils.cjs");
 
-const previewUrl = "http://127.0.0.1:4173";
+const previewHost = "127.0.0.1";
+let previewUrl = "";
 const desktopRoot = path.resolve(__dirname, "..");
+const uiReviewEvidenceDir = path.resolve(desktopRoot, "..", ".tmp", "qa-evidence", "ui-review");
 const browserActivityPanelSource = path.join(desktopRoot, "src", "renderer", "components", "BrowserActivityPanel.tsx");
+const isolatedPageContexts = new WeakMap();
 
 const session = {
   id: "backend-only-session",
@@ -102,6 +106,7 @@ const pilotTask = {
 };
 const pilotApproval = {
   id: "approval-pilot-smoke",
+  task_id: "task-pilot-smoke",
   approval_type: "cleanup",
   message: "准备清理下载目录的大文件，执行前需要你确认。",
   diff_preview: {
@@ -117,7 +122,48 @@ const pilotApproval = {
     risk_warnings: ["执行前需要人工确认"]
   },
   status: "pending",
-  created_at: "2026-05-27T00:03:30.000Z"
+  created_at: "2026-05-27T00:03:30.000Z",
+  expires_at: "2999-05-27T00:13:30.000Z"
+};
+
+const dialogTask = {
+  id: "task-dialog-accessibility-smoke",
+  user_goal: "整理项目交付资料",
+  status: "completed",
+  mode: "efficiency",
+  final_summary: "资料已整理并完成结果核验。",
+  created_at: "2026-07-11T11:00:00.000Z",
+  updated_at: "2026-07-11T11:02:00.000Z",
+  result_quality: {
+    state: "verified_complete",
+    can_treat_as_done: true,
+    summary: "输出已核验。",
+    missing_checks: []
+  }
+};
+
+const dialogTaskExplain = {
+  task_id: dialogTask.id,
+  user_goal: dialogTask.user_goal,
+  status: "completed",
+  mode: "efficiency",
+  generated_at: "2026-07-11T11:02:30.000Z",
+  complete: true,
+  missing_sections: [],
+  data_sources: { task: 1, tool_result: 1 },
+  steps: [],
+  chain: [
+    {
+      stage: "final_result",
+      title: "结果",
+      summary: "资料已整理并完成结果核验。",
+      evidence: []
+    }
+  ],
+  final_result: {
+    status: "completed",
+    summary: "资料已整理并完成结果核验。"
+  }
 };
 
 const forbiddenPlaceholderTexts = [
@@ -137,24 +183,6 @@ const quickTemplateButtonNames = {
   documentQa: /文档问答|鏂囨。闂瓟/
 };
 
-function releasePreviewPort() {
-  if (process.platform !== "win32") return;
-  try {
-    const output = execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "$connections = Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($processId in $connections) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }"
-      ],
-      { stdio: "pipe" }
-    );
-    if (String(output).trim()) process.stdout.write(output);
-  } catch {
-    // Port cleanup is best-effort; Vite strictPort will still fail loudly if another service remains.
-  }
-}
-
 function assertNoSecretPayload(value, label) {
   const text = JSON.stringify(value);
   assert.equal(text.includes("secret-token"), false, `${label} should not include raw token values`);
@@ -167,28 +195,60 @@ function assertBrowserHostFailureStopsBackendCommand() {
   const source = fs.readFileSync(browserActivityPanelSource, "utf8");
   assert.match(
     source,
-    /if \(!result\.ok\) \{\s*onErrorChange\(result\.error \?\? `\$\{label\} failed`\);\s*return;\s*\}\s*if \(backendCommand\)/s,
+    /if \(!result\.ok\) \{\s*onErrorChange\(`\$\{label\}失败，请稍后重试。`\);\s*return;\s*\}\s*if \(backendCommand\)/s,
     "BrowserActivityPanel must not call backend session commands after a failed BrowserHost command"
+  );
+  assert.doesNotMatch(
+    source,
+    /onErrorChange\(result\.error/,
+    "BrowserActivityPanel must not expose raw BrowserHost response errors"
   );
 }
 
-function startPreview() {
-  console.log("starting Vite preview on 127.0.0.1:4173");
-  releasePreviewPort();
+function startPreview(port) {
+  console.log(`starting Vite preview on ${previewHost}:${port}`);
   const viteBin = path.join(desktopRoot, "node_modules", "vite", "bin", "vite.js");
-  const child = spawn(process.execPath, [viteBin, "preview", "--host", "127.0.0.1", "--port", "4173", "--strictPort"], {
+  const child = spawn(process.execPath, [viteBin, "preview", "--host", previewHost, "--port", String(port), "--strictPort"], {
     cwd: desktopRoot,
     stdio: ["ignore", "pipe", "pipe"]
   });
   child.stdout.on("data", (data) => process.stdout.write(data));
   child.stderr.on("data", (data) => process.stderr.write(data));
+  child.once("exit", (code, signal) => {
+    if (!child.__expectedStop) {
+      console.error(`Vite preview exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"}).`);
+    }
+  });
   return child;
 }
 
-async function waitForPreview() {
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, previewHost, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function configuredPreviewPort() {
+  const rawPort = process.env.LENGRVIS_BROWSER_ACTIVITY_PORT;
+  if (rawPort === undefined || rawPort.trim() === "") return null;
+  const port = Number(rawPort);
+  assert.ok(Number.isInteger(port) && port >= 1 && port <= 65_535, "LENGRVIS_BROWSER_ACTIVITY_PORT must be an integer from 1 to 65535");
+  return port;
+}
+
+async function waitForPreview(preview) {
   console.log("waiting for Vite preview");
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
+    if (preview.exitCode !== null || preview.signalCode !== null) {
+      throw new Error(`Vite preview exited before it became ready (code=${preview.exitCode ?? "null"}, signal=${preview.signalCode ?? "null"})`);
+    }
     try {
       const response = await fetch(previewUrl);
       if (response.ok) return;
@@ -200,8 +260,31 @@ async function waitForPreview() {
   throw new Error("Vite preview did not start in time");
 }
 
-async function installDesktopBridgeMocks(page) {
-  await page.addInitScript(() => {
+async function createIsolatedPage(browser, options) {
+  const context = await browser.newContext({ ...options, reducedMotion: "reduce" });
+  const page = await context.newPage();
+  isolatedPageContexts.set(page, context);
+  return page;
+}
+
+async function closeIsolatedPage(page) {
+  const context = isolatedPageContexts.get(page);
+  if (context) {
+    isolatedPageContexts.delete(page);
+    await context.close();
+    return;
+  }
+  if (!page.isClosed()) await page.close();
+}
+
+async function installDesktopBridgeMocks(page, options = {}) {
+  const consentConfig = {
+    required: Boolean(options.consentRequired),
+    statusError: options.consentStatusError ?? "",
+    acceptDelayMs: options.consentAcceptDelayMs ?? 0,
+    readDelayMs: options.consentReadDelayMs ?? 0
+  };
+  await page.addInitScript((consentConfig) => {
     const backendBaseUrl = "http://127.0.0.1:8000";
     const apiRequest = async (request) => {
       const url = new URL(request.endpoint, backendBaseUrl);
@@ -291,25 +374,38 @@ async function installDesktopBridgeMocks(page) {
         onSnapshot: () => () => undefined
       },
       consent: {
-        getStatus: async () => ({
-          consent: {
+        getStatus: async () => {
+          if (consentConfig.statusError) throw new Error(consentConfig.statusError);
+          return {
+            consent: {
+              privacy_version: "v1.0",
+              eula_version: "v1.0",
+              privacy_accepted_at: consentConfig.required ? "" : "2026-01-01T00:00:00.000Z",
+              eula_accepted_at: consentConfig.required ? "" : "2026-01-01T00:00:00.000Z",
+              installer_version: "0.1.0-smoke"
+            },
+            needsPrivacyConsent: consentConfig.required,
+            needsEulaConsent: consentConfig.required
+          };
+        },
+        accept: async (request) => {
+          if (consentConfig.acceptDelayMs) {
+            await new Promise((resolve) => window.setTimeout(resolve, consentConfig.acceptDelayMs));
+          }
+          return {
             privacy_version: "v1.0",
             eula_version: "v1.0",
-            privacy_accepted_at: "2026-01-01T00:00:00.000Z",
-            eula_accepted_at: "2026-01-01T00:00:00.000Z",
+            privacy_accepted_at: request?.acceptPrivacy === false ? "" : "2026-01-01T00:00:00.000Z",
+            eula_accepted_at: request?.acceptEula === false ? "" : "2026-01-01T00:00:00.000Z",
             installer_version: "0.1.0-smoke"
-          },
-          needsPrivacyConsent: false,
-          needsEulaConsent: false
-        }),
-        accept: async (request) => ({
-          privacy_version: "v1.0",
-          eula_version: "v1.0",
-          privacy_accepted_at: request?.acceptPrivacy === false ? "" : "2026-01-01T00:00:00.000Z",
-          eula_accepted_at: request?.acceptEula === false ? "" : "2026-01-01T00:00:00.000Z",
-          installer_version: "0.1.0-smoke"
-        }),
-        readDoc: async (docId) => ({ docId, content: "Smoke legal document." })
+          };
+        },
+        readDoc: async (docId) => {
+          if (consentConfig.readDelayMs) {
+            await new Promise((resolve) => window.setTimeout(resolve, consentConfig.readDelayMs));
+          }
+          return { docId, content: `Smoke legal document: ${docId}` };
+        }
       },
       dialog: {
         chooseDirectory: async () => null,
@@ -341,16 +437,37 @@ async function installDesktopBridgeMocks(page) {
         node: "smoke"
       }
     };
-  });
+  }, consentConfig);
+}
+
+async function assertNoSeriousAccessibilityViolations(page, label) {
+  const results = await new AxeBuilder({ page }).analyze();
+  const blockingViolations = results.violations.filter(
+    (violation) => violation.impact === "serious" || violation.impact === "critical"
+  );
+  if (blockingViolations.length === 0) return;
+
+  const details = blockingViolations.map((violation) => {
+    const nodes = violation.nodes.map((node) => {
+      const target = node.target.join(" ");
+      const summary = node.failureSummary?.replace(/\s+/g, " ").trim() ?? "No failure summary";
+      return `    - ${target}: ${summary}`;
+    }).join("\n");
+    return `  ${violation.id} [${violation.impact}]: ${violation.help}\n${nodes}`;
+  }).join("\n");
+  assert.fail(`${label} has blocking axe violations:\n${details}`);
 }
 
 async function installApiMocks(page, options = {}) {
-  await installDesktopBridgeMocks(page);
+  await installDesktopBridgeMocks(page, options);
   const allowedDirectories = options.allowedDirectories ?? ["C:\\Users\\Smoke\\Documents"];
+  const backendOffline = options.backendOffline === true;
   const counters = options.counters;
   const fileSearchMode = options.fileSearchMode ?? "error";
   const tasks = options.tasks ?? [];
   const approvals = options.approvals ?? [];
+  const taskExplains = options.taskExplains ?? {};
+  const rollbackPreviews = options.rollbackPreviews ?? {};
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -365,7 +482,16 @@ async function installApiMocks(page, options = {}) {
       body: JSON.stringify(body)
     });
 
-    if (url.pathname === "/api/health") return json({ status: "ok" });
+    if (url.pathname === "/api/health") {
+      if (backendOffline) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "unavailable" })
+        });
+      }
+      return json({ status: "ok" });
+    }
     if (url.pathname === "/api/browser/sessions") return json({ ok: true, sessions: [session] });
     if (url.pathname === `/api/browser/session/${session.id}/events`) return json({ ok: true, events: [event] });
     if (url.pathname === "/api/browser/observe") return json({ ok: true, event });
@@ -398,11 +524,66 @@ async function installApiMocks(page, options = {}) {
     });
     if (url.pathname === "/api/current-plan") return json({});
     if (url.pathname === "/api/settings") return json({ allowed_directories: allowedDirectories });
-    if (url.pathname === "/api/settings/llm/health") return json({});
-    if (url.pathname === "/api/settings/llm/cost-summary") return json({});
+    if (url.pathname === "/api/settings/permission-policy") return json({ rules: [], updated_at: "2026-07-11T00:00:00.000Z" });
+    if (url.pathname === "/api/pair/devices") return json({ devices: [] });
+    if (url.pathname === "/api/settings/local-llm/health") return json({
+      available: false,
+      selected_backend: null,
+      probe_order: [],
+      error: "Local AI is not configured in browser activity smoke",
+      readiness: {
+        can_install: true,
+        recommended_model: "qwen2.5:3b",
+        reason: "Local AI setup is available.",
+        checks: []
+      }
+    });
+    if (url.pathname === "/api/settings/local-model/setup-plan") return json({
+      ready: false,
+      can_install: true,
+      model: "qwen2.5:3b",
+      readiness: { can_install: true, recommended_model: "qwen2.5:3b", reason: "Local AI setup is available.", checks: [] },
+      installed: false,
+      running: false,
+      models: [],
+      has_model: false,
+      runtime_source: "missing",
+      bundled_runtime_available: false,
+      bundled_models_available: false,
+      bundled_model_available: false,
+      bundled_model_configured: false,
+      bundle_manifest: { present: false },
+      next_action: "install_runtime",
+      repair_action: { code: "install_runtime", label: "Install local AI", detail: "Install a local AI runtime before privacy tasks." },
+      verification: { ready: false, next_action: "install_runtime", paths_redacted: true, privacy_fallback: "local_only_until_ready" },
+      evidence: [],
+      steps: []
+    });
+    if (url.pathname === "/api/settings/llm/health") return json({ active: { available: true, provider: "smoke", model: "gpt-4o-mini" }, retry: {} });
+    if (url.pathname === "/api/settings/llm/cost-summary") return json({ by_model: [] });
+    if (url.pathname === "/api/settings/onnx/status") return json({
+      available: false,
+      kind: "onnx",
+      model_path: "",
+      execution_provider: "",
+      available_providers: [],
+      generation_runtime: "",
+      runtime_packages: {},
+      errors: []
+    });
     if (url.pathname === "/api/context/usage") return json({});
     if (url.pathname === "/api/audit" || url.pathname === "/api/audit/logs") return json([]);
     if (url.pathname.endsWith("/timeline")) return json({ messages: [], recordings: [] });
+    const explainMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/explain$/);
+    if (explainMatch) {
+      const taskId = decodeURIComponent(explainMatch[1]);
+      return json(taskExplains[taskId] ?? {});
+    }
+    const rollbackPreviewMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/rollback-preview$/);
+    if (rollbackPreviewMatch) {
+      const taskId = decodeURIComponent(rollbackPreviewMatch[1]);
+      return json(rollbackPreviews[taskId] ?? { task_id: taskId, steps: [], count: 0 });
+    }
     if (url.pathname === "/api/system/info") {
       if (counters) counters.systemInfoRequests = (counters.systemInfoRequests ?? 0) + 1;
       return json({ system: "Windows", platform: "win32", machine: "x64" });
@@ -412,6 +593,7 @@ async function installApiMocks(page, options = {}) {
     if (url.pathname === "/api/system/startup-items") return json({ startup_items: [], count: 0 });
     if (url.pathname === "/api/apps") return json({ apps: [] });
     if (url.pathname === "/api/chat/proactive-suggestions") return json([]);
+    if (url.pathname === "/api/schedules") return json([]);
     if (url.pathname.endsWith("/agent-messages")) return json([]);
     if (url.pathname.endsWith("/safety-reviews")) return json([]);
     if (url.pathname === "/api/approvals/pending") return json(approvals);
@@ -651,8 +833,10 @@ async function assertTaskPilotCard(page) {
 }
 
 async function assertTaskPilotApprovalAction(page) {
-  await page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first().click();
-  await page.getByRole("dialog").waitFor({ timeout: 10_000 });
+  const trigger = page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first();
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await dialog.waitFor({ timeout: 10_000 });
   await page.getByText(/清理计划审批|审批|准备清理下载目录的大文件/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/决策总览|鍐崇瓥鎬昏/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/安全核对/).first().waitFor({ timeout: 10_000 });
@@ -661,6 +845,136 @@ async function assertTaskPilotApprovalAction(page) {
   await page.getByText(/批准前不会移动或删除任何文件|等待你批准|鎵瑰噯鍓嶄笉浼氱Щ鍔ㄦ垨鍒犻櫎|绛夊緟浣犳壒鍑?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/large-video\.mp4|下载目录的大文件|涓嬭浇鐩綍/).first().waitFor({ timeout: 10_000 });
   await assertNoHorizontalOverflow(page, "task pilot approval action");
+  await assertNoSeriousAccessibilityViolations(page, "task approval dialog");
+  await assertOpenDialogKeyboardContract(page, trigger, dialog, "task pilot approval");
+}
+
+async function assertTaskTimelineDialogAccessibility(page) {
+  await page.goto(`${previewUrl}/?view=agents`, { waitUntil: "networkidle" });
+  await assertRootRendered(page);
+  await page.getByText(/任务时间线|浠诲姟鏃堕棿绾?/).first().waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "task progress view");
+
+  const explainTrigger = page.getByRole("button", { name: /核对结果|鏍稿缁撴灉/ }).first();
+  await explainTrigger.click();
+  const explainDialog = page.getByRole("dialog", { name: /为什么这样执行|涓轰粈涔堣繖鏍锋墽琛?/ });
+  await explainDialog.waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "task explain dialog");
+  await assertOpenDialogKeyboardContract(page, explainTrigger, explainDialog, "task explain dialog");
+
+  const rollbackTrigger = page.getByRole("button", { name: /回滚预览|鍥炴粴棰勮/ }).first();
+  await rollbackTrigger.click();
+  const rollbackDialog = page.getByRole("dialog", { name: /回滚预览|鍥炴粴棰勮/ });
+  await rollbackDialog.waitFor({ timeout: 10_000 });
+  await page.getByText(/恢复整理前的目录结构|鎭㈠鏁寸悊鍓嶇殑鐩綍缁撴瀯/).waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "rollback dialog");
+  await assertOpenDialogKeyboardContract(page, rollbackTrigger, rollbackDialog, "rollback dialog");
+}
+
+async function assertOpenDialogKeyboardContract(page, trigger, dialog, label) {
+  await assertDialogFocusAndTabLoop(page, dialog, label);
+
+  await trigger.evaluate((element) => element.setAttribute("data-dialog-return-target", "true"));
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached", timeout: 10_000 });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-dialog-return-target") === "true");
+  await trigger.evaluate((element) => element.removeAttribute("data-dialog-return-target"));
+}
+
+async function assertDialogFocusAndTabLoop(page, dialog, label) {
+  await page.waitForFunction(() => {
+    const activeDialog = document.querySelector("[role='dialog'][aria-modal='true']");
+    const activeAlertDialog = document.querySelector("[role='alertdialog'][aria-modal='true']");
+    const modal = activeDialog ?? activeAlertDialog;
+    return modal instanceof HTMLElement && modal.contains(document.activeElement);
+  });
+
+  const focusables = dialog.locator(
+    "a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), [contenteditable='true'], [tabindex]:not([tabindex='-1'])"
+  );
+  const focusableCount = await focusables.count();
+  assert.ok(focusableCount > 0, `${label} should contain a focusable control`);
+  const first = focusables.first();
+  const last = focusables.nth(focusableCount - 1);
+
+  await first.focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await last.evaluate((element) => document.activeElement === element), true, `${label} should wrap Shift+Tab to the last control`);
+  await page.keyboard.press("Tab");
+  assert.equal(await first.evaluate((element) => document.activeElement === element), true, `${label} should wrap Tab to the first control`);
+}
+
+async function assertConsentDialogAccessibility(page) {
+  await page.goto(previewUrl, { waitUntil: "networkidle" });
+  const consentStatus = await page.evaluate(() => window.lengrvis?.consent?.getStatus());
+  assert.equal(consentStatus?.needsPrivacyConsent, true, "consent smoke bridge should require privacy consent");
+  assert.equal(consentStatus?.needsEulaConsent, true, "consent smoke bridge should require EULA consent");
+  const dialog = page.locator(".privacy-consent-modal[role='dialog']");
+  await dialog.waitFor({ timeout: 10_000 });
+  await page.getByText("使用条款与隐私说明", { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await dialog.getAttribute("aria-labelledby"), "privacy-consent-title", "consent dialog should expose its title");
+  await assertNoSeriousAccessibilityViolations(page, "legal consent dialog");
+  await assertDialogFocusAndTabLoop(page, dialog, "consent dialog");
+
+  const privacyTrigger = page.getByRole("button", { name: /查看完整隐私政策/ });
+  await privacyTrigger.click();
+  await page.getByText("隐私政策（完整）", { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText("Smoke legal document: privacy-policy").waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "full legal document dialog");
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("返回同意页面"));
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ timeout: 10_000 });
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes("查看完整隐私政策"));
+
+  await page.getByRole("checkbox", { name: /最终用户许可协议/ }).check();
+  await page.getByRole("checkbox", { name: /隐私政策/ }).check();
+  const agreeButton = page.getByRole("button", { name: /同意并开始/ });
+  await agreeButton.click();
+  await page.getByRole("button", { name: /正在保存/ }).waitFor({ timeout: 10_000 });
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.isVisible(), true, "consent dialog should stay open while acceptance is being persisted");
+  await dialog.waitFor({ state: "detached", timeout: 10_000 });
+  await page.getByRole("button", { name: /刷新|Refresh/ }).first().waitFor({ timeout: 10_000 });
+}
+
+async function assertConsentStatusErrorAccessibility(page) {
+  await page.goto(previewUrl, { waitUntil: "networkidle" });
+  const alertDialog = page.getByRole("alertdialog", { name: /无法验证使用条款/ });
+  await alertDialog.waitFor({ timeout: 10_000 });
+  const retryButton = page.getByRole("button", { name: /重试/ });
+  await page.waitForTimeout(100);
+  const activeElement = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName ?? "",
+    className: document.activeElement instanceof HTMLElement ? document.activeElement.className : "",
+    text: document.activeElement?.textContent?.trim() ?? ""
+  }));
+  assert.match(String(activeElement.className), /btn-primary/, `consent status error should focus retry, got ${JSON.stringify(activeElement)}`);
+  assert.equal(await retryButton.evaluate((element) => document.activeElement === element), true, "consent status error should focus retry");
+  await assertNoSeriousAccessibilityViolations(page, "consent status error dialog");
+  await assertDialogFocusAndTabLoop(page, alertDialog, "consent status error dialog");
+  await page.keyboard.press("Escape");
+  assert.equal(await alertDialog.isVisible(), true, "consent status error must remain fail closed on Escape");
+}
+
+async function assertActivityCenterDialogAccessibility(page) {
+  await page.goto(previewUrl, { waitUntil: "networkidle" });
+  await assertRootRendered(page);
+  const trigger = page.locator(".activity-center-trigger");
+  assert.match(await trigger.getAttribute("aria-label") ?? "", /打开活动中心/, "activity center trigger should disclose its action");
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: /活动中心/ });
+  await dialog.waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "activity center dialog");
+  await assertOpenDialogKeyboardContract(page, trigger, dialog, "activity center dialog");
+  assert.equal(await trigger.getAttribute("aria-expanded"), "false", "activity center trigger should report the closed state");
+}
+
+async function assertSettingsPrivacyAccessibility(page) {
+  await page.goto(`${previewUrl}/?view=settings`, { waitUntil: "networkidle" });
+  await assertRootRendered(page);
+  await page.getByText(/本机数据与隐私/).waitFor({ timeout: 10_000 });
+  await page.locator(".settings-privacy-anchor").waitFor({ timeout: 10_000 });
+  await assertNoSeriousAccessibilityViolations(page, "settings privacy view");
 }
 
 async function assertRecentTaskRowAction(page) {
@@ -716,7 +1030,7 @@ async function searchSuccessfulDocument(page) {
 async function assertFileSearchResultActions(browser) {
   for (const action of ["read", "summarize", "reveal"]) {
     const counters = { fileSearchRequests: 0, documentParseRequests: 0, documentAskRequests: 0, revealRequests: 0 };
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const page = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(page, { counters, fileSearchMode: "success" });
     await searchSuccessfulDocument(page);
 
@@ -744,7 +1058,7 @@ async function assertFileSearchResultActions(browser) {
 
     assert.equal(counters.fileSearchRequests, 1, `${action} flow should perform one file search`);
     await assertNoHorizontalOverflow(page, `file search result ${action} action`);
-    await page.close();
+    await closeIsolatedPage(page);
   }
 }
 
@@ -826,11 +1140,44 @@ async function returnToSearchTab(page) {
   await page.getByRole("button", { name: /^读取$/ }).first().waitFor({ timeout: 10_000 });
 }
 
+async function assertPrimaryRouteAccessibility(page) {
+  const routes = [
+    { label: "首页", heading: "首页", ready: () => page.getByTestId("office-template-check-computer") },
+    { label: "对话", heading: "对话", ready: () => page.locator(".conversation-view") },
+    { label: "进度", heading: "进度", ready: () => page.getByTestId("progress-more") },
+    { label: "设置", heading: "设置", ready: () => page.getByRole("heading", { level: 2, name: "设置", exact: true }) },
+    { label: "知识库", heading: "文档", ready: () => page.locator(".local-library-view") },
+    { label: "图库", heading: "图库", ready: () => page.locator(".local-library-view") },
+    { label: "文件工具", heading: "文件工具", ready: () => page.getByRole("heading", { level: 2, name: "文件工具", exact: true }) },
+    { label: "此电脑", heading: "此电脑", ready: () => page.getByTestId("system-update-card") },
+    { label: "技能", heading: "技能", ready: () => page.locator(".panel--skills") },
+    { label: "审批", heading: "审批", ready: () => page.getByRole("heading", { level: 2, name: "安全审核", exact: true }) },
+    { label: "记忆", heading: "记忆", ready: () => page.locator(".memory-panel") },
+    { label: "浏览器", heading: "浏览器监看", ready: () => page.locator(".panel--browser-activity") }
+  ];
+
+  for (const { label, heading, ready } of routes) {
+    await page.getByRole("button", { name: label, exact: true }).first().click();
+    await page.getByRole("heading", { level: 1, name: heading, exact: true }).waitFor({ timeout: 10_000 });
+    await ready().waitFor({ timeout: 10_000 });
+    await page.locator(".route-loading").waitFor({ state: "detached", timeout: 10_000 });
+    assert.equal(await page.locator(".route-load-failure").count(), 0, `${label} should not show the lazy-load recovery state`);
+    assert.equal(await page.locator("h1").count(), 1, `${label} should expose exactly one page heading`);
+    assert.equal(await page.locator("main").count(), 1, `${label} should expose exactly one main landmark`);
+    const invalidListChildren = page.locator("ul > :not(li):not(script):not(template), ol > :not(li):not(script):not(template)");
+    assert.equal(await invalidListChildren.count(), 0, `${label} should keep list content inside list items`);
+    await assertNoSeriousAccessibilityViolations(page, `${label} route`);
+  }
+}
+
 (async () => {
-  const preview = startPreview();
+  fs.mkdirSync(uiReviewEvidenceDir, { recursive: true });
+  const previewPort = configuredPreviewPort() ?? await getFreePort();
+  previewUrl = `http://${previewHost}:${previewPort}`;
+  const preview = startPreview(previewPort);
   let browser;
   try {
-    await waitForPreview();
+    await waitForPreview(preview);
     assertBrowserHostFailureStopsBackendCommand();
     console.log("launching Chromium");
     browser = await chromium.launch();
@@ -839,7 +1186,7 @@ async function returnToSearchTab(page) {
       { width: 1366, height: 768, label: "desktop" },
       { width: 390, height: 844, label: "mobile" }
     ]) {
-      const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const page = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(page);
       await page.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(page);
@@ -847,8 +1194,9 @@ async function returnToSearchTab(page) {
       await assertHomeQuickTemplates(page);
       await assertButtonExists(page, /^(Chat|对话|瀵硅瘽)$/);
       await assertNoHorizontalOverflow(page, `${viewport.label} home`);
+      await assertNoSeriousAccessibilityViolations(page, `${viewport.label} home`);
       console.log(`viewport smoke passed: ${viewport.label} ${viewport.width}x${viewport.height}`);
-      await page.close();
+      await closeIsolatedPage(page);
     }
 
     console.log("checking task pilot lifecycle card");
@@ -856,93 +1204,197 @@ async function returnToSearchTab(page) {
       { width: 1366, height: 768, label: "desktop" },
       { width: 390, height: 844, label: "mobile" }
     ]) {
-      const pilotPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const pilotPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(pilotPage, { tasks: [pilotTask], approvals: [pilotApproval] });
       await pilotPage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(pilotPage);
       await assertTaskPilotCard(pilotPage);
       await assertTaskPilotApprovalAction(pilotPage);
-      await pilotPage.close();
+      await closeIsolatedPage(pilotPage);
 
-      const rowPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const rowPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(rowPage, { tasks: [pilotTask], approvals: [pilotApproval] });
       await rowPage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(rowPage);
       await assertRecentTaskRowAction(rowPage);
-      await rowPage.close();
+      await closeIsolatedPage(rowPage);
     }
+
+    console.log("checking task timeline dialog accessibility");
+    const dialogPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    const dialogPageErrors = [];
+    dialogPage.on("pageerror", (error) => dialogPageErrors.push(error.stack ?? error.message));
+    dialogPage.on("console", (message) => {
+      if (message.type() === "error") dialogPageErrors.push(message.text());
+    });
+    await installApiMocks(dialogPage, {
+      tasks: [dialogTask],
+      taskExplains: { [dialogTask.id]: dialogTaskExplain },
+      rollbackPreviews: {
+        [dialogTask.id]: {
+          task_id: dialogTask.id,
+          steps: [{ action: "restore", description: "恢复整理前的目录结构" }],
+          count: 1
+        }
+      }
+    });
+    try {
+      await assertTaskTimelineDialogAccessibility(dialogPage);
+    } catch (error) {
+      const diagnostics = dialogPageErrors.length ? `\nRenderer errors:\n${dialogPageErrors.join("\n")}` : "";
+      throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
+    }
+    await closeIsolatedPage(dialogPage);
+
+    console.log("checking legal consent dialog accessibility");
+    const consentPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    const consentPageErrors = [];
+    consentPage.on("pageerror", (error) => consentPageErrors.push(error.stack ?? error.message));
+    consentPage.on("console", (message) => {
+      if (message.type() === "error") consentPageErrors.push(message.text());
+    });
+    await installApiMocks(consentPage, { consentRequired: true, consentAcceptDelayMs: 500 });
+    try {
+      await assertConsentDialogAccessibility(consentPage);
+    } catch (error) {
+      const diagnostics = consentPageErrors.length ? `\nRenderer errors:\n${consentPageErrors.join("\n")}` : "";
+      throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
+    }
+    await closeIsolatedPage(consentPage);
+
+    const consentErrorPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    await installApiMocks(consentErrorPage, { consentStatusError: "consent status unavailable" });
+    await assertConsentStatusErrorAccessibility(consentErrorPage);
+    await closeIsolatedPage(consentErrorPage);
+
+    console.log("checking activity center dialog accessibility");
+    const activityCenterPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    await installApiMocks(activityCenterPage);
+    await assertActivityCenterDialogAccessibility(activityCenterPage);
+    await closeIsolatedPage(activityCenterPage);
+
+    console.log("checking settings privacy accessibility");
+    const settingsPrivacyPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    const settingsPrivacyPageErrors = [];
+    settingsPrivacyPage.on("pageerror", (error) => settingsPrivacyPageErrors.push(error.stack ?? error.message));
+    settingsPrivacyPage.on("console", (message) => {
+      if (message.type() === "error") settingsPrivacyPageErrors.push(message.text());
+    });
+    await installApiMocks(settingsPrivacyPage);
+    try {
+      await assertSettingsPrivacyAccessibility(settingsPrivacyPage);
+    } catch (error) {
+      const diagnostics = settingsPrivacyPageErrors.length ? `\nRenderer errors:\n${settingsPrivacyPageErrors.join("\n")}` : "";
+      throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
+    }
+    await closeIsolatedPage(settingsPrivacyPage);
+
+    console.log("checking primary route accessibility");
+    const routesPage = await createIsolatedPage(browser, { viewport: { width: 1280, height: 800 } });
+    const routePageErrors = [];
+    routesPage.on("pageerror", (error) => routePageErrors.push(error.stack ?? error.message));
+    routesPage.on("console", (message) => {
+      if (message.type() === "error" && !message.text().includes("'frame-ancestors' is ignored when delivered via a <meta> element")) {
+        routePageErrors.push(message.text());
+      }
+    });
+    await installApiMocks(routesPage);
+    try {
+      await routesPage.goto(previewUrl, { waitUntil: "networkidle" });
+      await assertRootRendered(routesPage);
+      await assertPrimaryRouteAccessibility(routesPage);
+      assert.deepEqual(routePageErrors, [], "primary routes should not emit renderer errors");
+    } catch (error) {
+      const diagnostics = routePageErrors.length ? `\nRenderer errors:\n${routePageErrors.join("\n")}` : "";
+      throw new Error(`${error instanceof Error ? error.stack ?? error.message : String(error)}${diagnostics}`);
+    } finally {
+      await closeIsolatedPage(routesPage);
+    }
+
+    console.log("checking offline status accessibility");
+    const offlinePage = await createIsolatedPage(browser, { viewport: { width: 1024, height: 768 } });
+    await installApiMocks(offlinePage, { backendOffline: true });
+    await offlinePage.goto(previewUrl, { waitUntil: "networkidle" });
+    await offlinePage.getByText(/助手暂时连不上/).first().waitFor({ timeout: 10_000 });
+    await assertNoSeriousAccessibilityViolations(offlinePage, "offline home");
+    await offlinePage.screenshot({ path: path.join(uiReviewEvidenceDir, "offline-1024x768.png"), fullPage: true });
+    await closeIsolatedPage(offlinePage);
 
     console.log("checking placeholder-free entry points");
     for (const viewport of [
       { width: 1366, height: 768, label: "desktop" },
       { width: 390, height: 844, label: "mobile" }
     ]) {
-      const homePage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const homePage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       const quickPromptCounters = { taskLaunchRequests: 0 };
       await installApiMocks(homePage, { counters: quickPromptCounters });
       await homePage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(homePage);
       await assertNoPlaceholderContent(homePage, `${viewport.label} home`);
+      await homePage.screenshot({
+        path: path.join(uiReviewEvidenceDir, `home-${viewport.width}x${viewport.height}.png`),
+        fullPage: true
+      });
       await assertQuickPromptEntry(homePage, quickPromptCounters);
-      await homePage.close();
+      await closeIsolatedPage(homePage);
 
-      const computerPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const computerPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       const computerCounters = { systemInfoRequests: 0, taskLaunchRequests: 0 };
       await installApiMocks(computerPage, { counters: computerCounters });
       await computerPage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(computerPage);
       await assertNoPlaceholderContent(computerPage, `${viewport.label} home before computer check`);
       await assertComputerCheckEntry(computerPage, computerCounters);
-      await computerPage.close();
+      await closeIsolatedPage(computerPage);
 
-      const documentPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const documentPage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       await installApiMocks(documentPage);
       await documentPage.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(documentPage);
       await assertNoPlaceholderContent(documentPage, `${viewport.label} home before document entry`);
       await assertDocumentQuickEntry(documentPage);
       await assertNoPlaceholderContent(documentPage, `${viewport.label} document quick entry`);
-      await documentPage.close();
+      await closeIsolatedPage(documentPage);
 
-      const documentComparePage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const documentComparePage = await createIsolatedPage(browser, { viewport: { width: viewport.width, height: viewport.height } });
       const documentCompareCounters = { documentCompareRequests: 0 };
       await installApiMocks(documentComparePage, { counters: documentCompareCounters });
       await assertDocumentCompareFlow(documentComparePage, documentCompareCounters);
-      await documentComparePage.close();
+      await closeIsolatedPage(documentComparePage);
     }
 
     console.log("checking file search failure state");
     console.log("checking file search missing-scope guard");
     const missingScopeCounters = { fileSearchRequests: 0 };
-    const missingScopePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const missingScopePage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(missingScopePage, { allowedDirectories: [], counters: missingScopeCounters });
     await assertMissingScopeSearchIsLocal(missingScopePage, missingScopeCounters);
-    await missingScopePage.close();
+    await closeIsolatedPage(missingScopePage);
 
     console.log("checking file search missing-query guard");
     const missingQueryCounters = { fileSearchRequests: 0 };
-    const missingQueryPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const missingQueryPage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(missingQueryPage, { counters: missingQueryCounters });
     await assertMissingQuerySearchIsLocal(missingQueryPage, missingQueryCounters);
-    await missingQueryPage.close();
+    await closeIsolatedPage(missingQueryPage);
 
-    const filesPage = await browser.newPage({ viewport: { width: 1366, height: 768 } });
+    const filesPage = await createIsolatedPage(browser, { viewport: { width: 1366, height: 768 } });
     await installApiMocks(filesPage);
     await assertFileSearchFailureState(filesPage);
-    await filesPage.close();
+    await closeIsolatedPage(filesPage);
 
     console.log("checking file search empty state");
     const emptySearchCounters = { fileSearchRequests: 0 };
-    const emptySearchPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const emptySearchPage = await createIsolatedPage(browser, { viewport: { width: 390, height: 844 } });
     await installApiMocks(emptySearchPage, { counters: emptySearchCounters, fileSearchMode: "empty" });
     await assertFileSearchEmptyState(emptySearchPage, emptySearchCounters);
-    await emptySearchPage.close();
+    await closeIsolatedPage(emptySearchPage);
 
     console.log("checking file search result actions on mobile");
     await assertFileSearchResultActions(browser);
 
     console.log("checking Browser Activity backend-only session");
-    const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
+    const page = await createIsolatedPage(browser, { viewport: { width: 1366, height: 768 } });
     await installApiMocks(page);
     await page.goto(`${previewUrl}/?view=browser`, { waitUntil: "networkidle" });
     await assertRootRendered(page);
@@ -965,7 +1417,8 @@ async function returnToSearchTab(page) {
     assert.equal(requestCountAfter, requestCountBefore, "disabled host-only controls should not call Electron host actions");
 
     console.log("Browser Activity backend-only smoke passed");
-    await page.close();
+    await closeIsolatedPage(page);
+    assert.equal(browser.contexts().length, 0, "browser smoke must close every isolated context before backend-only checks");
 
     console.log("checking BrowserHost output redaction");
     const Module = require("node:module");
@@ -1216,8 +1669,8 @@ async function returnToSearchTab(page) {
     }
   } finally {
     if (browser) await browser.close();
+    preview.__expectedStop = true;
     await stopProcessTree(preview);
-    releasePreviewPort();
   }
 })().catch((error) => {
   console.error(error);

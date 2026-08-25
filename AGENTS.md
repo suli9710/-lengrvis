@@ -15,7 +15,9 @@ and the PowerShell helpers in `scripts/`. The PowerShell scripts only run on Win
 This environment is Linux; the repo's `.ps1`/`.cmd` launchers do not run here. Drive the underlying
 commands directly. The startup update script already creates a Python venv at `.venv` (from
 `requirements-dev.txt` + `ruff`), installs the Playwright Chromium browser for both Python and desktop,
-and runs `npm --prefix desktop ci` + `npm --prefix mobile ci`. CI itself runs on `windows-latest`, so a
+and runs `npm --prefix desktop ci` + `npm --prefix mobile ci`. Run
+`npm ci --ignore-scripts --engine-strict` at the repository root before MCP conformance or release commands.
+CI itself runs on `windows-latest`, so a
 clean local Linux run will show a small set of Windows-only failures (see backend/desktop notes below).
 
 ### Backend (required, the core product)

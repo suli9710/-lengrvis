@@ -51,7 +51,7 @@
     width: 34px;
     height: calc(100% - 18px);
     pointer-events: none;
-    background: linear-gradient(90deg, rgba(248, 250, 253, 0), var(--app-bg));
+    background: linear-gradient(90deg, rgba(248, 250, 253, 0), var(--bg));
   }
 
   .primary-nav__more {
@@ -219,20 +219,6 @@
 
   .home-trust-grid {
     grid-template-columns: 1fr;
-  }
-
-  .home-setup-step {
-    grid-template-columns: 24px minmax(0, 1fr);
-  }
-
-  .home-setup-step__copy em {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  .home-setup-step__state {
-    grid-column: 2;
-    justify-self: start;
   }
 
   .task-pilot-steps {

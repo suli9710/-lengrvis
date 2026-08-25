@@ -6,7 +6,7 @@ import {
   buildValidatedRequestUrl,
   validateApiRequest
 } from "./ipcValidation";
-import { mergeAbortSignals, resolveInflightGroupSignal } from "./ipcInflight";
+import { acquireInflightGroupSignal, mergeAbortSignals } from "./ipcInflight";
 
 const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
 
@@ -22,6 +22,7 @@ export async function proxyApiRequest<TData>(
 ): Promise<ApiResponse<TData>> {
   const receivedAt = new Date().toISOString();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let inflightGroup: ReturnType<typeof acquireInflightGroupSignal>;
 
   try {
     const { allowInternalHeaders, ...validationOptions } = options;
@@ -34,9 +35,9 @@ export async function proxyApiRequest<TData>(
       () => timeoutController.abort(),
       validatedRequest.timeoutMs
     );
-    const groupSignal = resolveInflightGroupSignal(validatedRequest.abortGroup);
-    const signal = groupSignal
-      ? mergeAbortSignals([groupSignal, timeoutController.signal])
+    inflightGroup = acquireInflightGroupSignal(validatedRequest.abortGroup);
+    const signal = inflightGroup
+      ? mergeAbortSignals([inflightGroup.signal, timeoutController.signal])
       : timeoutController.signal;
 
     const response = await fetch(url, {
@@ -48,6 +49,7 @@ export async function proxyApiRequest<TData>(
         ...(validatedRequest.serializedBody !== undefined ? { "Content-Type": "application/json" } : {})
       },
       body: validatedRequest.serializedBody,
+      redirect: "error",
       signal
     });
 
@@ -99,6 +101,7 @@ export async function proxyApiRequest<TData>(
     if (timeout) {
       clearTimeout(timeout);
     }
+    inflightGroup?.release();
   }
 }
 

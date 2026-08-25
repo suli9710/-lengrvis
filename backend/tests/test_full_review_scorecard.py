@@ -57,7 +57,9 @@ def test_scorecard_worktree_validation_rejects_untracked_source_file(tmp_path: P
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True, text=True)
     (repo / "README.md").write_text("fixture\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
@@ -104,9 +106,7 @@ def test_full_review_scorecard_parses_readiness_summary() -> None:
 def test_full_review_scorecard_requires_agentic_threat_model_stop_ship_row() -> None:
     scorecard = SCORECARD_PATH.read_text(encoding="utf-8")
     readiness = READINESS_PATH.read_text(encoding="utf-8")
-    without_threat_model = "\n".join(
-        line for line in readiness.splitlines() if not line.startswith("| RR-P0-007 |")
-    )
+    without_threat_model = "\n".join(line for line in readiness.splitlines() if not line.startswith("| RR-P0-007 |"))
 
     errors = mod.validate_scorecard(scorecard, without_threat_model)
 
@@ -192,7 +192,9 @@ def test_full_review_scorecard_is_wired_into_release_gates() -> None:
     assert "npm run review:scorecard" in release_publish
     assert "npm run review:scorecard" in current_release_evidence
     assert "`npm run review:scorecard` verifies the full-review scorecard before any" in delivery_pipeline_doc
-    assert "maintainability gate, `review:scorecard`, real-LLM eval" in release_gate_doc
+    assert (
+        "candidate-bound MCP and real-LLM quality evidence, maintainability gate, `review:scorecard`"
+    ) in release_gate_doc
     assert "npm run review:scorecard" in readiness
     assert mod.validate_repo_wiring(REPO_ROOT) == []
 
@@ -205,7 +207,9 @@ def test_full_review_scorecard_rejects_missing_release_workflow_wiring(tmp_path:
         target.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     workflow = tmp_path / ".github" / "workflows" / "release-readiness.yml"
     workflow.write_text(
-        workflow.read_text(encoding="utf-8").replace("npm run review:scorecard", "python scripts/delivery_pipeline.py --plan-only"),
+        workflow.read_text(encoding="utf-8").replace(
+            "npm run review:scorecard", "python scripts/delivery_pipeline.py --plan-only"
+        ),
         encoding="utf-8",
     )
 

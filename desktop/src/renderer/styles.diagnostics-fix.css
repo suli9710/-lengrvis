@@ -6,7 +6,9 @@
  * or auto-scrolls (.panel is overflow:hidden, .panel__body / .detail-grid are
  * overflow:auto), a programmatic scrollIntoView() triggered by clicking the
  * refresh / export buttons can scroll that ancestor horizontally and push the
- * diagnostics cards off the left edge of the viewport.
+ * diagnostics cards off the left edge of the viewport. The outer shell is
+ * handled globally in styles.responsive-tablet.css because its decorative
+ * pseudo-elements previously widened every narrow view, not only diagnostics.
  *
  * overflow-x: clip (unlike overflow-x: hidden) does NOT create a scroll
  * container, so the affected ancestors can no longer be scrolled horizontally

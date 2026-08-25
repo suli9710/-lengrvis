@@ -13,6 +13,11 @@
     "qa:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1 -- --maxfail=1 && npm --prefix desktop run smoke",
     "golden:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1",
     "eval:real-llm": "python scripts/run_real_llm_eval.py",
+    "mcp:conformance:initialize": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario initialize --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/initialize",
+    "mcp:conformance:tools": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario tools_call --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/tools-call",
+    "mcp:conformance:basic": "npm run mcp:conformance:initialize && npm run mcp:conformance:tools",
+    "mcp:conformance:sse-retry": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario sse-retry --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/sse-retry",
+    "mcp:conformance": "npm run mcp:conformance:basic && npm run mcp:conformance:sse-retry",
     "audit:deps": "powershell -ExecutionPolicy Bypass -File ./scripts/run_dependency_audit.ps1",
     "security:secrets": "powershell -ExecutionPolicy Bypass -File ./scripts/secret_scan.ps1",
     "sbom:generate": "powershell -ExecutionPolicy Bypass -File ./scripts/generate_sbom.ps1",
@@ -32,6 +37,7 @@
     "activation:admin": "python scripts/activation_admin.py",
     "activation:serve": "python -m uvicorn backend.activation_main:app --host 127.0.0.1 --port 8010",
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
+    "release:owner-signoff-payload": "python scripts/release_owner_signature.py --emit-payload-only --output build/release-owner-signoff-payload.json",
     "sign:windows:preflight": "powershell -ExecutionPolicy Bypass -File ./scripts/windows_signing_preflight.ps1",
     "sign:backend:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1",
     "refresh:portable-bundle": "powershell -ExecutionPolicy Bypass -File ./scripts/refresh_portable_release_bundle.ps1",
@@ -58,15 +64,20 @@
     "evidence:distribution-template": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_distribution_release_evidence_template.ps1",
     "evidence:paid-launch-template": "python scripts/collect_paid_launch_evidence_templates.py",
     "evidence:distribution-verify": "python scripts/verify_distribution_release_evidence.py",
+    "evidence:distribution-seal": "python scripts/seal_reviewed_release_evidence.py --kind distribution",
     "evidence:clean-machine-verify": "python scripts/verify_clean_machine_evidence.py",
+    "evidence:clean-machine-seal": "python scripts/seal_reviewed_release_evidence.py --kind clean-machine",
     "evidence:result-quality-verify": "python scripts/verify_result_quality_reviewed_evidence.py",
+    "evidence:result-quality-seal": "python scripts/seal_reviewed_release_evidence.py --kind result-quality",
     "evidence:diagnostics-verify": "python scripts/verify_diagnostics_external_reviewed_evidence.py",
+    "evidence:diagnostics-seal": "python scripts/seal_reviewed_release_evidence.py --kind diagnostics",
     "evidence:android-real-device-verify": "python scripts/verify_android_reviewed_evidence.py",
     "evidence:android-real-device-seal": "python scripts/seal_android_real_device_evidence.py",
     "evidence:support-privacy-verify": "python scripts/verify_support_privacy_rehearsal_evidence.py",
     "evidence:claims-launch-verify": "python scripts/verify_launch_claims_reviewed_evidence.py",
     "evidence:commercial-operations-verify": "python scripts/verify_commercial_operations_evidence.py",
     "evidence:commercial-operations-seal": "python scripts/seal_commercial_operations_evidence.py",
+    "evidence:keypair": "python scripts/generate_reviewed_evidence_keypair.py",
     "evidence:commercial-loop": "python scripts/verify_commercial_loop_evidence.py",
     "smoke:desktop-first-launch": "npm --prefix desktop run smoke:first-launch",
     "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1",
@@ -76,7 +87,10 @@
     "delivery:rc": "python scripts/delivery_pipeline.py --strict --output build/delivery-verdict.json",
     "delivery:paid-launch": "python scripts/delivery_pipeline.py --paid-launch --output build/delivery-verdict.json"
   },
+  "devDependencies": {
+    "@modelcontextprotocol/conformance": "0.1.16"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

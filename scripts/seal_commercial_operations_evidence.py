@@ -1,46 +1,35 @@
 #!/usr/bin/env python3
-"""Seal reviewed commercial operations evidence with the release evidence HMAC."""
+"""Seal reviewed commercial operations evidence with a reviewer Ed25519 key."""
 
 from __future__ import annotations
 
 import argparse
-import hmac
 import json
 import os
 import sys
-from copy import deepcopy
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from evidence_contracts import (
-    EVIDENCE_SIGNATURE_ENV,
-    canonical_evidence_payload_hash,
+    EVIDENCE_PRIVATE_KEY_ENV,
     load_json,
+    paths_refer_to_same_file as _paths_refer_to_same_file,
     print_result,
-    validate_evidence_signature_secret,
+    seal_evidence_payload_signature,
+    write_text_atomically as _write_output_atomically,
 )
 from verify_commercial_operations_evidence import ARTIFACT_TYPE, validate_payload
 
 
-def seal_payload(payload: dict[str, Any], *, secret: str, signing_key_fingerprint: str = "") -> dict[str, Any]:
-    secret = validate_evidence_signature_secret(secret)
+def seal_payload(payload: dict[str, Any], *, private_key_text: str) -> dict[str, Any]:
     if payload.get("artifact_type") != ARTIFACT_TYPE:
         raise ValueError(f"artifact_type must be {ARTIFACT_TYPE!r}")
-    if "template" in str(payload.get("artifact_type", "")).lower() or payload.get("template_mode"):
+    if "template" in str(payload.get("artifact_type", "")).lower() or payload.get(
+        "template_mode"
+    ):
         raise ValueError("template evidence cannot be sealed")
 
-    sealed = deepcopy(payload)
-    evidence = sealed.setdefault("evidence", {})
-    if not isinstance(evidence, dict):
-        raise ValueError("evidence must be an object when present")
-    evidence["payload_sha256"] = ""
-    evidence["signature"] = ""
-    evidence["signing_key_fingerprint"] = signing_key_fingerprint.strip() or sha256(secret.encode("utf-8")).hexdigest()[:16]
-    payload_hash = canonical_evidence_payload_hash(sealed)
-    evidence["payload_sha256"] = payload_hash
-    evidence["signature"] = hmac.new(secret.encode("utf-8"), payload_hash.encode("utf-8"), sha256).hexdigest()
-    return sealed
+    return seal_evidence_payload_signature(payload, private_key_text=private_key_text)
 
 
 def write_sealed_evidence(
@@ -49,18 +38,20 @@ def write_sealed_evidence(
     output_path: Path,
     repo_root: Path,
     force: bool,
-    signing_key_fingerprint: str = "",
 ) -> tuple[dict[str, Any] | None, list[str]]:
     payload, errors = load_json(input_path)
     if payload is None:
         return None, errors
+    if _paths_refer_to_same_file(input_path, output_path):
+        return None, ["input and output paths must be different"]
     if output_path.exists() and not force:
-        return None, [f"output already exists: {output_path}; pass --force to overwrite"]
+        return None, [
+            f"output already exists: {output_path}; pass --force to overwrite"
+        ]
     try:
         sealed = seal_payload(
             payload,
-            secret=str(os.getenv(EVIDENCE_SIGNATURE_ENV) or ""),
-            signing_key_fingerprint=signing_key_fingerprint,
+            private_key_text=str(os.getenv(EVIDENCE_PRIVATE_KEY_ENV) or ""),
         )
     except ValueError as exc:
         return None, [str(exc)]
@@ -69,22 +60,30 @@ def write_sealed_evidence(
     if validation_errors:
         return None, validation_errors
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(sealed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    serialized = json.dumps(sealed, ensure_ascii=False, indent=2) + "\n"
+    try:
+        _write_output_atomically(output_path, serialized, force=force)
+    except FileExistsError:
+        return None, [
+            f"output already exists: {output_path}; pass --force to overwrite"
+        ]
+    except OSError as exc:
+        return None, [f"unable to write sealed evidence: {exc}"]
     return sealed, []
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="Completed reviewed commercial operations draft JSON.")
-    parser.add_argument("--output", default="build/commercial-operations-evidence-reviewed.json")
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Completed reviewed commercial operations draft JSON.",
+    )
+    parser.add_argument(
+        "--output", default="build/commercial-operations-evidence-reviewed.json"
+    )
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument(
-        "--signing-key-fingerprint",
-        default="",
-        help="Optional redacted evidence signing key fingerprint label.",
-    )
     args = parser.parse_args()
 
     output_path = Path(args.output)
@@ -93,7 +92,6 @@ def main() -> int:
         output_path=output_path,
         repo_root=Path(args.repo_root).resolve(),
         force=bool(args.force),
-        signing_key_fingerprint=args.signing_key_fingerprint,
     )
     print_result(
         {

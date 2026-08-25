@@ -71,6 +71,21 @@ def trusted_reversible_edit_allowed(tool_definition: Any | None, args: dict[str,
     return True
 
 
+_SENSITIVE_PATH_PREFIXES = (
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+    "/etc",
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/var",
+    "/system",
+    "/library",
+)
+
+
 def _contains_runtime_or_sensitive_path(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_contains_runtime_or_sensitive_path(child) for child in value.values())
@@ -78,20 +93,25 @@ def _contains_runtime_or_sensitive_path(value: Any) -> bool:
         return any(_contains_runtime_or_sensitive_path(child) for child in value)
     if not isinstance(value, str):
         return False
-    normalized = value.replace("\\", "/").casefold()
-    return any(
-        normalized.startswith(prefix)
-        for prefix in (
-            "c:/windows",
-            "c:/program files",
-            "c:/program files (x86)",
-            "c:/programdata",
-            "/etc",
-            "/bin",
-            "/sbin",
-            "/usr",
-            "/var",
-            "/system",
-            "/library",
-        )
-    )
+    text = value.strip()
+    if not text:
+        return False
+    slashed = text.replace("\\", "/")
+    looks_like_path = "/" in slashed or _looks_like_windows_drive(slashed)
+    if looks_like_path:
+        # Canonicalize path-like strings so a `..` traversal (e.g.
+        # C:\Users\me\..\..\Windows\System32) cannot slip past the literal
+        # prefix check. `None` means ambiguous / walks above root -> fail closed.
+        from app.policy.policy_helpers import canonicalize_path
+
+        canonical = canonicalize_path(text)
+        if canonical is None:
+            return True
+        normalized = canonical.casefold()
+    else:
+        normalized = slashed.casefold()
+    return any(normalized.startswith(prefix) for prefix in _SENSITIVE_PATH_PREFIXES)
+
+
+def _looks_like_windows_drive(slashed: str) -> bool:
+    return len(slashed) >= 2 and slashed[1] == ":" and slashed[0].isalpha()

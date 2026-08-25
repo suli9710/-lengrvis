@@ -30,7 +30,7 @@ function makeTask(id, status, overrides = {}) {
   const actions =
     status === "paused"
       ? ["resume", "cancel", "follow_up"]
-      : status === "completed" || status === "cancelled" || status === "failed"
+      : ["completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"].includes(status)
         ? []
         : ["pause", "cancel", "follow_up"];
   const completionEvidence =
@@ -170,6 +170,19 @@ function assertTaskDisplaySafety(taskDisplay) {
     ),
     "回电脑端核对结果和来源，再决定是否签收。",
   );
+  const deniedTask = makeTask("task-denied", "denied", { status_detail: "" });
+  const cancelledTask = makeTask("task-cancelled", "cancelled", { status_detail: "" });
+  assert.equal(taskDisplay.taskStatusBadgeText(deniedTask), "已拒绝");
+  assert.equal(taskDisplay.taskStatusBadgeText(cancelledTask), "已取消");
+  assert.match(taskDisplay.taskStatusDetailText(deniedTask), /安全或权限边界/);
+  assert.match(taskDisplay.taskNextStepText(deniedTask), /修改目标或权限/);
+  assert.equal(taskDisplay.taskStatusDetailText(cancelledTask), "任务已取消。");
+  const rolledBackTask = makeTask("task-rolled-back", "rolled_back", { status_detail: "" });
+  const repairTask = makeTask("task-repair", "repair_required", { status_detail: "" });
+  assert.equal(taskDisplay.taskStatusBadgeText(rolledBackTask), "已回滚");
+  assert.equal(taskDisplay.taskStatusBadgeText(repairTask), "需要修复");
+  assert.equal(taskDisplay.isMobileTaskTerminal(rolledBackTask), true);
+  assert.equal(taskDisplay.isMobileTaskTerminal(repairTask), true);
 }
 
 function assertSafeDisplayHelpers(safeDisplay) {

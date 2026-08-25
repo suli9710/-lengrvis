@@ -23,4 +23,10 @@ describe("renderer API route allowlist", () => {
     expect(isRendererApiRouteAllowed("/api/credentials/export", "POST")).toBe(false);
     expect(isRendererApiRouteAllowed("/api/tasks/task-1/cancel", "POST")).toBe(false);
   });
+
+  it("rejects whitespace and control characters inside dynamic route parameters", () => {
+    expect(isRendererApiRouteAllowed("/api/tasks/task 1", "GET")).toBe(false);
+    expect(isRendererApiRouteAllowed("/api/tasks/task\t1", "GET")).toBe(false);
+    expect(isRendererApiRouteAllowed("/api/tasks/task\u00001", "GET")).toBe(false);
+  });
 });

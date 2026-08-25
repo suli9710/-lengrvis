@@ -7,7 +7,7 @@ param(
 )
 
 # Dependency vulnerability scan (SCA) entrypoint (market-readiness checklist #16).
-# Covers npm audit for desktop / mobile and pip-audit for backend runtime,
+# Covers npm audit for workspace QA / desktop / mobile and pip-audit for backend runtime,
 # development, backend build, and optional acceleration locks. npm uses AuditLevel; Python
 # audit fails closed on any pip-audit finding or audit error.
 
@@ -82,6 +82,7 @@ function Invoke-PipAudit([string]$WorkingDirectory, [string]$LogDirectory, [stri
     }
 }
 
+Invoke-NpmAudit "."
 Invoke-NpmAudit "desktop"
 Invoke-NpmAudit "mobile"
 

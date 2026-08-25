@@ -22,6 +22,13 @@ ALLOWED_OPERATIONS = frozenset(
     }
 )
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xlsb", ".xls"}
+EXCEL_EXTENSIONS_REQUIRING_MACRO_SECURITY = frozenset(EXCEL_EXTENSIONS - {".xlsx"})
+# Excel 4.0/XLM macros are not covered by AutomationSecurity, and legacy
+# formats can prompt or execute code before the COM caller can establish a
+# safe state.  Keep the broader set for diagnostics/error messages, but only
+# accept the macro-free OOXML format in the production COM path.
+EXCEL_EXTENSIONS_SUPPORTED = frozenset({".xlsx"})
+MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 MAX_CELL_TEXT_LENGTH = 32767
 MAX_EXCEL_ROW = 1_048_576
 MAX_EXCEL_COLUMN = 16_384
@@ -80,7 +87,7 @@ class PyWin32ExcelClient:
         excel = self._open_excel()
         workbook = None
         try:
-            _configure_excel(excel, visible=self.visible)
+            _configure_excel(excel, visible=self.visible, workbook_path=path)
             workbook = excel.Workbooks.Open(str(path), UpdateLinks=0, ReadOnly=True)
             sheets = []
             for index in range(1, int(workbook.Worksheets.Count) + 1):
@@ -114,7 +121,7 @@ class PyWin32ExcelClient:
         excel = self._open_excel()
         workbook = None
         try:
-            _configure_excel(excel, visible=self.visible)
+            _configure_excel(excel, visible=self.visible, workbook_path=path)
             workbook = excel.Workbooks.Open(str(path), UpdateLinks=0, ReadOnly=False)
             worksheet = workbook.Worksheets(sheet)
             target = worksheet.Range(cell)
@@ -233,7 +240,7 @@ def _client(context: dict[str, Any]) -> ExcelClient:
 def _resolve_workbook_path(args: dict[str, Any], context: dict[str, Any]) -> Path:
     allowed = list(context.get("allowed_directories") or [])
     path = resolve_authorized(str(args.get("path", "")), allowed)
-    if path.suffix.lower() not in EXCEL_EXTENSIONS:
+    if path.suffix.lower() not in EXCEL_EXTENSIONS_SUPPORTED:
         raise ValueError(f"Unsupported Excel workbook extension: {path.suffix}")
     if not path.exists():
         raise FileNotFoundError(f"Workbook was not found: {path}")
@@ -269,9 +276,26 @@ def _validate_cell_value(value: Any) -> Any:
     text = str(value)
     if len(text) > MAX_CELL_TEXT_LENGTH:
         raise ValueError("Excel cell text exceeds the maximum supported length.")
-    if text.startswith("="):
+    # Excel coerces strings that begin with =, +, - or @ into formulas (and @
+    # is rewritten to =), so guarding only "=" leaves the other formula-trigger
+    # prefixes open. Leading whitespace/control chars can prefix the trigger, so
+    # strip them before checking. A leading +/- followed by a plain number is a
+    # harmless numeric literal and is allowed.
+    stripped = text.lstrip("\t\r\n \x00")
+    lead = stripped[:1]
+    if lead in {"=", "@"}:
+        raise ValueError("Formula writes are not allowlisted for Excel COM automation.")
+    if lead in {"+", "-"} and not _is_plain_number(stripped):
         raise ValueError("Formula writes are not allowlisted for Excel COM automation.")
     return text
+
+
+def _is_plain_number(text: str) -> bool:
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _column_to_index(column: str) -> int:
@@ -289,13 +313,22 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
     return max(minimum, min(maximum, parsed))
 
 
-def _configure_excel(excel: Any, *, visible: bool) -> None:
+def _configure_excel(excel: Any, *, visible: bool, workbook_path: Path) -> None:
+    suffix = workbook_path.suffix.lower()
+    if suffix in EXCEL_EXTENSIONS_REQUIRING_MACRO_SECURITY:
+        raise ExcelUnavailableError(
+            "Legacy or macro-enabled Excel workbooks are not supported by COM automation; use .xlsx instead."
+        )
     excel.Visible = visible
     excel.DisplayAlerts = False
+    automation_security_confirmed = False
     try:
-        excel.AutomationSecurity = 3
+        excel.AutomationSecurity = MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+        automation_security_confirmed = int(excel.AutomationSecurity) == MSO_AUTOMATION_SECURITY_FORCE_DISABLE
     except _pywin32_error_types() as exc:
         logger.debug("could not set Excel automation security: %s", exc, exc_info=True)
+    if automation_security_confirmed:
+        return
 
 
 def _close_workbook(workbook: Any, *, save_changes: bool) -> None:
@@ -332,6 +365,31 @@ def _unavailable(reason: str) -> dict[str, Any]:
     }
 
 
+def _input_schema(name: str) -> dict[str, Any]:
+    if name != "app.excel.write_cell":
+        return {}
+    return {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Authorized path to the Excel workbook.",
+            },
+            "sheet": {"type": "string", "description": "Worksheet name."},
+            "cell": {
+                "type": "string",
+                "description": "Cell reference such as B2.",
+            },
+            "value": {"description": "New cell value."},
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview the cell change without writing (default true).",
+            },
+        },
+        "required": ["path", "sheet", "cell", "value"],
+    }
+
+
 def register(registry) -> None:
     defs = [
         ("app.excel.status", status, RiskLevel.R0_READ_ONLY, False, False),
@@ -344,7 +402,7 @@ def register(registry) -> None:
                 name=name,
                 description=tool_description(name),
                 search_hint=tool_search_hint(name),
-                input_schema={},
+                input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,
                 agent_owner="AppAgent",

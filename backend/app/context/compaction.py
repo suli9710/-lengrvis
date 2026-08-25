@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import AppSettings
-from app.context.agent_message_projection import llm_safe_agent_message
+from app.context.agent_message_projection import llm_safe_agent_message, strip_private_provenance
+from app.context.compaction_observability import observe_manual_compaction
 from app.context.management import (
     compact_boundary_view,
     count_messages_tokens,
@@ -12,7 +13,8 @@ from app.context.management import (
     repair_tool_message_invariants,
     summarize_messages,
 )
-from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole, new_id, now_iso
+from app.context.summary_provenance import SummaryProvenanceError, build_summary_content_envelope
+from app.core.schemas import AgentMessage, ContentEnvelope, MessageType, OpenAIMessageRole, new_id, now_iso
 from app.core.session_context import SessionContextStore, get_session_context_store
 from app.llm.prompts import render_prompt
 from app.llm.registry import get_effective_settings
@@ -36,8 +38,10 @@ class ManualCompactResult:
     session_context: dict[str, Any] | None = None
     task_id: str = ""
     persisted_message_id: str = ""
+    summary_content_envelope: ContentEnvelope | None = None
 
 
+@observe_manual_compaction
 def manual_compact_messages(
     messages: list[dict[str, Any]],
     settings: AppSettings | None = None,
@@ -45,6 +49,9 @@ def manual_compact_messages(
     custom_instructions: str = "",
     recent_message_limit: int | None = None,
     session_context: dict[str, Any] | None = None,
+    provenance_scope: str = "adhoc",
+    existing_summary_envelope: ContentEnvelope | dict[str, Any] | None = None,
+    require_message_ids: bool = False,
 ) -> ManualCompactResult:
     resolved_settings = settings or get_effective_settings()
     normalized = _normalize_messages(messages)
@@ -70,6 +77,24 @@ def manual_compact_messages(
         session_summary = _session_summary(session_context)
         if session_summary:
             summary = f"{session_summary}\n\n{summary}" if summary else session_summary
+    summary_content_envelope: ContentEnvelope | None = None
+    summary_anchor = (
+        _last_message_id(visible) or str((session_context or {}).get("last_summarized_message_id") or "").strip()
+    )
+    if summary and summary_anchor:
+        summary_content_envelope = build_summary_content_envelope(
+            summary,
+            compacted,
+            session_id=str(provenance_scope or "adhoc"),
+            last_message_id=summary_anchor,
+            source_message_ids=compact_metadata.get("messages_to_summarize_ids") or [],
+            existing_summary=str((session_context or {}).get("conversation_summary") or ""),
+            existing_envelope=existing_summary_envelope,
+            existing_last_message_id=str((session_context or {}).get("last_summarized_message_id") or ""),
+            custom_instructions=custom_instructions,
+            require_message_ids=require_message_ids,
+        )
+        compact_metadata["summary_content_envelope"] = summary_content_envelope.model_dump(mode="json")
     boundary = make_manual_compact_boundary(
         summary,
         custom_instructions=custom_instructions,
@@ -116,6 +141,7 @@ def manual_compact_messages(
         original_count=len(visible),
         compacted_count=len(result_messages),
         compact_metadata=compact_metadata,
+        summary_content_envelope=summary_content_envelope,
     )
 
 
@@ -129,8 +155,8 @@ def compact_session_context(
     session_id: str | None = None,
 ) -> ManualCompactResult:
     store = session_store or get_session_context_store()
-    if session_id:
-        store.load(session_id)
+    store.load(session_id or store.current.id)
+    expected_updated_at = store.current.updated_at
     session_context = store.planning_context()
     result = manual_compact_messages(
         messages,
@@ -138,13 +164,22 @@ def compact_session_context(
         custom_instructions=custom_instructions,
         recent_message_limit=recent_message_limit,
         session_context=session_context,
+        provenance_scope=store.current.id,
+        existing_summary_envelope=store.current.conversation_summary_envelope,
+        require_message_ids=True,
     )
+    if result.summary and result.summary_content_envelope is None:
+        raise SummaryProvenanceError(
+            "persisted compaction requires authenticated summary provenance and a stable message anchor"
+        )
     store.remember_summary(
         result.summary,
         last_message_id=str(_last_message_id(messages) or ""),
+        summary_envelope=result.summary_content_envelope,
         token_stats={
             "strategy": MANUAL_COMPACT_BOUNDARY,
             "session_id": store.current.id,
+            "summary_source_message_ids": list((result.compact_metadata or {}).get("messages_to_summarize_ids") or []),
             "pre_compact_tokens": result.pre_compact_tokens,
             "post_compact_tokens": result.post_compact_tokens,
             "compacted_messages": result.compacted_messages,
@@ -154,6 +189,7 @@ def compact_session_context(
             "compact_metadata": result.compact_metadata or {},
         },
         resumed_from_boundary_id=str(result.boundary_message.get("id") or ""),
+        expected_updated_at=expected_updated_at,
     )
     return ManualCompactResult(
         messages=result.messages,
@@ -167,6 +203,7 @@ def compact_session_context(
         compacted_count=result.compacted_count,
         compact_metadata=result.compact_metadata,
         session_context=store.planning_context(),
+        summary_content_envelope=result.summary_content_envelope,
     )
 
 
@@ -198,6 +235,8 @@ def compact_task_context(
             settings,
             custom_instructions=custom_instructions,
             recent_message_limit=recent_message_limit,
+            provenance_scope=str(session_id or task_id or "adhoc"),
+            require_message_ids=True,
         )
     if not persist_agent_boundary:
         return _copy_result(result, task_id=task_id)
@@ -224,6 +263,7 @@ def compact_task_context(
         session_context=result.session_context,
         task_id=task_id,
         persisted_message_id=boundary.id,
+        summary_content_envelope=result.summary_content_envelope,
     )
 
 
@@ -274,8 +314,8 @@ def persist_compact_boundary(
 
 def manual_compact_result_to_dict(result: ManualCompactResult) -> dict[str, Any]:
     return {
-        "messages": result.messages,
-        "boundary_message": result.boundary_message,
+        "messages": strip_private_provenance(result.messages),
+        "boundary_message": strip_private_provenance(result.boundary_message),
         "summary": result.summary,
         "pre_compact_tokens": result.pre_compact_tokens,
         "post_compact_tokens": result.post_compact_tokens,
@@ -283,10 +323,15 @@ def manual_compact_result_to_dict(result: ManualCompactResult) -> dict[str, Any]
         "retained_tail_messages": result.retained_tail_messages,
         "original_count": result.original_count,
         "compacted_count": result.compacted_count,
-        "compact_metadata": result.compact_metadata or {},
-        "session_context": result.session_context,
+        "compact_metadata": strip_private_provenance(result.compact_metadata or {}),
+        "session_context": strip_private_provenance(result.session_context),
         "task_id": result.task_id,
         "persisted_message_id": result.persisted_message_id,
+        "summary_content_envelope": (
+            result.summary_content_envelope.model_dump(mode="json")
+            if result.summary_content_envelope is not None
+            else None
+        ),
     }
 
 
@@ -322,6 +367,7 @@ def make_manual_compact_boundary(
             "pre_compact_tokens": max(0, int(pre_compact_tokens or 0)),
             "retained_tail_message_ids": list(retained_tail_message_ids or []),
             "compact_metadata": compact_meta,
+            "summary_content_envelope": compact_meta.get("summary_content_envelope"),
         },
     }
 
@@ -475,4 +521,5 @@ def _copy_result(
         session_context=result.session_context,
         task_id=task_id or result.task_id,
         persisted_message_id=persisted_message_id or result.persisted_message_id,
+        summary_content_envelope=result.summary_content_envelope,
     )

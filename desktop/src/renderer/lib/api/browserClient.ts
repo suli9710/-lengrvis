@@ -10,6 +10,7 @@ import type {
   BrowserSession
 } from "../../../shared/browserTypes";
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   BackendBrowserActivityEnvelope,
   BackendBrowserEvents,
@@ -144,7 +145,9 @@ export async function observeBrowserSessionEndpoint(
   }
 
   const response = window.lengrvis?.browserBackend
-    ? await window.lengrvis.browserBackend.observe({ sessionId }) as ApiResponse<BackendBrowserActivityEnvelope>
+    ? await safeIpcApiRequest<BackendBrowserActivityEnvelope>(() =>
+        window.lengrvis.browserBackend.observe({ sessionId }) as Promise<ApiResponse<BackendBrowserActivityEnvelope>>
+      )
     : await request<BackendBrowserActivityEnvelope, { session_id: string }>({
         endpoint: "/api/browser/observe",
         method: "POST",
@@ -190,7 +193,9 @@ export async function exportBrowserReplayEndpoint(
   if (hostReplay) return hostReplay;
 
   const response = window.lengrvis?.browserBackend
-    ? await window.lengrvis.browserBackend.replayExport({ sessionId }) as ApiResponse<BackendBrowserReplayExport>
+    ? await safeIpcApiRequest<BackendBrowserReplayExport>(() =>
+        window.lengrvis.browserBackend.replayExport({ sessionId }) as Promise<ApiResponse<BackendBrowserReplayExport>>
+      )
     : await request<BackendBrowserReplayExport, { session_id: string }>({
         endpoint: "/api/browser/replay-export",
         method: "POST",
@@ -301,13 +306,13 @@ export async function exportBrowserHostReplayEndpoint(
       },
       receivedAt
     };
-  } catch (error) { // broad-exception-boundary
+  } catch { // broad-exception-boundary: never expose browser host IPC details in renderer responses.
     return {
       ok: false,
       status: 0,
       error: {
         code: "BROWSER_HOST_UNAVAILABLE",
-        message: error instanceof Error ? error.message : "Browser host replay is unavailable"
+        message: "浏览器窗口暂时不可用，请稍后重试。"
       },
       receivedAt
     };

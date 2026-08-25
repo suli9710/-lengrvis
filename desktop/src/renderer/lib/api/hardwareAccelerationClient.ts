@@ -3,6 +3,7 @@ import type {
   HardwareAccelerationStatusPayload
 } from "../../../shared/hardwareAccelerationTypes";
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   BackendHardwareAccelerationSmoke,
   BackendHardwareAccelerationStatus,
@@ -55,16 +56,18 @@ export async function runHardwareAccelerationSmokeEndpoint(
           }
         : {
             model_path: payload.modelPath
-          };
+  };
   const response = window.lengrvis?.hardwareAcceleration
-    ? await window.lengrvis.hardwareAcceleration.smoke({
-        operation,
-        prompt: payload.prompt,
-        maxTokens: payload.maxTokens,
-        texts: payload.texts,
-        modelPath: payload.modelPath,
-        imagePath: payload.imagePath
-      }) as ApiResponse<BackendHardwareAccelerationSmoke>
+    ? await safeIpcApiRequest<BackendHardwareAccelerationSmoke>(() =>
+        window.lengrvis.hardwareAcceleration.smoke({
+          operation,
+          prompt: payload.prompt,
+          maxTokens: payload.maxTokens,
+          texts: payload.texts,
+          modelPath: payload.modelPath,
+          imagePath: payload.imagePath
+        }) as Promise<ApiResponse<BackendHardwareAccelerationSmoke>>
+      )
     : await request<BackendHardwareAccelerationSmoke, HardwareAccelerationSmokeRequestBody>({
         endpoint: endpointByOperation[operation],
         method: "POST",

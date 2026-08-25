@@ -18,6 +18,7 @@ import type {
   DesktopCommercePolicyImportRequest,
   DesktopHardwareAccelerationSmokeRequest,
   DesktopMemoryRecallRequest,
+  DesktopMemoryReviewRequest,
   DesktopMemorySaveRequest,
   DesktopOpenSettingsRequest,
   DesktopPerceptionSuggestionLaunchRequest,
@@ -236,6 +237,7 @@ export type {
   DesktopCommercePolicyImportRequest,
   DesktopHardwareAccelerationSmokeRequest,
   DesktopMemoryRecallRequest,
+  DesktopMemoryReviewRequest,
   DesktopMemorySaveRequest,
   DesktopOpenSettingsRequest,
   DesktopPerceptionSuggestionLaunchRequest,
@@ -364,6 +366,8 @@ export interface LengrvisDesktopBridge {
   memories: {
     save: (request: DesktopMemorySaveRequest) => Promise<ApiResponse<unknown>>;
     recall: (request: DesktopMemoryRecallRequest) => Promise<ApiResponse<unknown>>;
+    promote: (request: DesktopMemoryReviewRequest) => Promise<ApiResponse<unknown>>;
+    revoke: (request: DesktopMemoryReviewRequest) => Promise<ApiResponse<unknown>>;
     forget: (memoryId: string) => Promise<ApiResponse<unknown>>;
   };
   schedules: {

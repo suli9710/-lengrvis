@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import inspect
-import re
-from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.agents.base import BaseAgent
-from app.agents.path_detection import find_explicit_path
+from app.agents.planner_deterministic_intents import PlannerDeterministicIntentMixin
+from app.agents.planner_deterministic_plans import PlannerDeterministicPlanMixin
 from app.agents.worker_agents import normalize_supervisor_agent_hint
 from app.core.schemas import MessageType, Plan, PlanStep
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_effective_settings, get_provider
+from app.orchestration.deterministic_contracts import seal_deterministic_plan
 from app.perception.storage import is_sensitive_context
 from app.policy.risk import RiskLevel, max_risk
 
@@ -45,52 +45,6 @@ PLAN_SCHEMA: dict[str, Any] = {
         },
     },
 }
-
-DELETE_TERMS = ("delete", "remove", "trash", "删除", "删掉", "移除", "清理")
-UNINSTALL_TERMS = ("uninstall", "卸载")
-SYSTEM_CHECK_TERMS = (
-    "检查电脑状态",
-    "检查这台电脑",
-    "电脑状态",
-    "系统体检",
-    "运行状态",
-    "关键进程",
-    "本地 ai",
-    "本地ai",
-    "computer status",
-    "system status",
-    "diagnostics",
-)
-DRIVE_CLEANUP_RE = re.compile(r"(?P<drive>[a-zA-Z])\s*盘")
-OPEN_APP_EXCLUDE_TERMS = (
-    "文件",
-    "目录",
-    "网站",
-    "网页",
-    "链接",
-    "http",
-    "www.",
-    ".com",
-    ".cn",
-    ".net",
-    ".org",
-    "file",
-    "folder",
-    "directory",
-    "website",
-    "url",
-)
-# Whole-query aliases so common Chinese app names hit the launch allowlist.
-OPEN_APP_NAME_ALIASES = {"记事本": "notepad", "计算器": "calculator"}
-PATH_SUFFIXES = (
-    " 这个文件夹",
-    " 这个目录",
-    " 这个文件",
-    " 整个文件夹",
-    " 文件夹",
-    " 目录",
-    " 文件",
-)
 
 
 def supervisor_hint_allows_deterministic(agent_hint: str | None, owning_agent: str) -> bool:
@@ -130,7 +84,11 @@ GOAL_DESCRIPTION_CHARS = 480
 SCREEN_DESCRIPTION_CHARS = 480
 
 
-class PlannerAgent(BaseAgent):
+class PlannerAgent(
+    PlannerDeterministicPlanMixin,
+    PlannerDeterministicIntentMixin,
+    BaseAgent,
+):
     name = "PlannerAgent"
     prompt_file = "planner_agent.md"
 
@@ -149,15 +107,29 @@ class PlannerAgent(BaseAgent):
         planner_revision_feedback: str | None = None,
     ) -> Plan:
         for build_deterministic in (
+            self._deterministic_large_files_plan,
+            self._deterministic_duplicate_plan,
+            self._deterministic_developer_status_plan,
+            self._deterministic_developer_search_plan,
+            self._deterministic_full_text_search_plan,
+            self._deterministic_file_mutation_plan,
+            self._deterministic_excel_write_plan,
             self._deterministic_cleanup_plan,
             self._deterministic_file_plan,
             self._deterministic_uninstall_plan,
+            self._deterministic_browser_fill_plan,
+            self._deterministic_browser_submit_plan,
+            self._deterministic_browser_read_plan,
+            self._deterministic_document_qa_plan,
+            self._deterministic_document_read_plan,
+            self._deterministic_memory_plan,
             self._deterministic_system_check_plan,
             self._deterministic_open_app_plan,
             self._deterministic_search_plan,
         ):
             deterministic_plan = build_deterministic(task_id, goal, tools, agent_hint=agent_hint)
             if deterministic_plan:
+                seal_deterministic_plan(deterministic_plan)
                 self._publish_plan(task_id, deterministic_plan)
                 return deterministic_plan
 
@@ -390,356 +362,6 @@ class PlannerAgent(BaseAgent):
             f"Generated plan with {len(plan.steps)} step(s).",
             structured_payload=plan.model_dump(),
         )
-
-    def _deterministic_file_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
-            return None
-        if "file.trash" not in tools or not self._has_delete_intent(goal):
-            return None
-
-        target_path = self._extract_windows_path(goal)
-        if not target_path:
-            return None
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="FileAgent",
-            tool_name="file.trash",
-            description=f"将指定路径移入回收站：{target_path}",
-            args={"path": target_path, "dry_run": True},
-            expected_observation="文件或文件夹已移入回收站。",
-            risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
-            requires_approval=True,
-            rollback_strategy="如需恢复，请从 Windows 回收站还原该项目。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到明确的删除意图和路径，因此使用确定性的文件删除计划。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
-            requires_user_approval=True,
-        )
-
-    def _deterministic_cleanup_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
-            return None
-        if "file.cleanup_plan" not in tools or not self._has_cleanup_intent(goal):
-            return None
-        if self._extract_windows_path(goal):
-            return None
-
-        roots = self._cleanup_roots(goal)
-        if not roots:
-            step = PlanStep(
-                id="step_1",
-                task_id=task_id,
-                order=1,
-                agent_name="FileAgent",
-                tool_name="file.search_by_name",
-                description="说明清理任务需要先设置授权目录。",
-                args={"query": "清理文件前需要先在设置中添加要扫描的授权目录。"},
-                expected_observation="已说明需要授权目录后才能扫描清理项。",
-                risk_level=RiskLevel.R0_READ_ONLY,
-                requires_approval=False,
-                rollback_strategy="未执行文件修改。",
-            )
-            return Plan(
-                task_id=task_id,
-                goal=goal,
-                assumptions=["用户提出了宽泛磁盘清理请求，但没有可用授权目录；不会把自然语言当作文件路径删除。"],
-                steps=[step],
-                global_risk_level=RiskLevel.R0_READ_ONLY,
-                requires_user_approval=False,
-            )
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="FileAgent",
-            tool_name="file.cleanup_plan",
-            description="扫描授权目录并生成清理预览。",
-            args={"roots": roots, "threshold_mb": 50, "older_than_days": 30},
-            expected_observation="已生成清理预览，所有删除或移入回收站操作都需要用户审批后才会执行。",
-            risk_level=RiskLevel.R0_READ_ONLY,
-            requires_approval=False,
-            rollback_strategy="当前步骤只生成预览，不修改文件。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到宽泛清理请求；先扫描授权目录生成清理预览，不直接删除文件。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R0_READ_ONLY,
-            requires_user_approval=False,
-        )
-
-    def _deterministic_uninstall_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
-            return None
-        if "app.uninstall_app" not in tools or not self._has_uninstall_intent(goal):
-            return None
-
-        query = self._extract_uninstall_query(goal)
-        if not query:
-            return None
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="AppAgent",
-            tool_name="app.uninstall_app",
-            description=f"查找并启动应用卸载程序：{query}",
-            args={"query": query, "dry_run": True},
-            expected_observation="应用卸载程序已启动，等待用户完成厂商卸载向导。",
-            risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
-            requires_approval=True,
-            rollback_strategy="卸载由应用自身安装器处理；如需恢复需重新安装该应用。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到明确的应用卸载意图，因此先定位卸载项并等待用户审批。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
-            requires_user_approval=True,
-        )
-
-    def _deterministic_system_check_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "ComputerAgent"):
-            return None
-        if "system.diagnostics" not in tools or not self._has_system_check_intent(goal):
-            return None
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="ComputerAgent",
-            tool_name="system.diagnostics",
-            description="只读检查系统、磁盘、关键进程和本地 AI 状态。",
-            args={},
-            expected_observation="已完成只读电脑状态检查，未修改系统设置或文件。",
-            risk_level=RiskLevel.R0_READ_ONLY,
-            requires_approval=False,
-            rollback_strategy="当前步骤只读取状态，不修改系统，无需回滚。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到电脑状态检查请求；使用确定性只读系统诊断计划，不需要 LLM 规划。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R0_READ_ONLY,
-            requires_user_approval=False,
-        )
-
-    def _deterministic_open_app_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
-            return None
-        if "app.launch_installed" not in tools or not self._has_open_app_intent(goal):
-            return None
-        if self._has_delete_intent(goal) or self._has_uninstall_intent(goal) or self._has_system_check_intent(goal):
-            return None
-        if self._extract_windows_path(goal):
-            return None
-
-        app_query = self._extract_open_app_query(goal)
-        if not app_query or len(app_query) > 60:
-            return None
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="AppAgent",
-            tool_name="app.launch_installed",
-            description=f"启动本机已安装的应用：{app_query}",
-            args={"app": app_query},
-            expected_observation="目标应用已启动；只允许打开允许列表或已安装应用，不做其他系统修改。",
-            risk_level=RiskLevel.R1_OPEN_ONLY,
-            requires_approval=False,
-            rollback_strategy="如不需要该应用，请手动关闭其窗口；本步骤不修改文件或系统设置。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到明确的打开应用意图，因此使用确定性的应用启动计划。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R1_OPEN_ONLY,
-            requires_user_approval=False,
-        )
-
-    def _deterministic_search_plan(
-        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
-    ) -> Plan | None:
-        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
-            return None
-        if "file.search_by_name" not in tools or not self._has_file_search_intent(goal):
-            return None
-        normalized = goal.casefold()
-        if "重复" in goal or "duplicate" in normalized:
-            return None
-        if self._has_delete_intent(goal) or self._has_cleanup_intent(goal) or self._has_uninstall_intent(goal):
-            return None
-        if self._extract_windows_path(goal):
-            return None
-
-        query = self._extract_search_query(goal)
-        if not query or len(query) > 80:
-            return None
-
-        step = PlanStep(
-            id="step_1",
-            task_id=task_id,
-            order=1,
-            agent_name="FileAgent",
-            tool_name="file.search_by_name",
-            description=f"在授权目录中按文件名搜索：{query}",
-            args={"query": query},
-            expected_observation="已返回授权目录内匹配该名称的文件列表，未修改任何文件。",
-            risk_level=RiskLevel.R0_READ_ONLY,
-            requires_approval=False,
-            rollback_strategy="当前步骤只读搜索，不修改文件，无需回滚。",
-        )
-        return Plan(
-            task_id=task_id,
-            goal=goal,
-            assumptions=["检测到明确的按文件名搜索意图，因此使用确定性的只读搜索计划。"],
-            steps=[step],
-            global_risk_level=RiskLevel.R0_READ_ONLY,
-            requires_user_approval=False,
-        )
-
-    def _has_delete_intent(self, goal: str) -> bool:
-        normalized = goal.lower()
-        return any(term in normalized for term in DELETE_TERMS)
-
-    def _has_cleanup_intent(self, goal: str) -> bool:
-        normalized = goal.lower()
-        return "清理" in normalized or "cleanup" in normalized or "clean up" in normalized
-
-    def _cleanup_roots(self, goal: str) -> list[str]:
-        settings_roots = [str(path) for path in get_effective_settings().allowed_directories or []]
-        drive = self._extract_drive_root(goal)
-        if drive:
-            normalized_drive = drive.casefold().rstrip("\\/")
-            matching_roots = [
-                root for root in settings_roots if str(Path(root).drive).casefold().rstrip("\\/") == normalized_drive
-            ]
-            return matching_roots or settings_roots
-        return settings_roots
-
-    def _extract_drive_root(self, goal: str) -> str | None:
-        match = DRIVE_CLEANUP_RE.search(goal)
-        if not match:
-            return None
-        return f"{match.group('drive').upper()}:"
-
-    def _has_uninstall_intent(self, goal: str) -> bool:
-        normalized = goal.lower()
-        return any(term in normalized for term in UNINSTALL_TERMS)
-
-    def _has_open_app_intent(self, goal: str) -> bool:
-        normalized = goal.casefold()
-        has_open_verb = "打开" in goal or "启动" in goal or re.search(r"\b(open|launch)\b", normalized) is not None
-        if not has_open_verb:
-            return False
-        return not any(term in normalized for term in OPEN_APP_EXCLUDE_TERMS)
-
-    def _extract_open_app_query(self, goal: str) -> str:
-        query = goal.strip()
-        for term in ("帮我", "请", "麻烦", "一下", "这个", "应用", "软件", "程序"):
-            query = query.replace(term, "")
-        for term in ("打开", "启动"):
-            query = query.replace(term, "")
-        query = re.sub(r"\b(open|launch|the|app|application)\b", "", query, flags=re.IGNORECASE)
-        query = query.strip(" ：:，,。.!！?？\"'“”‘’")
-        return OPEN_APP_NAME_ALIASES.get(query.casefold(), query)
-
-    def _has_file_search_intent(self, goal: str) -> bool:
-        normalized = goal.casefold()
-        if re.search(r"\b(find|search|locate)\b.*\bfiles?\b", normalized):
-            return True
-        if re.search(r"\bfiles?\b.*\b(named|called)\b", normalized):
-            return True
-        return "文件" in goal and ("找" in goal or "搜" in goal)
-
-    def _extract_search_query(self, goal: str) -> str:
-        text = goal.strip()
-        colon_match = re.search(r"[:：](?P<q>.+)$", text)
-        if colon_match:
-            candidate = colon_match.group("q")
-        else:
-            candidate = text
-            for term in ("帮我", "请", "麻烦", "一下", "所有", "相关"):
-                candidate = candidate.replace(term, "")
-            for term in ("查找", "搜索", "找到", "寻找", "搜", "找"):
-                candidate = candidate.replace(term, "")
-            candidate = re.sub(
-                r"\b(find|search( for)?|locate|named|called|files?|the)\b", "", candidate, flags=re.IGNORECASE
-            )
-            candidate = candidate.replace("文件名", "").replace("文件", "")
-        return candidate.strip(" ：:，,。.\"'“”‘’")
-
-    def _has_system_check_intent(self, goal: str) -> bool:
-        normalized = goal.casefold()
-        if any(term.casefold() in normalized for term in SYSTEM_CHECK_TERMS):
-            return True
-        return (
-            "检查" in goal
-            and ("电脑" in goal or "系统" in goal)
-            and any(term in goal for term in ("状态", "磁盘", "内存", "进程", "可用性"))
-        )
-
-    def _extract_uninstall_query(self, goal: str) -> str:
-        query = goal.strip()
-        for term in ("帮我", "请", "一下", "应用", "软件", "程序"):
-            query = query.replace(term, "")
-        for term in ("卸载", "uninstall"):
-            query = re.sub(re.escape(term), "", query, flags=re.IGNORECASE)
-        return query.strip(" ：:，,。.")
-
-    def _extract_windows_path(self, goal: str) -> str | None:
-        quoted = re.search(r"[\"“](?P<path>[A-Za-z]:[\\/][^\"”]+)[\"”]", goal)
-        if quoted:
-            return self._clean_path_candidate(quoted.group("path"))
-
-        match = find_explicit_path(goal)
-        if not match:
-            return None
-        return self._clean_path_candidate(match)
-
-    def _clean_path_candidate(self, value: str) -> str:
-        candidate = value.strip().strip("`'\"“”‘’")
-        candidate = candidate.rstrip("。.,，;；、)]}）")
-        for suffix in PATH_SUFFIXES:
-            if candidate.endswith(suffix):
-                candidate = candidate[: -len(suffix)].rstrip()
-
-        if Path(candidate).exists():
-            return str(Path(candidate).resolve(strict=False))
-
-        parts = candidate.split()
-        while len(parts) > 1:
-            shortened = " ".join(parts[:-1]).rstrip("。.,，;；、)]}）")
-            if Path(shortened).exists():
-                return str(Path(shortened).resolve(strict=False))
-            parts = parts[:-1]
-        return candidate
 
     def _payload_to_plan(self, task_id: str, payload: dict[str, Any]) -> Plan:
         steps: list[PlanStep] = []

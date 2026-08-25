@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import PureWindowsPath
 from typing import Any
 
+from app.policy.policy_helpers import candidate_paths, canonicalize_path
 from app.policy.risk import RISK_ORDER, RiskLevel
 
 RISK_BY_SCORE = {score: level for level, score in RISK_ORDER.items()}
@@ -57,6 +58,9 @@ class DynamicRiskAssessor:
     late_night_start_hour = 22
     late_night_end_hour = 5
 
+    def __init__(self, *, now_provider: Callable[[], datetime] | None = None) -> None:
+        self.now_provider = now_provider
+
     def assess(
         self,
         tool_name: str,
@@ -64,6 +68,8 @@ class DynamicRiskAssessor:
         base_risk: RiskLevel,
         context: dict[str, Any] | None = None,
         task_id: str = "",
+        *,
+        now: datetime | None = None,
     ) -> DynamicRiskAssessment:
         context = context or {}
         if base_risk == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
@@ -78,19 +84,36 @@ class DynamicRiskAssessor:
         reasons: list[str] = [f"Static risk classified {tool_name} as {base_risk.value}."]
         factors: dict[str, Any] = {"task_id": task_id, "tool_name": tool_name}
 
-        paths = list(_candidate_paths(args))
-        path_factor = self._path_factor(paths)
-        factors["paths"] = paths
+        raw_paths = list(_candidate_paths(args))
+        paths, invalid_paths = _canonical_candidate_paths(raw_paths)
+        path_factor = self._path_factor(paths, invalid=bool(invalid_paths))
+        # Keep the original field for callers that use it for display, while
+        # exposing the canonical resource identity used for risk decisions.
+        factors["paths"] = raw_paths
+        factors["canonical_paths"] = paths
+        factors["invalid_paths"] = len(invalid_paths)
         factors["path_category"] = path_factor
-        if path_factor == "system":
+        if path_factor == "unsafe":
+            score += 2 if RISK_ORDER[base_risk] <= RISK_ORDER[RiskLevel.R1_OPEN_ONLY] else 1
+            reasons.append("Ambiguous or unsafe target path increases execution risk.")
+        elif path_factor == "system":
             score += 2 if RISK_ORDER[base_risk] <= RISK_ORDER[RiskLevel.R1_OPEN_ONLY] else 1
             reasons.append("Target path is in a system or application directory.")
         elif path_factor == "user_documents":
             reasons.append("Target path appears to be in user-owned documents or desktop storage.")
 
-        now = _context_datetime(context)
-        factors["hour"] = now.hour if now else None
-        if now and self._is_late_night(now):
+        # PolicyEngine passes one server-owned snapshot so risk and its cache
+        # provenance cannot straddle a time boundary. Direct assessor callers
+        # retain provider/context compatibility for deterministic tests.
+        assessed_at = (
+            now
+            if now is not None
+            else self.now_provider()
+            if self.now_provider is not None
+            else _context_datetime(context)
+        )
+        factors["hour"] = assessed_at.hour if assessed_at else None
+        if assessed_at and self._is_late_night(assessed_at):
             score += 1
             reasons.append("Deep-night operation increases review risk.")
 
@@ -150,7 +173,9 @@ class DynamicRiskAssessor:
             )
         )
 
-    def _path_factor(self, paths: list[str]) -> str:
+    def _path_factor(self, paths: list[str], *, invalid: bool = False) -> str:
+        if invalid:
+            return "unsafe"
         for path in paths:
             if _is_system_path(path):
                 return "system"
@@ -166,24 +191,19 @@ def _risk_from_score(score: int) -> RiskLevel:
 
 
 def _candidate_paths(value: Any) -> list[str]:
-    result: list[str] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized_key = str(key).casefold()
-            if normalized_key in PATH_ARG_KEYS or "path" in normalized_key:
-                result.extend(_candidate_paths(item))
-            elif isinstance(item, dict | list | tuple):
-                result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, list | tuple | set):
-        for item in value:
-            result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            result.append(text)
-    return result
+    return candidate_paths(value)
+
+
+def _canonical_candidate_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    canonical: list[str] = []
+    invalid: list[str] = []
+    for path in paths:
+        normalized = canonicalize_path(path)
+        if normalized is None:
+            invalid.append(path)
+        else:
+            canonical.append(normalized)
+    return canonical, invalid
 
 
 def _context_datetime(context: dict[str, Any]) -> datetime | None:
@@ -267,13 +287,7 @@ def _is_user_document_path(path: str) -> bool:
 
 
 def _normalized_path(path: str) -> str:
-    text = path.strip().replace("\\", "/")
-    if not text:
-        return ""
-    try:
-        pure = PureWindowsPath(text)
-        if pure.drive:
-            text = pure.as_posix()
-    except (TypeError, ValueError):
-        return text.rstrip("/").casefold()
-    return text.rstrip("/").casefold()
+    normalized = canonicalize_path(path)
+    if normalized is not None:
+        return normalized.rstrip("/")
+    return ""

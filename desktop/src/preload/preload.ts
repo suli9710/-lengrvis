@@ -10,6 +10,7 @@ import type {
   DesktopCommercePolicyImportRequest,
   DesktopHardwareAccelerationSmokeRequest,
   DesktopMemoryRecallRequest,
+  DesktopMemoryReviewRequest,
   DesktopMemorySaveRequest,
   LengrvisDesktopBridge,
   DesktopPerceptionSuggestionLaunchRequest,
@@ -135,6 +136,8 @@ const bridge: LengrvisDesktopBridge = {
   memories: {
     save: (request: DesktopMemorySaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesSave, request),
     recall: (request: DesktopMemoryRecallRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesRecall, request),
+    promote: (request: DesktopMemoryReviewRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesPromote, request),
+    revoke: (request: DesktopMemoryReviewRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesRevoke, request),
     forget: (memoryId: string) => ipcRenderer.invoke(IPC_CHANNELS.memoriesForget, memoryId)
   },
   schedules: {

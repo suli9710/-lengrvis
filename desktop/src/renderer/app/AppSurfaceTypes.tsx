@@ -12,7 +12,8 @@ import type {
   ApprovalRequest,
   Plan,
   SafetyReview,
-  TaskEvent
+  TaskEvent,
+  TaskPilotAction
 } from "../../shared/executionTypes";
 import type { FileSearchMeta, FileSearchResult } from "../../shared/fileLibraryTypes";
 import type { LLMCostSummary, LLMHealthStatus } from "../../shared/llmContextTypes";
@@ -83,7 +84,7 @@ export interface AppSurfaceProps {
   onSubmitHeroPrompt: () => Promise<void>;
   onQuickSkill: (skill: OfficeQuickSkill) => void;
   onReadinessAction: (item: HomeReadinessItem) => void;
-  onTaskPilotAction: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
   onSendMessage: (content: string) => Promise<SendResult>;
   onExecuteSuggestion: (suggestion: IntentSuggestion) => Promise<void>;
   onSearchFiles: (query: string) => Promise<void>;

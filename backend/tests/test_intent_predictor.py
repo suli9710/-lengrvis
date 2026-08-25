@@ -44,6 +44,31 @@ def test_predictor_uses_injected_model_and_filters_threshold():
     assert "Revenue" in model.features["ui_text"]
 
 
+def test_predictor_skips_malformed_confidence_without_losing_valid_candidates():
+    class PartiallyMalformedModel:
+        def predict(self, features):
+            del features
+            return [
+                {
+                    "id": "invalid_percentage",
+                    "title": "Invalid percentage",
+                    "prompt": "This must be rejected instead of treated as 97 percent.",
+                    "confidence": 97,
+                },
+                {
+                    "id": "valid_candidate",
+                    "title": "Valid candidate",
+                    "prompt": "Keep this candidate.",
+                    "confidence": 0.91,
+                },
+            ]
+
+    suggestions = IntentPredictor(model=PartiallyMalformedModel()).predict()
+
+    assert [item.id for item in suggestions] == ["valid_candidate"]
+    assert suggestions[0].confidence == 0.91
+
+
 def test_heuristic_predicts_spreadsheet_intent_from_screen_and_app_context():
     state = ScreenState(
         description="Budget spreadsheet with chart and formulas",

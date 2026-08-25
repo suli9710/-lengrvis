@@ -11,6 +11,7 @@ from contextlib import suppress
 from app.core.audit import record
 from app.core.schemas import Task
 from app.observability.best_effort import log_best_effort_failure
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,9 @@ class TaskPool:
                         if current is not None:
                             self._running[task.id] = current
                     try:
-                        await runner(task)
-                        self._record_completed(task.id, "completed")
+                        result = await runner(task)
+                        completed_status = result.status.value if result.status in TERMINAL_TASK_PHASES else "completed"
+                        self._record_completed(task.id, completed_status)
                     except asyncio.CancelledError:
                         self._record_completed(task.id, "cancelled")
                         raise

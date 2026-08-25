@@ -6,18 +6,24 @@ from pathlib import Path
 import httpx
 import pytest
 
+from app.commerce import usage as commerce_usage
+from app.commerce.usage import QuotaExceededError
 from app.config import AppSettings
-from app.context_management import PromptTooLongError
+from app.context_management import ContextAwareProvider, PromptTooLongError
 from app.core.outbound_url import PinnedOutboundRequest
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import (
     _CIRCUITS,
+    _IMAGE_PART_TOKEN_ESTIMATE,
     LLMApiCircuitOpen,
     OpenAICompatibleProvider,
+    _transport_token_estimate,
+    _transport_usage,
     circuit_snapshot,
     close_shared_http_client,
     normalize_openai_base_url,
 )
+from app.llm.profiles import profile_for_provider
 from app.llm.registry import get_provider_for_mode
 from app.llm.structured_output import (
     LLMApiResponseError,
@@ -26,6 +32,7 @@ from app.llm.structured_output import (
 from app.llm.structured_output import (
     validate_structured_payload_lightweight as _validate_structured_payload_lightweight,
 )
+from app.llm.usage import list_usage_events, usage_summary
 
 
 class FakeAsyncClient:
@@ -54,12 +61,14 @@ class FakeAsyncClient:
 @pytest.fixture(autouse=True)
 def _clear_circuit_state():
     _CIRCUITS.clear()
+    commerce_usage._clear_cloud_metering_fault_for_tests()
     FakeAsyncClient.calls = 0
     FakeAsyncClient.requests = []
     FakeAsyncClient.responses = []
     FakeAsyncClient.errors = []
     yield
     _CIRCUITS.clear()
+    commerce_usage._clear_cloud_metering_fault_for_tests()
     asyncio.run(close_shared_http_client())
 
 
@@ -115,6 +124,96 @@ def _text_response(status_code: int, text: str, headers: dict[str, str] | None =
     )
 
 
+def _metered_provider(settings: AppSettings, *, task: str = "default") -> ContextAwareProvider:
+    provider = OpenAICompatibleProvider(settings)
+    profile = profile_for_provider(provider, settings)
+    return ContextAwareProvider(
+        provider,
+        settings,
+        task=task,
+        profile=profile,
+        meter_cloud_usage=True,
+    )
+
+
+def test_transport_meter_records_chat_once_without_wrapper_duplication(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        )
+    ]
+    wrapped = _metered_provider(_settings(llm_api_max_retries=0), task="planner")
+
+    response = asyncio.run(wrapped.chat_result([{"role": "user", "content": "hello"}]))
+
+    assert response.content == "ok"
+    assert FakeAsyncClient.calls == 1
+    assert usage_summary(hours=1)["calls"] == 1
+    event = list_usage_events(limit=1)[0]
+    assert event["purpose"] == "chat"
+    assert event["reservation"]["state"] == "settled"
+
+
+def test_transport_meter_covers_embeddings_and_blocks_second_call(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    monkeypatch.setenv(commerce_usage.CLOUD_QUOTA_CALLS_ENV_VAR, "1")
+    monkeypatch.setenv(commerce_usage.CLOUD_QUOTA_TOKENS_ENV_VAR, "100000")
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "data": [{"embedding": [0.1, 0.2]}],
+                "usage": {"prompt_tokens": 2, "total_tokens": 2},
+            },
+        )
+    ]
+    wrapped = _metered_provider(_settings(llm_api_max_retries=0), task="embed")
+
+    assert asyncio.run(wrapped.embed(["first"])) == [[0.1, 0.2]]
+    with pytest.raises(QuotaExceededError):
+        asyncio.run(wrapped.embed(["second"]))
+
+    assert FakeAsyncClient.calls == 1
+    assert usage_summary(hours=1)["calls"] == 1
+
+
+def test_transport_meter_counts_structured_repair_as_separate_cloud_call(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    monkeypatch.setenv(commerce_usage.CLOUD_QUOTA_CALLS_ENV_VAR, "1")
+    monkeypatch.setenv(commerce_usage.CLOUD_QUOTA_TOKENS_ENV_VAR, "100000")
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "choices": [{"message": {"content": "not-json"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        )
+    ]
+    settings = _settings(
+        llm_api_max_retries=0,
+        structured_output_mode="prompt",
+        structured_output_repair_retries=1,
+    )
+    wrapped = _metered_provider(settings, task="planner")
+
+    with pytest.raises(QuotaExceededError):
+        asyncio.run(
+            wrapped.structured_chat(
+                [{"role": "user", "content": "return json"}],
+                {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            )
+        )
+
+    assert FakeAsyncClient.calls == 1
+    assert usage_summary(hours=1)["calls"] == 1
+
+
 @pytest.mark.parametrize(
     ("raw", "normalized"),
     [
@@ -148,6 +247,83 @@ def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
 
     assert text == "ok"
     assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/responses"
+
+
+def test_responses_chat_defaults_to_store_false_and_allows_explicit_opt_in(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(200, {"status": "completed", "output": [{"content": [{"text": "default"}]}]}),
+        _response(200, {"status": "completed", "output": [{"content": [{"text": "opt-in"}]}]}),
+    ]
+
+    default_provider = OpenAICompatibleProvider(_settings(wire_api="responses", llm_api_max_retries=0))
+    opt_in_provider = OpenAICompatibleProvider(
+        _settings(wire_api="responses", disable_response_storage=False, llm_api_max_retries=0)
+    )
+
+    assert asyncio.run(default_provider.chat([{"role": "user", "content": "hello"}])) == "default"
+    assert asyncio.run(opt_in_provider.chat([{"role": "user", "content": "hello"}])) == "opt-in"
+
+    assert FakeAsyncClient.requests[0]["json"]["store"] is False
+    assert FakeAsyncClient.requests[1]["json"]["store"] is True
+
+
+def test_responses_structured_payload_honors_storage_default(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(200, {"status": "completed", "output": [{"content": [{"text": '{"ok":true}'}]}]}),
+        _response(200, {"status": "completed", "output": [{"content": [{"text": '{"ok":true}'}]}]}),
+    ]
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+
+    default_provider = OpenAICompatibleProvider(
+        _settings(
+            wire_api="responses",
+            structured_output_mode="native",
+            structured_output_repair_retries=0,
+            llm_api_max_retries=0,
+        )
+    )
+    opt_in_provider = OpenAICompatibleProvider(
+        _settings(
+            wire_api="responses",
+            disable_response_storage=False,
+            structured_output_mode="native",
+            structured_output_repair_retries=0,
+            llm_api_max_retries=0,
+        )
+    )
+
+    assert asyncio.run(default_provider.structured_chat([{"role": "user", "content": "return json"}], schema)) == {
+        "ok": True
+    }
+    assert asyncio.run(opt_in_provider.structured_chat([{"role": "user", "content": "return json"}], schema)) == {
+        "ok": True
+    }
+
+    assert FakeAsyncClient.requests[0]["json"]["store"] is False
+    assert FakeAsyncClient.requests[1]["json"]["store"] is True
+
+
+def test_responses_vision_payload_honors_storage_default(monkeypatch, tmp_path):
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"png-bytes")
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(200, {"status": "completed", "output": [{"content": [{"text": "default"}]}]}),
+        _response(200, {"status": "completed", "output": [{"content": [{"text": "opt-in"}]}]}),
+    ]
+
+    default_provider = OpenAICompatibleProvider(_settings(wire_api="responses", llm_api_max_retries=0))
+    opt_in_provider = OpenAICompatibleProvider(
+        _settings(wire_api="responses", disable_response_storage=False, llm_api_max_retries=0)
+    )
+
+    assert asyncio.run(default_provider.vision(str(image), "describe")) == "default"
+    assert asyncio.run(opt_in_provider.vision(str(image), "describe")) == "opt-in"
+
+    assert FakeAsyncClient.requests[0]["json"]["store"] is False
+    assert FakeAsyncClient.requests[1]["json"]["store"] is True
 
 
 def test_chat_posts_to_pinned_ip_with_host_and_sni_preserved(monkeypatch):
@@ -295,6 +471,32 @@ def test_privacy_mode_does_not_silently_fallback_to_cloud_or_mock(monkeypatch):
         get_provider_for_mode(settings, task="planner")
 
 
+def test_privacy_mode_explicit_loopback_openai_alias_keeps_identity_and_allows_local_route(
+    monkeypatch,
+):
+    monkeypatch.setattr("app.llm.registry.detect_onnx_backend", lambda settings: None)
+    settings = _settings(base_url="http://127.0.0.1:11434/v1")
+    settings.provider_name = "openai_compatible"
+    settings.mode = "privacy"
+
+    provider = get_provider_for_mode(settings, task="planner")
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.settings.provider_name == "openai_compatible"
+    assert provider._allow_private_base(settings.base_url) is True
+    assert provider._chat_completions_endpoint() == "http://127.0.0.1:11434/v1/chat/completions"
+
+
+def test_direct_cloud_alias_cannot_opt_into_loopback_without_local_routing():
+    settings = _settings(base_url="http://127.0.0.1:11434/v1")
+    settings.provider_name = "openai_compatible"
+    provider = OpenAICompatibleProvider(settings)
+
+    assert provider._allow_private_base(settings.base_url) is False
+    with pytest.raises(ValueError, match="blocked to prevent SSRF"):
+        provider._chat_completions_endpoint()
+
+
 def test_retry_after_header_controls_retry_sleep(monkeypatch):
     sleeps: list[float] = []
 
@@ -335,6 +537,39 @@ def test_chat_result_parses_usage(monkeypatch):
     assert result.usage.completion_tokens == 3
     assert result.usage.estimated is False
     assert result.finish_reason == "stop"
+
+
+def test_partial_or_malformed_provider_usage_stays_conservative():
+    payload = {"messages": [{"role": "user", "content": "hello"}], "max_output_tokens": 256}
+
+    partial = _transport_usage(
+        {"usage": {"prompt_tokens": 10}},
+        payload,
+        endpoint_kind="responses",
+    )
+    malformed = _transport_usage(
+        {"usage": {"prompt_tokens": "not-a-number", "completion_tokens": 3}},
+        payload,
+        endpoint_kind="responses",
+    )
+
+    assert partial.estimated is True
+    assert partial.prompt_tokens >= 10
+    assert partial.completion_tokens >= 256
+    assert malformed.estimated is True
+    assert malformed.completion_tokens >= 256
+
+
+def test_image_transport_estimate_is_capped_not_byte_scaled():
+    # Vision models bill images by tile count, not byte size. The estimate must
+    # be a fixed conservative cap so a large image does not reserve millions of
+    # "tokens" and get rejected by the plan quota window.
+    small = "data:image/png;base64," + ("A" * 100)
+    large = "data:image/png;base64," + ("A" * 100_000)
+
+    assert _transport_token_estimate(small) == _IMAGE_PART_TOKEN_ESTIMATE
+    assert _transport_token_estimate(large) == _transport_token_estimate(small)
+    assert _transport_token_estimate(large) < 10_000
 
 
 def test_chat_payload_strips_non_provider_message_fields(monkeypatch):

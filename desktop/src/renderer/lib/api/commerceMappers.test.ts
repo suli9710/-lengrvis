@@ -80,6 +80,8 @@ describe("commerce mappers", () => {
       plan: "team",
       enforced: true,
       unlimited: false,
+      available: true,
+      state: "available",
       window_hours: 24,
       limits: { total_tokens: 1000, calls: 50, total_cost_usd: 2 },
       usage: { calls: 5, total_tokens: 100, total_cost_usd: 0.25, window_hours: 24 },
@@ -87,6 +89,7 @@ describe("commerce mappers", () => {
       windows: [
         {
           window_hours: 1,
+          available: true,
           limits: { total_tokens: 100, calls: 10, total_cost_usd: 1 },
           usage: { calls: 2, total_tokens: 20, total_cost_usd: 0.1, window_hours: 1 },
           exceeded: undefined
@@ -112,6 +115,8 @@ describe("commerce mappers", () => {
       plan: "free",
       enforced: false,
       unlimited: true,
+      available: true,
+      state: "available",
       window_hours: 12,
       limits: { total_tokens: null, calls: null, total_cost_usd: null },
       usage: null,
@@ -122,10 +127,70 @@ describe("commerce mappers", () => {
       {
         key: "12h",
         windowHours: 12,
+        available: true,
         limits: { totalTokens: null, calls: null, totalCostUsd: null },
-        usage: undefined,
+        usage: null,
         exceeded: []
       }
     ]);
+  });
+
+  it("preserves unavailable metering instead of synthesizing zero usage", () => {
+    const quota = mapCommerceQuotaStatus({
+      plan: "free",
+      enforced: true,
+      unlimited: false,
+      available: false,
+      state: "metering_unavailable",
+      window_hours: 5,
+      limits: { total_tokens: 5_000_000, calls: null, total_cost_usd: null },
+      usage: null,
+      exceeded: ["usage_unavailable"],
+      windows: [
+        {
+          key: "5h",
+          window_hours: 5,
+          available: false,
+          limits: { total_tokens: 5_000_000, calls: null, total_cost_usd: null },
+          usage: null,
+          exceeded: ["usage_unavailable"]
+        }
+      ]
+    });
+
+    expect(quota).toMatchObject({
+      available: false,
+      state: "metering_unavailable",
+      usage: null,
+      windows: [{ available: false, usage: null }]
+    });
+  });
+
+  it("fails closed when an available response omits finite-window usage", () => {
+    const quota = mapCommerceQuotaStatus({
+      plan: "plus",
+      enforced: true,
+      unlimited: false,
+      available: true,
+      state: "available",
+      window_hours: 24,
+      limits: { total_tokens: 10_000_000, calls: null, total_cost_usd: null },
+      usage: null,
+      exceeded: [],
+      windows: [
+        {
+          key: "24h",
+          window_hours: 24,
+          available: true,
+          limits: { total_tokens: 10_000_000, calls: null, total_cost_usd: null },
+          usage: null,
+          exceeded: []
+        }
+      ]
+    });
+
+    expect(quota.available).toBe(false);
+    expect(quota.state).toBe("metering_unavailable");
+    expect(quota.windows[0]).toMatchObject({ available: false, usage: null });
   });
 });

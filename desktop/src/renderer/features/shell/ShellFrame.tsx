@@ -392,7 +392,7 @@ function WorkbenchPanel({
             最近回复
           </span>
         </div>
-        <div className="workbench-message-list">
+        <div className="workbench-message-list" role="region" aria-label="最近回复列表" tabIndex={0}>
           {recentMessages.length ? recentMessages.map((message) => (
             <div className="workbench-message" key={message.id}>
               <strong>{friendlyMessageAuthor(message)}</strong>
@@ -438,7 +438,11 @@ function getWorkbenchState({
   const activeTask = visibleTasks.find((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
   const latestTask = visibleTasks[0];
   const latestMessage = messages[messages.length - 1];
-  const hasError = latestTask?.state === "failed" || latestMessage?.status === "failed";
+  const hasError =
+    latestTask?.state === "failed" ||
+    latestTask?.state === "denied" ||
+    latestTask?.state === "repair_required" ||
+    latestMessage?.status === "failed";
 
   if (connectionState === "offline" && !activeTask) {
     return {
@@ -476,7 +480,7 @@ function getWorkbenchState({
     };
   }
 
-  if (latestTask?.state === "completed") {
+  if (latestTask?.state === "completed" || latestTask?.state === "rolled_back") {
     return {
       state: "completed" as const,
       title: "刚完成一项工作",
@@ -701,7 +705,7 @@ function WindowBar({
     <header className="window-bar">
       <div className="window-bar__left">
         <div className="window-bar__title" key={activeView}>
-          <span>{viewMeta.title}</span>
+          <h1>{viewMeta.title}</h1>
           <small>{viewMeta.subtitle}</small>
         </div>
       </div>
@@ -766,7 +770,7 @@ function SideButton({
 }) {
   const className = ["side-button", active ? "side-button--active" : ""].filter(Boolean).join(" ");
   return (
-    <button className={className} onClick={onClick} type="button">
+    <button className={className} onClick={onClick} type="button" aria-current={active ? "page" : undefined}>
       <Icon size={15} aria-hidden="true" />
       <span>{label}</span>
     </button>

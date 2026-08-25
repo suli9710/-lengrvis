@@ -5,6 +5,7 @@ from typing import Any
 from app.agents.code_review_agent import CodeReviewAgent
 from app.commands.registry import normalize_command_name, register_builtin_commands, registry
 from app.commands.schemas import CommandExecuteRequest, CommandResult
+from app.context.compact_boundaries import redact_compact_metadata
 from app.context.compaction import (
     compact_session_context,
     compact_task_context,
@@ -13,12 +14,14 @@ from app.context.compaction import (
     manual_compact_result_to_dict,
 )
 from app.context.management import summarize_messages
+from app.context.summary_provenance import SummaryProvenanceError, build_summary_content_envelope
 from app.core import db
 from app.core.errors import AppError
 from app.core.session_context import (
     DEFAULT_SESSION_ID,
     SessionContext,
     SessionContextStore,
+    SessionSummaryConflictError,
     lineage_diagnostics_from_metadata,
 )
 from app.llm.registry import get_effective_settings
@@ -274,28 +277,63 @@ def _summary(args: dict[str, Any]) -> CommandResult:
         raw_messages = (
             load_task_messages(task_id) if task_id else [item for item in messages or [] if isinstance(item, dict)]
         )
-        summary_messages = _messages_after_summary_anchor(raw_messages, context.last_summarized_message_id)
-        if summary_messages and not _has_unclosed_tool_call(summary_messages):
-            settings = get_effective_settings()
+        settings = get_effective_settings()
+        for attempt in range(3):
+            summary_messages = _messages_after_summary_anchor(
+                raw_messages,
+                context.last_summarized_message_id,
+            )
+            if not summary_messages:
+                break
+            if _has_unclosed_tool_call(summary_messages):
+                diagnostics.append("Summary update skipped because messages contain an unclosed tool call.")
+                break
             new_summary = summarize_messages(summary_messages, settings)
-            if new_summary:
-                summary = _merge_summary(context.conversation_summary, new_summary)
-                last_message_id = _last_message_id(summary_messages)
-                store = SessionContextStore(session_id=context.id)
-                store.load()
+            if not new_summary:
+                break
+            summary = _merge_summary(context.conversation_summary, new_summary)
+            last_message_id = _last_message_id(summary_messages)
+            source_message_ids = _message_ids(summary_messages)
+            try:
+                summary_envelope = build_summary_content_envelope(
+                    summary,
+                    summary_messages,
+                    session_id=context.id,
+                    last_message_id=last_message_id,
+                    source_message_ids=source_message_ids,
+                    existing_summary=context.conversation_summary,
+                    existing_envelope=context.conversation_summary_envelope,
+                    existing_last_message_id=context.last_summarized_message_id,
+                    task_id=task_id,
+                )
+            except SummaryProvenanceError as exc:
+                diagnostics.append(f"Summary update skipped because provenance could not be bound: {exc}")
+                break
+            store = SessionContextStore(session_id=context.id)
+            store.load()
+            try:
                 context = store.remember_summary(
                     summary,
                     last_message_id=last_message_id,
+                    summary_envelope=summary_envelope,
+                    expected_updated_at=context.updated_at,
                     token_stats={
                         "strategy": "summary",
                         "summarized_messages": len(summary_messages),
+                        "summary_source_message_ids": source_message_ids,
                         "last_summary_task_id": task_id,
                     },
                     resumed_from_task_id=task_id,
                 )
-                updated = True
-        elif summary_messages:
-            diagnostics.append("Summary update skipped because messages contain an unclosed tool call.")
+            except SessionSummaryConflictError:
+                context = store.load()
+                if attempt == 2:
+                    diagnostics.append(
+                        "Summary update skipped because the session changed repeatedly; retry the command."
+                    )
+                continue
+            updated = True
+            break
     planning_context = context.context_for_planning()
     lineage = _lineage_payload(context)
     return CommandResult(
@@ -308,10 +346,11 @@ def _summary(args: dict[str, Any]) -> CommandResult:
             "active_task_ids": list(context.active_task_ids),
             "updated": updated,
             "summary": context.conversation_summary,
+            "summary_content_envelope": _summary_content_envelope_payload(context),
             "summary_anchor": context.last_summarized_message_id,
             "last_summarized_message_id": context.last_summarized_message_id,
-            "token_stats": context.token_stats,
-            "compact_metadata": context.token_stats.get("compact_metadata") or {},
+            "token_stats": context.public_token_stats(),
+            "compact_metadata": _public_compact_metadata(context.token_stats.get("compact_metadata")),
             "lineage": lineage,
             "session_context": planning_context,
             "compacted_context": _compacted_context_payload(context),
@@ -522,12 +561,15 @@ def _session_context_not_found_result(
 def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
     summary = str(context.conversation_summary or "").strip()
     compact_metadata = context.token_stats.get("compact_metadata") or {}
+    public_compact_metadata = _public_compact_metadata(compact_metadata)
     lineage = _lineage_payload(context)
     preserved_messages = _preserved_segment_messages(compact_metadata if isinstance(compact_metadata, dict) else {})
+    summary_envelope = _summary_content_envelope_payload(context)
     return {
         "role": "system",
         "summary": summary,
         "content": summary,
+        "content_envelope": summary_envelope,
         "messages": [
             {
                 "role": "system",
@@ -538,6 +580,7 @@ def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
                     "session_id": context.id,
                     "last_summarized_message_id": context.last_summarized_message_id,
                     "lineage": lineage,
+                    "content_envelope": summary_envelope,
                 },
             },
             *[dict(message) for message in preserved_messages if isinstance(message, dict)],
@@ -550,15 +593,25 @@ def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
             "summary": summary,
             "session_id": context.id,
             "last_summarized_message_id": context.last_summarized_message_id,
-            "token_stats": context.token_stats,
-            "compact_metadata": compact_metadata,
+            "token_stats": context.public_token_stats(),
+            "compact_metadata": public_compact_metadata,
             "lineage": lineage,
+            "content_envelope": summary_envelope,
         },
     }
 
 
 def _lineage_payload(context: SessionContext) -> dict[str, Any]:
     return context.lineage_diagnostics()
+
+
+def _summary_content_envelope_payload(context: SessionContext) -> dict[str, Any] | None:
+    envelope = context.ensure_summary_provenance()
+    return envelope.model_dump(mode="json") if envelope is not None else None
+
+
+def _public_compact_metadata(value: Any) -> dict[str, Any]:
+    return redact_compact_metadata(value if isinstance(value, dict) else {})
 
 
 def _compact_result_lineage(payload: dict[str, Any], *, session_id: str) -> dict[str, Any]:
@@ -635,6 +688,10 @@ def _last_message_id(messages: list[dict[str, Any]]) -> str:
         if message_id:
             return message_id
     return ""
+
+
+def _message_ids(messages: list[dict[str, Any]]) -> list[str]:
+    return [str(message.get("id") or "").strip() for message in messages]
 
 
 def _merge_summary(existing: str, new_summary: str) -> str:

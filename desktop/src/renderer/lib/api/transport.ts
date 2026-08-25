@@ -254,6 +254,9 @@ export function validateRendererBackendRelativeEndpoint(endpoint: string, allowe
   } catch {
     throw new Error("Renderer backend endpoint encoding is invalid");
   }
+  if (decodedPath.trim() !== decodedPath || /\s|[\u0000-\u001F\u007F]/.test(decodedPath)) {
+    throw new Error("Renderer backend endpoint contains unsafe decoded characters");
+  }
   if (decodedPath.includes("\\") || decodedPath.includes("//")) {
     throw new Error("Renderer backend endpoint contains unsafe path separators");
   }

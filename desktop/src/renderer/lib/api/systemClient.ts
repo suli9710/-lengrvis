@@ -10,6 +10,7 @@ import type { AuditLogEntry, PrivacyEraseResult } from "../../../shared/types";
 import type { BackendAuditEvent } from "./backendTypes";
 import type { BackendAppsResponse } from "./catalogBackendTypes";
 import { mapInstalledApp } from "./catalogMappers";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import { mapDiagnostic, mapDiagnosticExportResult, mapLocalMetrics, mapProcess, mapStartupItem } from "./diagnosticMappers";
 import type {
   BackendDiagnosticExportResult,
@@ -91,7 +92,9 @@ export function exportDiagnosticsPackageEndpoint(
   request: SystemEndpointRequest
 ): Promise<ApiResponse<DiagnosticExportResult>> {
   const diagnosticRequest = window.lengrvis?.system
-    ? window.lengrvis.system.exportDiagnosticsPackage() as Promise<ApiResponse<BackendDiagnosticExportResult>>
+    ? safeIpcApiRequest<BackendDiagnosticExportResult>(() =>
+        window.lengrvis.system.exportDiagnosticsPackage() as Promise<ApiResponse<BackendDiagnosticExportResult>>
+      )
     : request<BackendDiagnosticExportResult>({
         endpoint: "/api/system/diagnostics/export",
         method: "POST",
@@ -114,8 +117,9 @@ export function eraseLocalDataEndpoint(
       receivedAt: new Date().toISOString()
     });
   }
-  return window.lengrvis.privacy
-    .eraseLocalData(request)
+  return safeIpcApiRequest<DesktopPrivacyEraseResponse>(() =>
+    window.lengrvis.privacy.eraseLocalData(request)
+  )
     .then((response: ApiResponse<DesktopPrivacyEraseResponse>) =>
       mapResponse(response, (data) => ({
         scope: data.scope,
@@ -143,9 +147,9 @@ export function openWindowsSettingsEndpoint(
   uri: string
 ): Promise<ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>> {
   if (window.lengrvis?.system.openSettings) {
-    return window.lengrvis.system.openSettings({ uri }) as Promise<
-      ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>
-    >;
+    return safeIpcApiRequest(() => window.lengrvis.system.openSettings({ uri }) as Promise<
+        ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>
+      >);
   }
   return request<{ ok: boolean; uri: string; opened?: boolean; error?: string }, { uri: string }>({
     endpoint: "/api/system/open-settings",

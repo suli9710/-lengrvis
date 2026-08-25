@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import re
+import secrets
 import socket
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePath
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
@@ -20,16 +19,47 @@ from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
 from app.core.schemas import new_id, now_iso
 from app.policy.execution_marker import execution_is_marked_approved
-from app.policy.policy_rules import (
-    BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
-    BROWSER_CONTENT_TRUST,
-    BROWSER_PROMPT_INJECTION_PATTERNS,
-)
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
-from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public_text, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
-from app.policy.sensitive_values import looks_sensitive_value
 from app.security.pinned_http_proxy import PinnedHttpProxy
+from app.services.browser_activity_safety import (
+    BROWSER_CONTENT_PROMPT_INJECTION_WARNING as BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
+)
+from app.services.browser_activity_safety import BROWSER_CONTENT_TRUST as BROWSER_CONTENT_TRUST
+from app.services.browser_activity_safety import (
+    artifact_ref as _artifact_ref,
+)
+from app.services.browser_activity_safety import (
+    field_attributes_are_sensitive as _field_attributes_are_sensitive,
+)
+from app.services.browser_activity_safety import (
+    redact_event_value as _redact_event_value,
+)
+from app.services.browser_activity_safety import (
+    result_metadata as _result_metadata,
+)
+from app.services.browser_activity_safety import (
+    safe_browser_error as _safe_browser_error,
+)
+from app.services.browser_activity_safety import (
+    safe_result as _safe_result,
+)
+from app.services.browser_activity_safety import (
+    safe_text as _safe_text,
+)
+from app.services.browser_activity_safety import (
+    safe_url as _safe_url,
+)
+from app.services.browser_activity_safety import (
+    sanitize_action as _sanitize_action,
+)
+from app.services.browser_activity_safety import (
+    sensitive_selector as _sensitive_selector,
+)
+from app.services.browser_activity_safety import (
+    sensitive_value as _sensitive_value,
+)
+from app.tools.tool_abort import raise_if_tool_aborted
 
 BROWSER_ACTION_KINDS = {
     "open",
@@ -44,27 +74,6 @@ BROWSER_ACTION_KINDS = {
     "cua",
 }
 WRITE_ACTION_KINDS = {"click", "fill", "submit", "scroll", "cua"}
-SENSITIVE_SELECTOR_TOKENS = {
-    "password",
-    "pwd",
-    "passwd",
-    "credit",
-    "card",
-    "cvv",
-    "cvc",
-    "ssn",
-    "payment",
-    "pay",
-    "order",
-    "delete",
-    "token",
-    "cookie",
-    "otp",
-    "2fa",
-    "passcode",
-    "auth",
-    "credential",
-}
 
 
 def _playwright_error_types() -> tuple[type[BaseException], ...]:
@@ -87,10 +96,13 @@ def _playwright_action_error_types() -> tuple[type[BaseException], ...]:
 class BrowserSession:
     id: str = field(default_factory=lambda: new_id("browser_session"))
     task_id: str | None = None
+    account_id: str | None = None
     current_url: str = ""
     title: str = ""
     status: str = "active"
     mode: str = "headless"
+    allowed_origins: list[str] = field(default_factory=list)
+    allowed_actions: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
     paused: bool = False
@@ -103,6 +115,7 @@ class BrowserActivityEvent:
     id: str = field(default_factory=lambda: new_id("browser_event"))
     session_id: str = ""
     task_id: str | None = None
+    account_id: str | None = None
     step_id: str | None = None
     type: str = ""
     action: dict[str, Any] | None = None
@@ -137,6 +150,7 @@ class LocalBrowserActivityAdapter:
         return {"ok": False, "error": f"Unsupported browser action: {kind}"}
 
     def _observe(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         max_chars = max(
             1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000))
@@ -149,9 +163,14 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 html = page.content()
-                final_url = _validate_final_url(page.url)
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
                 browser.close()
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "playwright"
@@ -162,8 +181,18 @@ class LocalBrowserActivityAdapter:
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
             with httpx.Client(timeout=30, follow_redirects=False) as client:
-                html, final_url, response_truncated = _read_limited_http_response(client, url, max_chars)
-            final_url = _validate_final_url(final_url)
+                html, final_url, response_truncated = _read_limited_http_response(
+                    client,
+                    url,
+                    max_chars,
+                    abort_context=context,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
+            final_url = _validate_final_url(
+                final_url,
+                expected_origin=url,
+                allowed_origins=_browser_allowed_origins(context),
+            )
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "httpx"
             data["playwright_error"] = _safe_browser_error(exc)
@@ -175,14 +204,11 @@ class LocalBrowserActivityAdapter:
         return data
 
     def _screenshot(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
-        out_dir = Path(
-            getattr(_settings(context), "browser_screenshot_dir", "")
-            or Path.cwd() / ".lengrvis_data" / "browser_screenshots"
-        )
-        out_dir.mkdir(parents=True, exist_ok=True)
-        filename = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + ".png"
-        out_path = out_dir / filename
+        task_id = str(context.get("task_id") or "").strip()
+        step_id = str(context.get("step_id") or "").strip()
+        filename = f"shot-{secrets.token_hex(16)}.png"
         route_guard: _PlaywrightRouteGuard | None = None
         try:
             from playwright.sync_api import sync_playwright
@@ -191,15 +217,37 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(
                     browser,
-                    viewport={"width": int(action.get("width", 1280)), "height": int(action.get("height", 800))}
+                    viewport={"width": int(action.get("width", 1280)), "height": int(action.get("height", 800))},
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
-                page.screenshot(path=str(out_path), full_page=bool(action.get("full_page", True)))
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
+                image = page.screenshot(full_page=bool(action.get("full_page", True)))
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 title = page.title()
-                final_url = _validate_final_url(page.url)
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
                 browser.close()
+            if not task_id or not step_id:
+                return {"ok": False, "error": "Browser screenshot requires task and step context."}
+            from app.services.browser_screenshot_store import persist_browser_screenshot
+
+            artifact = persist_browser_screenshot(
+                bytes(image),
+                task_id=task_id,
+                step_id=step_id,
+                file_name=filename,
+                width=int(action.get("width", 1280)),
+                height=int(action.get("height", 800)),
+            )
         except _playwright_action_error_types() as exc:
             route_guard_error = _playwright_route_guard_error(route_guard)
             if route_guard_error:
@@ -208,9 +256,17 @@ class LocalBrowserActivityAdapter:
         finally:
             if route_guard is not None:
                 route_guard.close()
-        return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
+        return {
+            "ok": True,
+            "url": final_url,
+            "title": title,
+            "path": "",
+            "screenshot_url": artifact["artifact_url"],
+            "recording_id": artifact["recording_id"],
+        }
 
     def _wait(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         selector = str(action.get("selector") or "")
         timeout = int(action.get("timeout_ms") or 10000)
@@ -224,11 +280,16 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 page.wait_for_selector(selector, timeout=timeout)
                 _raise_if_playwright_route_guard_blocked(route_guard)
                 title = page.title()
-                final_url = _validate_final_url(page.url)
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
                 browser.close()
         except _playwright_action_error_types() as exc:
             route_guard_error = _playwright_route_guard_error(route_guard)
@@ -241,6 +302,7 @@ class LocalBrowserActivityAdapter:
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
     def _write_like(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        raise_if_tool_aborted(context)
         url = _validate_url(str(action.get("url") or ""))
         kind = str(action.get("kind") or "").lower()
         route_guard: _PlaywrightRouteGuard | None = None
@@ -251,13 +313,25 @@ class LocalBrowserActivityAdapter:
                 browser = p.chromium.launch(headless=True)
                 page, route_guard = _new_guarded_playwright_page(browser)
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                raise_if_tool_aborted(context)
                 _raise_if_playwright_route_guard_blocked(route_guard)
+                # Validate the LANDED origin BEFORE any write: goto() may follow
+                # a server-side redirect to another origin, and click/fill/submit
+                # must never run off-origin. The post-action check below is too
+                # late once the side effect (e.g. a form submit) has fired.
+                _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
                 if kind == "click":
                     page.click(str(action.get("selector") or ""), timeout=8000)
+                    raise_if_tool_aborted(context)
                     _raise_if_playwright_route_guard_blocked(route_guard)
                 elif kind == "fill":
                     fields = action.get("fields") or {}
                     for selector, value in fields.items():
+                        raise_if_tool_aborted(context)
                         # Element-semantics guard: block credential/payment/OTP
                         # fields even when reached via a generic selector.
                         if _playwright_field_is_sensitive(page, str(selector)):
@@ -278,7 +352,11 @@ class LocalBrowserActivityAdapter:
                     _raise_if_playwright_route_guard_blocked(route_guard)
                 else:
                     return {"ok": False, "error": "CUA actions require a dedicated CUA provider."}
-                final_url = _validate_final_url(page.url)
+                final_url = _validate_final_url(
+                    page.url,
+                    expected_origin=url,
+                    allowed_origins=_browser_allowed_origins(context),
+                )
                 title = page.title()
                 browser.close()
         except _playwright_action_error_types() as exc:
@@ -400,15 +478,23 @@ class BrowserActivityRuntime:
         allowed, reason = _network_allowed(context)
         if not allowed:
             return {"ok": False, "error": reason}
-        url = str(args.get("url") or "").strip()
-        if url:
-            url = _validate_url(url)
+        try:
+            task_id, account_id = _requested_session_identity(args, {}, context)
+            url = str(args.get("url") or "").strip()
+            allowed_origins, allowed_actions = _session_scope(args, context, initial_url=url)
+            if url:
+                url = _validate_url(url)
+        except ValueError as exc:
+            return {"ok": False, "error": _safe_browser_error(exc)}
         now = now_iso()
         session = BrowserSession(
-            task_id=_optional_text(args.get("task_id") or context.get("task_id")),
+            task_id=task_id,
+            account_id=account_id,
             current_url=url,
             title="",
             mode=str(args.get("mode") or "headless"),
+            allowed_origins=allowed_origins,
+            allowed_actions=allowed_actions,
             created_at=now,
             updated_at=now,
             paused=bool(args.get("paused", False)),
@@ -431,6 +517,7 @@ class BrowserActivityRuntime:
     def session_close(self, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         try:
             session = self._require_session(str(args.get("session_id") or ""))
+            self._bind_or_validate_session_identity(session, args, {}, context, bind_missing=False)
         except ValueError as exc:
             return {"ok": False, "error": _safe_browser_error(exc)}
         session.status = "closed"
@@ -446,23 +533,67 @@ class BrowserActivityRuntime:
         )
         return {"ok": True, "session": self._session_dict(session), "event": self._event_dict(event)}
 
+    def cancel_task_sessions(self, task_id: str) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return {"ok": False, "error": "task_id is required", "closed": 0, "session_ids": []}
+        with self._lock:
+            sessions = [
+                session
+                for session in self._sessions.values()
+                if session.task_id == normalized_task_id and session.status != "closed"
+            ]
+        closed: list[str] = []
+        for session in sessions:
+            session.status = "closed"
+            session.paused = True
+            session.updated_at = now_iso()
+            self._append_event(
+                session,
+                type="session.cancelled",
+                action={"kind": "close"},
+                ok=True,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                verdict=SafetyVerdict.ALLOW,
+            )
+            closed.append(session.id)
+        return {"ok": True, "closed": len(closed), "session_ids": closed}
+
     def session_info(self, args: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             session = self._require_session(str(args.get("session_id") or ""))
+            self._bind_or_validate_session_identity(session, args, {}, context or {}, bind_missing=False)
         except ValueError as exc:
             return {"ok": False, "error": _safe_browser_error(exc)}
         return {"ok": True, "session": self._session_dict(session)}
 
     def sessions(self, args: dict[str, Any] | None = None, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        limit = int((args or {}).get("limit") or 200)
+        payload = args or {}
+        effective_context = context or {}
+        limit = int(payload.get("limit") or 200)
+        try:
+            task_id, account_id = _requested_session_identity(payload, {}, effective_context)
+        except ValueError as exc:
+            return {"ok": False, "error": _safe_browser_error(exc), "sessions": []}
         with self._lock:
             sessions = list(self._sessions.values())
+        if task_id:
+            sessions = [session for session in sessions if session.task_id == task_id]
+        if account_id:
+            sessions = [session for session in sessions if session.account_id == account_id]
         sessions = sorted(sessions, key=lambda session: session.updated_at, reverse=True)[: max(1, limit)]
         return {"ok": True, "sessions": [self._session_dict(session) for session in sessions]}
 
     def events(self, args: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
         session_id = str(args.get("session_id") or "").strip()
-        task_id = str(args.get("task_id") or "").strip()
+        effective_context = context or {}
+        try:
+            task_id, account_id = _requested_session_identity(args, {}, effective_context)
+            if session_id:
+                session = self._require_session(session_id)
+                self._bind_or_validate_session_identity(session, args, {}, effective_context, bind_missing=False)
+        except ValueError as exc:
+            return {"ok": False, "error": _safe_browser_error(exc), "events": []}
         limit = int(args.get("limit") or 200)
         with self._lock:
             events = list(self._events)
@@ -470,6 +601,8 @@ class BrowserActivityRuntime:
             events = [event for event in events if event.session_id == session_id]
         if task_id:
             events = [event for event in events if event.task_id == task_id]
+        if account_id:
+            events = [event for event in events if event.account_id == account_id]
         events = events[-max(1, limit) :]
         return {"ok": True, "events": [self._event_dict(event) for event in events]}
 
@@ -489,11 +622,6 @@ class BrowserActivityRuntime:
         kind = str(action.get("kind") or "").lower()
         dry_run = bool(action.get("dry_run", args.get("dry_run", kind in WRITE_ACTION_KINDS)))
         action["dry_run"] = dry_run
-        task_id = _optional_text(
-            args.get("task_id") or action.get("task_id") or session.task_id or context.get("task_id")
-        )
-        if task_id:
-            session.task_id = task_id
         step_id = _optional_text(args.get("step_id") or action.get("step_id") or context.get("step_id"))
 
         review = self._review_action(action, context)
@@ -557,7 +685,12 @@ class BrowserActivityRuntime:
             return {"ok": False, "error": error, "event": self._event_dict(event)}
 
         try:
-            result = self.adapter.perform(session, action, context)
+            adapter_context = dict(context)
+            adapter_context["_browser_allowed_origins"] = tuple(session.allowed_origins)
+            adapter_context["task_id"] = session.task_id or context.get("task_id")
+            adapter_context["step_id"] = step_id or context.get("step_id")
+            result = self.adapter.perform(session, action, adapter_context)
+            self._validate_result_scope(session, action, result)
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             result = {"ok": False, "error": _safe_browser_error(exc)}
         ok = bool(result.get("ok"))
@@ -586,9 +719,13 @@ class BrowserActivityRuntime:
             return {"ok": False, "error": "session_id is required"}
         try:
             session = self._require_session(session_id)
+            self._bind_or_validate_session_identity(session, args, {}, context or {}, bind_missing=False)
         except ValueError as exc:
             return {"ok": False, "error": _safe_browser_error(exc)}
-        events = self.events({"session_id": session_id, "limit": int(args.get("limit") or 1000)})["events"]
+        events = self.events(
+            {"session_id": session_id, "limit": int(args.get("limit") or 1000)},
+            context,
+        )["events"]
         return {
             "ok": True,
             "session": self._session_dict(session),
@@ -607,19 +744,14 @@ class BrowserActivityRuntime:
     def ensure_session(self, args: dict[str, Any], context: dict[str, Any]) -> BrowserSession:
         session_id = str(args.get("session_id") or "").strip()
         if session_id:
-            return self._require_session(session_id)
+            session = self._require_session(session_id)
+            self._bind_or_validate_session_identity(session, args, {}, context, bind_missing=True)
+            return session
         url = str(args.get("url") or "").strip()
-        if url:
-            url = _validate_url(url)
-        started = self.session_start(
-            {
-                "task_id": args.get("task_id") or context.get("task_id"),
-                "step_id": args.get("step_id") or context.get("step_id"),
-                "url": url,
-                "mode": args.get("mode") or "headless",
-            },
-            context,
-        )
+        start_args = dict(args)
+        start_args["url"] = url
+        start_args.setdefault("mode", "headless")
+        started = self.session_start(start_args, context)
         if not started.get("ok"):
             raise ValueError(str(started.get("error") or "Could not start browser session"))
         return self._require_session(str(started["session"]["id"]))
@@ -631,10 +763,15 @@ class BrowserActivityRuntime:
             session = self.ensure_session({**args, "url": action.get("url") or args.get("url") or ""}, context)
         except ValueError as exc:
             raise exc
+        self._bind_or_validate_session_identity(session, args, action, context, bind_missing=True)
         if not action.get("url") and session.current_url:
             action["url"] = session.current_url
         if action.get("url"):
+            action["url"] = str(action.get("url") or "").strip()
+        self._validate_action_scope(session, action)
+        if action.get("url"):
             action["url"] = _validate_url(str(action.get("url") or ""))
+            self._bind_validated_action_origin(session, str(action["url"]))
         return session
 
     def _review_action(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -696,6 +833,76 @@ class BrowserActivityRuntime:
             raise ValueError(f"Unknown browser session: {session_id}")
         return session
 
+    def _bind_or_validate_session_identity(
+        self,
+        session: BrowserSession,
+        args: dict[str, Any],
+        action: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        bind_missing: bool,
+    ) -> None:
+        task_id, account_id = _requested_session_identity(args, action, context)
+        with self._lock:
+            if session.task_id and task_id and session.task_id != task_id:
+                raise ValueError("Browser session is bound to a different task.")
+            if session.account_id and account_id and session.account_id != account_id:
+                raise ValueError("Browser session is bound to a different account.")
+            if bind_missing and not session.task_id and task_id:
+                session.task_id = task_id
+            if bind_missing and not session.account_id and account_id:
+                session.account_id = account_id
+
+    def _validate_action_scope(self, session: BrowserSession, action: dict[str, Any]) -> None:
+        if session.status == "closed":
+            raise ValueError("Browser session is closed.")
+        kind = str(action.get("kind") or "").strip().casefold()
+        if kind not in session.allowed_actions:
+            raise ValueError(f"Browser action '{kind or 'unknown'}' is outside this session's allowed_actions.")
+        url = str(action.get("url") or "").strip()
+        if not url:
+            return
+        origin = _url_origin(url)
+        with self._lock:
+            if session.allowed_origins and origin not in session.allowed_origins:
+                raise ValueError("Browser URL origin is outside this session's allowed_origins.")
+
+    def _bind_validated_action_origin(self, session: BrowserSession, url: str) -> None:
+        """Bind a URL-less session only after the candidate URL passes SSRF validation."""
+
+        origin = _url_origin(url)
+        with self._lock:
+            # Re-check under the same lock used for the one-time binding so two
+            # concurrent first actions cannot bind the session to different origins.
+            if session.allowed_origins and origin not in session.allowed_origins:
+                raise ValueError("Browser URL origin is outside this session's allowed_origins.")
+            if not session.allowed_origins:
+                # A session created without an initial URL is bound exactly once,
+                # on its first URL-bearing action.
+                session.allowed_origins = [origin]
+
+    def _validate_result_scope(
+        self,
+        session: BrowserSession,
+        action: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        result_url = str(result.get("url") or result.get("final_url") or "").strip()
+        if not result_url:
+            return
+        expected_origin = str(action.get("url") or session.current_url or "") or None
+        final_url = _validate_final_url(
+            result_url,
+            expected_origin=expected_origin,
+            allowed_origins=session.allowed_origins,
+        )
+        result["url"] = final_url
+        if result.get("final_url"):
+            result["final_url"] = final_url
+        if not session.allowed_origins:
+            with self._lock:
+                session.allowed_origins = [_url_origin(final_url)]
+
     def _update_session_from_result(self, session: BrowserSession, result: dict[str, Any]) -> None:
         if result.get("url"):
             session.current_url = str(result.get("url") or "")
@@ -730,6 +937,7 @@ class BrowserActivityRuntime:
         event = BrowserActivityEvent(
             session_id=session.id,
             task_id=session.task_id,
+            account_id=session.account_id,
             step_id=step_id,
             type=type,
             action=_sanitize_action(action or {}) if action is not None else None,
@@ -776,6 +984,172 @@ def _settings(context: dict[str, Any]):
     return context["settings"]
 
 
+_TASK_ID_KEYS = ("task_id", "taskId", "browser_task_id")
+_ACCOUNT_ID_KEYS = (
+    "account_id",
+    "accountId",
+    "browser_account_id",
+    "account",
+    "principal_id",
+    "principalId",
+    "user_id",
+    "userId",
+    "tenant_id",
+    "tenantId",
+)
+_ORIGIN_SCOPE_KEYS = ("allowed_origins", "browser_allowed_origins")
+_ACTION_SCOPE_KEYS = ("allowed_actions", "browser_allowed_actions")
+
+
+def _optional_identity(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _mapping_values(mapping: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        if key in mapping:
+            value = _optional_identity(mapping.get(key))
+            if value:
+                values.append(value)
+    return values
+
+
+def _coherent_identity(*mappings: dict[str, Any], keys: tuple[str, ...], label: str) -> str | None:
+    values = _mapping_values(mappings[0], keys) if mappings else []
+    for mapping in mappings[1:]:
+        values.extend(_mapping_values(mapping, keys))
+    unique = {value for value in values}
+    if len(unique) > 1:
+        raise ValueError(f"Conflicting {label} values cannot be used for one browser session.")
+    return next(iter(unique), None)
+
+
+def _requested_session_identity(
+    args: dict[str, Any],
+    action: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    return (
+        _coherent_identity(args, action, context, keys=_TASK_ID_KEYS, label="task_id"),
+        _coherent_identity(args, action, context, keys=_ACCOUNT_ID_KEYS, label="account_id"),
+    )
+
+
+def _scope_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = [part.strip() for part in value.split(",")]
+    elif isinstance(value, list | tuple | set | frozenset):
+        raw = [str(part).strip() for part in value]
+    else:
+        raise ValueError("Browser session scope values must be strings or lists of strings.")
+    return [part for part in raw if part]
+
+
+def _scope_from_mapping(mapping: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, list[str]]:
+    for key in keys:
+        if key in mapping:
+            return True, _scope_values(mapping.get(key))
+    return False, []
+
+
+def _normalise_origin_scope(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        origin = _url_origin(value)
+        if origin not in normalized:
+            normalized.append(origin)
+    return normalized
+
+
+def _normalise_action_scope(values: list[str]) -> list[str]:
+    normalized = []
+    for value in values:
+        action = _canonical_action_kind(value)
+        if action not in BROWSER_ACTION_KINDS:
+            raise ValueError(f"Unsupported browser action in allowed_actions: {value}")
+        if action not in normalized:
+            normalized.append(action)
+    return normalized
+
+
+def _session_scope(
+    args: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    initial_url: str = "",
+) -> tuple[list[str], list[str]]:
+    context_has_origins, context_origins_raw = _scope_from_mapping(context, _ORIGIN_SCOPE_KEYS)
+    args_has_origins, args_origins_raw = _scope_from_mapping(args, _ORIGIN_SCOPE_KEYS)
+    context_origins = _normalise_origin_scope(context_origins_raw)
+    args_origins = _normalise_origin_scope(args_origins_raw)
+    if context_has_origins and args_has_origins and not set(args_origins).issubset(context_origins):
+        raise ValueError("Browser session allowed_origins cannot exceed the task scope.")
+    allowed_origins = args_origins if args_has_origins else context_origins
+
+    if initial_url:
+        initial_origin = _url_origin(initial_url)
+        if allowed_origins and initial_origin not in allowed_origins:
+            raise ValueError("Initial browser URL is outside allowed_origins.")
+        if not allowed_origins:
+            allowed_origins = [initial_origin]
+
+    context_has_actions, context_actions_raw = _scope_from_mapping(context, _ACTION_SCOPE_KEYS)
+    args_has_actions, args_actions_raw = _scope_from_mapping(args, _ACTION_SCOPE_KEYS)
+    context_actions = _normalise_action_scope(context_actions_raw)
+    args_actions = _normalise_action_scope(args_actions_raw)
+    if context_has_actions and args_has_actions and not set(args_actions).issubset(context_actions):
+        raise ValueError("Browser session allowed_actions cannot exceed the task scope.")
+    allowed_actions = args_actions if args_has_actions else context_actions
+    if not allowed_actions and not (context_has_actions or args_has_actions):
+        allowed_actions = sorted(BROWSER_ACTION_KINDS)
+    return allowed_origins, allowed_actions
+
+
+def _canonical_action_kind(value: Any) -> str:
+    action = str(value or "").casefold().replace("_", "-").strip()
+    if action.startswith("browser."):
+        action = action.removeprefix("browser.")
+    return {
+        "read-page": "observe",
+        "open-url": "open",
+        "wait-for-selector": "wait",
+        "click-element": "click",
+        "fill-form": "fill",
+        "submit-form": "submit",
+        "cua-run": "cua",
+    }.get(action, action)
+
+
+def _url_origin(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Browser origin must be an absolute http(s) URL without credentials.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Browser origin contains an invalid port.") from exc
+    if port is None:
+        port = 443 if parsed.scheme.casefold() == "https" else 80
+    hostname = parsed.hostname.casefold().rstrip(".")
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    return f"{parsed.scheme.casefold()}://{hostname}:{port}"
+
+
+def _browser_allowed_origins(context: dict[str, Any]) -> tuple[str, ...]:
+    raw = context.get("_browser_allowed_origins")
+    if raw is None:
+        return ()
+    try:
+        return tuple(_normalise_origin_scope(_scope_values(raw)))
+    except ValueError:
+        return ()
+
+
 def _network_allowed(context: dict[str, Any]) -> tuple[bool, str]:
     decision = can_use_browser_network(_settings(context))
     return decision.allowed, decision.reason
@@ -787,16 +1161,28 @@ def _writes_allowed(context: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _read_limited_http_response(
-    client: httpx.Client, url: str, max_bytes: int, *, max_redirects: int = 5
+    client: httpx.Client,
+    url: str,
+    max_bytes: int,
+    *,
+    max_redirects: int = 5,
+    abort_context: dict[str, Any] | None = None,
+    allowed_origins: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[str, str, bool]:
     limit = max(1, int(max_bytes or 1))
     allow_private = _private_hosts_allowed()
     current = str(url or "")
+    expected_origin = _url_origin(current)
     for _ in range(max_redirects + 1):
+        raise_if_tool_aborted(abort_context)
         # Re-validate every hop, then connect to the exact IP we just validated
         # (Host header + SNI restore the name) so a rebinding answer or a
         # redirect to an internal host cannot be reached.
-        current = _validate_url(current)
+        current = _validate_final_url(
+            current,
+            expected_origin=expected_origin,
+            allowed_origins=allowed_origins,
+        )
         pinned = pin_outbound_http_url(current, allow_private=allow_private)
         headers = {"User-Agent": "LengrvisAgent/0.1", **pinned.headers}
         with client.stream("GET", pinned.url, headers=headers, extensions=dict(pinned.extensions)) as response:
@@ -814,6 +1200,7 @@ def _read_limited_http_response(
             if content_length and content_length.isdigit() and int(content_length) > limit:
                 truncated = True
             for chunk in response.iter_bytes():
+                raise_if_tool_aborted(abort_context)
                 if not chunk:
                     continue
                 remaining = limit - len(chunks)
@@ -834,8 +1221,23 @@ ALLOW_PRIVATE_HOSTS_ENV = "LENGRVIS_BROWSER_ALLOW_PRIVATE_HOSTS"
 _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".intranet")
 
 
-def _validate_final_url(url: str) -> str:
-    return _validate_url(str(url or ""))
+def _validate_final_url(
+    url: str,
+    *,
+    expected_origin: str | None = None,
+    allowed_origins: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    candidate = str(url or "").strip()
+    # Enforce the task/session origin boundary before DNS-based SSRF checks. This
+    # keeps authorization deterministic without weakening the subsequent SSRF gate.
+    actual_origin = _url_origin(candidate)
+    if expected_origin and actual_origin != _url_origin(expected_origin):
+        raise ValueError("Browser redirect/final URL must remain same-origin.")
+    if allowed_origins:
+        normalized_allowed = set(_normalise_origin_scope(_scope_values(allowed_origins)))
+        if actual_origin not in normalized_allowed:
+            raise ValueError("Browser URL origin is outside allowed_origins.")
+    return _validate_url(candidate)
 
 
 def _validate_url(url: str) -> str:
@@ -908,7 +1310,7 @@ def _normalize_action(args: dict[str, Any]) -> dict[str, Any]:
         action = {}
     if not action.get("kind"):
         action["kind"] = str(args.get("kind") or "").lower()
-    action["kind"] = str(action.get("kind") or "").lower()
+    action["kind"] = _canonical_action_kind(action.get("kind"))
     for key in (
         "url",
         "selector",
@@ -964,38 +1366,6 @@ def _sensitive_action_error(action: dict[str, Any]) -> str:
     return ""
 
 
-# Autocomplete hints (WHATWG) for credential / payment / OTP fields.
-SENSITIVE_AUTOCOMPLETE_TOKENS = {
-    "current-password",
-    "new-password",
-    "one-time-code",
-    "cc-number",
-    "cc-csc",
-    "cc-exp",
-    "cc-exp-month",
-    "cc-exp-year",
-    "cc-name",
-}
-
-
-def _field_attributes_are_sensitive(attrs: dict[str, Any]) -> bool:
-    """Decide field sensitivity from element semantics, not the selector string.
-
-    A generic selector (e.g. ``#f1``) can still target a password/payment/OTP
-    input, so inspect the resolved element's ``type``/``autocomplete`` and
-    descriptive attributes instead of trusting the caller-supplied selector text.
-    """
-    if str(attrs.get("type") or "").strip().lower() == "password":
-        return True
-    autocomplete = str(attrs.get("autocomplete") or "").lower().replace(",", " ")
-    if {token.strip() for token in autocomplete.split()} & SENSITIVE_AUTOCOMPLETE_TOKENS:
-        return True
-    for key in ("name", "id", "aria-label", "placeholder"):
-        if _sensitive_selector(str(attrs.get(key) or "")):
-            return True
-    return False
-
-
 def _playwright_field_is_sensitive(page: Any, selector: str) -> bool:
     try:
         attrs = {
@@ -1005,180 +1375,6 @@ def _playwright_field_is_sensitive(page: Any, selector: str) -> bool:
     except _playwright_error_types():
         return False
     return _field_attributes_are_sensitive(attrs)
-
-
-def _sensitive_selector(selector: str) -> bool:
-    lowered = selector.lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS)
-
-
-def _sensitive_value(value: Any) -> bool:
-    lowered = str(value or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS) or looks_sensitive_value(value)
-
-
-def _sanitize_action(action: dict[str, Any]) -> dict[str, Any]:
-    safe: dict[str, Any] = {}
-    for key, value in action.items():
-        if key == "url":
-            safe[key] = _safe_url(str(value or ""))
-        elif key in {"selector", "text", "fields", "approval_id"}:
-            safe[key] = REDACTED if value not in (None, "", {}) else value
-        elif key in {
-            "approved",
-            "dry_run",
-            "kind",
-            "max_chars",
-            "timeout_ms",
-            "width",
-            "height",
-            "full_page",
-            "delta_y",
-            "y",
-        }:
-            safe[key] = value
-        else:
-            safe[key] = _redact_event_value(value)
-    return safe
-
-
-def _result_metadata(result: dict[str, Any]) -> dict[str, Any]:
-    metadata: dict[str, Any] = {"ok": bool(result.get("ok"))}
-    for key in ("url", "title", "adapter", "present", "changed_paths", "rollback_info", "screenshot_url", "path"):
-        if key in result:
-            metadata[key] = result[key]
-    if result.get("error"):
-        metadata["error"] = result["error"]
-    if result.get("text") is not None:
-        metadata["text_chars"] = len(str(result.get("text") or ""))
-    if isinstance(result.get("links"), list):
-        metadata["link_count"] = len(result.get("links") or [])
-    if _has_browser_content(result):
-        metadata["content_trust"] = BROWSER_CONTENT_TRUST
-        warnings = _browser_content_warnings(result)
-        if warnings:
-            metadata["browser_content_warnings"] = warnings
-    return metadata
-
-
-def _safe_result(value: Any, *, key: str = "") -> Any:
-    if isinstance(value, dict):
-        result: dict[str, Any] = {}
-        for item_key, item in value.items():
-            text_key = str(item_key)
-            if text_key == "url":
-                result[text_key] = _safe_url(str(item or ""))
-            elif text_key in {"path", "screenshot_url"}:
-                result[text_key] = _artifact_ref(item)
-            elif text_key in {"title", "error"}:
-                result[text_key] = _safe_text(str(item or ""))
-            else:
-                result[text_key] = _safe_result(item, key=text_key)
-        if _has_browser_content(value):
-            result["content_trust"] = BROWSER_CONTENT_TRUST
-            warnings = _browser_content_warnings(value)
-            if warnings:
-                result["browser_content_warnings"] = warnings
-        return result
-    if isinstance(value, list):
-        return [_safe_result(item, key=key) for item in value]
-    if isinstance(value, tuple):
-        return [_safe_result(item, key=key) for item in value]
-    if isinstance(value, str):
-        if key == "text":
-            return value
-        return _safe_text(value)
-    return value
-
-
-def _has_browser_content(result: dict[str, Any]) -> bool:
-    return result.get("text") is not None or isinstance(result.get("links"), list)
-
-
-def _browser_content_warnings(result: dict[str, Any]) -> list[str]:
-    inspected_parts: list[str] = []
-    if result.get("text") is not None:
-        inspected_parts.append(str(result.get("text") or ""))
-    if result.get("title") is not None:
-        inspected_parts.append(str(result.get("title") or ""))
-    for link in result.get("links") or []:
-        if isinstance(link, dict):
-            inspected_parts.append(str(link.get("title") or ""))
-            inspected_parts.append(str(link.get("url") or ""))
-    inspected = "\n".join(inspected_parts)
-    if any(re.search(pattern, inspected, flags=re.IGNORECASE) for pattern in BROWSER_PROMPT_INJECTION_PATTERNS):
-        return [BROWSER_CONTENT_PROMPT_INJECTION_WARNING]
-    return []
-
-
-def _redact_event_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        result = {}
-        for key, item in value.items():
-            text_key = str(key)
-            if text_key == "url":
-                result[key] = _safe_url(str(item or ""))
-            elif text_key in {"path", "screenshot_url"}:
-                result[key] = _artifact_ref(item)
-            elif text_key in {"content_trust", "browser_content_warnings"}:
-                result[key] = _safe_metadata_label_value(item)
-            else:
-                if text_key in {"text", "selector", "fields"}:
-                    result[key] = REDACTED if item not in (None, "", {}) else item
-                elif contains_sensitive_key(text_key):
-                    result[key] = _redact_event_value(redact_value({text_key: item}).get(text_key))
-                else:
-                    result[key] = _redact_event_value(item)
-        return result
-    if isinstance(value, list):
-        return [_redact_event_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_event_value(item) for item in value]
-    redacted = redact_value(value)
-    if isinstance(redacted, str):
-        return _safe_text(redacted)
-    return redacted
-
-
-def _safe_url(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(redact_text(url))
-    except ValueError:
-        return redact_text(url)
-    if not parsed.query:
-        return redact_text(url)
-    return parsed._replace(query=REDACTED).geturl()
-
-
-def _artifact_ref(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    parsed = urlparse(text)
-    candidate = parsed.path if parsed.scheme else text.split("?", 1)[0].split("#", 1)[0]
-    return redact_text(PurePath(candidate.replace("\\", "/")).name)
-
-
-def _safe_metadata_label_value(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_safe_metadata_label_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_safe_metadata_label_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _safe_metadata_label_value(item) for key, item in value.items()}
-    if isinstance(value, str):
-        return redact_text(value, redact_generic_tokens=False)
-    return value
-
-
-def _safe_text(text: str) -> str:
-    return redact_public_text(text) if text else ""
-
-
-def _safe_browser_error(value: Any) -> str:
-    return _safe_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
 
 
 def _parse_iso(value: str) -> datetime | None:

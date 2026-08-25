@@ -125,3 +125,20 @@ def test_pool_records_failure(caplog):
         assert "task_id=" in caplog.text
 
     asyncio.run(main())
+
+
+def test_pool_preserves_denied_terminal_outcome():
+    pool = task_pool.reset_pool_for_tests(max_concurrent=1)
+
+    async def runner(task: Task) -> Task:
+        task.status = TaskStatus.DENIED
+        task.phase = TaskStatus.DENIED
+        return task
+
+    async def main():
+        task = _make_task(100)
+        spawned = await pool.submit(task, runner)
+        await spawned
+        assert pool.status()["completed"][task.id] == "denied"
+
+    asyncio.run(main())

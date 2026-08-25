@@ -21,8 +21,10 @@ from app.core.schemas import (
     Task,
     TaskStatus,
     ToolResult,
+    approval_is_expired,
     now_iso,
 )
+from app.orchestration.deterministic_contracts import deterministic_contract_status
 from app.orchestration.execution_models import APPROVAL_REMAINING_STEPS_SUMMARY
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
@@ -35,6 +37,12 @@ from app.policy.approval_binding import (
     permission_policy_version,
     preview_hmac,
     settings_fingerprint,
+)
+from app.policy.effective_risk_binding import (
+    approval_risk_binding,
+    effective_risk_binding_error,
+    refreshed_effective_risk_error,
+    risk_revalidation_context,
 )
 from app.policy.permissions import PermissionStore
 from app.policy.redaction import redact_audit_payload, redact_public_text
@@ -109,6 +117,21 @@ class StepExecutionHandler:
     ) -> StepExecutionOutcome:
         orchestrator = self.orchestrator
         step.task_id = step.task_id or task.id
+        deterministic_status = deterministic_contract_status(step)
+        if deterministic_status == "invalid":
+            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+            orchestrator._set_status(
+                task,
+                TaskStatus.DENIED,
+                final_summary="Deterministic plan integrity verification failed.",
+            )
+            record(
+                "deterministic_plan.integrity_failed",
+                orchestrator.name,
+                {"step": step.id, "tool": step.tool_name},
+                task_id=task.id,
+            )
+            return StepExecutionOutcome("fatal_denied")
         orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
         await self._yield_if_parallel(threaded_tools)
         try:
@@ -135,7 +158,11 @@ class StepExecutionHandler:
         if safety_outcome.kind not in {"allowed"}:
             return StepExecutionOutcome(safety_outcome.kind, safety_outcome.result)
 
-        action = await orchestrator._consult_subagent(task, step, observation=observation)
+        action = (
+            None
+            if deterministic_status == "valid"
+            else await orchestrator._consult_subagent(task, step, observation=observation)
+        )
         await self._yield_if_parallel(threaded_tools)
         if action and action.kind == "done":
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
@@ -285,6 +312,15 @@ class StepExecutionHandler:
             return task
         if approval.consumed_at:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+        deterministic_status = deterministic_contract_status(step)
+        if deterministic_status == "invalid":
+            return self._deny_approved_step(
+                task,
+                plan,
+                step,
+                approval,
+                "Deterministic plan integrity verification failed.",
+            )
         self._normalize_approved_step_state(task, step)
         state_error = self._approval_execution_state_error(task, step)
         if state_error:
@@ -297,7 +333,7 @@ class StepExecutionHandler:
 
         action = (
             None
-            if approval.approval_type == "remote_input"
+            if approval.approval_type == "remote_input" or deterministic_status == "valid"
             else await orchestrator._consult_subagent(task, step, observation=None)
         )
         if action and action.kind == "done":
@@ -346,6 +382,16 @@ class StepExecutionHandler:
 
         runtime = self._runtime_context_for_step(task, step)
         self._bind_automation_authorization_context(runtime, plan)
+        risk_binding = approval_risk_binding(approval)
+        if risk_binding is None:
+            return self._deny_approved_step(
+                task,
+                plan,
+                step,
+                approval,
+                "Approval lacks effective risk binding metadata; a fresh preview is required.",
+            )
+        runtime.extra_context["effective_risk_binding"] = dict(risk_binding)
         provenance_error = self._bind_approved_content_provenance(runtime, approval, step.args, task.id)
         if provenance_error:
             return self._deny_approved_step(task, plan, step, approval, provenance_error)
@@ -369,7 +415,15 @@ class StepExecutionHandler:
 
         claimed = db.claim_approval_for_execution(approval.id, now_iso())
         if not claimed:
-            return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+            refreshed = db.fetch_one("approvals", approval.id) or {}
+            reason = str(refreshed.get("expired_reason") or "").strip()
+            if not reason:
+                reason = (
+                    "Approval has already been consumed."
+                    if refreshed.get("consumed_at")
+                    else "Approval is no longer approved."
+                )
+            return self._deny_approved_step(task, plan, step, approval, reason)
         approval = Approval.model_validate(claimed)
 
         approved_args = {
@@ -531,6 +585,8 @@ class StepExecutionHandler:
         return task
 
     def _approval_binding_error(self, approval: Approval, task: Task, plan: Plan, step: PlanStep, tool) -> str:
+        if approval_is_expired(approval):
+            return "Approval authorization expired."
         if approval.status != ApprovalStatus.APPROVED:
             return f"Approval status is {approval.status}; expected approved."
         if approval.consumed_at:
@@ -549,8 +605,30 @@ class StepExecutionHandler:
         runtime = self._runtime_context_for_step(task, step)
         if approval.tool_name != step.tool_name:
             return "Approved tool name does not match current plan step."
-        if approval.risk_level and approval.risk_level != tool.risk_level.value:
-            return "Approved risk level does not match current tool risk."
+        review_context = risk_revalidation_context(runtime.tool_context(), task_id=task.id)
+        review_context.update({"task_id": task.id, "step_id": step.id})
+        current_review = self.tool_runtime._review_tool_call(  # noqa: SLF001 - shared execution-boundary review.
+            self.orchestrator.safety,
+            task.id,
+            step.id,
+            step.tool_name,
+            step.args,
+            tool.risk_level,
+            context=review_context,
+            tool_definition=tool,
+        )
+        current_declared = current_review.declared_risk_level or tool.risk_level
+        risk_binding = approval_risk_binding(approval)
+        risk_error = effective_risk_binding_error(
+            risk_binding,
+            current_declared_risk=current_declared,
+            approval_risk_level=approval.risk_level,
+        )
+        if risk_error:
+            return risk_error
+        refreshed_error = refreshed_effective_risk_error(risk_binding, current_review)
+        if refreshed_error:
+            return refreshed_error
         if approval.tool_version != getattr(tool, "tool_version", "1"):
             return "Approved tool version does not match current tool definition."
         boundary = approval.engineering_boundary if isinstance(approval.engineering_boundary, dict) else {}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -474,6 +475,11 @@ class FTSIndex:
         allowed_roots = _normalized_allowed_roots(allowed_directories)
         if not allowed_roots:
             return []
+        # Rows outside allowed_roots are filtered in Python after the query, so
+        # cap the scan generously above `limit` rather than at exactly `limit`
+        # (which could drop all in-root matches). The cap still prevents a broad
+        # / short query from loading the entire index into memory.
+        scan_cap = max(int(limit) * 50, 1000)
         with db.connect() as conn:
             try:
                 rows = conn.execute(
@@ -482,13 +488,21 @@ class FTSIndex:
                            snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
                     FROM document_chunks_fts
                     WHERE document_chunks_fts MATCH ?
+                    LIMIT ?
                     """,
-                    (fts_match_query(cleaned),),
+                    (fts_match_query(cleaned), scan_cap),
                 ).fetchall()
                 rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)][:limit]
                 if rows:
                     return [dict(row) for row in rows]
-                if len(cleaned) >= 3 and document_chunks_fts_mode(conn) == "trigram":
+                # The trigram tokenizer only matches tokens of >=3 characters.
+                # An empty result is authoritative ONLY when some token is long
+                # enough for trigram to have indexed it. For queries where every
+                # token is short (e.g. two 2-char Chinese words "汽车 保养"),
+                # trigram matches nothing regardless of content, so we must fall
+                # through to the LIKE scan instead of returning [].
+                longest_token = max((len(token) for token in re.findall(r"\S+", cleaned)), default=0)
+                if longest_token >= 3 and document_chunks_fts_mode(conn) == "trigram":
                     return []
             except sqlite3.Error as exc:
                 logger.info("FTS search failed; falling back to LIKE for query=%r: %s", cleaned, exc)
@@ -501,14 +515,25 @@ class FTSIndex:
         limit: int,
         allowed_roots: list[Path],
     ) -> list[dict[str, Any]]:
+        scan_cap = max(int(limit) * 50, 1000)
+        # Match each whitespace-separated token independently (AND) so a
+        # multi-token query like "汽车 保养" matches a document containing both
+        # words non-contiguously; a single-token query degrades to one LIKE.
+        tokens = [token for token in re.findall(r"\S+", query) if token]
+        if not tokens:
+            return []
+        where_clause = " AND ".join(r"dc.text LIKE ? ESCAPE '\'" for _ in tokens)
+        params: list[Any] = [f"%{_escape_like_term(token)}%" for token in tokens]
+        params.append(scan_cap)
         rows = conn.execute(
-            """
+            f"""
             SELECT dc.file_id, dc.text, f.data, f.normalized_path
             FROM document_chunks dc
             JOIN indexed_files f ON f.id = dc.file_id
-            WHERE dc.text LIKE ?
-            """,
-            (f"%{query}%",),
+            WHERE {where_clause}
+            LIMIT ?
+            """,  # noqa: S608 - where_clause is a fixed count of parameterized LIKE terms, no interpolation of user data.
+            params,
         ).fetchall()
         rows = [row for row in rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)][:limit]
         results = []
@@ -557,6 +582,11 @@ def _normalized_allowed_roots(allowed_directories: list[str]) -> list[Path]:
         except OSError:
             continue
     return roots
+
+
+def _escape_like_term(term: str) -> str:
+    r"""Escape LIKE wildcards so user text is matched literally (ESCAPE '\')."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _path_within_roots(path: str, roots: list[Path]) -> bool:

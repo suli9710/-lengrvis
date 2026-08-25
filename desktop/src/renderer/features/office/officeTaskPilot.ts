@@ -100,16 +100,31 @@ export function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): Ta
     };
   }
 
-  if (latestTask.state === "failed") {
+  if (latestTask.state === "failed" || latestTask.state === "denied") {
     return {
       title: baseTitle,
-      detail: "任务没有完成。打开记录可以看到失败原因；重新发送前可补充范围或目标。",
+      detail: latestTask.state === "denied"
+        ? "任务被安全或权限边界拒绝。打开记录查看阻断原因，调整目标或权限后再新建任务。"
+        : "任务没有完成。打开记录可以看到失败原因；重新发送前可补充范围或目标。",
       status,
       tone: "failed",
       action: "open",
       actionLabel: "查看原因",
       task: latestTask,
       steps: taskPilotSteps("failed")
+    };
+  }
+
+  if (latestTask.state === "cancelled") {
+    return {
+      title: baseTitle,
+      detail: "任务已由用户取消，没有形成新的完成结果；需要时可调整目标后重新开始。",
+      status,
+      tone: "warning",
+      action: "open",
+      actionLabel: "查看记录",
+      task: latestTask,
+      steps: taskPilotSteps("cancelled")
     };
   }
 
@@ -186,7 +201,7 @@ function taskPilotSteps(stage: TaskEvent["state"] | "idle" | "completed_unverifi
     states.understand = "done";
     states.route = "done";
     states.execute = "current";
-  } else if (stage === "blocked" || stage === "paused") {
+  } else if (stage === "blocked" || stage === "paused" || stage === "cancelled") {
     states.understand = "done";
     states.route = "blocked";
     states.execute = "idle";

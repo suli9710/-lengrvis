@@ -1,5 +1,6 @@
 import { app, BrowserWindow, type IpcMainInvokeEvent } from "electron";
-import { pathToFileURL } from "node:url";
+
+import { isPackagedRendererEntryUrl } from "./rendererProtocol";
 
 export function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   const url = event.senderFrame?.url ?? "";
@@ -12,11 +13,10 @@ export function isTrustedRendererUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol === "file:") {
-      const rendererRoot = pathToFileURL(`${__dirname}/../renderer/`).toString();
-      return parsed.href.startsWith(rendererRoot);
+      return false;
     }
-    if (parsed.protocol === "app:" && parsed.hostname === "local") {
-      return true;
+    if (parsed.protocol === "app:") {
+      return isPackagedRendererEntryUrl(url);
     }
     const trustedOrigins = new Set<string>();
     if (!app.isPackaged) {

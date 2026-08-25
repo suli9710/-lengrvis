@@ -14,7 +14,7 @@ tokenizers==0.22.2
 transformers==5.12.1
 huggingface_hub==1.21.0
 numpy==2.2.6
-Pillow==12.2.0
+Pillow==12.3.0
 
 # Runtime: winml
 onnxruntime-windowsml==1.27.0.202606181907 ; platform_system == "Windows"

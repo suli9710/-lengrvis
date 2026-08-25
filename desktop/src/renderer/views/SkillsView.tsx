@@ -19,13 +19,18 @@ export function SkillsView({ api }: SkillsViewProps) {
   const refresh = async () => {
     setIsLoading(true);
     setError("");
-    const response = await api.listSkills();
-    setIsLoading(false);
-    if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "技能加载失败。");
-      return;
+    try {
+      const response = await api.listSkills();
+      if (!response.ok || !response.data) {
+        setError(response.error?.message ?? "技能加载失败。");
+        return;
+      }
+      setCatalog(response.data);
+    } catch (error) { // broad-exception-boundary
+      setError(readableError(error, "技能加载失败。"));
+    } finally {
+      setIsLoading(false);
     }
-    setCatalog(response.data);
   };
 
   useEffect(() => {
@@ -36,13 +41,19 @@ export function SkillsView({ api }: SkillsViewProps) {
     setIsLoading(true);
     setStatus("");
     setError("");
-    const response = await api.refreshSkills();
-    setIsLoading(false);
-    if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "技能注册表刷新失败。");
+    try {
+      const response = await api.refreshSkills();
+      if (!response.ok || !response.data) {
+        setError(response.error?.message ?? "技能注册表刷新失败。");
+        return;
+      }
+      setStatus(`注册表已刷新：${response.data.skillCount} 个技能，${response.data.toolCount} 个工具。`);
+    } catch (error) { // broad-exception-boundary
+      setError(readableError(error, "技能注册表刷新失败。"));
       return;
+    } finally {
+      setIsLoading(false);
     }
-    setStatus(`注册表已刷新：${response.data.skillCount} 个技能，${response.data.toolCount} 个工具。`);
     await refresh();
   };
 
@@ -51,25 +62,38 @@ export function SkillsView({ api }: SkillsViewProps) {
     setIsImporting(true);
     setStatus("");
     setError("");
-    const response = await api.importSkill(path);
-    setIsImporting(false);
-    if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "技能导入失败。");
-      await refresh();
-      return;
+    try {
+      const response = await api.importSkill(path);
+      if (!response.ok || !response.data) {
+        setError(response.error?.message ?? "技能导入失败。");
+        await refresh();
+        return;
+      }
+      setStatus(`已安装 ${response.data.skill.name}，并刷新 ${response.data.refresh.toolCount} 个工具。`);
+    } catch (error) { // broad-exception-boundary
+      setError(readableError(error, "技能导入失败。"));
+    } finally {
+      setIsImporting(false);
     }
-    setStatus(`已安装 ${response.data.skill.name}，并刷新 ${response.data.refresh.toolCount} 个工具。`);
     await refresh();
   };
 
   const importDirectory = async () => {
-    const path = await window.lengrvis?.dialog.chooseSkillDirectory();
-    await importFromPath(path ?? null);
+    try {
+      const path = await window.lengrvis?.dialog.chooseSkillDirectory();
+      await importFromPath(path ?? null);
+    } catch (error) { // broad-exception-boundary
+      setError(readableError(error, "选择技能目录失败。"));
+    }
   };
 
   const importZip = async () => {
-    const path = await window.lengrvis?.dialog.chooseSkillZip();
-    await importFromPath(path ?? null);
+    try {
+      const path = await window.lengrvis?.dialog.chooseSkillZip();
+      await importFromPath(path ?? null);
+    } catch (error) { // broad-exception-boundary
+      setError(readableError(error, "选择技能压缩包失败。"));
+    }
   };
 
   const skills = catalog?.skills ?? [];
@@ -131,6 +155,10 @@ export function SkillsView({ api }: SkillsViewProps) {
       </div>
     </Panel>
   );
+}
+
+function readableError(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
 function SkillRow({ skill }: { skill: InstalledSkill }) {

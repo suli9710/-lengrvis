@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.integrations.lengrvis_code import (
     BLOCKED_ENV_KEYS,
     DEFAULT_ALLOWED_TOOLS,
+    DEVELOPER_DISALLOWED_TOOLS,
     FORBIDDEN_ALLOWED_TOOLS,
     FORBIDDEN_CLI_FLAGS,
     LENGRVIS_CODE_DISPLAY_NAME,
@@ -21,6 +22,7 @@ from app.integrations.lengrvis_code import (
 __all__ = [
     "BLOCKED_ENV_KEYS",
     "DEFAULT_ALLOWED_TOOLS",
+    "DEVELOPER_DISALLOWED_TOOLS",
     "FORBIDDEN_ALLOWED_TOOLS",
     "FORBIDDEN_CLI_FLAGS",
     "LENGRVIS_CODE_DISPLAY_NAME",

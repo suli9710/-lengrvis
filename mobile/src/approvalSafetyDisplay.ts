@@ -41,6 +41,9 @@ interface ApprovalSafetyInput {
   required_mobile_scopes?: string[];
   mobile_step_up_required?: boolean;
   mobile_step_up_satisfied?: boolean;
+  expires_at?: string;
+  authorized_at?: string | null;
+  status?: string;
   remote_input_binding?: {
     device_bound?: boolean;
     grant_bound?: boolean;
@@ -58,8 +61,19 @@ const REMOTE_INPUT_ACTIVE_GRANT_REASON = "此审批没有匹配当前手机的�
 const REMOTE_INPUT_DESKTOP_APPROVAL_REASON = "远控输入审批不能在手机端批准；请回电脑端核对并处理，或直接拒绝。";
 const DANGEROUS_PERMISSION_REASON = "此审批会扩大电脑端执行权限，不能在手机上批准；请回电脑端核对后手动处理或拒绝。";
 const BIOMETRIC_STEP_UP_REASON = "此操作影响较高，当前版本没有可信的硬件绑定生物识别在场证明；请回电脑端处理或拒绝。";
+const EXPIRED_APPROVAL_REASON = "此审批授权已过期，不能继续批准；请回电脑端重新生成预览。";
+
+export function approvalAuthorizationExpired(approval: ApprovalSafetyInput, now = Date.now()): boolean {
+  if (!approval.status && !approval.expires_at) return false;
+  if (approval.status && approval.status !== "pending") return approval.status === "expired";
+  const expiresAt = Date.parse(approval.expires_at ?? "");
+  return !Number.isFinite(expiresAt) || expiresAt <= now;
+}
 
 export function approvalApproveBlockedReason(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): string | null {
+  if (approvalAuthorizationExpired(approval)) {
+    return EXPIRED_APPROVAL_REASON;
+  }
   if (isForbiddenOrHandoff(approval) || isDesktopOnlyApproval(approval)) {
     return FORBIDDEN_APPROVAL_REASON;
   }
@@ -97,6 +111,15 @@ export function remoteInputMobileDecisionBlockedReason(approval: ApprovalSafetyI
 export function approvalDecisionGuard(approval: ApprovalSafetyInput, activeGrant?: ApprovalActiveGrantContext | null): ApprovalDecisionGuardCopy {
   const approveBlockedReason = approvalApproveBlockedReason(approval, activeGrant);
   if (approveBlockedReason) {
+    if (approveBlockedReason === EXPIRED_APPROVAL_REASON) {
+      return {
+        title: "审批授权已过期",
+        detail: "旧审批不能继续使用，防止应用重启或长时间暂停后消费过时授权。",
+        nextStep: "回电脑端刷新任务并重新生成预览。",
+        tone: "danger",
+        approveBlockedReason,
+      };
+    }
     if (approveBlockedReason === UNVERIFIED_HIGH_RISK_REASON) {
       return {
         title: "缺少可核对的安全边界",

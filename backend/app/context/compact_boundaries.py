@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from app.context.agent_message_projection import strip_private_provenance
+
 COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
 
 
@@ -109,7 +111,7 @@ def compact_metadata(boundary: dict[str, Any]) -> dict[str, Any]:
 def redact_compact_metadata(compact_metadata_value: dict[str, Any]) -> dict[str, Any]:
     """Return compact metadata safe for API responses and telemetry."""
 
-    redacted = copy.deepcopy(compact_metadata_value)
+    redacted = strip_private_provenance(copy.deepcopy(compact_metadata_value))
     preserved = redacted.get("preserved_segment") or redacted.get("preservedSegment")
     if isinstance(preserved, dict):
         raw_messages = preserved.pop("messages", [])

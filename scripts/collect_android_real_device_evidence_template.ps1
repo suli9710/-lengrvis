@@ -158,7 +158,14 @@ $artifactShaNormalized = if ($ArtifactSha256 -match "^[a-fA-F0-9]{64}$") { $Arti
 $signerShaNormalized = if ($SignerCertificateSha256 -match "^[a-fA-F0-9]{64}$") { $SignerCertificateSha256.ToLowerInvariant() } else { "uncollected" }
 $packageName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.package_name)) { [string]$mobileAppIdentity.package_name } else { "uncollected" }
 $versionName = if ($null -ne $mobileAppIdentity -and -not [string]::IsNullOrWhiteSpace([string]$mobileAppIdentity.version_name)) { [string]$mobileAppIdentity.version_name } else { "uncollected" }
-$versionCode = if ($null -ne $mobileAppIdentity -and $mobileAppIdentity.version_code -is [int]) { [int]$mobileAppIdentity.version_code } else { "uncollected" }
+$versionCode = "uncollected"
+if ($null -ne $mobileAppIdentity) {
+    $rawVersionCode = $mobileAppIdentity.version_code
+    if (($rawVersionCode -is [int] -or $rawVersionCode -is [long]) -and
+        [long]$rawVersionCode -ge 1 -and [long]$rawVersionCode -le [int]::MaxValue) {
+        $versionCode = [int]$rawVersionCode
+    }
+}
 $localEasCliBinaryPresent = (
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas.cmd")) -or
     (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas"))
@@ -195,6 +202,7 @@ $packet = [ordered]@{
         required_transport = "Redacted HTTPS origin plus approval, remote screen, and remote input WSS URLs."
         required_artifact_match = "APK SHA-256, package name, version code/name, and signer certificate SHA-256 must match Android SDK inspection of the APK supplied to android:release-gate -ArtifactPath."
         required_artifact_provenance = "app.provenance must bind the reviewed builder invocation, source commit/repository, APK digest, package/version, signer digest, and build timestamp."
+        required_artifact_manifest = "evidence_artifact_manifest must bind redacted screenshot, video, backend/mobile log, and adb install-status labels to SHA-256 and byte size."
         required_candidate_binding = "Fill candidate.commit, build_identifier, repository, ci_run_id, and ci_run_attempt from the immutable reviewed candidate; seal with evidence:android-real-device-seal before strict release validation."
     }
     candidate = [ordered]@{
@@ -273,7 +281,12 @@ $packet = [ordered]@{
     evidence = [ordered]@{
         payload_sha256 = ""
         signature = ""
+        signature_payload_version = "reviewed-evidence-ed25519/v3"
         signing_key_fingerprint = ""
+    }
+    evidence_artifact_manifest = [ordered]@{
+        version = "sha256-manifest/v1"
+        entries = @()
     }
     evidence_artifacts_redacted = @()
     claim_controls = [ordered]@{
@@ -378,7 +391,8 @@ $markdown = @(
     "- `review.status` must be `reviewed_passed`, with reviewer, UTC timestamp, artifact review, and redaction review recorded.",
     "- `app.artifact_sha256`, package/version, and signer certificate SHA-256 must match Android SDK inspection of the exact APK supplied to `android:release-gate -ArtifactPath`.",
     "- `app.provenance` must bind the reviewed builder invocation and timestamp to the candidate source plus the same APK digest, package/version, and signer digest.",
-    "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the protected release-evidence HMAC secret.",
+    "- `evidence_artifact_manifest` must include SHA-256 and byte size for redacted device screenshot/video, backend/mobile logs, and adb install-status evidence; labels must match `evidence_artifacts_redacted`.",
+    "- Fill all `candidate` fields from the immutable candidate context, then run `npm run evidence:android-real-device-seal` with the reviewer-only Ed25519 private key.",
     "- A template has no valid signature and can never satisfy the strict gate.",
     "- `transport` must contain redacted HTTPS plus approval/screen/input WSS labels.",
     "- Shareable artifacts must use `binding_ref` or redacted active-grant labels; raw `deviceId` and `grantId` stay local-only.",

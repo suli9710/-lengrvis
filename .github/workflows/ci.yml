@@ -23,9 +23,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
@@ -41,19 +43,25 @@ jobs:
         run: npm run security:threat-model
 
   backend:
-    name: Backend pytest + golden task gate
+    name: Backend pytest + golden task + MCP conformance gate
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev-lock.txt
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+      - name: Install locked workspace QA dependencies
+        run: npm ci --ignore-scripts --engine-strict
       - name: Install locked backend and development dependencies
         run: |
-          python -m pip install -U pip
           python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Backend dependency audit gate
         run: python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps
@@ -67,12 +75,23 @@ jobs:
         run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=75
       - name: Golden task gate (>=95% pass rate report)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
+      - name: Official MCP client conformance (lifecycle, tools, SSE resume)
+        run: npm run mcp:conformance
+      - name: Upload MCP conformance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-client-conformance
+          path: .tmp/qa-evidence/mcp-conformance/
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Upload golden task report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: golden-tasks-report
           path: .tmp/qa-evidence/golden-tasks/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   real-llm-quality:
@@ -80,11 +99,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     outputs:
-      release_evidence_status: ${{ steps.real-llm-skip.outputs.release_evidence_status || steps.real-llm-eval.outputs.release_evidence_status }}
-    env:
-      LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+      release_evidence_status: ${{ steps.real-llm-eval.outputs.release_evidence_status || steps.real-llm-skip.outputs.release_evidence_status }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
@@ -92,11 +111,38 @@ jobs:
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install backend dependencies
         run: |
-          python -m pip install -U pip
           python -m pip install --require-hashes -r requirements-dev-lock.txt
-      - name: Skip real LLM quality gate when secret is unavailable
+      - name: Real LLM eval quality gate
+        id: real-llm-eval
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
+          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
+          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
+          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+          LENGRVIS_MODE: efficiency
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LENGRVIS_API_KEY)) {
+            New-Item -ItemType Directory -Force -Path .tmp/qa-evidence/real-llm-eval | Out-Null
+            @{
+              ok = $false
+              skipped = $true
+              blocking_for_release = $true
+              reason = "LENGRVIS_REAL_LLM_API_KEY secret is not configured for this workflow context."
+            } | ConvertTo-Json | Set-Content .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json -Encoding UTF8
+            "release_evidence_status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Warning "Real LLM quality gate skipped because LENGRVIS_REAL_LLM_API_KEY is not configured. Release evidence remains incomplete."
+            exit 0
+          }
+          python scripts/run_real_llm_eval.py --quality-gate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "release_evidence_status=success" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Record real LLM advisory skip for untrusted context
         id: real-llm-skip
-        if: ${{ env.LENGRVIS_API_KEY == '' }}
+        if: github.event_name == 'pull_request' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .tmp/qa-evidence/real-llm-eval | Out-Null
@@ -104,29 +150,16 @@ jobs:
             ok = $false
             skipped = $true
             blocking_for_release = $true
-            reason = "LENGRVIS_REAL_LLM_API_KEY secret is not configured for this workflow context."
+            reason = "Real-provider credentials are unavailable to pull requests and non-default branches."
           } | ConvertTo-Json | Set-Content .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json -Encoding UTF8
           "release_evidence_status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Warning "Real LLM quality gate skipped because LENGRVIS_REAL_LLM_API_KEY is not configured. Release evidence remains incomplete."
-      - name: Real LLM eval quality gate
-        id: real-llm-eval
-        if: ${{ env.LENGRVIS_API_KEY != '' }}
-        env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
-          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
-          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
-          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
-          LENGRVIS_MODE: efficiency
-        run: |
-          python scripts/run_real_llm_eval.py --quality-gate
-          "release_evidence_status=success" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Upload real LLM eval report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: real-llm-eval-report
           path: .tmp/qa-evidence/real-llm-eval/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   desktop:
@@ -135,9 +168,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - name: Install desktop dependencies
@@ -159,9 +194,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: mobile/package-lock.json
       - name: Install mobile dependencies
@@ -170,6 +207,8 @@ jobs:
         run: |
           cd mobile
           npm exec expo -- install --check
+      - name: Mobile EAS CLI runtime compatibility smoke
+        run: npm --prefix mobile run smoke:eas-cli-compat
       - name: Mobile dependency audit gate (high+ blocks the PR)
         run: npm --prefix mobile audit --audit-level=high
       - name: Mobile typecheck
@@ -243,9 +282,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
@@ -259,6 +300,7 @@ jobs:
         with:
           name: current-sbom
           path: .tmp/sbom/lengrvis-sbom.cdx.json
+          include-hidden-files: true
           if-no-files-found: error
 
   extension-security:
@@ -267,9 +309,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -279,7 +323,6 @@ jobs:
           cache-dependency-path: requirements-dev-lock.txt
       - name: Install backend dependencies
         run: |
-          python -m pip install -U pip
           python -m pip install --require-hashes -r requirements-dev-lock.txt
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
@@ -293,6 +336,7 @@ jobs:
         with:
           name: extension-security-gate
           path: .tmp/extension-security-gate/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   release-evidence:
@@ -303,6 +347,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
       - name: Generate current release evidence
         env:
           RELEASE_EVIDENCE_NEEDS_JSON: ${{ toJson(needs) }}

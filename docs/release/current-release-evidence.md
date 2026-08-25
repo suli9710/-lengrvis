@@ -56,6 +56,7 @@
 | Desktop typecheck + audit + behavior smokes | `npm --prefix desktop run smoke` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile ci` |
 | Mobile typecheck + behavior smokes | `cd mobile; npm exec expo -- install --check` |
+| Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:eas-cli-compat` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile audit --audit-level=high` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run typecheck` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:token` |

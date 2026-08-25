@@ -162,7 +162,8 @@ import {
   startRunEndpoint,
   submitApprovalDecisionEndpoint,
   subscribeRunEventsEndpoint,
-  subscribeTaskMessagesEndpoint
+  subscribeTaskMessagesEndpoint,
+  taskLifecycleEndpoint
 } from "./executionClient";
 import {
   getHardwareAccelerationStatusEndpoint,
@@ -192,10 +193,12 @@ import {
 import {
   forgetMemoryEndpoint,
   listMemoriesEndpoint,
+  promoteMemoryEndpoint,
   recallMemoryEndpoint,
+  revokeMemoryEndpoint,
   saveMemoryEndpoint
 } from "./memoryClient";
-import type { RecallMemoryOptions, SaveMemoryOptions } from "./memoryClient";
+import type { RecallMemoryOptions, ReviewMemoryOptions, SaveMemoryOptions } from "./memoryClient";
 import type { BackendMemory } from "./memoryBackendTypes";
 import {
   createMobilePairingCodeEndpoint,
@@ -704,6 +707,14 @@ export class LengrvisApiClient {
     return recallMemoryEndpoint(this.requestEndpoint, query, options);
   }
 
+  promoteMemory(memoryId: string, options: ReviewMemoryOptions = {}): Promise<ApiResponse<BackendMemory>> {
+    return promoteMemoryEndpoint(this.requestEndpoint, memoryId, options);
+  }
+
+  revokeMemory(memoryId: string, options: ReviewMemoryOptions = {}): Promise<ApiResponse<BackendMemory>> {
+    return revokeMemoryEndpoint(this.requestEndpoint, memoryId, options);
+  }
+
   forgetMemory(memoryId: string): Promise<ApiResponse<{ ok: boolean; id: string }>> {
     return forgetMemoryEndpoint(this.requestEndpoint, memoryId);
   }
@@ -712,8 +723,31 @@ export class LengrvisApiClient {
     return previewRollbackEndpoint(this.requestEndpoint, taskId);
   }
 
-  executeRollback(taskId: string): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
+  executeRollback(taskId: string): Promise<ApiResponse<{
+    executed: unknown[];
+    count: number;
+    state: string;
+    attempted: number;
+    succeeded: number;
+    verified: number;
+    verification_failed: number;
+    failed: number;
+    manual_required: number;
+    unrecoverable: number;
+  }>> {
     return executeRollbackEndpoint(this.requestEndpoint, taskId);
+  }
+
+  pauseTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "pause");
+  }
+
+  resumeTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "resume");
+  }
+
+  cancelTask(taskId: string): Promise<ApiResponse<unknown>> {
+    return taskLifecycleEndpoint(this.requestEndpoint, taskId, "cancel");
   }
 
   subscribeRunEvents(

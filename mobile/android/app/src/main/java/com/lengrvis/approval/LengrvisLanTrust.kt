@@ -3,7 +3,6 @@ package com.lengrvis.approval
 import android.content.Context
 import com.facebook.react.modules.network.OkHttpClientFactory
 import com.facebook.react.modules.network.OkHttpClientProvider
-import java.net.URL
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.cert.CertificateException
@@ -21,6 +20,8 @@ import javax.net.ssl.SSLSession
 import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Interceptor
 import org.json.JSONArray
@@ -28,7 +29,7 @@ import org.json.JSONObject
 
 object LengrvisLanTrust {
   private const val PREFS_NAME = "lengrvis_lan_tls_trust"
-  private const val RECORDS_KEY = "tls_pin_records_v1"
+  private const val RECORDS_PREF = "tls_pin_records_v1"
   private const val LEGACY_PINS_KEY = "pinned_certificate_sha256_by_host"
   private const val CORRUPT_STATE_KEY = "tls_pin_store_corrupt_v1"
   private const val CORRUPT_STATE_VALUE = "corrupt-v1"
@@ -152,9 +153,14 @@ object LengrvisLanTrust {
         it.origin == origin && it.fingerprintSha256 != fingerprint && it.isUsable(now)
       }
       val current = records[index]
+      // Renew on re-confirmation: a stable (non-rotating) self-signed cert would
+      // otherwise keep its original expiry forever and hard-expire at 30 days,
+      // forcing a disconnect + full re-pair even if the user re-confirmed the
+      // same out-of-band fingerprint the day before. Only ever extend, never
+      // shorten, an existing pin's lifetime.
       val activated = current.copy(
         status = STATUS_ACTIVE,
-        expiresAtEpochMs = if (current.status == STATUS_NEXT) activeExpiresAtEpochMs else current.expiresAtEpochMs,
+        expiresAtEpochMs = maxOf(current.expiresAtEpochMs, activeExpiresAtEpochMs),
         sourceDeviceId = normalizeSourceDeviceId(sourceDeviceId) ?: current.sourceDeviceId,
         revokedAtEpochMs = null,
       )
@@ -194,7 +200,7 @@ object LengrvisLanTrust {
     synchronized(lock) {
       check(
         prefs(context).edit()
-          .remove(RECORDS_KEY)
+          .remove(RECORDS_PREF)
           .remove(LEGACY_PINS_KEY)
           .remove(CORRUPT_STATE_KEY)
           .remove(GOVERNED_STATE_KEY)
@@ -209,7 +215,11 @@ object LengrvisLanTrust {
     val normalizedOrigin = normalizeHttpsOrigin(origin)
     synchronized(lock) {
       try {
-        readRecordsLocked(context)
+        val now = System.currentTimeMillis()
+        val originRecords = readRecordsLocked(context).filter { it.origin == normalizedOrigin }
+        if (originRecords.isNotEmpty() && originRecords.none { it.isUsable(now) }) {
+          throw SSLPeerUnverifiedException("LAN TLS certificate pin is expired or revoked for origin $normalizedOrigin.")
+        }
       } catch (error: CorruptTlsPinStoreException) {
         throw SSLPeerUnverifiedException("$CORRUPT_STORE_MESSAGE Origin: $normalizedOrigin").also {
           it.initCause(error)
@@ -260,6 +270,29 @@ object LengrvisLanTrust {
     }
   }
 
+  fun certificateAllowedByExactOriginPolicy(
+    context: Context,
+    origin: String,
+    fingerprintSha256: String,
+    requireExactOriginPin: Boolean,
+  ): Boolean {
+    val normalizedOrigin = normalizeHttpsOrigin(origin)
+    val fingerprint = normalizeFingerprint(fingerprintSha256)
+    if (fingerprint.isBlank()) return false
+    synchronized(lock) {
+      val now = System.currentTimeMillis()
+      val records = readRecordsLocked(context)
+      val originRecords = records.filter { it.origin == normalizedOrigin }
+      val usableOriginRecords = originRecords.filter { it.isUsable(now) }
+      if (originRecords.isNotEmpty() && usableOriginRecords.isEmpty()) return false
+      if (usableOriginRecords.isNotEmpty()) {
+        return usableOriginRecords.any { it.fingerprintSha256 == fingerprint }
+      }
+      if (requireExactOriginPin) return false
+      return records.none { it.isUsable(now) && it.fingerprintSha256 == fingerprint }
+    }
+  }
+
   private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
   private fun readRecordsLocked(context: Context): MutableList<StoredTlsPinRecord> {
@@ -282,7 +315,7 @@ object LengrvisLanTrust {
       failCorruptStoreLocked(preferences)
     }
     val wasGoverned = governedState == GOVERNED_STATE_VALUE
-    val rawValue = values[RECORDS_KEY]
+    val rawValue = values[RECORDS_PREF]
     if (rawValue == null) {
       if (wasGoverned) failCorruptStoreLocked(preferences)
       return mutableListOf()
@@ -291,10 +324,23 @@ object LengrvisLanTrust {
       failCorruptStoreLocked(preferences)
     }
 
+    var canonicalRewriteRequired = false
     val records = try {
       val raw = rawValue
       val array = JSONArray(raw)
-      MutableList(array.length()) { index -> StoredTlsPinRecord.fromJson(array.getJSONObject(index)) }
+      MutableList(array.length()) { index ->
+        val source = array.getJSONObject(index)
+        val record = StoredTlsPinRecord.fromJson(source)
+        // tls-pin-record-v1 was originally serialized with java.net.URL.  That
+        // representation preserved Unicode host names (and expanded IPv6
+        // spellings), while request URLs now use OkHttp's canonical HttpUrl.
+        // Migrate only values that parse to the exact same canonical origin and
+        // host; malformed or mismatched records still fail closed below.
+        if (source.optString("origin") != record.origin || source.optString("host") != record.host) {
+          canonicalRewriteRequired = true
+        }
+        record
+      }
         .also(::validateRecordSet)
     } catch (error: Exception) {
       failCorruptStoreLocked(preferences, error)
@@ -302,9 +348,13 @@ object LengrvisLanTrust {
     if (records.isEmpty() && wasGoverned) {
       failCorruptStoreLocked(preferences)
     }
-    if (records.isNotEmpty() && !wasGoverned) {
-      check(preferences.edit().putString(GOVERNED_STATE_KEY, GOVERNED_STATE_VALUE).commit()) {
-        "Failed to persist governed LAN TLS trust state."
+    if (records.isNotEmpty() && (!wasGoverned || canonicalRewriteRequired)) {
+      if (canonicalRewriteRequired) {
+        writeRecordsLocked(context, records)
+      } else {
+        check(preferences.edit().putString(GOVERNED_STATE_KEY, GOVERNED_STATE_VALUE).commit()) {
+          "Failed to persist governed LAN TLS trust state."
+        }
       }
     }
     return records
@@ -331,7 +381,7 @@ object LengrvisLanTrust {
     records.forEach { payload.put(it.toJson()) }
     check(
       prefs(context).edit()
-        .putString(RECORDS_KEY, payload.toString())
+        .putString(RECORDS_PREF, payload.toString())
         .putString(GOVERNED_STATE_KEY, GOVERNED_STATE_VALUE)
         .commit(),
     ) {
@@ -386,29 +436,56 @@ object LengrvisLanTrust {
     return fingerprint
   }
 
-  private fun normalizeHost(value: String?): String =
-    (value ?: "").trim().trim('[', ']').lowercase()
-
-  private fun normalizeHttpsOrigin(value: String): String {
-    val url = URL(value)
-    require(url.protocol.equals("https", ignoreCase = true)) {
-      "LAN certificate pins are only accepted for HTTPS origins."
+  private fun normalizeHost(value: String?): String {
+    val raw = (value ?: "").trim()
+    if (raw.isBlank()) return ""
+    val candidate = when {
+      raw.startsWith("[") || raw.endsWith("]") -> {
+        if (!raw.startsWith("[") || !raw.endsWith("]") || raw.length <= 2) return ""
+        raw.substring(1, raw.length - 1).also {
+          if (it.contains('[') || it.contains(']')) return ""
+        }
+      }
+      raw.contains('[') || raw.contains(']') -> return ""
+      else -> raw
     }
-    require(url.userInfo.isNullOrBlank() && url.query.isNullOrBlank() && url.ref.isNullOrBlank()) {
-      "LAN certificate pin origin must not include credentials, query, or fragment."
+    if (candidate.isBlank()) return ""
+    return try {
+      // HttpUrl.Builder.host() applies the same IDN/punycode and IPv6
+      // canonicalization as request URL parsing without treating host input as
+      // an authority containing credentials or a path.
+      HttpUrl.Builder()
+        .scheme("https")
+        .host(candidate)
+        .build()
+        .host
+    } catch (_: IllegalArgumentException) {
+      ""
     }
-    require(url.path.isNullOrBlank() || url.path == "/") {
-      "LAN certificate pins must be scoped to an HTTPS origin, not a path."
-    }
-    require(url.port == -1 || url.port in 1..65535) { "LAN certificate pin origin has an invalid port." }
-    val host = normalizeHost(url.host)
-    require(host.isNotBlank()) { "HTTPS origin is missing a host." }
-    val renderedHost = if (host.contains(':')) "[$host]" else host
-    val port = if (url.port == -1 || url.port == 443) "" else ":${url.port}"
-    return "https://$renderedHost$port"
   }
 
-  private fun originHost(origin: String): String = normalizeHost(URL(origin).host)
+  private fun requireStoredHost(value: String): String = normalizeHost(value).also {
+    require(it.isNotBlank()) { "TLS pin record host is invalid." }
+  }
+
+  private fun normalizeHttpsOrigin(value: String): String {
+    val url = requireNotNull(value.toHttpUrlOrNull()) {
+      "LAN certificate pin origin must be a valid HTTPS URL."
+    }
+    require(url.scheme == "https") {
+      "LAN certificate pins are only accepted for HTTPS origins."
+    }
+    require(url.username.isBlank() && url.password.isBlank() && url.query == null && url.fragment == null) {
+      "LAN certificate pin origin must not include credentials, query, or fragment."
+    }
+    require(url.encodedPath == "/") {
+      "LAN certificate pins must be scoped to an HTTPS origin, not a path."
+    }
+    return renderHttpsOrigin(url)
+  }
+
+  private fun originHost(origin: String): String =
+    requireNotNull(origin.toHttpUrlOrNull()) { "Stored TLS pin origin is invalid." }.host
 
   private fun normalizeSourceDeviceId(value: String?): String? =
     value?.trim()?.takeIf { it.isNotBlank() }?.take(128)
@@ -445,7 +522,7 @@ object LengrvisLanTrust {
       fun fromJson(value: JSONObject): StoredTlsPinRecord {
         require(value.getString("schema_version") == RECORD_SCHEMA) { "Unsupported TLS pin record schema." }
         val origin = normalizeHttpsOrigin(value.getString("origin"))
-        val host = normalizeHost(value.getString("host"))
+        val host = requireStoredHost(value.getString("host"))
         require(host == originHost(origin)) { "TLS pin record host does not match its origin." }
         val fingerprint = requireFingerprint(value.getString("fingerprint_sha256"))
         val status = value.getString("status")
@@ -507,7 +584,7 @@ private class LengrvisOkHttpClientFactory(
     return OkHttpClientProvider
       .createClientBuilder(context)
       .sslSocketFactory(sslContext.socketFactory, trustManager)
-      .hostnameVerifier(LengrvisPinnedHostnameVerifier(context))
+      .hostnameVerifier(LengrvisPinnedHostnameVerifier(context, trustManager))
       .addInterceptor { chain ->
         val request = chain.request()
         if (!request.url.isHttps) {
@@ -557,20 +634,39 @@ private fun verifyPinnedOriginBeforeRequest(
     ?.filterIsInstance<X509Certificate>()
     ?.toTypedArray()
     ?: emptyArray()
-  val leaf = certificateChain.firstOrNull() ?: return
-  if (trustManager.isSystemTrusted(certificateChain)) return
+  val leaf = certificateChain.firstOrNull()
+    ?: throw SSLPeerUnverifiedException("TLS peer certificate chain is empty for origin $origin.")
+  try {
+    leaf.checkValidity()
+  } catch (error: CertificateException) {
+    throw SSLPeerUnverifiedException(
+      "TLS certificate is expired or not yet valid for origin $origin.",
+    ).also { it.initCause(error) }
+  }
   val fingerprint = sha256(leaf)
-  if (!LengrvisLanTrust.originHasFingerprint(context, origin, fingerprint)) {
-    throw SSLPeerUnverifiedException("LAN TLS certificate pin is not authorized for origin $origin.")
+  val systemTrusted = trustManager.isSystemTrusted(certificateChain)
+  if (!LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+      context,
+      origin,
+      fingerprint,
+      requireExactOriginPin = !systemTrusted,
+    )) {
+    val trustKind = if (systemTrusted) "System-trusted" else "Pinned"
+    throw SSLPeerUnverifiedException(
+      "$trustKind TLS certificate is not authorized for exact origin $origin.",
+    )
   }
 }
 
-private fun requestOrigin(url: okhttp3.HttpUrl): String {
+private fun renderHttpsOrigin(url: HttpUrl): String {
+  require(url.scheme == "https") { "LAN TLS origin must use HTTPS." }
   val host = url.host.lowercase()
   val renderedHost = if (host.contains(':')) "[$host]" else host
   val port = if (url.port == 443) "" else ":${url.port}"
   return "https://$renderedHost$port"
 }
+
+private fun requestOrigin(url: HttpUrl): String = renderHttpsOrigin(url)
 
 private class LengrvisPinnedTrustManager(
   private val context: Context,
@@ -583,22 +679,34 @@ private class LengrvisPinnedTrustManager(
 
   override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
     val expectedOrigin = LengrvisTlsOriginScope.get()
-    if (expectedOrigin != null) {
-      try {
-        LengrvisLanTrust.assertRequestTrustStateHealthy(context, expectedOrigin)
-      } catch (error: SSLPeerUnverifiedException) {
-        throw CertificateException(error.message, error)
-      }
-    }
+      ?: throw CertificateException("TLS server validation requires an exact request origin.")
     try {
+      LengrvisLanTrust.assertRequestTrustStateHealthy(context, expectedOrigin)
+    } catch (error: SSLPeerUnverifiedException) {
+      throw CertificateException(error.message, error)
+    }
+    val leaf = chain.firstOrNull() ?: throw CertificateException("TLS server certificate chain is empty.")
+    var systemError: CertificateException? = null
+    val systemTrusted = try {
       systemTrustManager.checkServerTrusted(chain, authType)
-      return
-    } catch (systemError: CertificateException) {
-      val leaf = chain.firstOrNull() ?: throw systemError
-      val fingerprint = sha256(leaf)
-      if (expectedOrigin == null || !LengrvisLanTrust.originHasFingerprint(context, expectedOrigin, fingerprint)) {
-        throw systemError
-      }
+      true
+    } catch (error: CertificateException) {
+      systemError = error
+      false
+    }
+    leaf.checkValidity()
+    val fingerprint = sha256(leaf)
+    if (!LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        expectedOrigin,
+        fingerprint,
+        requireExactOriginPin = !systemTrusted,
+      )) {
+      val trustKind = if (systemTrusted) "System-trusted" else "Pinned"
+      throw CertificateException(
+        "$trustKind TLS certificate is not authorized for exact origin $expectedOrigin.",
+        systemError,
+      )
     }
   }
 
@@ -637,29 +745,41 @@ private class LengrvisPinnedTrustManager(
 
 private class LengrvisPinnedHostnameVerifier(
   private val context: Context,
+  private val trustManager: LengrvisPinnedTrustManager,
 ) : HostnameVerifier {
   private val systemVerifier = HttpsURLConnection.getDefaultHostnameVerifier()
 
   override fun verify(hostname: String?, session: SSLSession?): Boolean {
     if (hostname.isNullOrBlank() || session == null) return false
-    LengrvisTlsOriginScope.get()?.let { origin ->
-      try {
-        LengrvisLanTrust.assertRequestTrustStateHealthy(context, origin)
-      } catch (_: SSLPeerUnverifiedException) {
-        return false
-      }
-    }
-    if (!systemVerifier.verify(hostname, session)) return false
-    val fingerprint = try {
-      val leaf = session.peerCertificates.firstOrNull() as? X509Certificate ?: return false
-      sha256(leaf)
+    val expectedOrigin = LengrvisTlsOriginScope.get() ?: return false
+    try {
+      LengrvisLanTrust.assertRequestTrustStateHealthy(context, expectedOrigin)
     } catch (_: SSLPeerUnverifiedException) {
       return false
     }
-    return if (LengrvisLanTrust.hostHasAnyFingerprintForHost(context, hostname)) {
-      LengrvisLanTrust.hostHasFingerprint(context, hostname, fingerprint)
-    } else {
-      !LengrvisLanTrust.hasAnyFingerprint(context, fingerprint)
+    if (!systemVerifier.verify(hostname, session)) return false
+    val certificateChain = try {
+      session.peerCertificates.filterIsInstance<X509Certificate>().toTypedArray()
+    } catch (_: SSLPeerUnverifiedException) {
+      return false
+    }
+    val leaf = certificateChain.firstOrNull() ?: return false
+    try {
+      leaf.checkValidity()
+    } catch (_: CertificateException) {
+      return false
+    }
+    val fingerprint = sha256(leaf)
+    val systemTrusted = trustManager.isSystemTrusted(certificateChain)
+    return try {
+      LengrvisLanTrust.certificateAllowedByExactOriginPolicy(
+        context,
+        expectedOrigin,
+        fingerprint,
+        requireExactOriginPin = !systemTrusted,
+      )
+    } catch (_: IllegalStateException) {
+      false
     }
   }
 }

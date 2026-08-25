@@ -4,7 +4,20 @@ import asyncio
 import os
 import signal
 import subprocess
+import threading
+import time
 from typing import Any
+
+
+class ProcessCancelledError(RuntimeError):
+    """Raised after a cooperative cancel request terminates the process tree."""
+
+    def __init__(self, command: list[str] | str, *, output: Any = None, stderr: Any = None) -> None:
+        super().__init__(f"Process was cancelled: {command}")
+        self.cmd = command
+        self.output = output
+        self.stdout = output
+        self.stderr = stderr
 
 
 def process_tree_popen_kwargs(*, hide_window: bool = False) -> dict[str, Any]:
@@ -79,8 +92,19 @@ def run_process_tree(
     capture_output: bool = False,
     check: bool = False,
     hide_window: bool = False,
+    cancel_event: threading.Event | None = None,
+    cancel_poll_interval: float = 0.05,
+    windows_job_limits: Any | None = None,
+    require_windows_isolation: bool = False,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    isolation_requested = require_windows_isolation or windows_job_limits is not None
+    if isolation_requested and os.name != "nt":
+        # Reject before spawning. Killing a process after Popen is not a
+        # security boundary because user code may already have executed.
+        from app.core.windows_job import WindowsJobIsolationError
+
+        raise WindowsJobIsolationError("Windows Job Object isolation is unavailable on this host")
     if input is not None:
         kwargs["stdin"] = subprocess.PIPE
     if capture_output:
@@ -88,10 +112,42 @@ def run_process_tree(
             raise ValueError("stdout and stderr may not be used with capture_output.")
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    kwargs.update(process_tree_popen_kwargs(hide_window=hide_window))
+    popen_kwargs = process_tree_popen_kwargs(hide_window=hide_window)
+    if os.name == "nt":
+        creation_flags = int(kwargs.get("creationflags", 0) or 0) | int(popen_kwargs["creationflags"])
+        if isolation_requested:
+            creation_flags |= int(getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+        kwargs["creationflags"] = creation_flags
+    else:
+        kwargs.update(popen_kwargs)
     process = subprocess.Popen(command, **kwargs)  # noqa: S603 - callers perform command validation.
+    job_handle: int | None = None
+    if isolation_requested:
+        from app.core.windows_job import (
+            WindowsJobIsolationError,
+            attach_process_to_job,
+            close_job_handle,
+            resume_suspended_process,
+        )
+
+        try:
+            job_handle = attach_process_to_job(process, windows_job_limits)
+            resume_suspended_process(process)
+        except WindowsJobIsolationError:
+            if job_handle:
+                close_job_handle(job_handle)
+                job_handle = None
+            kill_process_tree(process)
+            raise
     try:
-        stdout, stderr = process.communicate(input, timeout=timeout)
+        stdout, stderr = _communicate_cancellable(
+            process,
+            command,
+            input=input,
+            timeout=timeout,
+            cancel_event=cancel_event,
+            poll_interval=cancel_poll_interval,
+        )
     except subprocess.TimeoutExpired as exc:
         kill_process_tree(process)
         stdout, stderr = process.communicate()
@@ -101,11 +157,46 @@ def run_process_tree(
             output=stdout,
             stderr=stderr,
         ) from None
+    finally:
+        if job_handle:
+            from app.core.windows_job import close_job_handle
+
+            close_job_handle(job_handle)
 
     completed = subprocess.CompletedProcess(command, process.poll(), stdout, stderr)
     if check:
         completed.check_returncode()
     return completed
+
+
+def _communicate_cancellable(
+    process: subprocess.Popen[Any],
+    command: list[str] | str,
+    *,
+    input: str | bytes | None,
+    timeout: float | None,
+    cancel_event: threading.Event | None,
+    poll_interval: float,
+) -> tuple[Any, Any]:
+    if cancel_event is None:
+        return process.communicate(input, timeout=timeout)
+
+    interval = max(0.01, float(poll_interval))
+    deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+    communicate_input = input
+    while True:
+        if cancel_event.is_set():
+            kill_process_tree(process)
+            stdout, stderr = process.communicate()
+            raise ProcessCancelledError(command, output=stdout, stderr=stderr)
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout)
+        wait_for = interval if remaining is None else min(interval, remaining)
+        try:
+            return process.communicate(communicate_input, timeout=wait_for)
+        except subprocess.TimeoutExpired:
+            communicate_input = None
 
 
 def _kill_windows_tree(process: subprocess.Popen[Any], *, timeout: float) -> None:

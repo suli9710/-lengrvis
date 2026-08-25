@@ -10,6 +10,48 @@ from app.llm.base import LLMProvider
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
 
+_WEB_DOMAIN_HINT = re.compile(
+    r"(?<![a-z0-9_@.])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?P<tld>[a-z]{2,63})"
+    r"(?::\d{1,5})?(?:[/?:#][^\s]*)?",
+    re.IGNORECASE,
+)
+_COMMON_WEB_TLDS = frozenset(
+    {
+        "ai",
+        "app",
+        "au",
+        "biz",
+        "ca",
+        "cloud",
+        "cn",
+        "co",
+        "com",
+        "de",
+        "dev",
+        "edu",
+        "fr",
+        "gov",
+        "hk",
+        "info",
+        "io",
+        "jp",
+        "me",
+        "net",
+        "online",
+        "org",
+        "site",
+        "tech",
+        "tw",
+        "uk",
+        "us",
+        "xyz",
+    }
+)
+
+
+def _contains_web_domain_hint(value: str) -> bool:
+    return any(match.group("tld").casefold() in _COMMON_WEB_TLDS for match in _WEB_DOMAIN_HINT.finditer(value))
+
 
 class MockProvider(LLMProvider):
     name = "mock"
@@ -270,7 +312,8 @@ class MockProvider(LLMProvider):
                 "reply": "收到，我会把这个执行请求交给文件 Agent，后台处理并持续反馈进展。",
                 "agent_hint": "FileAgent",
             }
-        if any(term in user for term in ["网页", "浏览器", "网址", "链接", "http", "www."]) or "example.com" in user:
+        has_web_term = any(term in user for term in ["网页", "浏览器", "网址", "链接", "http", "www."])
+        if has_web_term or _contains_web_domain_hint(user):
             return {
                 "delegate": True,
                 "reply": "收到，我会把这个网页读取请求交给浏览器 Agent，后台处理并持续反馈进展。",

@@ -42,6 +42,7 @@ parser.add_argument("--bare", action="store_true")
 parser.add_argument("--model")
 parser.add_argument("--add-dir")
 parser.add_argument("--permission-mode")
+parser.add_argument("--disallowedTools")
 parser.add_argument("--allowedTools", "--allowed-tools", dest="allowed_tools")
 parser.add_argument("--max-turns")
 parser.add_argument("--mode", choices=["stream", "sleep", "badjson", "nonzero", "result-error", "permission"], default="stream")
@@ -154,6 +155,8 @@ async def test_fake_lengrvis_code_stream_json_becomes_lengrvis_result(tmp_path, 
     assert "--output-format" in record
     assert "stream-json" in record
     assert "--dangerously-skip-permissions" not in record
+    assert "Bash(*git *--o*u*t*p*u*t*)" in record
+    assert "Bash(xargs git:*)" in record
     assert "Bash(*)" not in record
     assert '"LENGRVIS_CODE_USE_OPENAI": "1"' in record
     assert '"OPENAI_API_KEY": "test-api-key"' in record
@@ -333,6 +336,8 @@ async def test_lengrvis_code_error_classification_modes(tmp_path, fake_lengrvis_
     assert any(event["name"] == "run.failed" for event in payload["lengrvis_events"])
     if expected == "permission_denial":
         assert payload["permission_denials"][0]["tool_name"] == "Write"
+        assert payload["permission_denied"] is True
+        assert "awaiting_write_approval" not in payload
         assert payload["usage"] == {"input_tokens": 1}
     if expected == "non_zero_exit":
         assert "fatal fake stderr" in payload["stderr"]
@@ -435,9 +440,7 @@ def test_lengrvis_code_public_payload_redacts_semantic_tool_input_fields() -> No
     raw_notebook = "/home/suli/private/notebook.ipynb"
     raw_command = f"type {raw_file} && echo {secret_text}"
     raw_source = f"print({secret_text!r})"
-    semicolon_summary = (
-        f"content={secret_text};command={raw_command};input={secret_text} through generic input"
-    )
+    semicolon_summary = f"content={secret_text};command={raw_command};input={secret_text} through generic input"
     summary = parse_lengrvis_code_ndjson_lines(
         [
             json.dumps(

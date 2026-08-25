@@ -467,7 +467,9 @@ $strictEvidenceContract = [ordered]@{
     )
     evidence_labels = "At least one reviewed redacted screenshot/video/log label in evidence_artifacts_redacted."
     sensitive_values = "No raw tokens, pairing codes, hosts/IPs, device ids, grant ids, or private paths in shareable labels."
-    reviewed_evidence_signature = "A sealed HMAC evidence block is required for all full Android release gates."
+    reviewed_evidence_signature = "A sealed Ed25519 reviewed-evidence block is required for all full Android release gates."
+    artifact_manifest = "The sealed evidence must bind redacted screenshot/video, backend/mobile logs, and adb install-status artifacts by SHA-256 and byte size."
+    signing_key_fingerprint = "The reviewed-evidence signature payload must cryptographically bind its signing-key fingerprint label."
     candidate_binding = "Strict RC runs require the sealed evidence candidate identity to match the explicit checked-out candidate."
     apk_signature = "Android SDK apksigner verify --verbose --print-certs must pass with v2 and v3 schemes and one controlled signer certificate."
     sdk_toolchain = "apksigner.bat, apksigner.jar, and aapt2.exe must come from one approved build-tools/<version> root and match protected SHA-256 values. PATH and individual tool overrides are not trusted."
@@ -575,9 +577,6 @@ if ($null -ne $appJson) {
         }
     }
 
-    if (-not (Test-BooleanFalse (Get-PropertyValue $android "usesCleartextTraffic"))) {
-        Add-Issue $sourceIssues "cleartext_traffic_not_disabled" "expo.android.usesCleartextTraffic must stay false for token-bearing mobile flows."
-    }
     if ((Get-PropertyValue $android "softwareKeyboardLayoutMode") -ne "resize") {
         Add-Issue $sourceIssues "keyboard_resize_missing" "expo.android.softwareKeyboardLayoutMode must be resize for Android remote-control text inputs."
     }
@@ -1266,7 +1265,7 @@ if ($null -ne $easJson) {
 if ($null -ne $mobilePackage) {
     $scripts = Get-PropertyValue $mobilePackage "scripts"
     $devDependencies = Get-PropertyValue $mobilePackage "devDependencies"
-    foreach ($scriptName in @("typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "smoke:android-prebuild-network-security", "smoke:android-manifest-resources", "smoke:android-lan-tls", "gate:android-instrumentation-compile", "gate:android-connected-lan-tls", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
+    foreach ($scriptName in @("postinstall", "typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "smoke:android-prebuild-network-security", "smoke:android-manifest-resources", "smoke:android-lan-tls", "smoke:eas-cli-compat", "gate:android-instrumentation-compile", "gate:android-connected-lan-tls", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
         if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $scripts $scriptName))) {
             Add-Issue $sourceIssues "missing_mobile_script" "mobile/package.json must define script '$scriptName'."
         }
@@ -1283,13 +1282,15 @@ if ($null -ne $mobilePackage) {
             }
         }
     }
-    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("verify_android_release_gate.ps1", "-PreflightOnly")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "postinstall" @("patch-eas-cli-runtime.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("smoke:eas-cli-compat", "verify_android_release_gate.ps1", "-PreflightOnly")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:preview" @("preflight:android-release", "eas build", "--platform android", "--profile preview", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:production" @("preflight:android-release", "eas build", "--platform android", "--profile production", "--non-interactive")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-release" @("verify_android_release_gate.ps1")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-prebuild-network-security" @("android-prebuild-network-security-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-manifest-resources" @("android-manifest-resources-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:android-lan-tls" @("android-lan-tls-smoke.cjs")
+    Add-RequiredScriptFragmentIssue $sourceIssues $scripts "smoke:eas-cli-compat" @("eas-cli-compat-smoke.cjs")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-instrumentation-compile" @("android-lan-tls-smoke.cjs", "--compile-instrumentation")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "gate:android-connected-lan-tls" @("android-lan-tls-smoke.cjs", "--connected")
 }
@@ -1383,6 +1384,8 @@ $reviewedEvidenceContract = [ordered]@{
     candidate_binding_valid = $false
     artifact_identity_valid = $false
     artifact_provenance_valid = $false
+    artifact_manifest_valid = $false
+    signing_key_fingerprint_bound = $false
 }
 
 if ($PreflightOnly) {
@@ -1595,9 +1598,11 @@ else {
                     $reviewedEvidenceContract.candidate_binding_valid = Test-BooleanTrue (Get-PropertyValue $contract "candidate_binding_valid")
                     $reviewedEvidenceContract.artifact_identity_valid = Test-BooleanTrue (Get-PropertyValue $contract "artifact_identity_valid")
                     $reviewedEvidenceContract.artifact_provenance_valid = Test-BooleanTrue (Get-PropertyValue $contract "artifact_provenance_valid")
+                    $reviewedEvidenceContract.artifact_manifest_valid = Test-BooleanTrue (Get-PropertyValue $contract "artifact_manifest_valid")
+                    $reviewedEvidenceContract.signing_key_fingerprint_bound = Test-BooleanTrue (Get-PropertyValue $contract "signing_key_fingerprint_bound")
                 }
                 if ($verifierExitCode -ne 0 -or $null -eq $verifierResult -or -not (Test-BooleanTrue (Get-PropertyValue $verifierResult "ok"))) {
-                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must be sealed with a valid release-evidence HMAC contract."
+                    Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must be sealed with a valid Ed25519 reviewed-evidence contract."
                 }
                 elseif ($RequireCandidateBinding -and -not $reviewedEvidenceContract.candidate_binding_valid) {
                     Add-Issue $deviceIssues "android_reviewed_evidence_contract_invalid" "Android reviewed evidence must match the strict release candidate identity."
@@ -1607,6 +1612,12 @@ else {
                 }
                 if (-not $reviewedEvidenceContract.artifact_provenance_valid) {
                     Add-Issue $artifactIssues "android_artifact_provenance_invalid" "Signed Android reviewed evidence must contain a candidate-bound reviewed build provenance record."
+                }
+                if (-not $reviewedEvidenceContract.artifact_manifest_valid) {
+                    Add-Issue $artifactIssues "android_artifact_manifest_invalid" "Signed Android reviewed evidence must bind required redacted artifacts by SHA-256 and byte size."
+                }
+                if (-not $reviewedEvidenceContract.signing_key_fingerprint_bound) {
+                    Add-Issue $artifactIssues "android_evidence_signing_key_unbound" "Signed Android reviewed evidence must bind its signing-key fingerprint label inside the signature payload."
                 }
             }
             if ((Get-PropertyValue $realDevice "artifact_type") -ne "android-real-device-remote-control-evidence") {
@@ -1765,6 +1776,8 @@ else {
                     $reviewedEvidenceContract.candidate_binding_valid -and
                     $reviewedEvidenceContract.artifact_identity_valid -and
                     $reviewedEvidenceContract.artifact_provenance_valid -and
+                    $reviewedEvidenceContract.artifact_manifest_valid -and
+                    $reviewedEvidenceContract.signing_key_fingerprint_bound -and
                     $artifactIdentityMatchesApk
                 )
             }

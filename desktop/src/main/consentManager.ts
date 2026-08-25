@@ -4,7 +4,7 @@
  */
 
 import { app, ipcMain, type IpcMainInvokeEvent } from "electron";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { assertTrustedRenderer } from "./ipc";
@@ -19,6 +19,7 @@ import {
   type LegalDocId,
 } from "../shared/consent";
 import { IPC_CHANNELS } from "../shared/ipc";
+import { writeJsonAtomically } from "./atomicJsonStore";
 
 const CONSENT_FILENAME = "consent.json";
 
@@ -60,11 +61,7 @@ export function writeConsentRecord(patch: Partial<ConsentRecord>): ConsentRecord
   const existing = readConsentRecord();
   const next = mergeConsentRecord(existing, patch, process.platform);
   const filePath = getConsentFilePath();
-  const dir = join(filePath, "..");
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(filePath, JSON.stringify(next, null, 2), "utf-8");
+  writeJsonAtomically(filePath, next);
   return next;
 }
 /** Resolve the on-disk path to a bundled legal document. */

@@ -12,7 +12,7 @@ from app.core import db
 from app.core.errors import StateTransitionError
 from app.core.schemas import ChatResponse, Task
 from app.orchestration.execution_stage import ExecutionStage
-from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES, TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
 from app.product_task_templates import get_task_starter_template, task_starter_prompt
 from app.security.lan import is_secure_mobile_transport
@@ -143,7 +143,7 @@ MOBILE_TASK_STRUCTURED_EVIDENCE_RE = re.compile(
     r"(?i)['\"]?\b(?:model_action|task_metadata|metadata|tool[_ -]?(?:args?|arguments?|results?|calls?)|"
     r"tool_call(?:_id)?)\b['\"]?\s*[:=]"
 )
-MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}
+MOBILE_TERMINAL_TASK_PHASES = TERMINAL_TASK_PHASES
 
 
 @router.post("/mobile/session/refresh")
@@ -602,7 +602,10 @@ def _mobile_task_status_label(status: str) -> str:
         "paused": "已暂停",
         "final_review": "最终检查",
         "completed": "已完成",
+        "rolled_back": "已回滚",
+        "repair_required": "需要修复",
         "failed": "失败",
+        "denied": "已拒绝",
         "cancelled": "已取消",
     }.get(status, status or "未知状态")
 
@@ -619,7 +622,10 @@ def _mobile_task_status_detail(status: str) -> str:
         "paused": "任务已暂停，可从手机继续。",
         "final_review": "电脑端正在整理最终结果。",
         "completed": "任务已结束，可查看电脑端结果。",
+        "rolled_back": "任务变更已恢复并完成核验。",
+        "repair_required": "回滚未完整恢复，请回到电脑端完成修复。",
         "failed": "任务执行失败，请回到电脑端查看详情。",
+        "denied": "任务已被安全或权限边界拒绝，请回到电脑端查看详情。",
         "cancelled": "任务已取消。",
     }.get(status, "任务状态已同步。")
 

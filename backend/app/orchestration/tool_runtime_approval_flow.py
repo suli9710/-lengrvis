@@ -43,6 +43,7 @@ class ToolRuntimeApprovalFlowMixin:
         tool: ToolDefinition,
         runtime: TaskRuntimeContext,
         confirmation_message: str,
+        risk_binding: dict[str, str],
         *,
         threaded_tools: bool,
     ) -> RuntimeExecutionResult:
@@ -87,6 +88,7 @@ class ToolRuntimeApprovalFlowMixin:
             runtime=runtime,
             confirmation_message=confirmation_message,
             preview=preview,
+            risk_binding=risk_binding,
         )
         db.upsert_model("approvals", approval)
         publish_approval_created(approval)

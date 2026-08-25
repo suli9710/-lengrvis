@@ -11,6 +11,10 @@ import pytest
 
 from app.commerce.entitlements import EntitlementError, Feature
 from app.config import AppSettings
+from app.core.content_provenance import (
+    content_envelope_for_tool_output,
+    take_tool_output_provenance,
+)
 from app.llm.mock_provider import MockProvider
 from app.services import document_intelligence_service, document_service
 from app.tools import document_tools
@@ -235,6 +239,97 @@ def test_generate_report_empty_content_returns_placeholder(monkeypatch, context)
     assert not stub.calls
 
 
+def test_real_document_derivations_emit_explicit_field_lineage(
+    monkeypatch,
+    sample_text,
+    context,
+):
+    stub = _StubProvider(
+        replies=[
+            "Contract summary",
+            "Payment is due in 30 days.",
+            "# Report\n\nStructured result",
+            "Payment is due in 30 days. [p1:b1]",
+            "# Cited Report\n\nPayment is due in 30 days. [p1:b1]",
+        ]
+    )
+    _inject_provider(monkeypatch, stub)
+    calls = [
+        (
+            "document.extract_text",
+            lambda: document_tools.extract_text({"path": str(sample_text)}, context),
+            "/text",
+            "extract",
+        ),
+        (
+            "document.summarize",
+            lambda: document_tools.summarize({"path": str(sample_text)}, context),
+            "/summary",
+            "summarize",
+        ),
+        (
+            "document.qa",
+            lambda: document_tools.qa(
+                {"path": str(sample_text), "question": "When is payment due?"},
+                context,
+            ),
+            "/answer",
+            "rewrite",
+        ),
+        (
+            "document.generate_report",
+            lambda: document_tools.generate_report(
+                {"title": "Report", "content": "Revenue increased."},
+                context,
+            ),
+            "/report",
+            "rewrite",
+        ),
+        (
+            "document.extract_tables",
+            lambda: document_tools.extract_tables({"path": str(sample_text)}, context),
+            "/tables",
+            "extract",
+        ),
+        (
+            "document.ask_with_citations",
+            lambda: document_tools.ask_with_citations(
+                {"path": str(sample_text), "question": "When is payment due?"},
+                context,
+            ),
+            "/answer",
+            "rewrite",
+        ),
+        (
+            "document.generate_cited_report",
+            lambda: document_tools.generate_cited_report(
+                {"path": str(sample_text), "title": "Cited Report"},
+                context,
+            ),
+            "/report",
+            "summarize",
+        ),
+    ]
+
+    for index, (tool_name, invoke, output_pointer, operation) in enumerate(calls):
+        output = invoke()
+        provenance = take_tool_output_provenance(context)
+        assert provenance is not None
+        assert all(not key.startswith("_tool_output") for key in output)
+        envelope = content_envelope_for_tool_output(
+            tool_name,
+            output,
+            tool_call_id=f"call-{index}",
+            task_scope="task-document",
+            output_provenance=provenance,
+        )
+        matching = [edge for edge in envelope.field_lineage if edge.output_pointer == output_pointer]
+        assert len(matching) == 1
+        assert matching[0].operation == operation
+        assert matching[0].source_kind in {"document", "document_input", "document_ir"}
+        assert envelope.content_hash
+
+
 def test_chunk_text_splits_by_paragraph_size():
     chunks = document_tools._chunk_text("a" * 1000 + "\n\n" + "b" * 1000, chunk_chars=400)
 
@@ -325,8 +420,14 @@ def test_document_tools_register_validate_input_for_error_prone_tools():
 
     registry = register_all_tools(settings=get_effective_settings())
     assert registry.get("document.compare").validate_input is not None
-    assert registry.get("document.qa").validate_input is not None
-    assert registry.get("document.ask_with_citations").validate_input is not None
+    qa_tool = registry.get("document.qa")
+    assert qa_tool.validate_input is not None
+    assert qa_tool.input_schema["required"] == ["path", "question"]
+    assert set(qa_tool.input_schema["required"]) <= set(qa_tool.input_schema["properties"])
+    cited_qa_tool = registry.get("document.ask_with_citations")
+    assert cited_qa_tool.validate_input is not None
+    assert cited_qa_tool.input_schema["required"] == ["path", "question"]
+    assert set(cited_qa_tool.input_schema["required"]) <= set(cited_qa_tool.input_schema["properties"])
     # Tools without a semantic precondition stay unconstrained.
     assert registry.get("document.summarize").validate_input is None
 

@@ -229,6 +229,47 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
     assert listed["evidence_summary"]["counts"] == summary["counts"]
 
 
+def test_outcome_unknown_is_visible_as_a_redacted_blocking_control_plane_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    task = Task(id="task_outcome_unknown_control", user_goal="Review an interrupted write")
+    call = ToolCall(
+        id="call_outcome_unknown_control",
+        task_id=task.id,
+        step_id="step_write",
+        tool_name="file.write_text",
+        args={"path": r"C:\Users\private\secret.txt", "content": "secret-body"},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        status="outcome_unknown",
+        dry_run=False,
+        outcome_unknown_at="2026-07-17T00:00:00Z",
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model("tool_calls", call)
+
+    client = TestClient(app)
+    timeline = client.get(f"/api/tasks/{task.id}/timeline")
+    listed = client.get("/api/tasks")
+    replay = client.get(f"/api/tasks/{task.id}/replay")
+
+    assert timeline.status_code == listed.status_code == replay.status_code == 200
+    event = next(item for item in timeline.json()["boundary_events"] if item["kind"] == "outcome_unknown")
+    assert event["severity"] == "danger"
+    assert event["payload"]["status"] == "outcome_unknown"
+    assert event["payload"]["automatic_replay_blocked"] is True
+    assert event["payload"]["requires_user_review"] is True
+    assert timeline.json()["evidence_summary"]["counts"]["items_needing_attention"] == 1
+    listed_task = next(item for item in listed.json() if item["id"] == task.id)
+    assert any(item["kind"] == "outcome_unknown" for item in listed_task["boundary_events"])
+    public_call = replay.json()["tool_calls"][0]
+    assert public_call["status"] == "outcome_unknown"
+    assert public_call["outcome_unknown"] is True
+    assert public_call["automatic_replay_blocked"] is True
+    assert public_call["requires_user_review"] is True
+    assert "secret.txt" not in json.dumps([event, public_call], ensure_ascii=False)
+    assert "secret-body" not in json.dumps([event, public_call], ensure_ascii=False)
+
+
 def test_task_timeline_omits_audit_boundary_events_without_audit_export(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_PLAN", "free")

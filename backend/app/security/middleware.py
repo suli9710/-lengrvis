@@ -23,6 +23,32 @@ from app.security.lan import (
 )
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 
+SECURITY_RESPONSE_HEADERS = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"no-referrer"),
+)
+
+
+class SecurityResponseHeadersMiddleware:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {name.lower() for name, _ in headers}
+                headers.extend((name, value) for name, value in SECURITY_RESPONSE_HEADERS if name not in existing)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
 
 class TrustedProxyHeadersMiddleware:
     def __init__(self, app) -> None:
@@ -78,13 +104,14 @@ def register_security_middleware(app: FastAPI) -> None:
         ):
             try:
                 db.require_audit_fail_closed_ok()
-            except SensitiveRecordIntegrityError as exc:
+            except SensitiveRecordIntegrityError:
+                public_message = "Local audit integrity gate blocked this operation."
                 return JSONResponse(
                     status_code=503,
                     content=unified_error_body(
-                        "Local audit integrity gate blocked this operation.",
+                        public_message,
                         code="audit_fail_closed",
-                        message=str(exc),
+                        message=public_message,
                     ),
                 )
         return await call_next(request)
@@ -160,6 +187,7 @@ def register_security_middleware(app: FastAPI) -> None:
         return await call_next(request)
 
     app.add_middleware(TrustedProxyHeadersMiddleware)
+    app.add_middleware(SecurityResponseHeadersMiddleware)
 
 
 async def reject_audit_fail_closed_websocket(websocket: WebSocket) -> None:
@@ -176,10 +204,19 @@ async def reject_audit_fail_closed_websocket(websocket: WebSocket) -> None:
 
 
 def _audit_fail_closed_exempt_path(path: str) -> bool:
-    normalized = str(path or "")
-    if normalized in {"/health", "/api/health", "/api/audit/verify", "/api/audit/verify-chain"}:
-        return True
-    return normalized.startswith("/api/system/diagnostics") or normalized.startswith("/api/privacy/export")
+    # Exact set, not a prefix: a prefix match on "/api/system/diagnostics" also
+    # exempted the *mutating* POST /api/system/diagnostics/export, which writes
+    # a support package to disk -- exactly what an attacker who tampered the
+    # audit chain would want to run while fail-closed is active. The old
+    # "/api/privacy/export" prefix was dead (the real route is
+    # /api/system/privacy/erase-local-data) and is removed.
+    return str(path or "") in {
+        "/health",
+        "/api/health",
+        "/api/audit/verify",
+        "/api/audit/verify-chain",
+        "/api/system/diagnostics",
+    }
 
 
 def _scope_headers(scope) -> dict[str, str]:

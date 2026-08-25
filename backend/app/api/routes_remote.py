@@ -4,11 +4,14 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, WebSocketException
 
+from app.api.task_public_views import public_review
+from app.automation.intent_capsule import user_goal_digest
 from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.core import db
@@ -25,11 +28,13 @@ from app.policy.approval_binding import (
     redacted_preview,
     settings_fingerprint,
 )
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.redaction import redact_public_text
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.lan import is_secure_mobile_transport
+from app.security.middleware import reject_audit_fail_closed_websocket
 from app.security.mobile_jwt import (
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
@@ -61,6 +66,13 @@ _FRAME_ACK_POLL_SECONDS = 0.2
 _INPUT_ACTIVE_POLL_SECONDS = 0.2
 _REMOTE_SCREEN_CONTROL_ERROR_CODE = "remote_screen.invalid_control"
 _REMOTE_SCREEN_CAPTURE_ERROR_CODE = "remote_screen.capture_failed"
+_REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT = 5
+_REMOTE_SCREEN_CAPTURE_BACKOFF_MAX_SECONDS = 2.0
+_REMOTE_SCREEN_CAPTURE_FAILURE_CLOSE_CODE = 1011
+_REMOTE_SCREEN_CONNECTION_LIMIT = 3
+_REMOTE_SCREEN_PER_DEVICE_LIMIT = 1
+_REMOTE_SCREEN_CONNECTION_LOCK = threading.Lock()
+_REMOTE_SCREEN_CONNECTIONS: dict[str, int] = {}
 _REMOTE_INPUT_DENIED_ERROR_CODE = "remote_input.denied"
 _REMOTE_INPUT_RATE_LIMIT_ERROR_CODE = "remote_input.rate_limited"
 _REMOTE_INPUT_REJECTED_ERROR_CODE = "remote_input.rejected"
@@ -115,13 +127,18 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
     claims = await _authorize_remote_websocket(websocket, token)
     if claims is None:
         return
+    if not _acquire_remote_screen_lease(claims):
+        await websocket.close(code=1013, reason="Remote screen capacity is temporarily unavailable.")
+        return
 
-    await websocket.accept()
     fps = DEFAULT_FPS
     quality = DEFAULT_JPEG_QUALITY
     frame_sequence = 0
-    record("remote.screen.connected", _REMOTE_ACTOR, _claim_payload(claims))
+    consecutive_capture_failures = 0
+    suppressed_capture_failure_audits = 0
     try:
+        await websocket.accept()
+        record("remote.screen.connected", _REMOTE_ACTOR, _claim_payload(claims))
         await websocket.send_json({"type": "connected", "fps": fps, "quality": quality})
         while True:
             try:
@@ -150,44 +167,73 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                     max_height=DEFAULT_CAPTURE_HEIGHT,
                     quality=quality,
                 )
-                _remember_remote_screen_frame(
-                    claims,
-                    sequence=frame_sequence,
-                    origin_x=int(getattr(frame, "screen_origin_x", 0) or 0),
-                    origin_y=int(getattr(frame, "screen_origin_y", 0) or 0),
-                    width=int(getattr(frame, "original_width", frame.width) or frame.width),
-                    height=int(getattr(frame, "original_height", frame.height) or frame.height),
-                )
-                await websocket.send_json(
-                    {
-                        "type": "frame",
-                        "sequence": frame_sequence,
-                        "image": f"data:image/jpeg;base64,{frame.image_base64}",
-                        "timestamp": frame.timestamp,
-                        "width": frame.width,
-                        "height": frame.height,
-                        "original_width": frame.original_width,
-                        "original_height": frame.original_height,
-                        "screen_origin_x": int(getattr(frame, "screen_origin_x", 0) or 0),
-                        "screen_origin_y": int(getattr(frame, "screen_origin_y", 0) or 0),
-                    }
-                )
             except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-                _record_remote_exception(
-                    "remote.screen.capture_failed",
-                    exc,
-                    claims,
-                    code=_REMOTE_SCREEN_CAPTURE_ERROR_CODE,
-                    sequence=frame_sequence,
-                )
-                await websocket.send_json(
-                    _remote_client_error(
+                consecutive_capture_failures += 1
+                terminal_failure = consecutive_capture_failures >= _REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT
+                if consecutive_capture_failures == 1 or terminal_failure:
+                    _record_remote_exception(
+                        "remote.screen.capture_failed",
+                        exc,
+                        claims,
                         code=_REMOTE_SCREEN_CAPTURE_ERROR_CODE,
-                        message="Remote screen is temporarily unavailable.",
+                        sequence=frame_sequence,
+                        consecutive_failures=consecutive_capture_failures,
+                        suppressed_failures=suppressed_capture_failure_audits,
+                        terminal=terminal_failure,
                     )
-                )
-                await asyncio.sleep(frame_interval_seconds(fps))
+                else:
+                    suppressed_capture_failure_audits += 1
+                if terminal_failure:
+                    await websocket.send_json(
+                        _remote_client_error(
+                            code=_REMOTE_SCREEN_CAPTURE_ERROR_CODE,
+                            message="Remote screen is temporarily unavailable.",
+                        )
+                    )
+                    await websocket.close(
+                        code=_REMOTE_SCREEN_CAPTURE_FAILURE_CLOSE_CODE,
+                        reason="Remote screen capture is unavailable.",
+                    )
+                    break
+                await asyncio.sleep(_remote_screen_capture_backoff_seconds(fps, consecutive_capture_failures))
                 continue
+
+            if consecutive_capture_failures:
+                record(
+                    "remote.screen.capture_recovered",
+                    _REMOTE_ACTOR,
+                    {
+                        **_claim_payload(claims),
+                        "sequence": frame_sequence,
+                        "consecutive_failures": consecutive_capture_failures,
+                        "suppressed_failures": suppressed_capture_failure_audits,
+                    },
+                )
+                consecutive_capture_failures = 0
+                suppressed_capture_failure_audits = 0
+
+            _remember_remote_screen_frame(
+                claims,
+                sequence=frame_sequence,
+                origin_x=int(getattr(frame, "screen_origin_x", 0) or 0),
+                origin_y=int(getattr(frame, "screen_origin_y", 0) or 0),
+                width=int(getattr(frame, "original_width", frame.width) or frame.width),
+                height=int(getattr(frame, "original_height", frame.height) or frame.height),
+            )
+            await websocket.send_json(
+                {
+                    "type": "frame",
+                    "sequence": frame_sequence,
+                    "image": f"data:image/jpeg;base64,{frame.image_base64}",
+                    "timestamp": frame.timestamp,
+                    "width": frame.width,
+                    "height": frame.height,
+                    "original_width": frame.original_width,
+                    "original_height": frame.original_height,
+                    "screen_origin_x": int(getattr(frame, "screen_origin_x", 0) or 0),
+                    "screen_origin_y": int(getattr(frame, "screen_origin_y", 0) or 0),
+                }
+            )
 
             sent_at = asyncio.get_running_loop().time()
             try:
@@ -208,7 +254,17 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
             if remaining_delay > 0:
                 await asyncio.sleep(remaining_delay)
     finally:
+        _forget_remote_screen_frames(claims)
+        _release_remote_screen_lease(claims)
         record("remote.screen.disconnected", _REMOTE_ACTOR, _claim_payload(claims))
+
+
+def _remote_screen_capture_backoff_seconds(fps: float, consecutive_failures: int) -> float:
+    exponent = max(0, int(consecutive_failures) - 1)
+    return min(
+        _REMOTE_SCREEN_CAPTURE_BACKOFF_MAX_SECONDS,
+        frame_interval_seconds(fps) * (2**exponent),
+    )
 
 
 @ws_router.websocket("/ws/remote/input")
@@ -216,9 +272,11 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
     claims = await _authorize_remote_websocket(websocket, token)
     if claims is None:
         return
+    await reject_audit_fail_closed_websocket(websocket)
 
     await websocket.accept()
     limiter = RemoteInputRateLimiter()
+    audit_gate_rejected = False
     record("remote.input.connected", _REMOTE_ACTOR, _claim_payload(claims))
     try:
         await websocket.send_json({"type": "connected"})
@@ -233,6 +291,11 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
                 break
             if await _close_remote_websocket_if_inactive(websocket, claims):
                 break
+            try:
+                await reject_audit_fail_closed_websocket(websocket)
+            except WebSocketException:
+                audit_gate_rejected = True
+                raise
             limit_error = _remote_input_limit_error(claims, limiter, now=asyncio.get_running_loop().time())
             if limit_error is not None:
                 await websocket.send_json(limit_error)
@@ -271,7 +334,8 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
                 )
             await websocket.send_json(result)
     finally:
-        record("remote.input.disconnected", _REMOTE_ACTOR, _claim_payload(claims))
+        if not audit_gate_rejected:
+            record("remote.input.disconnected", _REMOTE_ACTOR, _claim_payload(claims))
 
 
 def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -347,6 +411,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     tool_effects = _remote_input_tool_effects(tool)
     tool_trust_tier = _remote_input_trust_tier(tool)
     dry_run_summary = _remote_input_dry_run_summary(safe_preview)
+    risk_binding = build_effective_risk_binding(review.declared_risk_level or tool.risk_level, [review])
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
@@ -354,7 +419,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         message=review.user_confirmation_message or f"Approve remote desktop input {tool_name}?",
         diff_preview=safe_preview,
         tool_name=tool_name,
-        risk_level=tool.risk_level.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(tool_name, args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(safe_preview),
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
@@ -364,16 +429,24 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         tool_effects=tool_effects,
         resource_kinds=resource_kinds,
         dry_run_summary=dry_run_summary,
-        engineering_boundary=_remote_input_approval_boundary_facts(
-            tool,
-            review,
-            safe_preview,
-            event_type=str(event.get("type") or ""),
-            resource_kinds=resource_kinds,
-            tool_effects=tool_effects,
-            tool_trust_tier=tool_trust_tier,
-            dry_run_summary=dry_run_summary,
-        ),
+        engineering_boundary={
+            **_remote_input_approval_boundary_facts(
+                tool,
+                review,
+                safe_preview,
+                event_type=str(event.get("type") or ""),
+                resource_kinds=resource_kinds,
+                tool_effects=tool_effects,
+                tool_trust_tier=tool_trust_tier,
+                dry_run_summary=dry_run_summary,
+            ),
+            "intent": {
+                "task_id": task.id,
+                "user_goal_digest": user_goal_digest(task.user_goal),
+                "plan_revision": plan.version,
+            },
+            "risk_provenance": risk_binding,
+        },
         source="remote_input",
         source_device_id=str((claims or {}).get("device_id") or ""),
         source_grant_id=str((claims or {}).get("grant_id") or ""),
@@ -396,7 +469,11 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         "type": "approval_required",
         "task_id": task.id,
         "approval_id": approval.id,
-        "review": review.model_dump(mode="json"),
+        # Sanitize the review before it leaves the desktop: raw review reasons,
+        # safe_alternative text and confirmation strings must not be sent to the
+        # paired phone (they can echo tool args / policy internals). This mirrors
+        # every other public/mobile surface (task_public_views.public_review).
+        "review": public_review(review.model_dump(mode="json")),
         "preview": redacted_preview(safe_preview),
     }
 
@@ -605,6 +682,7 @@ def _remember_remote_screen_frame(
     width: int,
     height: int,
 ) -> None:
+    _purge_expired_remote_screen_frames()
     keys = _remote_frame_keys(claims)
     if not keys:
         return
@@ -621,6 +699,7 @@ def _remember_remote_screen_frame(
 
 
 def _latest_remote_screen_frame(claims: dict[str, Any]) -> dict[str, Any] | None:
+    _purge_expired_remote_screen_frames()
     for key in _remote_frame_keys(claims):
         frame = _REMOTE_INPUT_FRAME_GEOMETRY.get(key)
         if not frame:
@@ -630,6 +709,57 @@ def _latest_remote_screen_frame(claims: dict[str, Any]) -> dict[str, Any] | None
             continue
         return frame
     return None
+
+
+def _purge_expired_remote_screen_frames(*, now: float | None = None) -> None:
+    current = time.monotonic() if now is None else float(now)
+    expired = [
+        key
+        for key, frame in _REMOTE_INPUT_FRAME_GEOMETRY.items()
+        if current - float(frame.get("recorded_at") or 0.0) > _REMOTE_INPUT_FRAME_TTL_SECONDS
+    ]
+    for key in expired:
+        _REMOTE_INPUT_FRAME_GEOMETRY.pop(key, None)
+
+
+def _forget_remote_screen_frames(claims: dict[str, Any]) -> None:
+    for key in _remote_frame_keys(claims):
+        _REMOTE_INPUT_FRAME_GEOMETRY.pop(key, None)
+
+
+def _remote_screen_device_key(claims: dict[str, Any]) -> str:
+    return str(claims.get("device_id") or claims.get("sub") or "").strip()
+
+
+def _acquire_remote_screen_lease(claims: dict[str, Any]) -> bool:
+    device_key = _remote_screen_device_key(claims)
+    if not device_key:
+        return False
+    with _REMOTE_SCREEN_CONNECTION_LOCK:
+        active_total = sum(_REMOTE_SCREEN_CONNECTIONS.values())
+        active_for_device = _REMOTE_SCREEN_CONNECTIONS.get(device_key, 0)
+        if active_total >= _REMOTE_SCREEN_CONNECTION_LIMIT or active_for_device >= _REMOTE_SCREEN_PER_DEVICE_LIMIT:
+            return False
+        _REMOTE_SCREEN_CONNECTIONS[device_key] = active_for_device + 1
+        return True
+
+
+def _release_remote_screen_lease(claims: dict[str, Any]) -> None:
+    device_key = _remote_screen_device_key(claims)
+    if not device_key:
+        return
+    with _REMOTE_SCREEN_CONNECTION_LOCK:
+        remaining = _REMOTE_SCREEN_CONNECTIONS.get(device_key, 0) - 1
+        if remaining > 0:
+            _REMOTE_SCREEN_CONNECTIONS[device_key] = remaining
+        else:
+            _REMOTE_SCREEN_CONNECTIONS.pop(device_key, None)
+
+
+def _reset_remote_screen_runtime_for_tests() -> None:
+    with _REMOTE_SCREEN_CONNECTION_LOCK:
+        _REMOTE_SCREEN_CONNECTIONS.clear()
+    _REMOTE_INPUT_FRAME_GEOMETRY.clear()
 
 
 def _remote_frame_keys(claims: dict[str, Any]) -> list[tuple[str, str]]:

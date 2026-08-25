@@ -18,8 +18,7 @@
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
-      "softwareKeyboardLayoutMode": "resize",
-      "usesCleartextTraffic": false
+      "softwareKeyboardLayoutMode": "resize"
     },
     "ios": {
       "infoPlist": {

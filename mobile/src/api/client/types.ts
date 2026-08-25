@@ -55,7 +55,9 @@ export interface BackendApproval {
   engineering_boundary?: unknown;
   status: BackendApprovalStatus;
   created_at: string;
+  expires_at?: string;
   decided_at?: string | null;
+  authorized_at?: string | null;
   source?: string;
   source_device_id?: string;
   source_grant_id?: string;

@@ -44,6 +44,7 @@ def test_mobile_session_uses_short_access_token_and_normalized_refresh_family(mo
     assert (expires_at - issued_at).total_seconds() <= MOBILE_ACCESS_TOKEN_MAX_TTL_SECONDS
     assert claims["device_id"] == device_id
     assert claims["family_id"] == session.token_family_id
+    assert claims["family_generation"] == 0
     assert claims["credential_id"] == session.device_credential_id
     assert session.refresh_token not in session.token
 
@@ -76,7 +77,11 @@ def test_refresh_rotation_detects_reuse_and_revokes_the_family(monkeypatch, tmp_
 
     assert second.refresh_token != first.refresh_token
     assert second.token_family_id == first.token_family_id
-    assert decode_mobile_token(second.token)["device_id"] == device_id
+    second_claims = decode_mobile_token(second.token)
+    assert second_claims["device_id"] == device_id
+    assert second_claims["family_generation"] == 1
+    with pytest.raises(HTTPException, match="generation is stale"):
+        decode_mobile_token(first.token)
 
     with pytest.raises(HTTPException, match="reuse detected") as reused:
         rotate_mobile_refresh_token(first.refresh_token, scopes=[TOKEN_SCOPE])
@@ -173,6 +178,31 @@ def test_access_token_rechecks_family_and_credential_status(monkeypatch, tmp_pat
         decode_mobile_token(credential_revoked.token)
 
 
+def test_legacy_family_token_requires_refresh_outside_explicit_test_mode(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+    db.init_db(force=True)
+    device_id, session = _new_session("Legacy Generation Phone")
+    legacy_token = issue_mobile_token(
+        device_id=device_id,
+        device_name="Legacy Generation Phone",
+        family_id=session.token_family_id,
+        credential_id=session.device_credential_id,
+    )
+
+    monkeypatch.setenv("LENGRVIS_TEST", "0")
+
+    with pytest.raises(HTTPException, match="generation is missing"):
+        decode_mobile_token(legacy_token)
+    with pytest.raises(ValueError, match="requires a family generation"):
+        issue_mobile_token(
+            device_id=device_id,
+            device_name="Legacy Generation Phone",
+            family_id=session.token_family_id,
+            credential_id=session.device_credential_id,
+        )
+
+
 def test_high_impact_mobile_approval_requires_fresh_biometric_step_up(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db(force=True)
@@ -221,9 +251,7 @@ def test_high_impact_mobile_approval_requires_fresh_biometric_step_up(monkeypatc
         },
         {
             "tool_name": "browser.cua_run",
-            "engineering_boundary": {
-                "model_action": {"args": {"target_url": "https://shop.example.test/checkout"}}
-            },
+            "engineering_boundary": {"model_action": {"args": {"target_url": "https://shop.example.test/checkout"}}},
         },
         {
             "tool_name": "browser.cua_run",
@@ -256,9 +284,7 @@ def test_r3_execute_credential_and_permission_approvals_require_mobile_step_up(a
         {
             "tool_name": "browser.act",
             "model_action": {
-                "args": {
-                    "action": {"kind": "scroll", "selector": "main", "url": "https://docs.example.test/guide"}
-                }
+                "args": {"action": {"kind": "scroll", "selector": "main", "url": "https://docs.example.test/guide"}}
             },
         },
         {

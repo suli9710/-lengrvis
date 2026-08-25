@@ -27,6 +27,7 @@ def build_tool_approval_record(
     runtime: TaskRuntimeContext,
     confirmation_message: str,
     preview: dict,
+    risk_binding: dict[str, str],
 ) -> Approval:
     safe_preview = binding_preview(preview)
     return Approval(
@@ -35,7 +36,7 @@ def build_tool_approval_record(
         message=confirmation_message or step.description,
         diff_preview=safe_preview,
         tool_name=step.tool_name,
-        risk_level=tool.risk_level.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(safe_preview),
         settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
@@ -48,5 +49,8 @@ def build_tool_approval_record(
         dry_run_summary=approval_dry_run_summary(tool, preview),
         model_action=dict(getattr(step, "model_action", {}) or {}),
         runtime_control_fields=runtime_control_fields(),
-        engineering_boundary=approval_boundary_facts(step, tool, runtime, safe_preview),
+        engineering_boundary={
+            **approval_boundary_facts(step, tool, runtime, safe_preview),
+            "risk_provenance": dict(risk_binding),
+        },
     )

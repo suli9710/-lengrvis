@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.commerce import usage as commerce_usage
+from app.commerce.usage import QuotaUnavailableError
 from app.config import AppSettings
 from app.context_management import ContextAwareProvider, LLMCapabilityError
 from app.core import db
@@ -31,6 +33,13 @@ class ResultProvider(LLMProvider):
 
     async def structured_chat(self, messages, output_schema):  # noqa: ANN001, ARG002
         return {"ok": True}
+
+
+@pytest.fixture(autouse=True)
+def _reset_cloud_metering_fault():  # noqa: ANN201
+    commerce_usage._clear_cloud_metering_fault_for_tests()
+    yield
+    commerce_usage._clear_cloud_metering_fault_for_tests()
 
 
 def test_profile_uses_configured_context_for_unknown_model():
@@ -73,6 +82,77 @@ def test_context_provider_adds_cost_to_chat_result(tmp_path, monkeypatch):
     assert response.content == "ok"
     assert response.cost is not None
     assert response.cost.total_cost_usd is not None
+
+
+def test_context_provider_atomically_settles_cloud_reservation(tmp_path, monkeypatch):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    settings = AppSettings(
+        provider_name="openai",
+        model="gpt-4o-mini",
+        mode="efficiency",
+        data_dir=str(tmp_path),
+        context_auto_compact_enabled=False,
+        context_micro_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_session_memory_enabled=False,
+    )
+    profile = profile_for_settings(settings, provider_name="openai", model="gpt-4o-mini")
+    wrapped = ContextAwareProvider(
+        ResultProvider(),
+        settings,
+        profile=profile,
+        meter_cloud_usage=True,
+    )
+
+    response = asyncio.run(wrapped.chat_result([{"role": "user", "content": "hi"}]))
+    summary = usage_summary(hours=1)
+    events = list_usage_events(limit=5)
+
+    assert response.content == "ok"
+    assert summary["calls"] == 1
+    assert summary["total_tokens"] == 15
+    assert events[0]["metered_cloud"] is True
+    assert events[0]["reservation"]["state"] == "settled"
+    assert events[0]["accounted_usage"]["total_tokens"] == 15
+
+
+def test_cloud_settlement_failure_keeps_reservation_and_latches_next_call(tmp_path, monkeypatch):
+    class UnserializableResultProvider(ResultProvider):
+        async def chat_result(self, messages, model=None, temperature=None, tools=None):  # noqa: ANN001, ARG002
+            return LLMResponse(
+                content="ok",
+                provider=self.name,
+                model=model or "gpt-4o-mini",
+                usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15, estimated=False),
+                metadata={"unserializable": object()},
+            )
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    settings = AppSettings(
+        provider_name="openai",
+        model="gpt-4o-mini",
+        mode="efficiency",
+        data_dir=str(tmp_path),
+        context_auto_compact_enabled=False,
+        context_micro_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_session_memory_enabled=False,
+    )
+    profile = profile_for_settings(settings, provider_name="openai", model="gpt-4o-mini")
+    wrapped = ContextAwareProvider(
+        UnserializableResultProvider(),
+        settings,
+        profile=profile,
+        meter_cloud_usage=True,
+    )
+
+    assert asyncio.run(wrapped.chat_result([{"role": "user", "content": "first"}])).content == "ok"
+    with pytest.raises(QuotaUnavailableError):
+        asyncio.run(wrapped.chat_result([{"role": "user", "content": "second"}]))
+
+    events = list_usage_events(limit=5)
+    assert len(events) == 1
+    assert events[0]["reservation"]["state"] == "reserved"
 
 
 def test_context_provider_records_structured_chat_usage(tmp_path, monkeypatch):

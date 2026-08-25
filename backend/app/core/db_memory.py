@@ -4,8 +4,10 @@ import json
 from typing import Any
 
 from app.core import db
+from app.core.memory_namespace import normalize_memory_namespace
 
 _MEMORY_STATES = {"quarantined", "active", "revoked"}
+_MEMORY_CONFLICT_STATUSES = {"none", "conflicting", "resolved", "superseded"}
 _MEMORY_SELECT = """
     SELECT
         memory.id,
@@ -16,6 +18,13 @@ _MEMORY_SELECT = """
         memory.data,
         memory.created_at,
         memory.last_used_at,
+        scope.memory_id AS namespace_memory_id,
+        scope.principal_id AS namespace_principal_id,
+        scope.workspace_id AS namespace_workspace_id,
+        scope.domain_scope AS namespace_domain_scope,
+        scope.version AS namespace_version,
+        scope.supersedes AS namespace_supersedes,
+        scope.conflict_status AS namespace_conflict_status,
         quarantine.memory_id AS quarantine_memory_id,
         quarantine.state AS quarantine_state,
         quarantine.source AS quarantine_source,
@@ -35,17 +44,34 @@ _MEMORY_SELECT = """
         quarantine.provenance_sanitizers_applied,
         quarantine.provenance_integrity_hmac
     FROM memories AS memory
+    JOIN memory_namespace AS scope ON scope.memory_id = memory.id
     LEFT JOIN memory_quarantine AS quarantine ON quarantine.memory_id = memory.id
 """
 
 
 def upsert_memory(payload: dict[str, Any]) -> None:
-    """Persist memory content plus authoritative normalized quarantine state."""
+    """Persist memory content plus authoritative lifecycle and namespace state."""
     record_id = str(payload.get("id") or "")
     content = str(payload.get("content", ""))
-    kind = str(payload.get("kind", "fact"))
+    kind = str(payload.get("kind") or "fact").strip() or "fact"
     tags = payload.get("tags") or []
     embedding = payload.get("embedding") or []
+    namespace = normalize_memory_namespace(
+        principal_id=payload.get("principal_id"),
+        workspace_id=payload.get("workspace_id"),
+        domain_scope=payload.get("domain_scope"),
+    )
+    try:
+        version = int(payload.get("version") or 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("memory version must be a positive integer") from exc
+    if version < 1:
+        raise ValueError("memory version must be a positive integer")
+    supersedes = str(payload.get("supersedes") or "").strip()
+    raw_conflict_status = payload.get("conflict_status")
+    conflict_status = str(getattr(raw_conflict_status, "value", raw_conflict_status) or "none").strip().casefold()
+    if conflict_status not in _MEMORY_CONFLICT_STATUSES:
+        raise ValueError(f"unsupported memory conflict status: {conflict_status}")
     source = str(payload.get("source") or "user")
     raw_state = payload.get("state")
     state = str(getattr(raw_state, "value", raw_state) or "active").strip().casefold()
@@ -54,7 +80,13 @@ def upsert_memory(payload: dict[str, Any]) -> None:
     content_envelope = _mapping_value(payload.get("content_envelope"))
     body = {
         "id": record_id,
+        "principal_id": namespace.principal_id,
+        "workspace_id": namespace.workspace_id,
+        "domain_scope": namespace.domain_scope,
         "kind": kind,
+        "version": version,
+        "supersedes": supersedes,
+        "conflict_status": conflict_status,
         "content": content,
         "tags": list(tags),
         "task_id": payload.get("task_id", ""),
@@ -74,6 +106,13 @@ def upsert_memory(payload: dict[str, Any]) -> None:
     with db.connect() as conn:
         conn.execute("SAVEPOINT memory_record_upsert")
         try:
+            # Acquire the write lock before lineage reads so SQLite never has to
+            # upgrade a stale deferred read transaction under concurrent audit writes.
+            conn.execute(
+                "UPDATE memory_namespace SET updated_at = updated_at WHERE memory_id = ?",
+                (body["id"],),
+            )
+            _validate_namespace_write(conn, body)
             conn.execute(
                 """
                 INSERT INTO memories (
@@ -135,6 +174,34 @@ def upsert_memory(payload: dict[str, Any]) -> None:
                 """,
                 _quarantine_values(body, content_envelope),
             )
+            conn.execute(
+                """
+                INSERT INTO memory_namespace (
+                    memory_id, principal_id, workspace_id, domain_scope, version, supersedes,
+                    conflict_status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    principal_id = excluded.principal_id,
+                    workspace_id = excluded.workspace_id,
+                    domain_scope = excluded.domain_scope,
+                    version = excluded.version,
+                    supersedes = excluded.supersedes,
+                    conflict_status = excluded.conflict_status,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                _namespace_values(body),
+            )
+            if body["supersedes"] and body["state"] == "active" and body["conflict_status"] in {"none", "resolved"}:
+                conn.execute(
+                    """
+                    UPDATE memory_namespace
+                    SET conflict_status = 'superseded', updated_at = ?
+                    WHERE memory_id = ?
+                    """,
+                    (db._now_iso(), body["supersedes"]),
+                )
         except BaseException:
             conn.execute("ROLLBACK TO SAVEPOINT memory_record_upsert")
             conn.execute("RELEASE SAVEPOINT memory_record_upsert")
@@ -143,11 +210,36 @@ def upsert_memory(payload: dict[str, Any]) -> None:
             conn.execute("RELEASE SAVEPOINT memory_record_upsert")
 
 
-def list_memories(*, tags: list[str] | None = None, limit: int = 200) -> list[dict[str, Any]]:
+def list_memories(
+    *,
+    tags: list[str] | None = None,
+    kind: str | None = None,
+    principal_id: str | None = None,
+    workspace_id: str | None = None,
+    domain_scope: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    namespace = normalize_memory_namespace(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        domain_scope=domain_scope,
+    )
+    clauses = [
+        "scope.principal_id = ?",
+        "scope.workspace_id = ?",
+        "scope.domain_scope = ?",
+    ]
+    params: list[Any] = [namespace.principal_id, namespace.workspace_id, namespace.domain_scope]
+    normalized_kind = str(kind or "").strip()
+    if normalized_kind:
+        clauses.append("memory.kind = ?")
+        params.append(normalized_kind)
+    params.append(limit)
     with db.connect() as conn:
+        _ensure_memory_metadata(conn)
         rows = conn.execute(
-            f"{_MEMORY_SELECT} ORDER BY memory.created_at DESC LIMIT ?",
-            (limit,),
+            f"{_MEMORY_SELECT} WHERE {' AND '.join(clauses)} ORDER BY memory.created_at DESC LIMIT ?",
+            tuple(params),
         ).fetchall()
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -161,19 +253,69 @@ def list_memories(*, tags: list[str] | None = None, limit: int = 200) -> list[di
     return results
 
 
-def get_memory(memory_id: str) -> dict[str, Any] | None:
+def get_memory(
+    memory_id: str,
+    *,
+    principal_id: str | None = None,
+    workspace_id: str | None = None,
+    domain_scope: str | None = None,
+) -> dict[str, Any] | None:
+    namespace = normalize_memory_namespace(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        domain_scope=domain_scope,
+    )
     with db.connect() as conn:
-        row = conn.execute(f"{_MEMORY_SELECT} WHERE memory.id = ?", (memory_id,)).fetchone()
+        _ensure_memory_metadata(conn)
+        row = conn.execute(
+            f"{_MEMORY_SELECT} WHERE memory.id = ? AND scope.principal_id = ? "
+            "AND scope.workspace_id = ? AND scope.domain_scope = ?",
+            (
+                memory_id,
+                namespace.principal_id,
+                namespace.workspace_id,
+                namespace.domain_scope,
+            ),
+        ).fetchone()
     if row is None:
         return None
     return _memory_from_row(row)
 
 
-def delete_memory(memory_id: str) -> bool:
+def delete_memory(
+    memory_id: str,
+    *,
+    principal_id: str | None = None,
+    workspace_id: str | None = None,
+    domain_scope: str | None = None,
+) -> bool:
+    namespace = normalize_memory_namespace(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        domain_scope=domain_scope,
+    )
     with db.connect() as conn:
+        _ensure_memory_metadata(conn)
         conn.execute("SAVEPOINT memory_record_delete")
         try:
+            owned = conn.execute(
+                """
+                SELECT 1
+                FROM memory_namespace
+                WHERE memory_id = ? AND principal_id = ? AND workspace_id = ? AND domain_scope = ?
+                """,
+                (
+                    memory_id,
+                    namespace.principal_id,
+                    namespace.workspace_id,
+                    namespace.domain_scope,
+                ),
+            ).fetchone()
+            if owned is None:
+                conn.execute("RELEASE SAVEPOINT memory_record_delete")
+                return False
             conn.execute("DELETE FROM memory_quarantine WHERE memory_id = ?", (memory_id,))
+            conn.execute("DELETE FROM memory_namespace WHERE memory_id = ?", (memory_id,))
             cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         except BaseException:
             conn.execute("ROLLBACK TO SAVEPOINT memory_record_delete")
@@ -182,6 +324,115 @@ def delete_memory(memory_id: str) -> bool:
         else:
             conn.execute("RELEASE SAVEPOINT memory_record_delete")
     return cursor.rowcount > 0
+
+
+def _validate_namespace_write(conn: Any, body: dict[str, Any]) -> None:
+    existing = conn.execute(
+        """
+        SELECT scope.principal_id, scope.workspace_id, scope.domain_scope, scope.version,
+               scope.supersedes, memory.kind
+        FROM memory_namespace AS scope
+        JOIN memories AS memory ON memory.id = scope.memory_id
+        WHERE scope.memory_id = ?
+        """,
+        (body["id"],),
+    ).fetchone()
+    if existing is not None:
+        current = (
+            str(existing["principal_id"]),
+            str(existing["workspace_id"]),
+            str(existing["domain_scope"]),
+            int(existing["version"]),
+            str(existing["supersedes"] or ""),
+            str(existing["kind"]),
+        )
+        requested = (
+            body["principal_id"],
+            body["workspace_id"],
+            body["domain_scope"],
+            body["version"],
+            body["supersedes"],
+            body["kind"],
+        )
+        if current != requested:
+            raise ValueError("memory namespace, kind, and lineage are immutable")
+
+    supersedes = body["supersedes"]
+    if not supersedes:
+        return
+    if supersedes == body["id"]:
+        raise ValueError("a memory cannot supersede itself")
+    parent = conn.execute(
+        """
+        SELECT scope.principal_id, scope.workspace_id, scope.domain_scope, scope.version, memory.kind
+        FROM memory_namespace AS scope
+        JOIN memories AS memory ON memory.id = scope.memory_id
+        WHERE scope.memory_id = ?
+        """,
+        (supersedes,),
+    ).fetchone()
+    if parent is None:
+        raise ValueError("superseded memory was not found")
+    parent_namespace = (
+        str(parent["principal_id"]),
+        str(parent["workspace_id"]),
+        str(parent["domain_scope"]),
+    )
+    requested_namespace = (body["principal_id"], body["workspace_id"], body["domain_scope"])
+    if parent_namespace != requested_namespace:
+        raise ValueError("a memory can only supersede a record in the same namespace")
+    if str(parent["kind"]) != body["kind"]:
+        raise ValueError("a memory can only supersede a record of the same kind")
+    if body["version"] <= int(parent["version"]):
+        raise ValueError("a superseding memory must have a higher version")
+    if body["state"] == "active" and body["conflict_status"] in {"none", "resolved"}:
+        active_successor = conn.execute(
+            """
+            SELECT scope.memory_id
+            FROM memory_namespace AS scope
+            JOIN memory_quarantine AS quarantine ON quarantine.memory_id = scope.memory_id
+            WHERE scope.supersedes = ?
+              AND scope.memory_id != ?
+              AND scope.conflict_status IN ('none', 'resolved')
+              AND quarantine.state = 'active'
+            LIMIT 1
+            """,
+            (supersedes, body["id"]),
+        ).fetchone()
+        if active_successor is not None:
+            raise ValueError("superseded memory already has an active successor")
+
+
+def _ensure_memory_metadata(conn: Any) -> None:
+    missing = conn.execute(
+        """
+        SELECT 1
+        FROM memories AS memory
+        LEFT JOIN memory_quarantine AS quarantine ON quarantine.memory_id = memory.id
+        LEFT JOIN memory_namespace AS scope ON scope.memory_id = memory.id
+        WHERE quarantine.memory_id IS NULL OR scope.memory_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if missing is None:
+        return
+    from app.core.db_migrations import backfill_missing_memory_metadata
+
+    backfill_missing_memory_metadata(conn)
+
+
+def _namespace_values(body: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        body["id"],
+        body["principal_id"],
+        body["workspace_id"],
+        body["domain_scope"],
+        body["version"],
+        _optional_text(body.get("supersedes")),
+        body["conflict_status"],
+        body["created_at"],
+        db._now_iso(),
+    )
 
 
 def _quarantine_values(body: dict[str, Any], envelope: dict[str, Any] | None) -> tuple[Any, ...]:
@@ -212,13 +463,23 @@ def _quarantine_values(body: dict[str, Any], envelope: dict[str, Any] | None) ->
 
 def _memory_from_row(row: Any) -> dict[str, Any]:
     body = _safe_json_mapping(row["data"])
-    body.setdefault("id", str(row["id"] or ""))
-    body.setdefault("kind", str(row["kind"] or "fact"))
-    body.setdefault("content", str(row["content"] or ""))
-    body.setdefault("tags", [tag for tag in str(row["tags"] or "").split(",") if tag])
-    body.setdefault("task_id", str(row["task_id"] or ""))
-    body.setdefault("created_at", str(row["created_at"] or ""))
-    body.setdefault("last_used_at", str(row["last_used_at"] or ""))
+    body.update(
+        {
+            "id": str(row["id"] or ""),
+            "principal_id": str(row["namespace_principal_id"]),
+            "workspace_id": str(row["namespace_workspace_id"]),
+            "domain_scope": str(row["namespace_domain_scope"]),
+            "kind": str(row["kind"] or "fact"),
+            "version": int(row["namespace_version"]),
+            "supersedes": str(row["namespace_supersedes"] or ""),
+            "conflict_status": str(row["namespace_conflict_status"]),
+            "content": str(row["content"] or ""),
+            "tags": [tag for tag in str(row["tags"] or "").split(",") if tag],
+            "task_id": str(row["task_id"] or ""),
+            "created_at": str(row["created_at"] or ""),
+            "last_used_at": str(row["last_used_at"] or ""),
+        }
+    )
     if row["quarantine_memory_id"] is None:
         return body
 

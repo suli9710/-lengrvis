@@ -18,9 +18,8 @@ import type {
   TaskBoundaryEvent,
   TaskEvent,
   TaskExplain,
-  TaskExplainEvidence,
-  TaskResultQualityState,
   TaskState,
+  TaskPilotAction,
   TaskStepRecording
 } from "../../shared/executionTypes";
 import {
@@ -39,25 +38,25 @@ import {
 } from "../lib/technicalDetails";
 import {
   zhAgentName,
-  zhBackendTaskStatus,
   zhRelativeTime,
-  zhRiskLevel,
-  zhSafetyVerdict,
-  zhTaskState,
-  zhToolName
+  zhTaskState
 } from "../lib/zh";
+import { AccessibleDialog } from "./AccessibleDialog";
 import { Badge, Panel } from "./Panel";
+import { TaskExplainDialog } from "./TaskExplainDialog";
 import { TechnicalDetails } from "./TechnicalDetails";
+import { timelineUserStatusCopy, toneForState, workspaceAction } from "./taskTimelinePresentation";
 
 interface TaskTimelineProps {
   tasks: TaskEvent[];
   api?: LengrvisApiClient;
   focusedTaskId?: string | null;
-  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
 }
 
 export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: TaskTimelineProps) {
   const focusedTaskRef = useRef<HTMLLIElement | null>(null);
+  const dialogTriggerRef = useRef<HTMLElement | null>(null);
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [previewSteps, setPreviewSteps] = useState<unknown[]>([]);
   const [recordingPlayer, setRecordingPlayer] = useState<{
@@ -98,45 +97,75 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
 
   const openPreview = async (task: TaskEvent) => {
     if (!api) return;
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
-    const response = await api.previewRollback(taskId);
-    setIsWorking(false);
-    if (response.ok && response.data) {
-      setPreviewTaskId(taskId);
-      setPreviewSteps(response.data.steps ?? []);
-    } else {
-      setFeedback(response.error?.message ?? "回滚预览失败");
+    try {
+      const response = await api.previewRollback(taskId);
+      if (response.ok && response.data) {
+        setPreviewTaskId(taskId);
+        setPreviewSteps(response.data.steps ?? []);
+      } else {
+        setFeedback(response.error?.message ?? "回滚预览失败");
+      }
+    } catch (error) { // broad-exception-boundary
+      setFeedback(taskControlFailureMessage(error));
+    } finally {
+      setIsWorking(false);
     }
   };
 
   const executeRollback = async () => {
     if (!api || !previewTaskId) return;
     setIsWorking(true);
-    const response = await api.executeRollback(previewTaskId);
-    setIsWorking(false);
-    if (response.ok && response.data) {
-      setFeedback(`已回滚 ${response.data.count ?? 0} 个动作。`);
-      setPreviewTaskId(null);
-      setPreviewSteps([]);
-    } else {
-      setFeedback(response.error?.message ?? "回滚失败");
+    try {
+      const response = await api.executeRollback(previewTaskId);
+      if (response.ok && response.data) {
+        const state = response.data.state;
+        if (state === "succeeded") {
+          setFeedback(`回滚完成：已恢复并核验 ${response.data.verified ?? 0}/${response.data.attempted ?? 0} 个动作。`);
+        } else if (state === "manual_required") {
+          setFeedback("回滚尚未完成：有动作需要你手动恢复。");
+        } else if (state === "unrecoverable") {
+          setFeedback("回滚无法完整恢复：包含不可恢复的动作。");
+        } else {
+          const verificationFailure = response.data.verification_failed ?? 0;
+          const verificationCopy = verificationFailure > 0 ? `，其中 ${verificationFailure} 个动作未通过后态核验` : "";
+          setFeedback(
+            `回滚未完整完成：已恢复并核验 ${response.data.verified ?? 0}/${response.data.attempted ?? 0} 个动作${verificationCopy}。`
+          );
+        }
+        setPreviewTaskId(null);
+        setPreviewSteps([]);
+      } else {
+        setFeedback(response.error?.message ?? "回滚失败");
+      }
+    } catch (error) { // broad-exception-boundary
+      setFeedback(taskControlFailureMessage(error));
+    } finally {
+      setIsWorking(false);
     }
   };
 
   const openExplain = async (task: TaskEvent) => {
     if (!api) return;
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const taskId = taskSourceId(task);
     setIsWorking(true);
     setFeedback(null);
-    const response = await api.getTaskExplain(taskId);
-    setIsWorking(false);
-    if (response.ok && response.data) {
-      setExplainTaskId(taskId);
-      setExplain(response.data);
-    } else {
-      setFeedback(response.error?.message ?? "解释失败");
+    try {
+      const response = await api.getTaskExplain(taskId);
+      if (response.ok && response.data) {
+        setExplainTaskId(taskId);
+        setExplain(response.data);
+      } else {
+        setFeedback(response.error?.message ?? "解释失败");
+      }
+    } catch (error) { // broad-exception-boundary
+      setFeedback(taskControlFailureMessage(error));
+    } finally {
+      setIsWorking(false);
     }
   };
 
@@ -145,7 +174,26 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
     setExplainTaskId(null);
   };
 
+  const runTaskControl = async (
+    task: TaskEvent,
+    action: Extract<TaskPilotAction, "pause" | "resume" | "stop" | "cancel">,
+    successMessage: string
+  ) => {
+    if (!onTaskPilotAction) return;
+    setIsWorking(true);
+    setFeedback(null);
+    try {
+      await onTaskPilotAction(task, action);
+      setFeedback(successMessage);
+    } catch (error) { // broad-exception-boundary
+      setFeedback(taskControlFailureMessage(error));
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
   const openRecordingPlayer = (taskTitle: string, recording: TaskStepRecording, frameIndex = 0) => {
+    dialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const playableFrames = recording.frames.filter((frame) => frame.url);
     const targetFrame = recording.frames[frameIndex];
     const matchingIndex = playableFrames.findIndex((frame) => frame === targetFrame);
@@ -200,6 +248,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                     onExplain={openExplain}
                     onPreview={openPreview}
                     onTaskPilotAction={onTaskPilotAction}
+                    onTaskControl={runTaskControl}
                   />
                   <TimelineTechnicalDetails
                     task={task}
@@ -219,14 +268,19 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
       {feedback ? <p className="muted" style={{ marginTop: 12 }}>{feedback}</p> : null}
 
       {previewTaskId ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
+        <AccessibleDialog
+          labelledBy="rollback-title"
+          describedBy="rollback-description"
+          closeDisabled={isWorking}
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={() => setPreviewTaskId(null)}
+        >
             <header className="modal__header">
               <h2 id="rollback-title">回滚预览</h2>
               <Badge tone="warning">{previewSteps.length} 个动作</Badge>
             </header>
             <div className="modal__body">
-              <p className="muted">将按倒序执行以下逆向动作。需要用户手动恢复的动作会标记出来。</p>
+              <p className="muted" id="rollback-description">将按倒序执行以下逆向动作。需要用户手动恢复的动作会标记出来。</p>
               <ol className="rollback-preview-list">
                 {previewSteps.map((entry, index) => (
                   <li key={index}>
@@ -244,15 +298,25 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                 确认回滚
               </button>
             </footer>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
 
-      {explain ? <ExplainDialog explain={explain} taskId={explainTaskId} onClose={closeExplain} /> : null}
+      {explain ? (
+        <TaskExplainDialog
+          explain={explain}
+          taskId={explainTaskId}
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={closeExplain}
+        />
+      ) : null}
 
       {recordingPlayer && activeFrame ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="recording-title">
+        <AccessibleDialog
+          className="modal modal--wide"
+          labelledBy="recording-title"
+          returnFocusTo={dialogTriggerRef.current}
+          onClose={closeRecordingPlayer}
+        >
             <header className="modal__header">
               <div>
                 <span className="panel__eyebrow">步骤录屏</span>
@@ -346,8 +410,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId, onTaskPilotAction }: T
                 关闭
               </button>
             </footer>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
     </Panel>
   );
@@ -377,7 +440,13 @@ function taskMatchesFocus(task: TaskEvent, focusedTaskId?: string | null): boole
 
 function TimelineUserStatus({ task }: { task: TaskEvent }) {
   const copy = timelineUserStatusCopy(task);
-  const role = task.state === "failed" || task.state === "blocked" ? "alert" : "status";
+  const role =
+    task.state === "failed" ||
+    task.state === "denied" ||
+    task.state === "repair_required" ||
+    task.state === "blocked"
+      ? "alert"
+      : "status";
   return (
     <div className={`timeline-user-status timeline-user-status--${copy.tone}`} role={role}>
       <span>
@@ -390,30 +459,6 @@ function TimelineUserStatus({ task }: { task: TaskEvent }) {
       </span>
     </div>
   );
-}
-
-function timelineUserStatusCopy(task: TaskEvent): {
-  stageLabel: string;
-  stage: string;
-  nextStep: string;
-  tone: "neutral" | "active" | "success" | "warning" | "danger";
-} {
-  if (task.state === "running") {
-    return { stageLabel: "当前阶段", stage: "正在执行任务", nextStep: "完成后核对结果与证据", tone: "active" };
-  }
-  if (task.state === "blocked") {
-    return { stageLabel: "当前阶段", stage: "等待你的确认", nextStep: "查看审批内容，再决定是否继续", tone: "warning" };
-  }
-  if (task.state === "completed") {
-    return { stageLabel: "结果", stage: "任务已完成", nextStep: "核对结果，必要时查看证据或回滚预案", tone: "success" };
-  }
-  if (task.state === "failed") {
-    return { stageLabel: "发生了什么", stage: "任务未完成，并已安全停止", nextStep: "重试任务，或打开技术详情查看脱敏原因", tone: "danger" };
-  }
-  if (task.state === "paused") {
-    return { stageLabel: "当前阶段", stage: "任务已暂停", nextStep: "恢复任务或调整目标", tone: "neutral" };
-  }
-  return { stageLabel: "当前阶段", stage: "等待开始", nextStep: "系统会在执行前检查范围和权限", tone: "neutral" };
 }
 
 function TimelineTechnicalDetails({
@@ -548,7 +593,8 @@ function TimelineResultWorkbench({
   isWorking,
   onExplain,
   onPreview,
-  onTaskPilotAction
+  onTaskPilotAction,
+  onTaskControl
 }: {
   summary: TaskResultTimelineSummary;
   task: TaskEvent;
@@ -556,7 +602,12 @@ function TimelineResultWorkbench({
   isWorking: boolean;
   onExplain: (task: TaskEvent) => Promise<void>;
   onPreview: (task: TaskEvent) => Promise<void>;
-  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
+  onTaskControl: (
+    task: TaskEvent,
+    action: Extract<TaskPilotAction, "pause" | "resume" | "stop" | "cancel">,
+    successMessage: string
+  ) => Promise<void>;
 }) {
   const missingChecks = summary.missingChecks.slice(0, 3);
   const canPreviewRollback = Boolean(api && task.state === "completed");
@@ -586,8 +637,38 @@ function TimelineResultWorkbench({
       </div>
       <span className="timeline-result-workbench__privacy">{summary.privacyNote}</span>
       <div className="timeline-result-workbench__actions">
+        {(task.state === "running" || task.state === "queued") && onTaskPilotAction ? (
+          <>
+            <button className="button button--ghost" onClick={() => void onTaskControl(task, "pause", "任务已暂停。")} disabled={isWorking}>
+              <Pause size={14} aria-hidden="true" />
+              暂停
+            </button>
+            <button className="button button--danger" onClick={() => void onTaskControl(task, "stop", "任务已停止。")} disabled={isWorking}>
+              <XCircle size={14} aria-hidden="true" />
+              停止
+            </button>
+          </>
+        ) : null}
+        {task.state === "paused" && onTaskPilotAction ? (
+          <>
+            <button className="button button--ghost" onClick={() => void onTaskControl(task, "resume", "任务已继续。")} disabled={isWorking}>
+              <Play size={14} aria-hidden="true" />
+              继续
+            </button>
+            <button className="button button--danger" onClick={() => void onTaskControl(task, "cancel", "任务已取消。")} disabled={isWorking}>
+              <XCircle size={14} aria-hidden="true" />
+              取消任务
+            </button>
+          </>
+        ) : null}
+        {task.state === "blocked" && onTaskPilotAction ? (
+          <button className="button button--danger" onClick={() => void onTaskControl(task, "cancel", "任务已取消。")} disabled={isWorking}>
+            <XCircle size={14} aria-hidden="true" />
+            取消任务
+          </button>
+        ) : null}
         {summary.action === "approve" && onTaskPilotAction ? (
-          <button className="button button--ghost" onClick={() => onTaskPilotAction(task, "approve")} disabled={isWorking}>
+          <button className="button button--ghost" onClick={() => void onTaskPilotAction(task, "approve")} disabled={isWorking}>
             <CheckCircle2 size={14} aria-hidden="true" />
             去审批
           </button>
@@ -633,7 +714,12 @@ function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: 
     {
       label: "当前动作",
       value: workspaceAction(task),
-      tone: task.state === "failed" ? "blocked" : task.state === "queued" ? "warning" : "ready"
+      tone:
+        task.state === "failed" || task.state === "denied"
+          ? "blocked"
+          : task.state === "queued" || task.state === "cancelled"
+            ? "warning"
+            : "ready"
     },
     {
       label: "工具权限",
@@ -651,15 +737,6 @@ function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: 
       tone: hasRollback ? "ready" : "warning"
     }
   ];
-}
-
-function workspaceAction(task: TaskEvent): string {
-  if (task.state === "queued") return "等待执行";
-  if (task.state === "running") return "正在执行";
-  if (task.state === "blocked") return "等待审批";
-  if (task.state === "paused") return "已暂停";
-  if (task.state === "completed") return "已完成";
-  return "需要复核";
 }
 
 function workspaceTool(task: TaskEvent): string {
@@ -723,181 +800,8 @@ function formatBytes(bytes?: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
-function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {
-  const completionEvidence = explain.finalResult.completionEvidence;
-  const resultQuality = explain.finalResult.resultQuality;
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
-        <header className="modal__header">
-          <div>
-            <span className="panel__eyebrow">执行解释</span>
-            <h2 id="explain-title">为什么这样执行？</h2>
-          </div>
-          <div className="recording-player__header-actions">
-            <Badge tone={explain.complete ? "success" : "warning"}>{explain.complete ? "完整链路" : "部分记录"}</Badge>
-            <button className="icon-button" onClick={onClose} title="关闭" aria-label="关闭">
-              <X size={16} aria-hidden="true" />
-            </button>
-          </div>
-        </header>
-        <div className="modal__body">
-          <div className="explain-summary">
-            <div>
-              <span className="muted">目标</span>
-              <strong>{sanitizeTechnicalText(explain.userGoal)}</strong>
-            </div>
-            <div>
-              <span className="muted">状态</span>
-              <Badge tone={explain.status === "completed" ? "success" : "info"}>{zhBackendTaskStatus(explain.status)}</Badge>
-            </div>
-            <div>
-              <span className="muted">数据来源</span>
-              <span>{formatSources(explain.dataSources)}</span>
-            </div>
-            <div>
-              <span className="muted">结果证据</span>
-              <Badge tone={resultQualityTone(resultQuality.state, resultQuality.canTreatAsDone)}>
-                {resultQualityLabel(resultQuality.state)}
-              </Badge>
-            </div>
-          </div>
-
-          <div className={`explain-result-evidence explain-result-evidence--${resultQuality.state}`}>
-            <div className="row row--between">
-              <strong>结果可信度</strong>
-              <Badge tone={resultQualityTone(resultQuality.state, resultQuality.canTreatAsDone)}>
-                {resultQuality.canTreatAsDone ? "可作为完成结果" : resultQualityLabel(resultQuality.state)}
-              </Badge>
-            </div>
-            <p>{sanitizeTechnicalText(resultQuality.summary || completionEvidence.summary)}</p>
-            {resultQuality.missingChecks.length ? (
-              <ul>
-                {resultQuality.missingChecks.slice(0, 4).map((missing) => (
-                  <li key={missing}>{missing}</li>
-                ))}
-              </ul>
-            ) : null}
-            {resultQuality.nextStep ? <em>下一步：{resultQuality.nextStep}</em> : null}
-            <span>{resultQuality.privacyNote ?? completionEvidence.privacyNote ?? "仅展示证据状态，不展示原始证据内容。"}</span>
-          </div>
-
-          <div className="explain-chain">
-            {explain.chain.map((item) => (
-              <article className="explain-chain__item" key={item.stage}>
-                <span className="explain-chain__marker">{stageNumber(item.stage)}</span>
-                <div>
-                  <div className="row row--between">
-                    <strong>{stageTitle(item.stage, item.title)}</strong>
-                    <span className="muted">{item.evidence.length} 条证据</span>
-                  </div>
-                  <p>{explainStageSummary(item.stage, item.summary)}</p>
-                  {item.evidence.length ? <EvidenceList evidence={item.evidence.slice(0, 3)} /> : null}
-                </div>
-              </article>
-            ))}
-          </div>
-
-          {explain.steps.length ? (
-            <div className="explain-steps">
-              <strong>步骤审查</strong>
-              {explain.steps.map((step) => (
-                <article className="explain-step" key={step.stepId}>
-                  <div className="row row--between">
-                    <span>{step.order}. {zhToolName(step.toolName)}</span>
-                    <Badge tone={step.requiresApproval ? "warning" : "neutral"}>{zhRiskLevel(step.riskLevel)}</Badge>
-                  </div>
-                  <p>{sanitizeTechnicalText(step.description)}</p>
-                  {step.subagentSuggestions.map((message) => (
-                    <p className="muted" key={message.id}>
-                      {zhAgentName(message.fromAgent)}：{sanitizeTechnicalText(message.content)}
-                    </p>
-                  ))}
-                  {step.safetyReviews.map((review) => (
-                    <p className="muted" key={review.id}>
-                      安全审查 {zhSafetyVerdict(review.verdict)}：{sanitizeTechnicalText(review.reasons.join(" "))}
-                    </p>
-                  ))}
-                </article>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <footer className="modal__footer">
-          <span className="muted">{taskId ? "证据链已脱敏" : "无关联任务"}</span>
-          <button className="button button--ghost" onClick={onClose}>
-            <X size={14} aria-hidden="true" />
-            关闭
-          </button>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-function EvidenceList({ evidence }: { evidence: TaskExplainEvidence[] }) {
-  return (
-    <ul className="explain-evidence">
-      {evidence.map((item) => (
-        <li key={`${item.source}-${item.id}`}>
-          <span>{item.source}</span>
-          <p>{item.actor ? `${zhAgentName(item.actor)}：` : ""}{sanitizeTechnicalText(item.summary)}</p>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function explainStageSummary(stage: string, summary: string): string {
-  if (stage === "planner_reasoning") {
-    return "已记录计划选择；为保护隐私与可读性，不展示模型内部推理过程。";
-  }
-  return sanitizeTechnicalText(summary);
-}
-
-function stageTitle(stage: string, fallback: string) {
-  const labels: Record<string, string> = {
-    user_goal: "用户目标",
-    supervisor_judgment: "主管判断",
-    planner_reasoning: "计划依据",
-    step_safety_reviews: "每步安全审查",
-    subagent_suggestions: "子 Agent 建议",
-    final_result: "最终结果"
-  };
-  return labels[stage] ?? fallback;
-}
-
-function stageNumber(stage: string) {
-  const order = ["user_goal", "supervisor_judgment", "planner_reasoning", "step_safety_reviews", "subagent_suggestions", "final_result"];
-  const index = order.indexOf(stage);
-  return index >= 0 ? index + 1 : "·";
-}
-
-function formatSources(sources: Record<string, number>) {
-  return Object.entries(sources)
-    .map(([name, count]) => `${name}: ${count}`)
-    .join(" / ");
-}
-
-function resultQualityLabel(state: TaskResultQualityState): string {
-  const labels: Record<TaskResultQualityState, string> = {
-    verified_result: "完成结果已核验",
-    visible_progress: "有进度待核验",
-    safe_failure: "安全停止",
-    task_evidence_only: "仅有任务记录"
-  };
-  return labels[state];
-}
-
-function resultQualityTone(
-  state: TaskResultQualityState,
-  canTreatAsDone: boolean
-): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (state === "verified_result" && canTreatAsDone) return "success";
-  if (state === "safe_failure") return "danger";
-  if (state === "visible_progress") return "info";
-  if (state === "task_evidence_only") return "warning";
-  return "neutral";
+export function taskControlFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim() ? error.message : "任务控制失败";
 }
 
 function boundaryKindLabel(kind: string) {
@@ -923,30 +827,13 @@ function phaseLabel(phase: string) {
 }
 
 function iconForState(state: TaskState) {
-  if (state === "completed") {
+  if (state === "completed" || state === "rolled_back") {
     return <CheckCircle2 size={16} aria-hidden="true" />;
   }
 
-  if (state === "failed" || state === "blocked") {
+  if (state === "failed" || state === "denied" || state === "cancelled" || state === "blocked" || state === "repair_required") {
     return <XCircle size={16} aria-hidden="true" />;
   }
 
   return <Clock size={16} aria-hidden="true" />;
-}
-
-function toneForState(state: TaskState): "neutral" | "success" | "warning" | "danger" | "info" {
-  switch (state) {
-    case "completed":
-      return "success";
-    case "blocked":
-      return "warning";
-    case "paused":
-      return "neutral";
-    case "failed":
-      return "danger";
-    case "running":
-      return "info";
-    default:
-      return "neutral";
-  }
 }

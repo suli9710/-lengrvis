@@ -7,6 +7,7 @@ import type {
   CleanupScanRequest
 } from "../../../shared/cleanupTypes";
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type {
   BackendCleanupExecuteRequest,
   BackendCleanupExecutionResult,
@@ -65,7 +66,9 @@ export function executeCleanupEndpoint(
     approval_id: body.approvalId
   };
   const response = window.lengrvis?.cleanup
-    ? window.lengrvis.cleanup.execute(requestBody as Record<string, unknown>)
+    ? safeIpcApiRequest<BackendCleanupExecutionResult>(() =>
+        window.lengrvis.cleanup.execute(requestBody as Record<string, unknown>) as Promise<ApiResponse<BackendCleanupExecutionResult>>
+      )
     : request<BackendCleanupExecutionResult, BackendCleanupExecuteRequest>({
         endpoint: "/api/files/cleanup/execute",
         method: "POST",
@@ -86,7 +89,9 @@ export function rollbackCleanupEndpoint(
     execution_id: body.executionId
   };
   const response = window.lengrvis?.cleanup
-    ? window.lengrvis.cleanup.rollback(requestBody as Record<string, unknown>)
+    ? safeIpcApiRequest<BackendCleanupExecutionResult>(() =>
+        window.lengrvis.cleanup.rollback(requestBody as Record<string, unknown>) as Promise<ApiResponse<BackendCleanupExecutionResult>>
+      )
     : request<BackendCleanupExecutionResult, BackendCleanupRollbackRequest>({
         endpoint: "/api/files/cleanup/rollback",
         method: "POST",

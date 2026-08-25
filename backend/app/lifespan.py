@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -14,6 +15,7 @@ from app.core.session_context import get_session_context_store
 from app.indexer.file_watcher import get_file_watcher
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
+from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
 from app.perception.environment_stream import get_environment_stream
@@ -23,6 +25,7 @@ from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
 
 AsyncCleanup = Callable[[], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -31,9 +34,11 @@ async def full_backend_lifespan(app: FastAPI):
     _enforce_local_data_protection()
     _prepare_run_runtime()
     settings = get_effective_settings()
-    await _load_mcp_tools(settings)
 
     async with AsyncExitStack() as stack:
+        stack.callback(db.close_thread_connection)
+        await _load_mcp_tools(settings)
+        stack.push_async_callback(get_mcp_registry().close)
         _register_process_cleanups(stack)
         session_store = _load_session_context()
         await _start_scheduler(stack)
@@ -65,6 +70,7 @@ def _enforce_local_data_protection() -> None:
 async def guardian_lifespan(app: FastAPI):
     db.init_db()
     async with AsyncExitStack() as stack:
+        stack.callback(db.close_thread_connection)
         await runtime.start()
         stack.push_async_callback(runtime.stop)
         scheduler = get_guardian_scheduler()
@@ -74,9 +80,31 @@ async def guardian_lifespan(app: FastAPI):
 
 
 def _prepare_run_runtime() -> None:
+    from app.core.db_task_rollback import recover_interrupted_task_rollbacks
+    from app.orchestration.tool_execution_journal import recover_interrupted_tool_executions
     from app.services.run_service import enter_foreground_runtime, recover_interrupted_runs
 
     enter_foreground_runtime()
+    try:
+        interrupted_rollbacks = recover_interrupted_task_rollbacks()
+        if interrupted_rollbacks:
+            record(
+                "lifespan.task_rollbacks_recovered",
+                "lifespan",
+                {"repair_required_task_ids": interrupted_rollbacks},
+            )
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
+        record("lifespan.task_rollback_recovery_failed", "lifespan", {"error": str(exc)})
+    try:
+        unknown_tool_calls = recover_interrupted_tool_executions()
+        if unknown_tool_calls:
+            record(
+                "lifespan.tool_executions_recovered",
+                "lifespan",
+                {"outcome_unknown_tool_call_ids": unknown_tool_calls},
+            )
+    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
+        record("lifespan.tool_execution_recovery_failed", "lifespan", {"error": str(exc)})
     try:
         recovered = recover_interrupted_runs()
         if recovered:
@@ -146,10 +174,34 @@ async def _start_file_environment(stack: AsyncExitStack, settings: AppSettings) 
         reset=True,
     )
     file_environment_sink = environment_stream.file_change_sink()
-    watcher.subscribe_changes(file_environment_sink)
-    await environment_stream.start()
-    await watcher.start(settings.allowed_directories)
-    await automation_triggers.start(watcher)
+    environment_start_attempted = False
+    watcher_start_attempted = False
+    subscription_attempted = False
+    automation_start_attempted = False
+    try:
+        subscription_attempted = True
+        watcher.subscribe_changes(file_environment_sink)
+        environment_start_attempted = True
+        await environment_stream.start()
+        watcher_start_attempted = True
+        await watcher.start(settings.allowed_directories)
+        automation_start_attempted = True
+        await automation_triggers.start(watcher)
+    except BaseException:  # noqa: BLE001 - startup must unwind partially initialized resources.
+        try:
+            await _stop_file_environment(
+                watcher,
+                environment_stream,
+                file_environment_sink,
+                automation_triggers,
+                stop_automation=automation_start_attempted,
+                stop_watcher=watcher_start_attempted,
+                unsubscribe=subscription_attempted,
+                stop_environment=environment_start_attempted,
+            )
+        except BaseException as cleanup_exc:  # noqa: BLE001 - preserve the original startup failure.
+            log_best_effort_failure(logger, "lifespan.file_environment_startup_cleanup", cleanup_exc)
+        raise
     stack.push_async_callback(
         _stop_file_environment,
         watcher,
@@ -164,8 +216,32 @@ async def _stop_file_environment(
     environment_stream: Any,
     file_environment_sink: Any,
     automation_triggers: Any,
+    *,
+    stop_automation: bool = True,
+    stop_watcher: bool = True,
+    unsubscribe: bool = True,
+    stop_environment: bool = True,
 ) -> None:
-    await automation_triggers.stop()
-    await watcher.stop()
-    watcher.unsubscribe_changes(file_environment_sink)
-    await environment_stream.stop()
+    failures: list[BaseException] = []
+
+    async def _await_cleanup(operation: str, cleanup: AsyncCleanup) -> None:
+        try:
+            await cleanup()
+        except BaseException as exc:  # noqa: BLE001 - teardown must continue through every owned resource.
+            failures.append(exc)
+            log_best_effort_failure(logger, operation, exc)
+
+    if stop_automation:
+        await _await_cleanup("lifespan.automation_triggers.stop", automation_triggers.stop)
+    if stop_watcher:
+        await _await_cleanup("lifespan.file_watcher.stop", watcher.stop)
+    if unsubscribe:
+        try:
+            watcher.unsubscribe_changes(file_environment_sink)
+        except BaseException as exc:  # noqa: BLE001 - teardown must continue through every owned resource.
+            failures.append(exc)
+            log_best_effort_failure(logger, "lifespan.file_watcher.unsubscribe", exc)
+    if stop_environment:
+        await _await_cleanup("lifespan.environment_stream.stop", environment_stream.stop)
+    if failures:
+        raise failures[0]

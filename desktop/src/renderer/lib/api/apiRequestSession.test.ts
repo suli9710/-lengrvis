@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RendererApiRequestSession } from "./apiRequestSession";
+import { RendererApiRequestSession, safeIpcApiRequest } from "./apiRequestSession";
 import { rendererBatchControllers } from "./transport";
 
 function installElectronApi(request = vi.fn(), abortInflight = vi.fn()) {
@@ -79,6 +79,39 @@ describe("RendererApiRequestSession", () => {
     });
   });
 
+  it("does not attach the active batch abort group to mutations", async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, status: 200, receivedAt: "now" });
+    installElectronApi(request);
+    const session = new RendererApiRequestSession();
+
+    // A snapshot refresh batch is active while the user submits an approval.
+    await session.beginBatch("task-snapshot");
+    await session.request({ endpoint: "/api/approvals/a1/decision", method: "POST", body: { decision: "approve" } });
+
+    // The POST must not carry the batch group, otherwise the next
+    // beginBatch("task-snapshot") -> abortInflight would cancel it silently.
+    expect(request).toHaveBeenCalledWith({
+      endpoint: "/api/approvals/a1/decision",
+      method: "POST",
+      body: { decision: "approve" }
+    });
+  });
+
+  it("still lets a mutation opt into an explicit abort group", async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, status: 200, receivedAt: "now" });
+    installElectronApi(request);
+    const session = new RendererApiRequestSession();
+
+    await session.beginBatch("task-snapshot");
+    await session.request({ endpoint: "/api/chat", method: "POST", abortGroup: "manual" });
+
+    expect(request).toHaveBeenCalledWith({
+      endpoint: "/api/chat",
+      method: "POST",
+      abortGroup: "manual"
+    });
+  });
+
   it("aborts local batch controllers and notifies Electron", async () => {
     const abortInflight = vi.fn().mockResolvedValue(undefined);
     installElectronApi(vi.fn(), abortInflight);
@@ -91,6 +124,15 @@ describe("RendererApiRequestSession", () => {
     expect(controller.signal.aborted).toBe(true);
     expect(rendererBatchControllers.has("workspace-refresh")).toBe(false);
     expect(abortInflight).toHaveBeenCalledWith("workspace-refresh");
+  });
+
+  it("keeps abort cleanup best-effort when Electron is already closing", async () => {
+    const abortInflight = vi.fn().mockRejectedValue(new Error("window closed"));
+    installElectronApi(vi.fn(), abortInflight);
+    const session = new RendererApiRequestSession();
+
+    await expect(session.abortInflight("workspace-refresh")).resolves.toBeUndefined();
+    await expect(session.beginBatch("workspace-refresh")).resolves.toBeUndefined();
   });
 
   it("falls back to direct loopback requests without Electron", async () => {
@@ -121,5 +163,48 @@ describe("RendererApiRequestSession", () => {
     const event = dispatchEvent.mock.calls[0][0] as CustomEvent;
     expect(event.type).toBe("lengrvis-api-request");
     expect(event.detail).toEqual({ endpoint: "/api/system/info", method: "GET" });
+  });
+
+  it("normalizes rejected Electron IPC requests into a safe ApiResponse", async () => {
+    const request = vi.fn().mockRejectedValue(
+      new Error("authorization=super-secret-token at C:\\Users\\Private\\backend.log")
+    );
+    installElectronApi(request);
+    const session = new RendererApiRequestSession();
+
+    const response = await session.request({ endpoint: "/api/system/info" });
+
+    expect(response).toMatchObject({
+      ok: false,
+      status: 0,
+      error: {
+        code: "IPC_REQUEST_FAILED",
+        message: "Lengrvis 桌面连接暂时不可用，请重启应用后再试。"
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("super-secret-token");
+    expect(JSON.stringify(response)).not.toContain("Users\\Private");
+  });
+
+  it("normalizes synchronous and asynchronous specialized IPC failures", async () => {
+    const [synchronous, asynchronous] = await Promise.all([
+      safeIpcApiRequest(() => {
+        throw new Error("sync token=super-secret at C:\\Private\\bridge.ts");
+      }),
+      safeIpcApiRequest(() => Promise.reject(new Error("async token=super-secret")))
+    ]);
+
+    for (const response of [synchronous, asynchronous]) {
+      expect(response).toMatchObject({
+        ok: false,
+        status: 0,
+        error: {
+          code: "IPC_REQUEST_FAILED",
+          message: "Lengrvis 桌面连接暂时不可用，请重启应用后再试。"
+        }
+      });
+      expect(JSON.stringify(response)).not.toContain("super-secret");
+      expect(JSON.stringify(response)).not.toContain("Private");
+    }
   });
 });

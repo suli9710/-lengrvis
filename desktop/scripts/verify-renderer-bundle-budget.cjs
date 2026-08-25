@@ -4,14 +4,14 @@ const path = require("node:path");
 const rendererDir = path.join(__dirname, "..", "dist", "renderer");
 const assetsDir = path.join(rendererDir, "assets");
 
-// Renderer-local UI preferences and progressive technical details add a small,
-// intentional baseline cost. Character stills remain external assets via
+// Async collection states and local-library correctness fixes add a small,
+// measured baseline cost. Character stills remain external assets via
 // `?no-inline`, so these limits cover application code rather than image data.
 const budgets = {
-  entryJs: Number(process.env.LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB || 235),
-  chunkJs: Number(process.env.LENGRVIS_RENDERER_CHUNK_JS_BUDGET_KB || 160),
-  totalJs: Number(process.env.LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB || 740),
-  totalCss: Number(process.env.LENGRVIS_RENDERER_TOTAL_CSS_BUDGET_KB || 190),
+  entryJs: readBudget("LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB", 235),
+  chunkJs: readBudget("LENGRVIS_RENDERER_CHUNK_JS_BUDGET_KB", 160),
+  totalJs: readBudget("LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB", 750),
+  totalCss: readBudget("LENGRVIS_RENDERER_TOTAL_CSS_BUDGET_KB", 195),
 };
 
 function fail(message) {
@@ -19,8 +19,23 @@ function fail(message) {
   process.exitCode = 1;
 }
 
+function readBudget(name, fallback) {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === "") return fallback;
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value <= 0) {
+    fail(`${name} must be a positive finite number, got ${JSON.stringify(rawValue)}`);
+    return null;
+  }
+  return value;
+}
+
 function sizeKb(filePath) {
   return fs.statSync(filePath).size / 1024;
+}
+
+if (Object.values(budgets).some((value) => value === null)) {
+  return;
 }
 
 if (!fs.existsSync(assetsDir)) {

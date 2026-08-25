@@ -119,6 +119,8 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
             step_id TEXT NOT NULL,
+            execution_key TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'created',
             data TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
@@ -360,6 +362,34 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
     )
     ensure_columns(
         conn,
+        "tool_calls",
+        {
+            "execution_key": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'created'",
+        },
+    )
+    conn.execute(
+        """
+        UPDATE tool_calls
+        SET execution_key = COALESCE(NULLIF(json_extract(data, '$.execution_key'), ''), execution_key),
+            status = COALESCE(NULLIF(json_extract(data, '$.status'), ''), status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_execution_key
+            ON tool_calls(execution_key)
+            WHERE execution_key <> ''
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tool_calls_status_created
+            ON tool_calls(status, created_at, id)
+        """
+    )
+    ensure_columns(
+        conn,
         "llm_usage_events",
         {
             "data": "TEXT NOT NULL DEFAULT '{}'",
@@ -388,9 +418,7 @@ def ensure_document_chunks_fts(conn: sqlite3.Connection) -> str:
     ddl = _fts_table_sql(conn)
     existing_mode = _fts_mode_from_sql(ddl)
     desired_mode = (
-        FTS_MODE_TRIGRAM
-        if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn)
-        else FTS_MODE_PLAIN
+        FTS_MODE_TRIGRAM if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn) else FTS_MODE_PLAIN
     )
 
     if ddl and existing_mode not in {desired_mode, FTS_MODE_UNAVAILABLE}:

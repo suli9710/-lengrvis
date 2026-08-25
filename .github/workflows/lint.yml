@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
@@ -34,15 +35,19 @@ jobs:
       - name: Collect changed backend Python files
         id: ruff_targets
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           mkdir -p .tmp
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
-            git diff --name-only --diff-filter=ACMRT "origin/${{ github.base_ref }}...HEAD" -- "backend/**/*.py" > .tmp/ruff-targets.txt
-          elif [[ -n "${{ github.event.before }}" && ! "${{ github.event.before }}" =~ ^0+$ ]]; then
-            git diff --name-only --diff-filter=ACMRT "${{ github.event.before }}" HEAD -- "backend/**/*.py" > .tmp/ruff-targets.txt
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch --no-tags --prune --depth=1 origin "$BASE_REF"
+            git diff --name-only --diff-filter=ACMRT "origin/$BASE_REF...HEAD" -- "backend/**/*.py" > .tmp/ruff-targets.txt
+          elif [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            git diff --name-only --diff-filter=ACMRT "$BEFORE_SHA" HEAD -- "backend/**/*.py" > .tmp/ruff-targets.txt
           elif git rev-parse HEAD^ >/dev/null 2>&1; then
             git diff --name-only --diff-filter=ACMRT HEAD^ HEAD -- "backend/**/*.py" > .tmp/ruff-targets.txt
           else

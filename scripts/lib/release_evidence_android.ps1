@@ -178,6 +178,8 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
     $reviewedEvidenceContractCandidateBound = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.candidate_binding_valid
     $reviewedEvidenceArtifactIdentityValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.artifact_identity_valid
     $reviewedEvidenceArtifactProvenanceValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.artifact_provenance_valid
+    $reviewedEvidenceArtifactManifestValid = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.artifact_manifest_valid
+    $reviewedEvidenceSigningKeyFingerprintBound = Test-JsonTrue $latestAndroidReleaseGate.data.reviewed_evidence_contract.signing_key_fingerprint_bound
 
     if ($androidArtifactType -ne "android-release-gate-summary") {
         $androidGateMismatches.Add("artifact_type is not android-release-gate-summary")
@@ -266,8 +268,8 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
         if (-not $apkProvenanceVerified) {
             $androidGateMismatches.Add("passed Android gate must include verified candidate-bound APK provenance")
         }
-        if (-not ($reviewedEvidenceContractEvaluated -and $reviewedEvidenceContractHashValid -and $reviewedEvidenceContractSignatureValid -and $reviewedEvidenceContractCandidateBound -and $reviewedEvidenceArtifactIdentityValid -and $reviewedEvidenceArtifactProvenanceValid)) {
-            $androidGateMismatches.Add("passed Android gate must include a valid sealed reviewed-evidence contract, artifact identity/provenance, and strict candidate binding")
+        if (-not ($reviewedEvidenceContractEvaluated -and $reviewedEvidenceContractHashValid -and $reviewedEvidenceContractSignatureValid -and $reviewedEvidenceContractCandidateBound -and $reviewedEvidenceArtifactIdentityValid -and $reviewedEvidenceArtifactProvenanceValid -and $reviewedEvidenceArtifactManifestValid -and $reviewedEvidenceSigningKeyFingerprintBound)) {
+            $androidGateMismatches.Add("passed Android gate must include a valid sealed reviewed-evidence contract, artifact identity/provenance/manifest, signing-key binding, and strict candidate binding")
         }
     }
     else {
@@ -334,6 +336,8 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
             candidate_binding_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceContractCandidateBound } else { $false }
             artifact_identity_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceArtifactIdentityValid } else { $false }
             artifact_provenance_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceArtifactProvenanceValid } else { $false }
+            artifact_manifest_valid = if ($androidGateSourceContractValid) { $reviewedEvidenceArtifactManifestValid } else { $false }
+            signing_key_fingerprint_bound = if ($androidGateSourceContractValid) { $reviewedEvidenceSigningKeyFingerprintBound } else { $false }
         }
         real_device_evidence_label = Redact-DisplayLabel ([string]$latestAndroidReleaseGate.data.real_device_gate.evidence_label)
         claim_controls = [ordered]@{

@@ -1,9 +1,32 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from app.core import db
 from app.core.schemas import Task, ToolResult
+
+
+def test_db_memory_can_be_imported_before_db_in_clean_process() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.core import db_memory; from app.core import db; assert callable(db.get_memory)",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_connect_uses_explicit_transaction_control(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

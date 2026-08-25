@@ -187,6 +187,152 @@ def test_permission_policy_denies_matching_weekend_delete():
     assert decision.rule_id == "weekend_delete"
 
 
+def test_permission_policy_canonicalizes_parent_traversal_before_glob_matching():
+    policy = PermissionPolicy(
+        rules=[
+            PermissionRule(
+                id="allow_safe_workspace",
+                name="Safe workspace",
+                effect="allow",
+                tools=["file.read_text"],
+                path_patterns=[r"D:\workspace\safe\*"],
+            )
+        ]
+    )
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.read_text",
+        args={"path": r"d:/WORKSPACE/safe/../secret.txt"},
+    )
+
+    assert decision.allowed is False
+    assert decision.matched is False
+
+
+def test_permission_policy_allow_rule_requires_all_paths_to_be_in_scope():
+    policy = PermissionPolicy(
+        rules=[
+            PermissionRule(
+                id="allow_safe_copy",
+                name="Safe copy",
+                effect="allow",
+                tools=["file.inspect"],
+                path_patterns=[r"D:/workspace/safe/*"],
+            )
+        ]
+    )
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.inspect",
+        args={
+            "SOURCE": r"D:\workspace\safe\notes.txt",
+            "destinations": [r"D:/workspace/safe/result.txt", r"D:/workspace/private.txt"],
+        },
+    )
+
+    assert decision.allowed is False
+    assert decision.matched is False
+
+
+def test_permission_policy_does_not_treat_unrelated_nested_string_lists_as_paths():
+    policy = PermissionPolicy(
+        rules=[
+            PermissionRule(
+                id="allow_developer_workspace",
+                effect="allow",
+                tools=["developer.lengrvis_code"],
+                path_patterns=[r"D:/workspace/safe/*"],
+            )
+        ]
+    )
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="developer.lengrvis_code",
+        args={
+            "workspace_path": r"D:\workspace\safe\repo",
+            "allowed_tools": ["Read", "Bash(pytest:*)", "Bash(python -m pytest:*)"],
+            "metadata": {"labels": ["read-only", "provider:local"]},
+        },
+    )
+
+    assert decision.allowed is True
+    assert decision.rule_id == "allow_developer_workspace"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"\\server\share\SAFE\report.txt",
+        r"//SERVER/share/safe\report.txt",
+    ],
+)
+def test_permission_policy_matches_unc_paths_case_insensitively_with_mixed_separators(path: str):
+    policy = PermissionPolicy(
+        rules=[
+            PermissionRule(
+                id="allow_unc_share",
+                effect="allow",
+                tools=["file.read_text"],
+                path_patterns=[r"\\SERVER\SHARE\safe\*"],
+            )
+        ]
+    )
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.read_text",
+        args={"path": path},
+    )
+
+    assert decision.allowed is True
+    assert decision.rule_id == "allow_unc_share"
+
+
+def test_permission_policy_preserves_posix_path_matching():
+    policy = PermissionPolicy(
+        rules=[
+            PermissionRule(
+                id="allow_tmp",
+                effect="allow",
+                tools=["file.read_text"],
+                path_patterns=["/tmp/workspace/*"],
+            )
+        ]
+    )
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.read_text",
+        args={"path": "/tmp/workspace/notes.txt"},
+    )
+
+    assert decision.allowed is True
+    assert decision.rule_id == "allow_tmp"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"D:workspace\relative.txt",
+        r"\\?\D:\workspace\safe\file.txt",
+        r"\\server",
+        r"D:\workspace\safe\file.txt:secret",
+    ],
+)
+def test_permission_policy_rejects_ambiguous_windows_paths(path: str):
+    decision = evaluate_permission_policy(
+        PermissionPolicy(rules=[]),
+        tool_name="file.read_text",
+        args={"path": path},
+    )
+
+    assert decision.allowed is False
+    assert decision.rule_id == "builtin_ambiguous_path"
+
+
 def test_permission_store_persists_policy_to_sqlite():
     store = PermissionStore()
     store.save_policy(PermissionPolicy(rules=[weekend_delete_rule()]))
@@ -198,7 +344,7 @@ def test_permission_store_persists_policy_to_sqlite():
     assert loaded.rules[0].time_windows[0].days == [5, 6]
 
 
-def test_permission_store_corrupt_policy_parse_fallback_is_narrow(monkeypatch: pytest.MonkeyPatch):
+def test_permission_store_corrupt_signed_policy_fails_closed(monkeypatch: pytest.MonkeyPatch):
     store = PermissionStore()
     store.save_policy(PermissionPolicy(rules=[weekend_delete_rule()]))
     corrupt_payload = "{not-json"
@@ -210,9 +356,10 @@ def test_permission_store_corrupt_policy_parse_fallback_is_narrow(monkeypatch: p
         )
         db.store_sensitive_record_integrity("permission_policies", store.policy_id, corrupt_payload, conn=conn)
 
-    assert store.get_policy().rules == []
-    updated = store.add_rule(weekend_delete_rule())
-    assert [rule.id for rule in updated.rules] == ["weekend_delete"]
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="payload is invalid"):
+        store.get_policy()
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="payload is invalid"):
+        store.add_rule(weekend_delete_rule())
 
     def fail_model_validate(cls, value):  # noqa: ANN001
         raise RuntimeError("policy parser bug")
@@ -449,7 +596,7 @@ def test_policy_engine_fails_closed_when_permission_store_errors(monkeypatch: py
     engine = PolicyEngine()
 
     def broken_evaluate(**kwargs):  # noqa: ANN003, ANN202, ARG001
-        raise RuntimeError("policy store unavailable")
+        raise RuntimeError("token=secret-value at C:\\Users\\Private\\permission-policy.db")
 
     monkeypatch.setattr(engine.permission_store, "evaluate", broken_evaluate)
 
@@ -463,6 +610,8 @@ def test_policy_engine_fails_closed_when_permission_store_errors(monkeypatch: py
 
     assert review.verdict == SafetyVerdict.DENY
     assert "fail-closed" in review.reasons[0].lower()
+    assert "secret-value" not in review.reasons[0]
+    assert "Users\\Private" not in review.reasons[0]
 
 
 def test_evaluate_user_permission_for_tool_matches_policy_engine():

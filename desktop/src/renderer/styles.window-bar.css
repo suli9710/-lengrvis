@@ -47,12 +47,17 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.window-bar__title span,
+.window-bar__title h1,
 .window-bar__title small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.window-bar__title h1 {
+  margin: 0;
+  font: inherit;
 }
 
 .window-bar__title small {

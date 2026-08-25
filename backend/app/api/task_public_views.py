@@ -16,9 +16,11 @@ EVIDENCE_PRIVACY_NOTE = (
 REVIEW_EVENT_KINDS = {"post_tool_review", "safety_review"}
 CAPABILITY_BOUNDARY_KINDS = {"context_boundary", "context_projection", "model_boundary_denied", "tool_contract"}
 SAFE_BOUNDARY_PAYLOAD_KEYS = {
+    "automatic_replay_blocked",
     "event_type",
     "kind",
     "risk_level",
+    "requires_user_review",
     "source",
     "status",
     "strategy",
@@ -110,6 +112,7 @@ PUBLIC_STATUS_ALIASES = {
     "failure": "failed",
     "in_progress": "running",
     "ok": "completed",
+    "outcome_unknown": "outcome_unknown",
     "pending": "pending",
     "queued": "pending",
     "retry": "retrying",
@@ -334,8 +337,14 @@ def task_status_summary(task: Task | None, completion_evidence: dict[str, Any]) 
         if completion_result_verified(task, completion_evidence):
             return "Completed with verified result evidence; manual sign-off is still separate."
         return "Completed, but result evidence is not verified yet."
+    if status == "rolled_back":
+        return "Rolled back with verified restoration evidence."
+    if status == "repair_required":
+        return "Rollback is incomplete; review the remaining repair actions."
     if status == "failed":
         return "Failed; review the evidence trail before retrying."
+    if status == "denied":
+        return "Denied by a safety or permission boundary before completion."
     if status == "cancelled":
         return "Cancelled before completion."
     if status == "execution":
@@ -357,8 +366,14 @@ def task_next_step(task: Task | None, counts: dict[str, int], completion_evidenc
             return "Open the task explanation to inspect the verified result evidence before manual sign-off."
         missing = completion_missing_text(completion_evidence)
         return f"Open the task explanation and collect missing evidence before treating the result as done{missing}."
+    if status == "rolled_back":
+        return "Inspect the rollback evidence before closing the task."
+    if status == "repair_required":
+        return "Review the rollback details and complete the remaining repair actions."
     if status == "failed":
         return "Review the failed evidence trail, fix the cause, then retry only if the goal is still safe."
+    if status == "denied":
+        return "Review the blocking boundary and revise the goal or permissions before starting a new task."
     if status == "cancelled":
         return "Start a new task or revise the goal; this run did not reach a verified result."
     if status in {"created", "planning", "plan_review", "consultation", "final_review"}:
@@ -660,6 +675,7 @@ def public_error_category(error: Any) -> str:
 
 
 def public_tool_call(call: dict) -> dict:
+    outcome_unknown = str(call.get("status") or "") == "outcome_unknown"
     return {
         "id": call.get("id"),
         "task_id": call.get("task_id"),
@@ -667,6 +683,9 @@ def public_tool_call(call: dict) -> dict:
         "tool_name": public_tool_label(str(call.get("tool_name") or "")),
         "risk_level": call.get("risk_level"),
         "status": public_status_label(str(call.get("status") or "")),
+        "outcome_unknown": outcome_unknown,
+        "automatic_replay_blocked": outcome_unknown,
+        "requires_user_review": outcome_unknown,
         "dry_run": call.get("dry_run"),
         "created_at": call.get("created_at"),
         "args": redacted_public_field(call.get("args") or {}),

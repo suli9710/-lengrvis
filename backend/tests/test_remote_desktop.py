@@ -12,11 +12,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
 
+from app.agents.orchestrator_agent import OrchestratorAgent
 from app.api import routes_remote
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus
 from app.llm.registry import get_effective_settings
-from app.policy.approval_binding import args_binding_hmac
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.policy.risk import RiskLevel
@@ -40,8 +41,10 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
     db.init_db()
     routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
+    routes_remote._reset_remote_screen_runtime_for_tests()
     yield
     routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
+    routes_remote._reset_remote_screen_runtime_for_tests()
 
 
 def _test_app() -> FastAPI:
@@ -110,6 +113,64 @@ def _assert_no_sensitive_details(payload: dict, fragments: list[str]) -> None:
         assert fragment not in serialized
 
 
+def test_remote_input_websocket_honors_audit_fail_closed_before_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_remote_desktop()
+    token, _grant_id = _remote_input_grant_token("mobile_audit_blocked")
+    monkeypatch.setattr(db, "audit_fail_closed_enabled", lambda: True)
+
+    def reject_write() -> None:
+        raise db.SensitiveRecordIntegrityError("audit chain mismatch")
+
+    monkeypatch.setattr(db, "require_audit_fail_closed_ok", reject_write)
+    client = TestClient(_test_app())
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/input",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("remote input websocket should honor audit fail-closed")
+
+    assert exc_info.value.code == 1013
+
+
+def test_connected_remote_input_rechecks_audit_fail_closed_before_each_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_remote_desktop()
+    token, _grant_id = _remote_input_grant_token("mobile_audit_recheck")
+    blocked = False
+    input_calls: list[dict] = []
+    monkeypatch.setattr(db, "audit_fail_closed_enabled", lambda: True)
+    monkeypatch.setattr(
+        routes_remote,
+        "handle_remote_input_event",
+        lambda event, *, claims=None: input_calls.append(dict(event)) or {"ok": True},
+    )
+
+    def require_write_integrity() -> None:
+        if blocked:
+            raise db.SensitiveRecordIntegrityError("audit chain mismatch")
+
+    monkeypatch.setattr(db, "require_audit_fail_closed_ok", require_write_integrity)
+    client = TestClient(_test_app())
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        blocked = True
+        websocket.send_json({"type": "click", "x": 100, "y": 200, "frame_sequence": 1})
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
+
+    assert exc_info.value.code == 1013
+    assert input_calls == []
+
+
 def _expire_remote_input_grant(device_id: str, grant_id: str) -> None:
     device = db.fetch_one("mobile_devices", device_id)
     assert device is not None
@@ -157,6 +218,9 @@ def _live_remote_click_approval(x: int = 1, y: int = 2) -> Approval:
     task_id = f"task_{device_id}"
     step_id = "step_1"
     tool_name = "remote.click"
+    settings = get_effective_settings()
+    tool = register_all_tools(settings=settings, load_skills=False).get(tool_name)
+    preview = {"ok": True, "dry_run": True, "diff_preview": [{"action": "click", "x": x, "y": y}]}
     approval = Approval(
         task_id=task_id,
         step_id=step_id,
@@ -165,6 +229,23 @@ def _live_remote_click_approval(x: int = 1, y: int = 2) -> Approval:
         status=ApprovalStatus.APPROVED,
         source="remote_input",
         tool_name=tool_name,
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        diff_preview=preview,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(
+            settings,
+            allowed_directories=settings.allowed_directories,
+        ),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version=str(tool.tool_version or "1"),
+        engineering_boundary={
+            "risk_provenance": {
+                "version": "effective-risk/v1",
+                "declared_risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+                "effective_risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+                "review_id": "review_00000000000000000000000000000000",
+            }
+        },
         source_device_id=device_id,
         source_grant_id=grant["grant_id"],
         required_mobile_scopes=[mobile_jwt.REMOTE_INPUT_SCOPE],
@@ -303,6 +384,115 @@ def test_remote_tools_direct_path_rejects_double_execution(monkeypatch: pytest.M
     assert second["ok"] is False
     assert "approval_id" in second["error"]
     assert calls == [(1, 2)]
+
+
+def test_remote_tools_direct_path_expires_legacy_approval_without_risk_binding(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    approval.engineering_boundary.pop("risk_provenance", None)
+    db.upsert_model("approvals", approval, status=approval.status)
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+    assert "effective risk binding" in stored["expired_reason"].lower()
+
+
+def test_remote_tools_direct_path_expires_when_policy_denies_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    PermissionStore().save_policy(
+        PermissionPolicy(rules=[PermissionRule(name="deny remote click", effect="deny", tools=["remote.click"])])
+    )
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+
+
+def test_remote_tools_direct_path_expires_when_dynamic_risk_increases(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {
+        "settings": get_effective_settings(),
+        "allowed_directories": [],
+        "recent_failure_count": 3,
+    }
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["status"] == ApprovalStatus.EXPIRED.value
+    assert stored["consumed_at"] is None
+    assert "current safety review denies" in stored["expired_reason"].lower()
+
+
+def test_remote_tools_direct_path_revalidates_risk_after_claim(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    original_claim = db.claim_approval_for_execution
+
+    def claim_then_raise_risk(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        enabled["recent_failure_count"] = 3
+        return claimed
+
+    monkeypatch.setattr(
+        "app.tools.remote_tools.db.claim_approval_for_execution",
+        claim_then_raise_risk,
+    )
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    stored = db.fetch_one("approvals", approval.id)
+    assert result["ok"] is False
+    assert calls == []
+    assert stored["consumed_at"] is not None
 
 
 def test_remote_disabled_by_default():
@@ -627,8 +817,112 @@ def test_remote_screen_ack_wait_only_suppresses_malformed_control_messages():
         )
 
 
+def test_remote_screen_capture_backoff_is_exponential_and_capped():
+    delays = [routes_remote._remote_screen_capture_backoff_seconds(5.0, failure) for failure in range(1, 7)]
+
+    assert delays == pytest.approx([0.2, 0.4, 0.8, 1.6, 2.0, 2.0])
+
+
+def test_remote_screen_lease_rejects_duplicate_device_connection():
+    claims = {"device_id": "mobile_same"}
+
+    assert routes_remote._acquire_remote_screen_lease(claims) is True
+    assert routes_remote._acquire_remote_screen_lease(claims) is False
+
+    routes_remote._release_remote_screen_lease(claims)
+    assert routes_remote._acquire_remote_screen_lease(claims) is True
+
+
+def test_remote_screen_lease_enforces_global_capacity():
+    claims = [{"device_id": f"mobile_{index}"} for index in range(4)]
+
+    assert all(routes_remote._acquire_remote_screen_lease(item) for item in claims[:3])
+    assert routes_remote._acquire_remote_screen_lease(claims[3]) is False
+
+    routes_remote._release_remote_screen_lease(claims[1])
+    assert routes_remote._acquire_remote_screen_lease(claims[3]) is True
+
+
+def test_remote_screen_geometry_cache_sweeps_and_forgets_frames(monkeypatch: pytest.MonkeyPatch):
+    clock = {"now": 100.0}
+    monkeypatch.setattr(routes_remote.time, "monotonic", lambda: clock["now"])
+    stale_claims = {"device_id": "mobile_stale"}
+    live_claims = {"device_id": "mobile_live", "grant_id": "grant_live"}
+
+    routes_remote._remember_remote_screen_frame(
+        stale_claims,
+        sequence=1,
+        origin_x=0,
+        origin_y=0,
+        width=100,
+        height=100,
+    )
+    clock["now"] += routes_remote._REMOTE_INPUT_FRAME_TTL_SECONDS + 1
+    routes_remote._remember_remote_screen_frame(
+        live_claims,
+        sequence=2,
+        origin_x=10,
+        origin_y=20,
+        width=200,
+        height=150,
+    )
+
+    assert routes_remote._latest_remote_screen_frame(stale_claims) is None
+    assert routes_remote._latest_remote_screen_frame(live_claims) is not None
+
+    routes_remote._forget_remote_screen_frames(live_claims)
+    assert routes_remote._latest_remote_screen_frame(live_claims) is None
+
+
+def test_remote_screen_recovers_after_one_capture_failure(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    attempts = 0
+    frame = remote_desktop_service.ScreenFrame(
+        image_base64="c2NyZWVu",
+        timestamp="2026-07-12T00:00:00Z",
+        width=100,
+        height=80,
+        original_width=100,
+        original_height=80,
+        quality=50,
+    )
+
+    def flaky_capture(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary capture failure")
+        return frame
+
+    monkeypatch.setattr(routes_remote, "capture_screen_frame", flaky_capture)
+    monkeypatch.setattr(routes_remote, "_remote_screen_capture_backoff_seconds", lambda _fps, _failures: 0)
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with client.websocket_connect(
+        "/ws/remote/screen",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        recovered_frame = websocket.receive_json()
+
+    assert recovered_frame["type"] == "frame"
+    assert recovered_frame["sequence"] == 2
+    assert attempts == 2
+    events = db.fetch_many("audit_events", limit=20)
+    failures = [event for event in events if event["event_type"] == "remote.screen.capture_failed"]
+    recoveries = [event for event in events if event["event_type"] == "remote.screen.capture_recovered"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["consecutive_failures"] == 1
+    assert failures[0]["payload"]["terminal"] is False
+    assert len(recoveries) == 1
+    assert recoveries[0]["payload"]["consecutive_failures"] == 1
+    assert recoveries[0]["payload"]["suppressed_failures"] == 0
+
+
 def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
+    capture_calls = 0
     raw_error = (
         r"capture failed at C:\\Users\\Suli\\Desktop\\secrets\\screen.txt "
         "token=secretREMOTE123456 selector=#password-field "
@@ -638,9 +932,12 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     )
 
     def fail_capture(**kwargs):
+        nonlocal capture_calls
+        capture_calls += 1
         raise RuntimeError(raw_error)
 
     monkeypatch.setattr(routes_remote, "capture_screen_frame", fail_capture)
+    monkeypatch.setattr(routes_remote, "_remote_screen_capture_backoff_seconds", lambda _fps, _failures: 0)
     client = TestClient(_test_app())
     token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
 
@@ -650,12 +947,16 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
         error = websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
 
     assert error == {
         "type": "error",
         "code": "remote_screen.capture_failed",
         "message": "Remote screen is temporarily unavailable.",
     }
+    assert exc_info.value.code == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_CLOSE_CODE
+    assert capture_calls == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT
     _assert_no_sensitive_details(
         error,
         [
@@ -671,25 +972,31 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
             "Test Phone",
         ],
     )
-    failure = next(
+    failures = [
         event
         for event in db.fetch_many("audit_events", limit=20)
         if event["event_type"] == "remote.screen.capture_failed"
-    )
-    _assert_no_sensitive_details(
-        failure["payload"],
-        [
-            r"C:\\Users\\Suli",
-            "secretREMOTE123456",
-            "#password-field",
-            "screen-host.internal.local",
-            "Traceback",
-            "line 117",
-            "mobile_test",
-            "Test Phone",
-        ],
-    )
-    assert "[REDACTED" in json.dumps(failure["payload"], ensure_ascii=False)
+    ]
+    assert len(failures) == 2
+    failure_counts = sorted(event["payload"]["consecutive_failures"] for event in failures)
+    assert failure_counts == [1, routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT]
+    terminal_failure = next(event for event in failures if event["payload"]["terminal"])
+    assert terminal_failure["payload"]["suppressed_failures"] == routes_remote._REMOTE_SCREEN_CAPTURE_FAILURE_LIMIT - 2
+    for failure in failures:
+        _assert_no_sensitive_details(
+            failure["payload"],
+            [
+                r"C:\\Users\\Suli",
+                "secretREMOTE123456",
+                "#password-field",
+                "screen-host.internal.local",
+                "Traceback",
+                "line 117",
+                "mobile_test",
+                "Test Phone",
+            ],
+        )
+        assert "[REDACTED" in json.dumps(failure["payload"], ensure_ascii=False)
 
 
 def test_revoked_remote_view_token_cannot_open_remote_screen(monkeypatch: pytest.MonkeyPatch):
@@ -822,6 +1129,36 @@ def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
     events = db.fetch_many("audit_events", limit=20)
     assert any(event["event_type"] == "remote.input.received" for event in events)
     assert any(event["event_type"] == "remote.input.approval_requested" for event in events)
+    approval = Approval.model_validate(db.fetch_one("approvals", result["approval_id"]))
+    provenance = approval.engineering_boundary["risk_provenance"]
+    assert provenance["version"] == "effective-risk/v1"
+    assert approval.risk_level == provenance["effective_risk_level"]
+    assert approval.engineering_boundary["intent"]["task_id"] == approval.task_id
+
+
+def test_remote_input_route_approval_executes_through_standard_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_remote_desktop()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+    device_id = "mobile_standard_risk_binding"
+    mobile_pairing_service._upsert_mobile_device(device_id=device_id, device_name="Bound Phone")
+    grant = mobile_pairing_service.create_remote_input_grant(device_id)
+    _seed_remote_frame(device_id=device_id, grant_id=grant["grant_id"])
+    result = routes_remote.handle_remote_input_event(
+        {"type": "click", "x": 100, "y": 200},
+        claims={"device_id": device_id, "grant_id": grant["grant_id"]},
+    )
+    approval = Approval.model_validate(db.fetch_one("approvals", result["approval_id"]))
+    approval.status = ApprovalStatus.APPROVED
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    asyncio.run(OrchestratorAgent().execute_approved_step(approval))
+
+    stored = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert stored.consumed_at
+    assert calls == [(100, 200)]
 
 
 def test_remote_key_input_rejects_unsafe_key_before_approval(monkeypatch: pytest.MonkeyPatch):
@@ -1113,6 +1450,7 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
             source_device_id=device_id,
             source_grant_id=grant_id,
             created_at="2026-01-01T00:00:00+00:00",
+            expires_at="2999-01-01T00:00:00+00:00",
         ),
     )
     for index in range(1001):
@@ -1127,6 +1465,7 @@ def test_remote_input_pending_approval_count_filters_in_database_beyond_old_scan
                 source_device_id=f"other_device_{index}",
                 source_grant_id=f"other_grant_{index}",
                 created_at="2026-01-02T00:00:00+00:00",
+                expires_at="2999-01-01T00:00:00+00:00",
             ),
         )
 

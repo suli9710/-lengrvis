@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import AppSettings
@@ -59,6 +59,10 @@ from app.policy.policy_rules import (
     FAST_PATH_FORBIDDEN_EFFECTS,
     FAST_PATH_TRUST_TIERS,
     FORBIDDEN_TERMS,
+    GOAL_MISSING_TRUSTED_BIOMETRIC_STEP_UP_SIGNALS,
+    GOAL_REVOKED_MOBILE_DEVICE_ACCESS_SIGNALS,
+    GOAL_UNSANDBOXED_GENERATED_CODE_SIGNALS,
+    GOAL_UNTRUSTED_AUTHORIZATION_MEMORY_SIGNALS,
     MCP_PREFIXES,
     SENSITIVE_FIELD_NAMES,
     UI_AUTOMATION_WRITE_TOOLS,
@@ -101,16 +105,64 @@ class PolicyEngine:
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings
-        self.dynamic_risk = DynamicRiskAssessor()
+        self.now_provider = now_provider or (lambda: datetime.now(UTC))
+        self.dynamic_risk = DynamicRiskAssessor(now_provider=self.now_provider)
         self.permission_policy = permission_policy
         self.permission_store = permission_store or PermissionStore()
-        self.now_provider = now_provider
 
     def review_goal_text(self, task_id: str, goal: str) -> SafetyReview:
         # User goals get no boundary-context exemption: a goal that asks for
         # forbidden material is denied even when it also mentions words like
         # "approval" or "read-only" (prompt-injection hardening).
         inspected_text = goal.lower()
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_UNTRUSTED_AUTHORIZATION_MEMORY_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["Untrusted content cannot grant persistent authorization or modify authorization memory."],
+                safe_alternative="Denied: I can ignore the untrusted authorization claim without storing it in memory.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_MISSING_TRUSTED_BIOMETRIC_STEP_UP_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["High-impact approval requires a trusted biometric step-up."],
+                safe_alternative="Denied: complete a trusted biometric step-up before approving a high-impact action.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_UNSANDBOXED_GENERATED_CODE_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["Generated code execution is forbidden without an OS sandbox or broker."],
+                safe_alternative="Denied: I can inspect the code without executing it.",
+            )
+        if self._matches_goal_security_boundary(
+            inspected_text,
+            GOAL_REVOKED_MOBILE_DEVICE_ACCESS_SIGNALS,
+        ):
+            return SafetyReview(
+                task_id=task_id,
+                target_type="goal",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["A revoked mobile device cannot continue accessing tasks or approvals."],
+                safe_alternative="Denied: pair and authorize a trusted device before accessing the task.",
+            )
         hits = self._forbidden_hits(inspected_text)
         if hits:
             return SafetyReview(
@@ -162,8 +214,18 @@ class PolicyEngine:
         tool_definition: Any | None = None,
     ) -> SafetyReview:
         classified_risk = self.classify_tool_call(tool_name, args, tool_definition=tool_definition)
-        static_risk = classified_risk if tool_name == "browser.act" else max_risk([risk_level, classified_risk])
-        permission_decision = self._review_permission_policy(tool_name, args, context)
+        declared_risk = classified_risk if tool_name == "browser.act" else max_risk([risk_level, classified_risk])
+        authoritative_context = dict(context or {})
+        authoritative_now = self.now_provider()
+        authoritative_context.update(
+            {"now": authoritative_now, "current_time": authoritative_now, "timestamp": authoritative_now}
+        )
+        permission_decision = self._review_permission_policy(
+            tool_name,
+            args,
+            authoritative_context,
+            now=authoritative_now,
+        )
         if not permission_decision.allowed and not is_builtin_baseline_deny(permission_decision):
             reason = permission_decision.reason or f"Permission policy denied {tool_name}."
             rule_id = getattr(permission_decision, "matched_rule_id", "") or getattr(permission_decision, "rule_id", "")
@@ -174,36 +236,67 @@ class PolicyEngine:
                 step_id=step_id,
                 target_type="tool_call",
                 verdict=SafetyVerdict.DENY,
-                risk_level=static_risk,
+                risk_level=declared_risk,
+                declared_risk_level=declared_risk,
                 reasons=[reason],
                 safe_alternative="This action is blocked by your permission policy.",
             )
 
-        cleanup_review = self._review_cleanup_tool_call(task_id, step_id, tool_name, args, static_risk)
+        dynamic = self.dynamic_risk.assess(
+            tool_name=tool_name,
+            args=args,
+            base_risk=declared_risk,
+            context=authoritative_context,
+            task_id=task_id,
+            now=authoritative_now,
+        )
+        effective_risk = dynamic.risk_level
+        authoritative_context["_effective_risk_cache_bucket"] = self._effective_risk_cache_bucket(
+            authoritative_now,
+            effective_risk,
+        )
+        dynamic_reasons = [
+            f"Dynamic risk adjusted {declared_risk.value} -> {effective_risk.value}: {reason}"
+            for reason in dynamic.adjustments
+            if dynamic.changed
+        ]
+        if effective_risk == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=effective_risk,
+                declared_risk_level=declared_risk,
+                reasons=[*dynamic_reasons, "This tool call is in the forbidden risk tier."],
+                safe_alternative="Use a read-only inspection tool instead.",
+            )
+
+        cleanup_review = self._review_cleanup_tool_call(task_id, step_id, tool_name, args, effective_risk)
         if cleanup_review is not None:
-            return cleanup_review
+            return self._bind_effective_review(cleanup_review, declared_risk, effective_risk, dynamic_reasons)
 
         browser_write_review = self.review_browser_write_call(task_id, step_id, tool_name, args)
         if browser_write_review is not None:
-            return browser_write_review
+            return self._bind_effective_review(browser_write_review, declared_risk, effective_risk, dynamic_reasons)
 
-        ui_review = self._review_ui_automation_call(task_id, step_id, tool_name, args, static_risk)
+        ui_review = self._review_ui_automation_call(task_id, step_id, tool_name, args, effective_risk)
         if ui_review is not None:
-            return ui_review
+            return self._bind_effective_review(ui_review, declared_risk, effective_risk, dynamic_reasons)
 
         mode_review = self._review_permission_mode(
             task_id=task_id,
             step_id=step_id,
             tool_name=tool_name,
             args=args,
-            static_risk=static_risk,
-            context=context,
+            static_risk=effective_risk,
+            context=authoritative_context,
             tool_definition=tool_definition,
         )
         if mode_review is not None:
-            return mode_review
+            return self._bind_effective_review(mode_review, declared_risk, effective_risk, dynamic_reasons)
 
-        cache_context = self._cache_context(args, context, tool_definition)
+        cache_context = self._cache_context(args, authoritative_context, tool_definition)
         cached = tool_decision_cache.get(tool_name, args, context=cache_context)
         if cached is not None:
             return SafetyReview(
@@ -212,6 +305,7 @@ class PolicyEngine:
                 target_type="tool_call",
                 verdict=cached.verdict,
                 risk_level=cached.risk_level,
+                declared_risk_level=declared_risk,
                 reasons=[*cached.reasons, "Tool-call decision reused from in-memory cache."],
             )
 
@@ -220,45 +314,18 @@ class PolicyEngine:
             step_id=step_id,
             tool_name=tool_name,
             args=args,
-            static_risk=static_risk,
-            context=context,
+            static_risk=effective_risk,
+            context=authoritative_context,
             tool_definition=tool_definition,
         )
         if fast_review is not None:
+            fast_review = self._bind_effective_review(fast_review, declared_risk, effective_risk, dynamic_reasons)
             tool_decision_cache.put_review(tool_name, args, fast_review, context=cache_context)
             return fast_review
 
-        trust_review = self._review_tool_metadata_trust(task_id, step_id, tool_name, static_risk, tool_definition)
+        trust_review = self._review_tool_metadata_trust(task_id, step_id, tool_name, effective_risk, tool_definition)
         if trust_review is not None:
-            return trust_review
-
-        dynamic = self.dynamic_risk.assess(
-            tool_name=tool_name,
-            args=args,
-            base_risk=static_risk,
-            context=context,
-            task_id=task_id,
-        )
-        effective_risk = getattr(dynamic, "risk_level", None) or dynamic.adjusted_risk
-        adjustments = getattr(dynamic, "adjustments", None) or getattr(dynamic, "reasons", [])
-        dynamic_reasons = [
-            f"Dynamic risk adjusted {static_risk} -> {effective_risk}: {reason}"
-            for reason in adjustments
-            if dynamic.changed
-        ]
-
-        if effective_risk == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
-            review = SafetyReview(
-                task_id=task_id,
-                step_id=step_id,
-                target_type="tool_call",
-                verdict=SafetyVerdict.DENY,
-                risk_level=effective_risk,
-                reasons=[*dynamic_reasons, "This tool call is in the forbidden risk tier."],
-                safe_alternative="Use a read-only inspection tool instead.",
-            )
-            tool_decision_cache.put_review(tool_name, args, review, context=cache_context)
-            return review
+            return self._bind_effective_review(trust_review, declared_risk, effective_risk, dynamic_reasons)
         if effective_risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}:
             # P1-2 fix: dry_run should be explicitly checked, not defaulted to True.
             # The old code used args.get("dry_run", True) which meant any call
@@ -272,6 +339,7 @@ class PolicyEngine:
                     target_type="tool_call",
                     verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
                     risk_level=effective_risk,
+                    declared_risk_level=declared_risk,
                     reasons=[
                         *dynamic_reasons,
                         (
@@ -290,6 +358,7 @@ class PolicyEngine:
                     target_type="tool_call",
                     verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
                     risk_level=effective_risk,
+                    declared_risk_level=declared_risk,
                     reasons=[
                         *dynamic_reasons,
                         "Modifying tools require explicit user approval before non-dry-run execution.",
@@ -304,6 +373,7 @@ class PolicyEngine:
                 target_type="tool_call",
                 verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
                 risk_level=effective_risk,
+                declared_risk_level=declared_risk,
                 reasons=[*dynamic_reasons, "Dry-run preview generated; user approval is required for execution."],
                 user_confirmation_message=f"Approve {tool_name} after reviewing the preview?",
             )
@@ -315,10 +385,28 @@ class PolicyEngine:
             target_type="tool_call",
             verdict=SafetyVerdict.ALLOW,
             risk_level=effective_risk,
+            declared_risk_level=declared_risk,
             reasons=[*dynamic_reasons, "Read-only or open-only tool call allowed."],
         )
         tool_decision_cache.put_review(tool_name, args, review, context=cache_context)
         return review
+
+    @staticmethod
+    def _bind_effective_review(
+        review: SafetyReview,
+        declared_risk: RiskLevel,
+        effective_risk: RiskLevel,
+        dynamic_reasons: list[str],
+    ) -> SafetyReview:
+        risk = review.risk_level if review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF else effective_risk
+        return review.model_copy(
+            update={
+                "declared_risk_level": declared_risk,
+                "risk_level": risk,
+                "reasons": [*dynamic_reasons, *review.reasons],
+            },
+            deep=True,
+        )
 
     def _review_tool_metadata_trust(
         self,
@@ -398,8 +486,12 @@ class PolicyEngine:
         risk_level: RiskLevel,
         tool_definition: Any | None = None,
     ) -> SafetyReview:
+        # Tool metadata may shape user-facing observations, but it must never
+        # narrow the root post-tool safety boundary to a tool-authored summary.
+        _ = tool_definition
+        safe_payload = result.output
         inspected_text = self._inspectable_text(
-            safe_payload := self._safe_tool_result_payload(result, tool_definition),
+            safe_payload,
             result.error,
             result.changed_paths,
             result.rollback_info,
@@ -446,35 +538,6 @@ class PolicyEngine:
             risk_level=risk_level,
             reasons=[reason],
         )
-
-    def _safe_tool_result_payload(self, result: ToolResult, tool_definition: Any | None = None) -> Any:
-        if result.ok and result.error:
-            return result.output
-        if result.changed_paths or result.rollback_info:
-            return result.output
-        if result.ok and not self._low_risk_trusted_tool(tool_definition):
-            return result.output
-        summarizer = getattr(tool_definition, "result_summary", None)
-        if summarizer is None:
-            return result.output
-        try:
-            summary = summarizer(result.output if isinstance(result.output, dict) else {})
-        except Exception:  # noqa: BLE001 - broad-exception-boundary: fall back to fail-closed full-output review if a summarizer breaks.
-            return result.output
-        return {
-            "ok": result.ok,
-            "summary": summary,
-        }
-
-    @staticmethod
-    def _low_risk_trusted_tool(tool_definition: Any | None) -> bool:
-        if tool_definition is None:
-            return False
-        risk = getattr(tool_definition, "risk_level", None)
-        if risk not in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
-            return False
-        trust_tier = str(getattr(tool_definition, "trust_tier", "") or "").casefold()
-        return trust_tier in FAST_PATH_TRUST_TIERS
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:
         inspected_text = self._inspectable_text(plan.model_dump(), task_status, final_summary)
@@ -736,15 +799,6 @@ class PolicyEngine:
             return None
         if _contains_system_path(args):
             return None
-        dynamic = self.dynamic_risk.assess(
-            tool_name=tool_name,
-            args=args,
-            base_risk=static_risk,
-            context=context,
-            task_id=task_id,
-        )
-        if dynamic.risk_level != static_risk:
-            return None
         cache_key = self._fast_path_cache_key(tool_name, args, static_risk, context, tool_definition)
         # P1-1 fix: use internal cache scope marker instead of caller-supplied string.
         fast_cache_context = {"_internal_cache_scope": _INTERNAL_CACHE_SCOPE_MARKER}
@@ -810,7 +864,11 @@ class PolicyEngine:
                 reasons=[f"Permission mode 'dont_ask' denies {tool_name} because it would require approval."],
                 safe_alternative="Add an explicit permission rule or switch to a mode that allows approval prompts.",
             )
-        if mode in {"trusted_edits", "auto_review"} and trusted_reversible_edit_allowed(tool_definition, args):
+        if (
+            mode in {"trusted_edits", "auto_review"}
+            and static_risk == RiskLevel.R2_REVERSIBLE_MODIFY
+            and trusted_reversible_edit_allowed(tool_definition, args)
+        ):
             return SafetyReview(
                 task_id=task_id,
                 step_id=step_id,
@@ -858,9 +916,7 @@ class PolicyEngine:
                     "trust_level": context.get(
                         "user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))
                     ),
-                    "timestamp": str(
-                        context.get("timestamp") or context.get("now") or context.get("current_time") or ""
-                    ),
+                    "risk_bucket": context.get("_effective_risk_cache_bucket", ""),
                 },
             },
             task_id=str(context.get("task_id") or ""),
@@ -900,10 +956,14 @@ class PolicyEngine:
                 "trust_level": context.get(
                     "user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))
                 ),
-                "timestamp": str(context.get("timestamp") or context.get("now") or context.get("current_time") or ""),
+                "risk_bucket": context.get("_effective_risk_cache_bucket", ""),
             },
             "args": args_binding_hmac("cache", args),
         }
+
+    def _effective_risk_cache_bucket(self, now: datetime, effective_risk: RiskLevel) -> str:
+        time_bucket = "late_night" if self.dynamic_risk._is_late_night(now) else "day"
+        return f"{effective_risk.value}:{time_bucket}"
 
     def _sensitive_arg_hit(self, args: dict[str, Any], tool_definition: Any | None = None) -> bool:
         sensitive_keys = set(SENSITIVE_FIELD_NAMES)
@@ -916,6 +976,10 @@ class PolicyEngine:
         return " ".join(
             json.dumps(item, ensure_ascii=False, default=str) if not isinstance(item, str) else item for item in items
         ).lower()
+
+    @staticmethod
+    def _matches_goal_security_boundary(text: str, signals: tuple[str, ...]) -> bool:
+        return all(re.search(signal, text, flags=re.IGNORECASE | re.DOTALL) for signal in signals)
 
     def _forbidden_hits(self, text: str) -> list[str]:
         hits: list[str] = []
@@ -975,7 +1039,14 @@ class PolicyEngine:
                     break
         return hits
 
-    def _review_permission_policy(self, tool_name: str, args: dict[str, Any], context: dict[str, Any] | None = None):
+    def _review_permission_policy(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        context: dict[str, Any] | None = None,
+        *,
+        now: datetime | None = None,
+    ):
         from app.policy.permissions import evaluate_user_permission_for_tool
 
         try:
@@ -984,9 +1055,10 @@ class PolicyEngine:
                 args=args,
                 context=context,
                 policy_engine=self,
+                now=now,
             )
-        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-            return _PermissionCheckDenied(str(exc))
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: policy adapter failures deny without exposing internals.
+            return _PermissionCheckDenied()
 
     def _review_cleanup_tool_call(
         self,
@@ -1113,8 +1185,4 @@ class PolicyEngine:
 class _PermissionCheckDenied:
     allowed = False
     matched_rule_id = "permission_policy_unavailable"
-
-    def __init__(self, error: str = "") -> None:
-        self.reason = "Permission policy unavailable; fail-closed."
-        if error:
-            self.reason = f"{self.reason} {error}"
+    reason = "Permission policy unavailable; fail-closed."

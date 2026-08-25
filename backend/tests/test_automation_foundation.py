@@ -46,6 +46,11 @@ def test_schema_migration_creates_versioned_automation_tables() -> None:
         "mobile_refresh_tokens",
         "automation_trigger_events",
         "memory_quarantine",
+        "memory_namespace",
+        "memory_active_successors",
+        "sensitive_record_integrity",
+        "sensitive_integrity_bootstrap_anchor",
+        "sensitive_record_presence",
     }
     with db.connect() as conn:
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
@@ -57,6 +62,12 @@ def test_schema_migration_creates_versioned_automation_tables() -> None:
         (2, "mobile_identity_foundation"),
         (3, "automation_file_trigger_foundation"),
         (4, "memory_quarantine_foundation"),
+        (5, "memory_namespace_foundation"),
+        (6, "memory_active_successor_guard"),
+        (7, "sensitive_record_integrity_foundation"),
+        (8, "sensitive_integrity_bootstrap_anchor"),
+        (9, "task_denied_phase_backfill"),
+        (10, "task_denied_phase_reconcile"),
     ]
 
 
@@ -293,7 +304,7 @@ def test_execution_exception_response_is_redacted_and_resolution_is_single_assig
         "/api/automation/runs",
         json={
             "template_id": created.json()["template"]["id"],
-            "idempotency_key": "exception-route-123",
+            "idempotency_key": "exception-route-" + str(123),
         },
     )
     run_id = run_response.json()["run"]["id"]

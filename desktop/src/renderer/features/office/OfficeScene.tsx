@@ -1,7 +1,7 @@
 import { CornerDownLeft, LockKeyhole, Radio, Sparkles } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { TaskEvent } from "../../../shared/executionTypes";
+import type { TaskEvent, TaskPilotAction } from "../../../shared/executionTypes";
 import type { ConnectionState, ViewKey } from "../../store";
 import { useUiPreferences } from "../../lib/uiPreferences";
 import {
@@ -85,7 +85,7 @@ export interface OfficeSceneProps {
   onAgentSelect: (prompt: string) => void;
   onQuickSkill: (skill: OfficeQuickSkill) => void;
   onReadinessAction: (item: HomeReadinessItem) => void;
-  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: TaskPilotAction) => void | Promise<void>;
   pendingApprovalCount: number;
   safetyAlert: boolean;
 }
@@ -270,15 +270,15 @@ export function OfficeScene({
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .find((task) => {
         const before = previous[task.id];
-        return before && before !== task.state && (task.state === "completed" || task.state === "failed");
+        return before && before !== task.state && ["completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"].includes(task.state);
       });
 
     previousTaskStatesRef.current = Object.fromEntries(recentTasks.map((task) => [task.id, task.state]));
 
     const transitionedAgentId = transitioned ? officeAgentIdForTask(transitioned) || workingAgentId : workingAgentId;
-    if (transitioned?.state === "completed") {
+    if (transitioned?.state === "completed" || transitioned?.state === "rolled_back") {
       triggerAgentFeedback(transitionedAgentId, "completed");
-    } else if (transitioned?.state === "failed") {
+    } else if (transitioned?.state === "failed" || transitioned?.state === "denied" || transitioned?.state === "repair_required") {
       triggerAgentFeedback(transitionedAgentId, "failed", true);
     } else if (recentTasks.some((task) => task.state === "running" || task.state === "queued")) {
       setAgentFeedback((current) => current?.kind === "failed" ? null : current);
@@ -383,7 +383,7 @@ export function OfficeScene({
               <Sparkles size={13} aria-hidden="true" />
               本机优先 AI 工作台
             </span>
-            <h1>问问 Lengrvis</h1>
+            <h2>问问 Lengrvis</h2>
             <p>一句话处理文件、文档、应用和电脑事务。</p>
           </div>
           <div className="office-headline__status" aria-label="当前工作状态">
@@ -410,10 +410,11 @@ export function OfficeScene({
         </div>
 
         <div className="office-command-dock">
-          <div className="office-command-dock__hint">
+          <label className="office-command-dock__hint" htmlFor="office-command-input">
             <span>说出目标，先判断范围和风险</span>
-          </div>
+          </label>
           <textarea
+            id="office-command-input"
             ref={commandInputRef}
             value={draft}
             disabled={isSubmitting}

@@ -22,6 +22,7 @@ from app.security.capability_manifest import (
     build_capability_manifest,
     canonical_content_hash,
     canonical_json_bytes,
+    load_revocation_config,
     mcp_server_capability_payload,
     permission_policy_capability_payload,
     prompt_capability_payload,
@@ -177,6 +178,66 @@ def test_invalid_explicit_revocation_file_disables_protected_capabilities(
         prompts.load_prompt("guarded.md")
 
 
+def test_default_revocation_file_deletion_fails_closed_after_first_valid_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+    revocations = tmp_path / "capability-revocations.json"
+    revocations.write_text(
+        json.dumps({"revocations": [{"kind": "tool", "id": "test.echo"}]}),
+        encoding="utf-8",
+    )
+
+    initial = load_revocation_config(settings=settings)
+    revocations.unlink()
+    deleted = load_revocation_config(settings=settings)
+
+    assert initial.valid is True
+    assert initial.targets[0].capability_id == "test.echo"
+    assert deleted.valid is False
+    assert deleted.sources == ("file_presence_anchor", "file")
+    assert deleted.errors == ({"source": "file", "code": "missing_after_observed"},)
+    with pytest.raises(CapabilityRevocationConfigError):
+        assert_capability_allowed("tool", "test.echo")
+
+
+def test_revocation_presence_anchor_tampering_fails_closed(tmp_path: Path) -> None:
+    from app.core import db
+
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+    revocations = tmp_path / "capability-revocations.json"
+    revocations.write_text(json.dumps({"revocations": []}), encoding="utf-8")
+    assert load_revocation_config(settings=settings).valid is True
+
+    with db.using_data_dir(tmp_path), db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = ?
+            WHERE key LIKE 'security.capability_revocation_file_presence.v1.%'
+            """,
+            (json.dumps({"version": 1, "required": False}),),
+        )
+
+    tampered = load_revocation_config(settings=settings)
+
+    assert tampered.valid is False
+    assert {error["code"] for error in tampered.errors} == {"anchor_unreadable"}
+    assert "file_presence_anchor" in tampered.sources
+
+
+def test_fresh_install_without_default_revocation_file_remains_valid(tmp_path: Path) -> None:
+    settings = AppSettings(provider_name="mock", data_dir=str(tmp_path))
+
+    config = load_revocation_config(settings=settings)
+
+    assert config.valid is True
+    assert config.sources == ()
+    assert not (tmp_path / "lengrvis.db").exists()
+
+
 def test_revoked_permission_policy_fails_closed_at_evaluation_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     policy = PermissionPolicy(id="operations", rules=[])
     digest = canonical_content_hash(permission_policy_capability_payload(policy))
@@ -310,6 +371,28 @@ def test_manifest_hash_is_versioned_and_deterministic_for_same_capabilities() ->
     assert first["manifest_id"] == second["manifest_id"]
     assert first["manifest_hash"] == second["manifest_hash"]
     assert first["generated_at"] != ""
+
+
+def test_manifest_fails_closed_when_permission_policy_collection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = AppSettings(provider_name="mock", mcp_servers=[])
+    healthy = build_capability_manifest(settings=settings, tools=[_test_tool()])
+
+    def fail_policy_read(_self):  # noqa: ANN001, ANN202
+        raise RuntimeError("policy failed token=manifest-secret-value")
+
+    monkeypatch.setattr("app.policy.permissions.PermissionStore.get_policy", fail_policy_read)
+    degraded = build_capability_manifest(settings=settings, tools=[_test_tool()])
+
+    assert degraded["state"] == "invalid"
+    assert degraded["collection_errors"] == [
+        {
+            "kind": "permission_policy",
+            "code": "collection_failed",
+            "error_type": "RuntimeError",
+        }
+    ]
+    assert degraded["manifest_hash"] != healthy["manifest_hash"]
+    assert "manifest-secret-value" not in json.dumps(degraded, sort_keys=True)
 
 
 def test_manifest_covers_prompts_tools_policy_skills_and_mcp_config(tmp_path: Path) -> None:

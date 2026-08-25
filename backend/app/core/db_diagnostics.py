@@ -16,12 +16,9 @@ def build_local_product_diagnostics(
     tool_results: list[dict[str, Any]],
     audits: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    task_success_count = sum(
-        1 for item in tasks if _is_success_state(item.get("status")) or _is_success_state(item.get("phase"))
-    )
-    task_failure_count = sum(
-        1 for item in tasks if _is_failed_state(item.get("status")) or _is_failed_state(item.get("phase"))
-    )
+    task_states = [_effective_task_state(item) for item in tasks]
+    task_success_count = sum(1 for state in task_states if _is_success_state(state))
+    task_failure_count = sum(1 for state in task_states if _is_failed_state(state))
     run_success_count = sum(1 for item in runs if _is_success_state(item.get("phase")))
     run_failure_count = sum(1 for item in runs if _is_failed_state(item.get("phase")))
     tool_result_success_count = sum(1 for item in tool_results if item.get("ok") is True)
@@ -214,8 +211,23 @@ def _is_success_state(value: Any) -> bool:
         "success",
         "succeeded",
         "done",
+        "rolled_back",
     }
 
 
+def _effective_task_state(item: dict[str, Any]) -> Any:
+    status = item.get("status") or item.get("phase")
+    status_text = str(getattr(status, "value", status) or "").strip().lower()
+    rollback = (item.get("metadata") or {}).get("rollback")
+    if status_text == "failed" and isinstance(rollback, dict) and rollback:
+        return "rolled_back" if str(rollback.get("state") or "").strip().lower() == "succeeded" else "repair_required"
+    return status
+
+
 def _is_failed_state(value: Any) -> bool:
-    return str(getattr(value, "value", value) or "").casefold() in {"failed", "failure", "error"}
+    return str(getattr(value, "value", value) or "").casefold() in {
+        "failed",
+        "failure",
+        "error",
+        "repair_required",
+    }

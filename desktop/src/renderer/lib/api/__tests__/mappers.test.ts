@@ -24,9 +24,11 @@ describe("runEngineAgentName", () => {
 describe("mapTaskState", () => {
   it("maps backend statuses onto UI task states", () => {
     expect(mapTaskState("completed")).toBe("completed");
+    expect(mapTaskState("rolled_back")).toBe("rolled_back");
+    expect(mapTaskState("repair_required")).toBe("repair_required");
     expect(mapTaskState("failed")).toBe("failed");
-    expect(mapTaskState("denied")).toBe("failed");
-    expect(mapTaskState("cancelled")).toBe("failed");
+    expect(mapTaskState("denied")).toBe("denied");
+    expect(mapTaskState("cancelled")).toBe("cancelled");
     expect(mapTaskState("paused")).toBe("paused");
     expect(mapTaskState("waiting_user_approval")).toBe("blocked");
     expect(mapTaskState("awaiting_approval")).toBe("blocked");

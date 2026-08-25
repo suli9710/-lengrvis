@@ -1,4 +1,5 @@
 import type { ApiRequest, ApiResponse } from "../../../shared/desktopBridgeTypes";
+import { safeIpcApiRequest } from "./apiRequestSession";
 import type { BackendMemory } from "./memoryBackendTypes";
 
 export interface SaveMemoryOptions {
@@ -10,6 +11,11 @@ export interface SaveMemoryOptions {
 export interface RecallMemoryOptions {
   k?: number;
   tags?: string[];
+}
+
+export interface ReviewMemoryOptions {
+  reviewedBy?: string;
+  resolveConflict?: boolean;
 }
 
 export type MemoryEndpointRequest = <TResponse, TBody = unknown>(
@@ -34,7 +40,9 @@ export function saveMemoryEndpoint(
     kind: options.kind ?? "fact"
   };
   if (window.lengrvis?.memories) {
-    return window.lengrvis.memories.save(input) as Promise<ApiResponse<BackendMemory>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.memories.save(input) as Promise<ApiResponse<BackendMemory>>
+    );
   }
   return request<BackendMemory, { content: string; tags: string[]; task_id: string; kind: string }>({
     endpoint: "/api/memories",
@@ -59,7 +67,9 @@ export function recallMemoryEndpoint(
     tags: options.tags ?? []
   };
   if (window.lengrvis?.memories) {
-    return window.lengrvis.memories.recall(input) as Promise<ApiResponse<BackendMemory[]>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.memories.recall(input) as Promise<ApiResponse<BackendMemory[]>>
+    );
   }
   return request<BackendMemory[], typeof input>({
     endpoint: "/api/memories/recall",
@@ -68,12 +78,60 @@ export function recallMemoryEndpoint(
   });
 }
 
+export function promoteMemoryEndpoint(
+  request: MemoryEndpointRequest,
+  memoryId: string,
+  options: ReviewMemoryOptions = {}
+): Promise<ApiResponse<BackendMemory>> {
+  const input = {
+    memoryId,
+    reviewedBy: options.reviewedBy ?? "desktop-user",
+    resolveConflict: options.resolveConflict ?? false
+  };
+  if (window.lengrvis?.memories) {
+    return safeIpcApiRequest(() =>
+      window.lengrvis.memories.promote(input) as Promise<ApiResponse<BackendMemory>>
+    );
+  }
+  return request<BackendMemory, { reviewed_by: string; conflict_status?: "resolved" }>({
+    endpoint: `/api/memories/${encodeURIComponent(memoryId)}/promote`,
+    method: "POST",
+    body: {
+      reviewed_by: input.reviewedBy,
+      ...(input.resolveConflict ? { conflict_status: "resolved" as const } : {})
+    }
+  });
+}
+
+export function revokeMemoryEndpoint(
+  request: MemoryEndpointRequest,
+  memoryId: string,
+  options: ReviewMemoryOptions = {}
+): Promise<ApiResponse<BackendMemory>> {
+  const input = {
+    memoryId,
+    reviewedBy: options.reviewedBy ?? "desktop-user"
+  };
+  if (window.lengrvis?.memories) {
+    return safeIpcApiRequest(() =>
+      window.lengrvis.memories.revoke(input) as Promise<ApiResponse<BackendMemory>>
+    );
+  }
+  return request<BackendMemory, { reviewed_by: string }>({
+    endpoint: `/api/memories/${encodeURIComponent(memoryId)}/revoke`,
+    method: "POST",
+    body: { reviewed_by: input.reviewedBy }
+  });
+}
+
 export function forgetMemoryEndpoint(
   request: MemoryEndpointRequest,
   memoryId: string
 ): Promise<ApiResponse<{ ok: boolean; id: string }>> {
   if (window.lengrvis?.memories) {
-    return window.lengrvis.memories.forget(memoryId) as Promise<ApiResponse<{ ok: boolean; id: string }>>;
+    return safeIpcApiRequest(() =>
+      window.lengrvis.memories.forget(memoryId) as Promise<ApiResponse<{ ok: boolean; id: string }>>
+    );
   }
   return request({
     endpoint: `/api/memories/${memoryId}`,

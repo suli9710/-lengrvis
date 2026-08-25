@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 
 def _text(project_root: Path, relative: str) -> str:
     return (project_root / relative).read_text(encoding="utf-8")
@@ -15,6 +17,7 @@ def test_mobile_gate_commands_stay_in_ci_evidence_and_local_runner(project_root:
     local_runner = _text(project_root, "scripts/run_tests.ps1")
     required_markers = (
         "npm exec expo -- install --check",
+        "npm --prefix mobile run smoke:eas-cli-compat",
         "npm --prefix mobile run smoke:consent",
         "npm --prefix mobile run smoke:session-lifecycle",
         "npm --prefix mobile run smoke:push-notifications",
@@ -35,14 +38,42 @@ def test_mobile_gate_commands_stay_in_ci_evidence_and_local_runner(project_root:
 def test_mobile_expo_patch_dependencies_match_the_supported_sdk_line(project_root: Path) -> None:
     package = json.loads((project_root / "mobile" / "package.json").read_text(encoding="utf-8"))
     lock = json.loads((project_root / "mobile" / "package-lock.json").read_text(encoding="utf-8"))
+    eas = json.loads((project_root / "mobile" / "eas.json").read_text(encoding="utf-8"))
 
     expected = {
-        "expo": "56.0.15",
-        "expo-notifications": "56.0.20",
-        "expo-router": "56.2.14",
+        "expo": "56.0.20",
+        "expo-notifications": "56.0.24",
+        "expo-router": "56.2.19",
     }
     assert {name: package["dependencies"][name] for name in expected} == expected
     assert {name: lock["packages"][""]["dependencies"][name] for name in expected} == expected
+    assert eas["cli"]["version"] == package["devDependencies"]["eas-cli"]
+    assert package["overrides"]["eas-cli@22.2.0"] == {
+        "minimatch@5.1.2": "5.1.9",
+        "ts-deepmerge@6.2.0": "8.0.0",
+    }
+    assert lock["packages"]["node_modules/minimatch"]["version"] == "5.1.9"
+    assert lock["packages"]["node_modules/@oclif/core/node_modules/minimatch"]["version"] == "10.2.6"
+    assert lock["packages"]["node_modules/ts-deepmerge"]["version"] == "8.0.0"
+
+
+def test_eas_cli_runtime_compatibility_patch_is_wired_into_install_and_smokes(
+    project_root: Path,
+) -> None:
+    package = json.loads((project_root / "mobile" / "package.json").read_text(encoding="utf-8"))
+
+    assert package["scripts"]["postinstall"] == "node scripts/patch-eas-cli-runtime.cjs"
+    assert package["scripts"]["smoke:eas-cli-compat"] == "node scripts/eas-cli-compat-smoke.cjs"
+    assert package["scripts"]["preflight:android-release"].startswith("npm run smoke:eas-cli-compat && ")
+    patch = _text(project_root, "mobile/scripts/patch-eas-cli-runtime.cjs")
+    smoke = _text(project_root, "mobile/scripts/eas-cli-compat-smoke.cjs")
+    assert "EXPECTED_EAS_VERSION" in patch
+    assert "fs.realpathSync(expectedEasPackagePath)" in patch
+    assert "outside mobile/node_modules" in patch
+    assert "ts_deepmerge_1.merge" in patch
+    assert 'process.argv.includes("--check")' in patch
+    assert 'requireFromEas("minimatch")' in smoke
+    assert "generateAppConfigAsync" in smoke
 
 
 def test_android_prebuild_network_security_smoke_is_wired_into_release_gates(
@@ -80,6 +111,43 @@ def test_gradle_wrapper_distribution_is_checksum_pinned_and_checked_by_lock_gate
 
 
 def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) -> None:
-    codeql = _text(project_root, ".github/workflows/codeql.yml")
+    codeql = yaml.safe_load(_text(project_root, ".github/workflows/codeql.yml"))
+    analyze = codeql["jobs"]["analyze"]
+    assert analyze["strategy"]["matrix"]["include"] == [
+        {
+            "languages": "python,javascript-typescript",
+            "build-mode": "none",
+            "category": "/language:python-typescript",
+            "android-build": False,
+        },
+        {
+            "languages": "java-kotlin",
+            "build-mode": "manual",
+            "category": "/language:java-kotlin",
+            "android-build": True,
+        },
+    ]
 
-    assert "languages: python,javascript-typescript,java-kotlin" in codeql
+    steps = analyze["steps"]
+    node_setup = next(step for step in steps if step.get("name") == "Set up Node.js for the Android build")
+    java_setup = next(step for step in steps if step.get("name") == "Set up JDK 17 for the Android build")
+    mobile_install = next(step for step in steps if step.get("name") == "Install locked mobile dependencies")
+    kotlin_compile = next(step for step in steps if step.get("name") == "Compile Android Kotlin sources")
+    codeql_init = next(step for step in steps if "github/codeql-action/init@" in step.get("uses", ""))
+    codeql_analyze = next(step for step in steps if "github/codeql-action/analyze@" in step.get("uses", ""))
+
+    kotlin_only = "${{ matrix.android-build }}"
+    assert node_setup["if"] == kotlin_only
+    assert node_setup["with"]["node-version"] == "24"
+    assert java_setup["if"] == kotlin_only
+    assert java_setup["with"] == {"distribution": "temurin", "java-version": "17"}
+    assert mobile_install["if"] == kotlin_only
+    assert mobile_install["run"] == "npm --prefix mobile ci"
+    assert codeql_init["with"]["languages"] == "${{ matrix.languages }}"
+    assert codeql_init["with"]["build-mode"] == "${{ matrix.build-mode }}"
+    assert kotlin_compile["if"] == kotlin_only
+    assert kotlin_compile["working-directory"] == "mobile/android"
+    assert kotlin_compile["run"].startswith("bash ./gradlew ")
+    assert ":app:compileDebugKotlin" in kotlin_compile["run"]
+    assert ":app:compileDebugAndroidTestKotlin" in kotlin_compile["run"]
+    assert codeql_analyze["with"]["category"] == "${{ matrix.category }}"

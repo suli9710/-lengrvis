@@ -202,7 +202,7 @@ def test_root_health_omits_local_llm_snapshot_by_default(monkeypatch):
     assert response.json() == {"status": "ok"}
 
 
-@pytest.mark.requires_desktop_api_token
+@pytest.mark.desktop_api_auth_contract
 def test_authenticated_health_diagnostics_include_local_llm_snapshot_for_privacy_mode(monkeypatch):
     monkeypatch.setenv("LENGRVIS_MODE", "privacy")
     monkeypatch.setattr("app.llm.local_provider.detect_onnx_backend", lambda settings=None: None)

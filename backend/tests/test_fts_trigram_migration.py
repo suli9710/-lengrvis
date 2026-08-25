@@ -116,3 +116,19 @@ def test_fts_search_short_cjk_query_falls_back_to_like(tmp_path: Path) -> None:
 
     assert results
     assert any("汽车" in str(item.get("snippet") or "") for item in results)
+
+
+def test_fts_search_multi_token_short_cjk_query_falls_back_to_like(tmp_path: Path) -> None:
+    # Two 2-char Chinese words: len(query) >= 3 but every token is < 3 chars, so
+    # the trigram tokenizer matches nothing. The search must still fall back to
+    # LIKE instead of returning [] on the len(cleaned) >= 3 guard.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("汽车维修手册与发动机保养记录", encoding="utf-8")
+
+    FTSIndex().rebuild([str(workspace)])
+    db.init_db()
+
+    results = FTSIndex().search("汽车 保养", limit=5, allowed_directories=[str(workspace)])
+
+    assert results

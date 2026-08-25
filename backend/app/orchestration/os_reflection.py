@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, ToolResult, new_id
+from app.orchestration.deterministic_contracts import plan_has_deterministic_contract
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import StepPhase
 from app.policy.risk import RiskLevel
@@ -56,6 +57,8 @@ class OSReflectionDecider:
         self.max_per_step = max(0, max_per_step)
 
     def should_reflect(self, data: OSReflectionInput) -> bool:
+        if plan_has_deterministic_contract(data.plan):
+            return False
         if data.run_reflection_count >= self.max_per_run:
             return False
         if data.graph_error:

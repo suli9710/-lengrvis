@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.schemas import RunCreateResponse, RunEngine
+from app.observability.best_effort import log_best_effort_failure
 from app.perception.intent_predictor import IntentSuggestion
 from app.perception.voice_input import (
     DEFAULT_MAX_AUDIO_BYTES,
@@ -19,6 +21,7 @@ from app.perception.voice_input import (
 from app.services import perception_suggestion_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MAX_VOICE_AUDIO_BYTES = DEFAULT_MAX_AUDIO_BYTES  # ~5 minutes of 16 kHz mono PCM16.
 MAX_VOICE_AUDIO_BASE64_CHARS = ((MAX_VOICE_AUDIO_BYTES + 2) // 3) * 4
@@ -60,7 +63,8 @@ def capture_perception() -> PerceptionCaptureResponse:
     try:
         state = perception_suggestion_service.capture_once_summary()
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
-        raise HTTPException(status_code=503, detail=f"Perception capture failed: {exc}") from exc
+        log_best_effort_failure(logger, "perception.capture", exc)
+        raise HTTPException(status_code=503, detail="Perception capture is temporarily unavailable.") from None
     return PerceptionCaptureResponse(screen_state=state)
 
 
@@ -122,10 +126,12 @@ async def voice_transcribe(request: VoiceTranscribeRequest) -> VoiceTranscribeRe
     sample_rate = max(8_000, min(int(request.sample_rate or 16_000), 48_000))
 
     processor = _get_voice_processor()
-    processor.language = request.language or None
     try:
         payload = audio if sample_rate == 16_000 else _resample_pcm16(audio, sample_rate)
-        event = await processor.process_utterance(payload)
+        # Pass the language per call: assigning it on the shared module-level
+        # processor would race with concurrent requests that use a different
+        # language (the assignment happens before an await).
+        event = await processor.process_utterance(payload, language=request.language or None)
     except AudioBufferLimitError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from None
     if event is None:

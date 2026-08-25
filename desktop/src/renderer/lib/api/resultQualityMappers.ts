@@ -1,9 +1,6 @@
 import type { TaskCompletionEvidence, TaskResultQuality, TaskResultQualityState } from "../../../shared/executionTypes";
+import { recordOrUndefined } from "./mapperPrimitives";
 import { zhBackendText } from "../zh";
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
 
 function normalizeResultQualityState(value: unknown, completionEvidence?: TaskCompletionEvidence): TaskResultQualityState {
   const normalized = String(value ?? "").trim().replace(/[\s.-]+/g, "_").toLowerCase();

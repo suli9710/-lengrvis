@@ -11,6 +11,37 @@ from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
 DESKTOP_SECRET = "desktop-secret"  # noqa: S105 - deterministic test credential.
 
 
+class _FakeWsUrl:
+    def __init__(self) -> None:
+        self.scheme = "ws"
+        self.hostname = "127.0.0.1"
+        self.port = 8000
+
+
+class _FakeWebSocket:
+    def __init__(self, origin: str) -> None:
+        self.headers = {"origin": origin}
+        self.url = _FakeWsUrl()
+
+
+def test_vite_dev_origin_trusted_in_dev_but_not_release(monkeypatch):
+    from app.security.websocket_origin import is_trusted_websocket_origin
+
+    ws = _FakeWebSocket("http://localhost:5173")
+
+    # Dev profile: the Vite dev-server origin is trusted (developer convenience).
+    for name in ("LENGRVIS_ENV", "APP_ENV", "ENVIRONMENT", "LENGRVIS_RELEASE_CHANNEL"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("LENGRVIS_COMMERCIAL_RELEASE", "LENGRVIS_PUBLIC_BETA", "LENGRVIS_RELEASE_BUILD"):
+        monkeypatch.delenv(name, raising=False)
+    assert is_trusted_websocket_origin(ws) is True
+
+    # Release profile: a local process squatting on :5173 must not pass the
+    # Origin CSRF check.
+    monkeypatch.setenv("LENGRVIS_ENV", "ga")
+    assert is_trusted_websocket_origin(ws) is False
+
+
 @pytest.mark.parametrize(
     ("headers", "subprotocols"),
     [

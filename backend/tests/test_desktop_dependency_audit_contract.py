@@ -71,7 +71,7 @@ def _locked_versions(lockfile: dict[str, object], package_name: str) -> list[str
     return versions
 
 
-def test_desktop_high_severity_audit_gate_stays_in_ci_and_security_audit(
+def test_npm_high_severity_audit_gate_stays_in_ci_and_security_audit(
     project_root: Path,
 ) -> None:
     ci = (project_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -82,6 +82,7 @@ def test_desktop_high_severity_audit_gate_stays_in_ci_and_security_audit(
     assert "npm --prefix mobile audit --audit-level=high" in ci
     assert "npm run audit:deps" in security_audit
     assert "npm audit --audit-level=$AuditLevel" in audit_script
+    assert 'Invoke-NpmAudit "."' in audit_script
     for python_lock in (
         "backend/requirements-lock.txt",
         "requirements-dev-lock.txt",
@@ -150,30 +151,42 @@ def test_secret_scan_uses_strict_config_and_bypasses_line_fingerprint_ignore(
     )
 
 
-def test_dev_toolchain_uses_the_patched_pytest_release(project_root: Path) -> None:
+def test_dev_toolchains_use_patched_and_transitively_locked_releases(project_root: Path) -> None:
     requirements = (project_root / "requirements-dev.txt").read_text(encoding="utf-8")
     lock = (project_root / "requirements-dev-lock.txt").read_text(encoding="utf-8")
+    package = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    npm_lock = json.loads((project_root / "package-lock.json").read_text(encoding="utf-8"))
 
     # Keep the advisory-fixed pytest release reproducible while the repository
     # validates its plugin suite against pytest 9.  A floating <10 constraint
     # can silently move release CI to a newer, unqualified minor release.
     assert "pytest==9.0.3" in requirements
     assert _python_direct_pins(lock)["pytest"] == "9.0.3"
+    assert package["devDependencies"]["@modelcontextprotocol/conformance"] == "0.1.16"
+    assert npm_lock["packages"][""]["devDependencies"] == package["devDependencies"]
+    conformance = npm_lock["packages"]["node_modules/@modelcontextprotocol/conformance"]
+    assert conformance["version"] == "0.1.16"
+    assert conformance["resolved"].startswith(
+        "https://registry.npmjs.org/@modelcontextprotocol/conformance/-/conformance-0.1.16.tgz"
+    )
+    assert conformance["integrity"].startswith("sha512-")
+    for name, command in package["scripts"].items():
+        if name.startswith("mcp:conformance:") and name not in {"mcp:conformance:basic"}:
+            assert command.startswith("conformance client ")
+            assert "npx" not in command
+    lock_verifier = (project_root / "scripts" / "verify_dependency_locks.ps1").read_text(encoding="utf-8")
+    assert 'Test-NpmPackageLock -Root $resolvedRoot -PackageDir "."' in lock_verifier
 
 
 def test_backend_dev_requirements_delegate_to_the_patched_hashed_lock(
     project_root: Path,
 ) -> None:
-    backend_requirements = (
-        project_root / "backend" / "requirements-dev.txt"
-    ).read_text(encoding="utf-8")
+    backend_requirements = (project_root / "backend" / "requirements-dev.txt").read_text(encoding="utf-8")
 
     assert "-r ../requirements-dev-lock.txt" in backend_requirements
     assert "pytest>=8.0,<9.0" not in backend_requirements
 
-    lock_verifier = (
-        project_root / "scripts" / "verify_dependency_locks.ps1"
-    ).read_text(encoding="utf-8")
+    lock_verifier = (project_root / "scripts" / "verify_dependency_locks.ps1").read_text(encoding="utf-8")
     assert "Test-BackendDevRequirementsAlias" in lock_verifier
     assert '"backend\\requirements-dev.txt"' in lock_verifier
 
@@ -182,8 +195,7 @@ def test_desktop_generic_bridge_blocks_sensitive_backend_routes(project_root: Pa
     shared_ipc = (project_root / "desktop/src/shared/ipc.ts").read_text(encoding="utf-8")
     generic_allowlist = (project_root / "desktop/src/shared/apiRequestAllowlist.ts").read_text(encoding="utf-8")
     typed_handlers = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (project_root / "desktop/src/main").glob("ipc*Handlers.ts")
+        path.read_text(encoding="utf-8") for path in (project_root / "desktop/src/main").glob("ipc*Handlers.ts")
     )
 
     for exact_path in (
@@ -248,6 +260,7 @@ def test_sbom_includes_all_python_locks_and_npm_locks(project_root: Path) -> Non
         "requirements-dev-lock.txt",
         "backend/requirements-build-lock.txt",
         "scripts/acceleration-requirements-lock.txt",
+        "package-lock.json",
         "desktop/package-lock.json",
         "mobile/package-lock.json",
     ):

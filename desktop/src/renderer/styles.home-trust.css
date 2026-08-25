@@ -80,7 +80,9 @@
 }
 
 .home-more {
+  flex: 0 0 auto;
   padding: 0;
+  border-top: 1px solid var(--line);
   overflow: hidden;
 }
 

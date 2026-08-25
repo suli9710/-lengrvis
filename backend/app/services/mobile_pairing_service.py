@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import re
 import secrets
-import threading
 import time
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from typing import Any
 
 from fastapi import HTTPException
@@ -37,8 +34,11 @@ from app.security.mobile_jwt import (
 from app.services import mobile_pairing_access as _access_helpers
 from app.services import mobile_pairing_common as _common_helpers
 from app.services import mobile_pairing_payloads as _payload_helpers
+from app.services import mobile_pairing_push as _push_helpers
+from app.services import mobile_pairing_records as _record_helpers
 from app.services import mobile_pairing_remote_input as _remote_input_helpers
 from app.services import mobile_pairing_transport as _transport_helpers
+from app.services.mobile_approval_auth_context import mobile_approval_auth_context
 
 _approval_allowed_device_ids = _access_helpers._approval_allowed_device_ids
 _approval_required_mobile_scopes = _access_helpers._approval_required_mobile_scopes
@@ -104,6 +104,31 @@ _parse_iso = _transport_helpers._parse_iso
 _safe_tls_error = _transport_helpers._safe_tls_error
 _validate_lan_tls_material = _transport_helpers._validate_lan_tls_material
 
+_PAIR_CONFIRM_FAILURES = _record_helpers.PAIR_CONFIRM_FAILURES
+_PAIR_CONFIRM_FAILURES_LOCK = _record_helpers.PAIR_CONFIRM_FAILURES_LOCK
+_clear_pairing_failures = _record_helpers.clear_pairing_failures
+_expire_pairing_record = _record_helpers.expire_pairing_record
+_expire_stale_pairings = _record_helpers.expire_stale_pairings
+_hash_pairing_claim_secret = _record_helpers.hash_pairing_claim_secret
+_load_pairing_record = _record_helpers.load_pairing_record
+_new_pairing_claim_secret = _record_helpers.new_pairing_claim_secret
+_normalize_code = _record_helpers.normalize_code
+_pairing_claim_secret_matches = _record_helpers.pairing_claim_secret_matches
+_pairing_rate_key = _record_helpers.pairing_rate_key
+_raise_if_pairing_rate_limited = _record_helpers.raise_if_pairing_rate_limited
+_record_pairing_failure = _record_helpers.record_pairing_failure
+_recent_pairing_failures = _record_helpers.recent_pairing_failures
+_safe_device_name = _record_helpers.safe_device_name
+_unique_code = _record_helpers.unique_code
+_upsert_mobile_device = _record_helpers.upsert_mobile_device
+_upsert_mobile_device_locked = _record_helpers.upsert_mobile_device_locked
+_write_pairing_record = _record_helpers.write_pairing_record
+
+register_mobile_push_subscription = _push_helpers.register_mobile_push_subscription
+unregister_mobile_push_subscription = _push_helpers.unregister_mobile_push_subscription
+_remove_mobile_push_subscription = _push_helpers.remove_mobile_push_subscription
+_valid_expo_push_token = _push_helpers.valid_expo_push_token
+
 
 def _server_info(transport: dict[str, Any] | None = None) -> dict[str, Any]:
     transport = transport or lan_transport_security()
@@ -119,18 +144,16 @@ def _server_info(transport: dict[str, Any] | None = None) -> dict[str, Any]:
 def lan_transport_security(settings: Any | None = None) -> dict[str, Any]:
     return _transport_helpers.lan_transport_security(settings or get_effective_settings())
 
-PAIR_CODE_TTL_SECONDS = 300
+
+PAIR_CODE_TTL_SECONDS = _record_helpers.PAIR_CODE_TTL_SECONDS
 TOKEN_TTL_SECONDS = MOBILE_TOKEN_TTL_SECONDS
 # 64-bit pairing-code entropy (16 hex chars). The code lives for PAIR_CODE_TTL_SECONDS
 # and is single-use, so 2**64 makes online brute force over the LAN infeasible even
 # when a distributed attacker spreads guesses across many source IPs.
-PAIR_CODE_HEX_LENGTH = 8
-PAIR_CLAIM_SECRET_BYTES = 32
-PAIR_CONFIRM_FAILURE_LIMIT = 8
-PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = 60
-
-_PAIR_CONFIRM_FAILURES: dict[str, list[float]] = {}
-_PAIR_CONFIRM_FAILURES_LOCK = threading.Lock()
+PAIR_CODE_HEX_LENGTH = _record_helpers.PAIR_CODE_HEX_LENGTH
+PAIR_CLAIM_SECRET_BYTES = _record_helpers.PAIR_CLAIM_SECRET_BYTES
+PAIR_CONFIRM_FAILURE_LIMIT = _record_helpers.PAIR_CONFIRM_FAILURE_LIMIT
+PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = _record_helpers.PAIR_CONFIRM_FAILURE_WINDOW_SECONDS
 
 
 def create_pairing_request() -> dict[str, Any]:
@@ -296,9 +319,12 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
 
 
 def list_pending_approvals(claims: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    _expire_stale_approval_records()
     approvals = db.fetch_many("approvals", "status = ?", ("pending",))
     return [
-        _safe_approval_payload(row, claims) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)
+        _safe_approval_payload(Approval.model_validate(row).model_dump(mode="json"), claims)
+        for row in approvals
+        if _mobile_claims_allow_approval_for_read(row, claims)
     ]
 
 
@@ -309,6 +335,16 @@ def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) 
     _raise_if_mobile_claims_disallowed_for_read(approval_data, claims)
 
     approval = Approval.model_validate(approval_data)
+    from app.core.schemas import approval_is_expired
+
+    if approval.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED} and approval_is_expired(approval):
+        expired = db.expire_approval_if_unconsumed(
+            approval.id,
+            now_iso(),
+            "Approval authorization expired.",
+        )
+        if expired:
+            approval = Approval.model_validate(expired)
     task_data = db.fetch_one("tasks", approval.task_id)
     task = Task.model_validate(task_data) if task_data else None
     plan = _latest_plan(task.id if task else approval.task_id)
@@ -634,12 +670,36 @@ def revoke_own_mobile_device(device_id: str, claims: dict[str, Any]) -> dict[str
     return revoke_mobile_device(normalized_id)
 
 
-def approve_approval(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
-    return _decide_approval(approval_id, ApprovalStatus.APPROVED, claims=claims)
+def approve_approval(
+    approval_id: str,
+    claims: dict[str, Any] | None = None,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
+    return _decide_approval(
+        approval_id,
+        ApprovalStatus.APPROVED,
+        claims=claims,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
 
 
-def reject_approval(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
-    return _decide_approval(approval_id, ApprovalStatus.REJECTED, claims=claims)
+def reject_approval(
+    approval_id: str,
+    claims: dict[str, Any] | None = None,
+    *,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
+    return _decide_approval(
+        approval_id,
+        ApprovalStatus.REJECTED,
+        claims=claims,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
 
 
 def refresh_mobile_session_token(refresh_token: str) -> dict[str, Any]:
@@ -667,91 +727,6 @@ def refresh_mobile_session_token(refresh_token: str) -> dict[str, Any]:
     }
 
 
-def register_mobile_push_subscription(
-    claims: dict[str, Any],
-    *,
-    provider: str,
-    push_token: str,
-) -> dict[str, str]:
-    device_id = _text(claims.get("device_id"))
-    if not device_id:
-        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
-    normalized_provider = _text(provider).lower()
-    normalized_token = _text(push_token)
-    if normalized_provider != "expo" or not _valid_expo_push_token(normalized_token):
-        raise HTTPException(status_code=422, detail="Invalid mobile push subscription")
-    timestamp = now_iso()
-    with db.connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=401, detail="Mobile device is not paired")
-        device = json.loads(row["data"])
-        if str(device.get("status") or "active").lower() != "active":
-            raise HTTPException(status_code=401, detail="Mobile device has been revoked")
-        device["push_subscription"] = {
-            "provider": normalized_provider,
-            "token": normalized_token,
-            "updated_at": timestamp,
-        }
-        device["updated_at"] = timestamp
-        conn.execute(
-            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(device, ensure_ascii=False), timestamp, device_id),
-        )
-    record(
-        "mobile.push_subscription.registered",
-        "MobilePairingService",
-        {"device_id": device_id, "provider": normalized_provider},
-    )
-    return {"status": "registered", "provider": normalized_provider}
-
-
-def unregister_mobile_push_subscription(claims: dict[str, Any]) -> dict[str, str]:
-    device_id = _text(claims.get("device_id"))
-    if not device_id:
-        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
-    _remove_mobile_push_subscription(device_id)
-    return {"status": "unregistered"}
-
-
-def _remove_mobile_push_subscription(device_id: str, *, expected_token: str = "") -> bool:
-    normalized_id = _text(device_id)
-    if not normalized_id:
-        return False
-    timestamp = now_iso()
-    removed = False
-    with db.connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (normalized_id,)).fetchone()
-        if not row:
-            return False
-        device = json.loads(row["data"])
-        subscription = device.get("push_subscription")
-        if not isinstance(subscription, dict):
-            return False
-        if expected_token and _text(subscription.get("token")) != expected_token:
-            return False
-        device.pop("push_subscription", None)
-        device["updated_at"] = timestamp
-        conn.execute(
-            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(device, ensure_ascii=False), timestamp, normalized_id),
-        )
-        removed = True
-    if removed:
-        record(
-            "mobile.push_subscription.removed",
-            "MobilePairingService",
-            {"device_id": normalized_id},
-        )
-    return removed
-
-
-def _valid_expo_push_token(value: str) -> bool:
-    return bool(re.fullmatch(r"(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{1,200}\]", value))
-
-
 def validate_mobile_token(token: str) -> dict[str, Any]:
     return decode_mobile_token(token)
 
@@ -772,83 +747,14 @@ def _require_remote_control_enabled(settings: Any | None = None) -> None:
         raise HTTPException(status_code=403, detail="Remote input requires a fresh subscription confirmation")
 
 
-def _write_pairing_record(record: dict[str, Any]) -> None:
-    with db.connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO mobile_pairings (id, data, status, created_at, expires_at, used_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                data=excluded.data,
-                status=excluded.status,
-                created_at=excluded.created_at,
-                expires_at=excluded.expires_at,
-                used_at=excluded.used_at,
-                updated_at=excluded.updated_at
-            """,
-            (
-                record["id"],
-                json.dumps(record, ensure_ascii=False),
-                record["status"],
-                record["created_at"],
-                record["expires_at"],
-                record["used_at"],
-                record["updated_at"],
-            ),
-        )
-
-
-def _load_pairing_record(code: str) -> dict[str, Any] | None:
-    return db.fetch_one("mobile_pairings", code)
-
-
-def _expire_pairing_record(record: dict[str, Any]) -> None:
-    updated = dict(record)
-    updated["status"] = "expired"
-    updated["updated_at"] = now_iso()
-    _write_pairing_record(updated)
-
-
-def _expire_stale_pairings() -> None:
-    now = time.time()
-    for pairing_record in db.fetch_many("mobile_pairings", limit=500):
-        if pairing_record.get("status") != "pending":
-            continue
-        expires_at = _parse_iso(str(pairing_record.get("expires_at") or ""))
-        if expires_at <= now:
-            _expire_pairing_record(pairing_record)
-
-
-def _upsert_mobile_device(*, device_id: str, device_name: str) -> None:
-    timestamp = now_iso()
-    with db.connect() as conn:
-        _upsert_mobile_device_locked(conn, device_id=device_id, device_name=device_name, timestamp=timestamp)
-
-
-def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str, timestamp: str) -> None:
-    body = {
-        "id": device_id,
-        "device_id": device_id,
-        "device_name": device_name,
-        "status": "active",
-        "revoked_at": "",
-        "remote_input_grants": [],
-        "token_epoch": 0,
-        "device_trust": mobile_device_trust_metadata(),
-        "created_at": timestamp,
-        "updated_at": timestamp,
-    }
-    conn.execute(
-        """
-        INSERT INTO mobile_devices (id, data, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-        """,
-        (device_id, json.dumps(body, ensure_ascii=False), body["created_at"], body["updated_at"]),
-    )
-
-
-def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[str, Any] | None = None) -> Approval:
+def _decide_approval(
+    approval_id: str,
+    status: ApprovalStatus,
+    *,
+    claims: dict[str, Any] | None = None,
+    authorized_at: str | None = None,
+    auth_context: dict[str, Any] | None = None,
+) -> Approval:
     existing = db.fetch_one("approvals", approval_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Approval not found")
@@ -857,6 +763,19 @@ def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[s
     else:
         _raise_if_mobile_claims_disallowed(existing, claims)
     existing_approval = Approval.model_validate(existing)
+    from app.core.schemas import approval_is_expired
+
+    if approval_is_expired(existing_approval):
+        expired = db.expire_approval_if_unconsumed(
+            approval_id,
+            now_iso(),
+            "Approval authorization expired.",
+        )
+        if expired:
+            from app.services.approval_event_service import publish_approval_decided
+
+            publish_approval_decided(Approval.model_validate(expired))
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
     if existing_approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
     if existing_approval.status != ApprovalStatus.PENDING:
@@ -871,16 +790,46 @@ def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[s
 
                 publish_approval_decided(Approval.model_validate(expired))
             raise HTTPException(status_code=409, detail="Approval is no longer executable.")
-    data = db.decide_approval_atomically(approval_id, status.value, now_iso())
+    decided_at = now_iso()
+    if claims is not None and authorized_at is None and auth_context is None:
+        authorized_at = decided_at
+        auth_context = mobile_approval_auth_context(claims)
+        if status == ApprovalStatus.APPROVED and (
+            not auth_context["device_id"] or not auth_context["token_family_id"] or not auth_context["credential_id"]
+        ):
+            raise HTTPException(status_code=401, detail="Mobile approval requires a device-bound session")
+    data = db.decide_approval_atomically(
+        approval_id,
+        status.value,
+        decided_at,
+        authorized_at=authorized_at,
+        auth_context=auth_context,
+    )
     if not data:
         existing_approval = Approval.model_validate(db.fetch_one("approvals", approval_id) or existing)
         raise HTTPException(status_code=409, detail=f"Approval is already {existing_approval.status}.")
+    if data.get("status") == ApprovalStatus.EXPIRED.value:
+        expired_approval = Approval.model_validate(data)
+        from app.services.approval_event_service import publish_approval_decided
+
+        publish_approval_decided(expired_approval)
+        raise HTTPException(status_code=409, detail="Approval authorization expired.")
 
     from app.services.approval_event_service import publish_approval_decided
 
     approval = Approval.model_validate(data)
     publish_approval_decided(approval)
     return approval
+
+
+def _expire_stale_approval_records() -> None:
+    expired = db.expire_stale_approvals(now_iso())
+    if not expired:
+        return
+    from app.services.approval_event_service import publish_approval_decided
+
+    for item in expired:
+        publish_approval_decided(Approval.model_validate(item))
 
 
 def _approval_state_error(approval_id: str) -> str:
@@ -903,68 +852,3 @@ def _approval_state_error(approval_id: str) -> str:
     if step.get("status") != "waiting_user_approval":
         return f"Step status is {step.get('status')}; expected waiting_user_approval."
     return ""
-
-
-def _unique_code() -> str:
-    for _ in range(100):
-        code = secrets.token_hex(PAIR_CODE_HEX_LENGTH)
-        if not db.fetch_one("mobile_pairings", code):
-            return code
-    raise HTTPException(status_code=503, detail="Unable to allocate a pairing code")
-
-
-def _new_pairing_claim_secret() -> str:
-    return secrets.token_urlsafe(PAIR_CLAIM_SECRET_BYTES)
-
-
-def _hash_pairing_claim_secret(claim_secret: str) -> str:
-    return sha256(str(claim_secret or "").encode("utf-8")).hexdigest()
-
-
-def _pairing_claim_secret_matches(record: dict[str, Any], claim_secret: str) -> bool:
-    expected_hash = str(record.get("claim_secret_hash") or "").strip()
-    supplied = str(claim_secret or "").strip()
-    if not expected_hash or not supplied:
-        return False
-    return secrets.compare_digest(expected_hash, _hash_pairing_claim_secret(supplied))
-
-
-def _normalize_code(code: str) -> str:
-    return "".join(character for character in code if character.isalnum()).lower()
-
-
-def _safe_device_name(device_name: str) -> str:
-    cleaned = "".join(character for character in str(device_name or "") if character.isprintable()).strip()
-    return cleaned[:80] or "Android device"
-
-
-def _pairing_rate_key(client_host: str) -> str:
-    return (client_host or "unknown").strip().lower() or "unknown"
-
-
-def _raise_if_pairing_rate_limited(rate_key: str) -> None:
-    now = time.time()
-    with _PAIR_CONFIRM_FAILURES_LOCK:
-        failures = _recent_pairing_failures(rate_key, now)
-        if len(failures) >= PAIR_CONFIRM_FAILURE_LIMIT:
-            _PAIR_CONFIRM_FAILURES[rate_key] = failures
-            raise HTTPException(status_code=429, detail="Too many failed pairing attempts. Try again later.")
-        _PAIR_CONFIRM_FAILURES[rate_key] = failures
-
-
-def _record_pairing_failure(rate_key: str) -> None:
-    now = time.time()
-    with _PAIR_CONFIRM_FAILURES_LOCK:
-        failures = _recent_pairing_failures(rate_key, now)
-        failures.append(now)
-        _PAIR_CONFIRM_FAILURES[rate_key] = failures
-
-
-def _clear_pairing_failures(rate_key: str) -> None:
-    with _PAIR_CONFIRM_FAILURES_LOCK:
-        _PAIR_CONFIRM_FAILURES.pop(rate_key, None)
-
-
-def _recent_pairing_failures(rate_key: str, now: float) -> list[float]:
-    cutoff = now - PAIR_CONFIRM_FAILURE_WINDOW_SECONDS
-    return [timestamp for timestamp in _PAIR_CONFIRM_FAILURES.get(rate_key, []) if timestamp >= cutoff]

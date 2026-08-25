@@ -3,15 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 from typing import TYPE_CHECKING
 
+from app.core import db
 from app.core.audit import record
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.orchestration.deterministic_contracts import deterministic_contract_status
 from app.orchestration.events import ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import set_step_status
-from app.policy.risk import RiskLevel
-from app.tools import rollback_tools
+from app.orchestration.task_phase import TaskPhase
+from app.orchestration.task_rollback_workflow import (
+    RollbackSource,
+    TaskRollbackRequest,
+    execute_task_rollback,
+)
+from app.policy.risk import RISK_ORDER, RiskLevel
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -119,6 +127,37 @@ class RecoveryHandler:
             )
         )
 
+        if deterministic_contract_status(step) != "none":
+            return await self.rollback_and_fail(
+                task,
+                plan,
+                step,
+                result,
+                reason="deterministic_contract_failed",
+            )
+
+        retry_block_reason = self._automatic_recovery_block_reason(step, result)
+        if retry_block_reason:
+            record(
+                "task.recovery_unsafe_retry_blocked",
+                orchestrator.name,
+                {
+                    "step": step.id,
+                    "tool": step.tool_name,
+                    "risk_level": step.risk_level.value,
+                    "error_code": _tool_result_error_code(result),
+                    "reason": retry_block_reason,
+                },
+                task_id=task.id,
+            )
+            return await self.rollback_and_fail(
+                task,
+                plan,
+                step,
+                result,
+                reason="unsafe_retry_error",
+            )
+
         retry_count = self._get_retry_count(key)
         if retry_count >= self.max_retries:
             return await self.rollback_and_fail(task, plan, step, result, reason="retry_limit")
@@ -197,7 +236,6 @@ class RecoveryHandler:
         reason: str,
     ) -> StepExecutionOutcome:
         orchestrator = self.orchestrator
-        rollback = rollback_tools.execute_rollback(task.id)
         set_step_status(step, StepStatus.FAILED, actor="RecoveryHandler")
         orchestrator._set_status(
             task,
@@ -205,6 +243,37 @@ class RecoveryHandler:
             final_summary=orchestrator._friendly_tool_error(result.error if result else "Tool failed."),
         )
         orchestrator._persist_plan_update(plan, "Plan failed after recovery was exhausted; rollback attempted.")
+        try:
+            run = await execute_task_rollback(
+                TaskRollbackRequest(
+                    task_id=task.id,
+                    source=RollbackSource.RUNTIME_RECOVERY,
+                    confirmation_id=f"runtime-recovery:{uuid.uuid4().hex}",
+                    actor="RecoveryHandler",
+                )
+            )
+            rollback = run.outcome
+            self._sync_task(task, run.task)
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: durable workflow persists repair state
+            persisted = db.fetch_one("tasks", task.id)
+            if persisted:
+                self._sync_task(task, Task.model_validate(persisted))
+            if task.status is not TaskPhase.REPAIR_REQUIRED:
+                orchestrator._set_status(
+                    task,
+                    TaskStatus.REPAIR_REQUIRED,
+                    final_summary=(
+                        "Automatic rollback could not be completed safely. "
+                        "Inspect the affected paths and repair them manually."
+                    ),
+                )
+            rollback = {
+                "task_id": task.id,
+                "state": "interrupted",
+                "count": 0,
+                "executed": [],
+                "error": orchestrator._friendly_tool_error(str(exc)),
+            }
         orchestrator.bus.publish_text(
             task.id,
             "RollbackTool",
@@ -220,6 +289,17 @@ class RecoveryHandler:
             task_id=task.id,
         )
         return StepExecutionOutcome("fatal_failed", result)
+
+    @staticmethod
+    def _sync_task(target: Task, source: Task) -> None:
+        # Keep the caller's pre-rollback version token. The outer execution
+        # engine closes ``fatal_failed`` generically; its stale-write guard
+        # must reload this stronger durable terminal instead of downgrading it.
+        target.status = source.status
+        target.phase = source.phase
+        target.execution_stage = source.execution_stage
+        target.metadata = dict(source.metadata)
+        target.final_summary = source.final_summary
 
     def _create_recovery_step(self, failed_step: PlanStep, action: AgentAction) -> PlanStep:
         tool_name = action.tool_name or failed_step.tool_name
@@ -247,6 +327,29 @@ class RecoveryHandler:
 
     def _risk_requires_approval(self, risk: RiskLevel) -> bool:
         return risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+
+    def _automatic_recovery_block_reason(self, step: PlanStep, result: ToolResult | None) -> str:
+        tool = None
+        try:
+            tool = self.orchestrator.registry.get(step.tool_name)
+        except Exception:  # noqa: BLE001 - broad-exception-boundary: missing retry contract fails closed for high risk.
+            if self._risk_requires_approval(step.risk_level):
+                return "high-risk tool retry contract is unavailable"
+            return ""
+        effective_risk = max((step.risk_level, tool.risk_level), key=lambda risk: RISK_ORDER[risk])
+        if not self._risk_requires_approval(effective_risk):
+            return ""
+        if result is None:
+            return "high-risk failure has no structured result"
+        if bool(result.output.get("outcome_unknown")) or bool(result.output.get("automatic_replay_blocked")):
+            return "high-risk execution outcome is unknown"
+        error_code = _tool_result_error_code(result)
+        if not error_code:
+            return "high-risk failure has no classified error code"
+        safe_errors = {str(item).strip() for item in tool.safe_to_retry_errors if str(item).strip()}
+        if error_code not in safe_errors:
+            return "high-risk error code is not declared safe to retry"
+        return ""
 
     def _recovery_observation(
         self,
@@ -292,3 +395,9 @@ def _recovery_step_key(step: PlanStep) -> tuple[str, str, tuple[str, ...]]:
 
 def _stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _tool_result_error_code(result: ToolResult | None) -> str:
+    if result is None or not isinstance(result.output, dict):
+        return ""
+    return str(result.output.get("error_code") or result.output.get("code") or "").strip()

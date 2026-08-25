@@ -13,6 +13,7 @@ import {
   validateCommercePolicyImportRequest,
   validateHardwareAccelerationSmokeRequest,
   validateMemoryRecallRequest,
+  validateMemoryReviewRequest,
   validateMemorySaveRequest,
   validateOptionalModelRequest,
   validatePlainBridgeBody,
@@ -234,6 +235,44 @@ export function registerFeatureBridgeIpcHandlers(backend: BackendProcessManager)
         k: body.k ?? 5,
         tags: body.tags ?? []
       }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.memoriesPromote, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateMemoryReviewRequest(request);
+    const conflictStatus = body.resolveConflict ? "resolved" : body.conflictStatus;
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm memory promotion",
+      message: conflictStatus === "resolved"
+        ? "Promote this memory and mark its conflict as reviewed?"
+        : "Promote this memory into active agent context?",
+      detail: `Memory id: ${body.memoryId}\nReviewer: ${body.reviewedBy ?? "desktop-user"}\n\nOnly promote content you have reviewed and trust.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/memories/${encodeURIComponent(body.memoryId)}/promote`,
+      method: "POST",
+      body: {
+        reviewed_by: body.reviewedBy ?? "desktop-user",
+        ...(conflictStatus ? { conflict_status: conflictStatus } : {})
+      }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.memoriesRevoke, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateMemoryReviewRequest(request);
+    await confirmNativeDesktopAction(event, {
+      type: "warning",
+      confirmLabel: "Revoke memory",
+      title: "Confirm memory revocation",
+      message: "Revoke this memory from future agent recall?",
+      detail: `Memory id: ${body.memoryId}\nReviewer: ${body.reviewedBy ?? "desktop-user"}\n\nThe audit record is retained.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/memories/${encodeURIComponent(body.memoryId)}/revoke`,
+      method: "POST",
+      body: { reviewed_by: body.reviewedBy ?? "desktop-user" }
     });
   });
 

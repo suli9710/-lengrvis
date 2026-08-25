@@ -3,22 +3,9 @@ import type { AgentConversation, Plan, TaskBoundaryEvent, TaskEvent } from "../.
 import type { BackendPlan, BackendRunCreateResponse, BackendRunEvent, BackendRunState, BackendRunTimeline, BackendSuggestionLaunchResponse } from "./executionBackendTypes";
 import { cleanupPlanFromApprovalPayload } from "./cleanupMappers";
 import { mapOptionalTaskCompletionEvidence } from "./completionEvidenceMappers";
+import { arrayOfObjects, optionalString, recordOrUndefined } from "./mapperPrimitives";
 import { mapOptionalTaskResultQuality } from "./resultQualityMappers";
 import { zhAgentName, zhBackendTaskStatus, zhBackendText, zhToolName } from "../zh";
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function arrayOfObjects(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
-    : [];
-}
-
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
 
 function emptyPlan(): Plan {
   return {
@@ -32,7 +19,11 @@ function emptyPlan(): Plan {
 
 export function mapTaskState(status: string): TaskEvent["state"] {
   if (status === "completed") return "completed";
-  if (status === "failed" || status === "denied" || status === "cancelled") return "failed";
+  if (status === "rolled_back") return "rolled_back";
+  if (status === "repair_required") return "repair_required";
+  if (status === "failed") return "failed";
+  if (status === "denied") return "denied";
+  if (status === "cancelled") return "cancelled";
   if (status === "paused") return "paused";
   if (status === "waiting_user_approval" || status === "awaiting_approval") return "blocked";
   return "running";

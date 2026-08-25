@@ -116,6 +116,21 @@ export interface BackendTask {
   result_quality?: unknown;
   result_verified?: unknown;
   completed_result?: unknown;
+  metadata?: {
+    rollback?: BackendRollbackSummary;
+    [key: string]: unknown;
+  };
+}
+
+export interface BackendRollbackSummary {
+  state?: string;
+  attempted?: number;
+  succeeded?: number;
+  verified?: number;
+  verification_failed?: number;
+  failed?: number;
+  manual_required?: number;
+  unrecoverable?: number;
 }
 
 export interface BackendTimeline {
@@ -376,6 +391,8 @@ export interface BackendApproval {
   engineering_boundary?: unknown;
   status: string;
   created_at: string;
+  expires_at?: string;
+  authorized_at?: string | null;
 }
 
 export interface BackendCommandInfo {

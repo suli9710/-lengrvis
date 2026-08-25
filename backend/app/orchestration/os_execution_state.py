@@ -8,7 +8,7 @@ from app.orchestration.execution_models import LargeResultRef, RunObservation, R
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
-from app.policy.risk import RiskLevel
+from app.orchestration.tool_execution_journal import load_persisted_observations
 
 TERMINAL_STEP_STATUSES = {
     StepStatus.SUCCEEDED,
@@ -53,6 +53,8 @@ def observations_by_step(state: RunState, *, orchestrator_name: str) -> dict[str
                 task_id=state.task_id,
             )
             continue
+    if state.task_id:
+        observations.update(load_persisted_observations(state.task_id))
     return observations
 
 
@@ -163,21 +165,8 @@ def phase_for_task(task: Task) -> RunPhase:
 
 
 def phase_for_task_plan(task: Task, plan: Plan) -> RunPhase:
-    phase = phase_for_task(task)
-    if phase != RunPhase.CANCELLED:
-        return phase
-    summary = (task.final_summary or "").casefold()
-    if "cancel" in summary or "rejected" in summary:
-        return RunPhase.CANCELLED
-    if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
-        return RunPhase.DENIED
-    if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
-        return RunPhase.DENIED
-    if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):
-        return RunPhase.DENIED
-    if any(step.status == StepStatus.DENIED for step in plan.steps):
-        return RunPhase.DENIED
-    return RunPhase.CANCELLED
+    del plan
+    return phase_for_task(task)
 
 
 def event_name_for_outcome(outcome: str) -> str:

@@ -60,6 +60,16 @@ def test_write_text_rejects_existing_linked_parent_escape(tmp_path: Path) -> Non
         _remove_escape_link(link)
 
 
+@pytest.mark.skipif(not filesystem_safety.supports_dir_fd_no_follow(), reason="dir_fd no-follow is unavailable")
+def test_dir_fd_write_creates_private_file(tmp_path: Path) -> None:
+    target = tmp_path / "private.txt"
+
+    filesystem_safety.write_text_with_dir_fd_no_follow(target, "private payload")
+
+    assert target.read_text(encoding="utf-8") == "private payload"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
 def test_move_file_rejects_existing_linked_destination_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"

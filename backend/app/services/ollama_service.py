@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -442,6 +443,13 @@ async def install() -> dict[str, Any]:
             "install_runtime",
         )
     except TimeoutError:
+        # wait_for cancels communicate() but does NOT terminate winget; without
+        # this the installer keeps running in the background with dangling pipes
+        # and a user retry can race the still-running process.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
         return _ollama_action_error("Installation timed out after 120 seconds.", "install_runtime")
     except (OSError, subprocess.SubprocessError) as exc:
         return _ollama_action_error(str(exc), "install_runtime")
@@ -1077,17 +1085,25 @@ async def pull_model_streaming(model: str | None = None):
                         continue
                     try:
                         data = json.loads(line)
-                        total = data.get("total", 0)
-                        completed = data.get("completed", 0)
-                        pct = round(completed / total * 100, 1) if total else 0
-                        yield {
-                            "status": _public_text(data.get("status", "downloading"), fallback="downloading"),
-                            "total": total,
-                            "completed": completed,
-                            "percent": pct,
-                        }
-                    except (json.JSONDecodeError, ZeroDivisionError):
+                    except json.JSONDecodeError:
                         continue
+                    # Ollama streams failures as {"error": ...} lines with HTTP
+                    # 200. These must surface as an error and stop the stream —
+                    # otherwise they were mapped to "downloading" and the pull
+                    # was reported as a success it never achieved.
+                    error_text = data.get("error")
+                    if error_text:
+                        yield _ollama_action_error(str(error_text), "download_model", model=target)
+                        return
+                    total = data.get("total", 0)
+                    completed = data.get("completed", 0)
+                    pct = round(completed / total * 100, 1) if total else 0
+                    yield {
+                        "status": _public_text(data.get("status", "downloading"), fallback="downloading"),
+                        "total": total,
+                        "completed": completed,
+                        "percent": pct,
+                    }
         record("ollama.pull_complete", "OllamaService", {"model": target})
         yield {"status": "success", "model": target}
     except (httpx.HTTPError, OSError) as exc:

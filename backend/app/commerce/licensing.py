@@ -55,6 +55,12 @@ LICENSE_SIGNING_KEY_ENV_VAR = "LENGRVIS_LICENSE_SIGNING_KEY"  # Deprecated HMAC-
 LICENSE_FILE_NAME = "license.key"
 LICENSE_REVOCATIONS_ENV_VAR = "LENGRVIS_LICENSE_REVOCATIONS"
 LICENSE_REVOCATIONS_FILE_NAME = "license-revocations.key"
+# Monotonic "highest wall-clock ever observed" watermark. Used to defeat offline
+# clock-rollback: a subscription that relies on local time for freshness must not
+# become valid again by winding the system clock back.
+CLOCK_WATERMARK_FILE_NAME = "clock-watermark.key"
+# Allow small legitimate backward NTP corrections without tripping rollback.
+CLOCK_WATERMARK_TOLERANCE_SECONDS = 300
 COMMERCIAL_RELEASE_ENV_VAR = "LENGRVIS_COMMERCIAL_RELEASE"
 SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS_ENV_VAR = "LENGRVIS_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS"
 DEFAULT_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS = 24 * 60 * 60
@@ -139,6 +145,61 @@ def _revocation_file_path(settings: Any | None) -> Path | None:
     if not data_dir:
         return None
     return Path(str(data_dir)).expanduser().resolve() / LICENSE_REVOCATIONS_FILE_NAME
+
+
+def _clock_watermark_path(settings: Any | None) -> Path | None:
+    data_dir = getattr(settings, "data_dir", "") if settings is not None else ""
+    if not data_dir:
+        return None
+    return Path(str(data_dir)).expanduser().resolve() / CLOCK_WATERMARK_FILE_NAME
+
+
+def _read_clock_watermark(settings: Any | None) -> datetime | None:
+    path = _clock_watermark_path(settings)
+    if path is None or not path.exists():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        moment = datetime.fromisoformat(raw)
+    except (OSError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _write_clock_watermark(settings: Any | None, moment: datetime) -> None:
+    path = _clock_watermark_path(settings)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(path.parent), delete=False, suffix=".tmp"
+        ) as handle:
+            handle.write(moment.astimezone(UTC).isoformat())
+            temp_path = handle.name
+        os.replace(temp_path, path)
+    except OSError:
+        # Best effort: failing to persist the watermark must not break licensing.
+        return
+
+
+def _effective_now(settings: Any | None, now: datetime | None) -> datetime:
+    """Return a monotonic 'now' that never regresses below the stored watermark.
+
+    Only applied for real runtime checks (``now is None``); callers that pass an
+    explicit ``now`` (tests, replays) are honored verbatim. When the system clock
+    is rolled back beyond the tolerance, the latest observed time is used instead
+    so a subscription cannot be revived offline by winding the clock back.
+    """
+    if now is not None:
+        return now
+    system_now = datetime.now(UTC)
+    watermark = _read_clock_watermark(settings)
+    if watermark is not None and system_now < watermark - timedelta(seconds=CLOCK_WATERMARK_TOLERANCE_SECONDS):
+        return watermark
+    if watermark is None or system_now > watermark:
+        _write_clock_watermark(settings, system_now)
+    return system_now
 
 
 def _license_token_with_source(settings: Any | None) -> tuple[str, str | None]:
@@ -1001,6 +1062,10 @@ def subscription_confirmation_fresh(
     public_key = _read_public_key()
     if not token or not public_key:
         return _plan_env_override_allowed()
+    # Defeat offline clock-rollback: subscriptions lean on local time for
+    # freshness, so a wound-back clock could otherwise revive an expired/cancelled
+    # subscription. Pin the whole freshness evaluation to a monotonic clock.
+    now = _effective_now(settings, now)
     try:
         revocations, _ = load_revocation_manifest(settings, public_key=public_key)
         license_ = parse_license(token, public_key)

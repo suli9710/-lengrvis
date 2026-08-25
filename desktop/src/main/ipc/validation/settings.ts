@@ -5,7 +5,6 @@ import {
   ApiRequestValidationError,
   assertJsonSafeValue,
   assertSafeFieldName,
-  isPlainRecord,
   rejectUnexpectedBridgeKeys,
   validateBridgeBoolean,
   validateBridgeFiniteNumber,
@@ -92,7 +91,36 @@ const SETTINGS_PATCH_VALUE_KINDS: Record<
   confirmation_nonce: "string",
   mcp_servers: "mcpServers"
 };
-const MCP_SERVER_ALLOWED_KEYS = new Set(["id", "name", "url", "command", "args", "enabled", "transport", "auth"]);
+const MCP_SERVER_ALLOWED_KEYS = new Set([
+  "id",
+  "name",
+  "url",
+  "command",
+  "args",
+  "enabled",
+  "transport",
+  "auth",
+  "inherit_env",
+  "owner",
+  "policy_id",
+  "allowed_tools",
+  "protocol_version",
+  "strict_lifecycle",
+  "client_name",
+  "client_version"
+]);
+const MCP_AUTH_ALLOWED_KEYS = new Set([
+  "type",
+  "required",
+  "resource",
+  "audience",
+  "client_id",
+  "scope",
+  "scopes",
+  "token_env",
+  "client_secret_env",
+  "token_endpoint_auth_method"
+]);
 
 export function validateOpenSettingsRequest(value: unknown): DesktopOpenSettingsRequest {
   const request = validatePlainBridgeBody(value, "open settings request");
@@ -181,7 +209,18 @@ function validateMcpServer(value: unknown, index: number): Record<string, unknow
   }
 
   const server: Record<string, unknown> = {};
-  for (const key of ["id", "name", "url", "command", "transport"]) {
+  for (const key of [
+    "id",
+    "name",
+    "url",
+    "command",
+    "transport",
+    "owner",
+    "policy_id",
+    "protocol_version",
+    "client_name",
+    "client_version"
+  ]) {
     if (request[key] !== undefined) {
       server[key] = validateBridgeStringValue(request[key], `MCP server ${key}`, key === "name" ? 256 : 4096, {
         allowEmpty: true,
@@ -192,15 +231,51 @@ function validateMcpServer(value: unknown, index: number): Record<string, unknow
   if (request.args !== undefined) {
     server.args = validateBridgeStringArray(request.args, "MCP server args", 100, 4096);
   }
+  if (request.inherit_env !== undefined) {
+    server.inherit_env = validateBridgeStringArray(request.inherit_env, "MCP server inherited environment", 100, 128);
+  }
+  if (request.allowed_tools !== undefined) {
+    server.allowed_tools = validateBridgeStringArray(request.allowed_tools, "MCP server allowed tools", 1000, 512);
+  }
   if (request.enabled !== undefined) {
     server.enabled = validateBridgeBoolean(request.enabled, "MCP server enabled");
   }
+  if (request.strict_lifecycle !== undefined) {
+    server.strict_lifecycle = validateBridgeBoolean(request.strict_lifecycle, "MCP server strict lifecycle");
+  }
   if (request.auth !== undefined) {
-    if (!isPlainRecord(request.auth)) {
-      throw new ApiRequestValidationError("MCP server auth must be an object");
-    }
-    assertJsonSafeValue(request.auth, 0, new WeakSet<object>());
-    server.auth = JSON.parse(JSON.stringify(request.auth)) as Record<string, unknown>;
+    server.auth = validateMcpAuth(request.auth);
   }
   return server;
+}
+
+function validateMcpAuth(value: unknown): Record<string, unknown> {
+  const request = validatePlainBridgeBody(value, "MCP server auth");
+  rejectUnexpectedBridgeKeys(request, MCP_AUTH_ALLOWED_KEYS, "MCP server auth");
+  const auth: Record<string, unknown> = {};
+  for (const key of [
+    "type",
+    "resource",
+    "audience",
+    "client_id",
+    "scope",
+    "token_env",
+    "client_secret_env",
+    "token_endpoint_auth_method"
+  ]) {
+    if (request[key] !== undefined) {
+      auth[key] = validateBridgeStringValue(request[key], `MCP auth ${key}`, 4096, {
+        allowEmpty: true,
+        trim: true
+      });
+    }
+  }
+  if (request.required !== undefined) {
+    auth.required = validateBridgeBoolean(request.required, "MCP auth required");
+  }
+  if (request.scopes !== undefined) {
+    auth.scopes = validateBridgeStringArray(request.scopes, "MCP auth scopes", 100, 512);
+  }
+  assertJsonSafeValue(auth, 0, new WeakSet<object>());
+  return auth;
 }

@@ -230,13 +230,27 @@ def test_settings_mcp_servers_validates_structure():
         "mcp_servers",
         [
             {"name": "ok", "url": "https://mcp.example/", "enabled": True},
+            {
+                "name": "local",
+                "command": "node",
+                "args": ["server.js"],
+                "transport": "stdio",
+                "inherit_env": ["MCP_TOKEN"],
+                "owner": "security",
+                "policy_id": "SEC-MCP-1",
+                "allowed_tools": ["read"],
+            },
             {"name": "no-url"},
             {"url": "https://only-url/"},
             "not-a-dict",
         ],
     )
     assert isinstance(valid, list)
-    assert len(valid) == 2
+    assert len(valid) == 3
     assert valid[0]["name"] == "ok"
-    assert valid[1]["name"] == "mcp"
-    assert all(item["url"].startswith("http") for item in valid)
+    assert valid[1]["command"] == "node"
+    assert valid[1]["args"] == ["server.js"]
+    assert valid[1]["inherit_env"] == ["MCP_TOKEN"]
+    assert valid[1]["owner"] == "security"
+    assert valid[2]["name"] == "mcp"
+    assert all(item.get("url") or item.get("command") for item in valid)

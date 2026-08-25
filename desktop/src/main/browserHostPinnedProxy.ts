@@ -4,7 +4,9 @@ import {
   type IncomingHttpHeaders,
   type IncomingMessage,
   type Server,
-  type ServerResponse
+  type ServerResponse,
+  validateHeaderName,
+  validateHeaderValue
 } from "node:http";
 import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
@@ -118,11 +120,20 @@ export class BrowserHostPinnedProxy {
         response.end();
       });
       upstream.once("response", (upstreamResponse) => {
-        response.writeHead(
-          upstreamResponse.statusCode ?? 502,
-          upstreamResponse.statusMessage,
-          upstreamResponse.headers
-        );
+        let headers: string[];
+        try {
+          headers = forwardedResponseHeaders(upstreamResponse);
+        } catch (error) { // broad-exception-boundary: reject malformed upstream metadata before it reaches the browser.
+          this.onBlock?.(safeErrorMessage(error));
+          upstreamResponse.destroy();
+          if (!response.headersSent) response.writeHead(502, { Connection: "close" });
+          response.end();
+          return;
+        }
+        const statusCode = upstreamResponse.statusCode ?? 502;
+        // The origin owns these validated headers; raw pairs avoid object writes and strip hop-by-hop fields.
+        // codeql[js/remote-property-injection]
+        response.writeHead(statusCode, upstreamResponse.statusMessage, headers);
         upstreamResponse.pipe(response);
       });
       request.pipe(upstream);
@@ -162,12 +173,35 @@ function safeErrorMessage(error: unknown): string {
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
+  "proxy-connection",
   "proxy-authenticate",
   "proxy-authorization",
   "te",
   "trailer",
+  "transfer-encoding",
   "upgrade"
 ]);
+
+function forwardedResponseHeaders(upstream: IncomingMessage): string[] {
+  const connectionHeaders = new Set<string>();
+  for (const option of String(upstream.headers.connection ?? "").split(",")) {
+    const name = option.trim();
+    if (!name) continue;
+    validateHeaderName(name);
+    connectionHeaders.add(name.toLowerCase());
+  }
+  const forwarded: string[] = [];
+  for (let index = 0; index + 1 < upstream.rawHeaders.length; index += 2) {
+    const name = upstream.rawHeaders[index];
+    const value = upstream.rawHeaders[index + 1];
+    validateHeaderName(name);
+    validateHeaderValue(name, value);
+    const lowerName = name.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lowerName) || connectionHeaders.has(lowerName)) continue;
+    forwarded.push(name, value);
+  }
+  return forwarded;
+}
 
 function forwardedHeaders(headers: IncomingHttpHeaders, authority: string): IncomingHttpHeaders {
   const forwarded: IncomingHttpHeaders = {};

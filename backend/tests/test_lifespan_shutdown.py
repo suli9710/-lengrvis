@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,75 @@ def test_lifespan_mcp_load_does_not_swallow_unexpected_adapter_bugs(monkeypatch:
 
     with pytest.raises(RuntimeError, match="mcp adapter bug"):
         asyncio.run(lifespan._load_mcp_tools(AppSettings(provider_name="mock")))
+
+
+def test_file_environment_startup_failure_unwinds_started_components(monkeypatch: pytest.MonkeyPatch):
+    from app import lifespan
+    from app.config import AppSettings
+
+    calls: list[str] = []
+    sink = object()
+
+    class Watcher:
+        def subscribe_changes(self, value):
+            assert value is sink
+            calls.append("watcher.subscribe")
+
+        async def start(self, allowed_directories):
+            assert allowed_directories
+            calls.append("watcher.start")
+
+        async def stop(self):
+            calls.append("watcher.stop")
+
+        def unsubscribe_changes(self, value):
+            assert value is sink
+            calls.append("watcher.unsubscribe")
+
+    class EnvironmentStream:
+        def file_change_sink(self):
+            return sink
+
+        async def start(self):
+            calls.append("environment.start")
+
+        async def stop(self):
+            calls.append("environment.stop")
+
+    class AutomationTriggers:
+        def __init__(self, *, allowed_directories):
+            assert allowed_directories
+
+        async def start(self, watcher):  # noqa: ARG002
+            calls.append("automation.start")
+            raise RuntimeError("automation startup failed")
+
+        async def stop(self):
+            calls.append("automation.stop")
+
+    watcher = Watcher()
+    environment_stream = EnvironmentStream()
+    monkeypatch.setattr(lifespan, "get_file_watcher", lambda: watcher)
+    monkeypatch.setattr(lifespan, "get_environment_stream", lambda **kwargs: environment_stream)
+    monkeypatch.setattr("app.automation.file_trigger.AutomationFileTriggerService", AutomationTriggers)
+
+    async def run_startup() -> None:
+        async with AsyncExitStack() as stack:
+            await lifespan._start_file_environment(
+                stack,
+                AppSettings(provider_name="mock", allowed_directories=[str(Path.cwd())]),
+            )
+
+    with pytest.raises(RuntimeError, match="automation startup failed"):
+        asyncio.run(run_startup())
+
+    assert calls == [
+        "watcher.subscribe",
+        "environment.start",
+        "watcher.start",
+        "automation.start",
+        "automation.stop",
+        "watcher.stop",
+        "watcher.unsubscribe",
+        "environment.stop",
+    ]

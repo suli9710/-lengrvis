@@ -11,14 +11,26 @@ from fastapi.testclient import TestClient
 
 import app.agents.orchestrator_agent as orchestrator_module
 from app.agents.orchestrator_agent import OrchestratorAgent
+from app.automation.intent_capsule import user_goal_digest
 from app.core import db
-from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import (
+    AgentAction,
+    Approval,
+    ApprovalStatus,
+    Plan,
+    PlanStep,
+    SafetyReview,
+    StepStatus,
+    Task,
+    TaskStatus,
+)
 from app.main import create_app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.permissions import PermissionStore
-from app.policy.risk import RiskLevel
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.sensitive_data_crypto import ENCRYPTED_PAYLOAD_PREFIX
 from app.services import task_recording_service
 from app.services.task_recording_service import list_recording_frames, persist_recording_frame, read_recording_image
@@ -407,18 +419,36 @@ def test_approved_step_records_approved_before_and_after(fake_capture):
     db.upsert_model("plans", plan)
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     preview: dict[str, Any] = {"ok": True}
+    risk_review = SafetyReview(
+        task_id=task.id,
+        step_id=step.id,
+        target_type="tool_call",
+        verdict=SafetyVerdict.ALLOW,
+        risk_level=RiskLevel.R0_READ_ONLY,
+        declared_risk_level=RiskLevel.R0_READ_ONLY,
+        reasons=["Test fixture binds the approved effective risk."],
+    )
+    risk_binding = build_effective_risk_binding(RiskLevel.R0_READ_ONLY, [risk_review])
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
         message="Approve",
         diff_preview=preview,
         tool_name=step.tool_name,
-        risk_level=RiskLevel.R0_READ_ONLY.value,
+        risk_level=risk_binding["effective_risk_level"],
         args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
         preview_hmac=preview_hmac(preview),
         settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="1",
+        engineering_boundary={
+            "intent": {
+                "task_id": task.id,
+                "user_goal_digest": user_goal_digest(task.user_goal),
+                "plan_revision": plan.version,
+            },
+            "risk_provenance": risk_binding,
+        },
         status=ApprovalStatus.APPROVED,
     )
     db.upsert_model("approvals", approval)
