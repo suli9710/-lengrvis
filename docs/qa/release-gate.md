@@ -1,6 +1,6 @@
 # Lengrvis Release Gate
 
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-25
 
 This release gate turns the end-to-end acceptance matrix into a repeatable decision checklist. It is intentionally split into fast preflight, demo-before-release readiness, artifact verification, and manual sign-off so development builds do not need release artifacts while release candidates still verify the package that will ship.
 
@@ -46,6 +46,8 @@ npm run evidence:diagnostics-seal -- --input "<completed diagnostics draft.json>
 ```
 
 Each command refuses templates, overwrites only with `--force`, binds the exact candidate identity, emits `reviewed-evidence-ed25519/v3`, and validates the sealed artifact before publishing it atomically. Remove `LENGRVIS_REVIEWED_EVIDENCE_PRIVATE_KEY` from the shell environment after sealing. Candidate, review, and publish workflows must never receive that private key; they verify with the public key only. Sealing records reviewed evidence, not release-owner sign-off.
+
+Keep the repository default branch frozen at the candidate commit from candidate generation through reviewed-evidence sealing and final publication. The publish workflow rejects a dispatch SHA, candidate run, reviewed-evidence run, or remote tag that does not resolve to that exact full commit. Its repository-code preflight is read-only; the only `contents: write` capability belongs to a fresh runner that performs no checkout or dependency installation, executes no repository script, independently re-verifies the attested candidate bytes, and checks the remote tag before and after publication. If the default branch advances, generate and review a new candidate rather than reusing the old run IDs.
 
 ## 1. Preflight Gate
 
@@ -268,7 +270,7 @@ Pass criteria:
 - Remote WS client-error privacy remains green: targeted backend tests for all screen/input auth, close behavior, and generic error branches pass before any remote UX claim is made.
 - Desktop token-bearing bridges remain loopback-only, and preload API requests reject non-plain or prototype-polluting data before IPC.
 - Mobile smoke commands exit 0, including token subprotocol, task Companion list/start/follow-up/pause/resume/cancel, and remote-input grant lifecycle checks.
-- Dependency lock verification passes when run with `npm run deps:verify`: `backend/requirements-lock.txt` is a fully resolved transitive Python lock with pinned `==` entries, resolver provenance, and `sha256` hashes for every package; every direct backend requirement is present in that lock, and desktop/mobile npm lockfiles exist with matching root package name and version. SBOM generation passes when `npm run sbom:generate` writes CycloneDX JSON to `.tmp/sbom/lengrvis-sbom.cdx.json` with Python hashes and npm integrity hashes; this is inventory evidence, not vulnerability, license approval, provenance, RC, or release sign-off.
+- Dependency lock verification passes when run with `npm run deps:verify`: `backend/requirements-lock.txt` is a fully resolved transitive Python lock with pinned `==` entries, resolver provenance, and `sha256` hashes for every package; every direct backend requirement is present in that lock; and the workspace QA, desktop, and mobile npm lockfiles match their manifests, cover direct dependencies, and carry SRI integrity plus allowlisted HTTPS registry sources for every transitive non-link package. SBOM generation passes when `npm run sbom:generate` writes CycloneDX JSON to `.tmp/sbom/lengrvis-sbom.cdx.json` from the Python locks and all three npm locks, with root toolchain components labeled `lengrvis:npm_project=workspace-qa`. This is inventory evidence, not vulnerability, license approval, provenance, RC, or release sign-off.
 - Mobile LAN/WSS prerequisite preflight, when applicable, exits 0 only for an HTTPS/WSS-ready advertised origin with LAN TLS env, cert/key material, and certificate host coverage that can be validated without starting the backend. It writes a redacted evidence summary path and still requires separate real phone/emulator camera/QR, WSS, and certificate trust evidence before any Android/WSS pass claim.
 - Diagnostics export tests, packet helpers, and evidence templates are contract/template evidence only. Before any diagnostics package is shared externally, a human must review the actual package contents, record the actual exported package path label plus logs/path labels/task traces/model traces/device identifiers, reviewer/timestamp, decision status, and blocked reason, and keep `public_safe=false`, `external_sharing_allowed=false`, and `claim_allowed=false` until that separate human artifact exists. That external content review is still not public-safe approval, clean-machine validation, RC sign-off, or release sign-off.
 - Any skipped backend tests are expected platform skips and are recorded.
@@ -321,12 +323,52 @@ Run the independent portable launcher/backend diagnostics smoke when Windows por
 npm run smoke:portable-first-screen
 ```
 
-`delivery:rc` runs the strict release-candidate pipeline: `qa:gate`, `golden:gate`, official MCP conformance, maintainability gate, `review:scorecard`, real-LLM eval, `security:threat-model`, supply-chain verification, dependency audit, secret scan, extension security, release safety, packaging verification, Windows signature verification, distribution/clean-machine/result-quality/diagnostics/Android evidence validators, market readiness, current release evidence generation, and release readiness. Enable the strict state machine through `config.yaml` or the shell environment before running it:
+`delivery:rc` runs the strict release-candidate pipeline: `qa:gate`, `golden:gate`, candidate-bound MCP and real-LLM quality evidence, maintainability gate, `review:scorecard`, `security:threat-model`, supply-chain verification, dependency audit, secret scan, extension security, release safety, packaging verification, Windows signature verification, distribution/clean-machine/result-quality/diagnostics/Android evidence validators, market readiness, current release evidence generation, and release readiness. The candidate workflow uses four jobs: an unprivileged MCP producer and clean sealer, plus a protected real-provider producer and clean secret-free sealer. The provider credential is scoped only to the evaluation step. Formal real-LLM evaluation uses `--quality-gate --release-evidence`, runs the complete unfiltered current corpus (25 eligible golden plus 105 benchmark tasks), and forbids release-profile overrides.
+
+A manual diagnostic strict run must download both original attempt-bound artifacts:
+`mcp-conformance-evidence-<run-id>-<run-attempt>` into
+`.tmp/qa-evidence/mcp-conformance-job/`, and
+`real-llm-quality-evidence-<run-id>-<run-attempt>` into
+`.tmp/qa-evidence/real-llm-eval/`. Set the matching
+`LENGRVIS_RELEASE_CANDIDATE_*` identity and never synthesize either formal evidence
+file locally. Normal PR/non-default-branch CI skips the advisory real-provider call;
+that skip is not formal release evidence. Enable the strict state machine through
+`config.yaml` or the shell environment before running it:
 
 ```powershell
+npm ci --ignore-scripts --engine-strict
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
 npm run release:check
 ```
+
+If a candidate workflow is rerun, use **rerun all jobs**. Both machine-quality
+evidence artifacts are bound to `github.run_attempt`; rerunning only a failed job
+without all producers and sealers intentionally leaves the release gate blocked.
+
+Once a candidate succeeds, apply a release freeze: the repository default branch
+must remain at that exact candidate commit through reviewed-evidence sealing and final
+publication. GitHub `workflow_dispatch` derives `GITHUB_SHA` from
+the selected branch or tag; the reviewed-evidence job accepts only the default branch
+and requires that SHA to equal the candidate run's head SHA. If the branch advances,
+produce and review a new candidate. Protected branch/tag rulesets, named release owners,
+CODEOWNERS review, production-environment reviewers, an immutable release-tag policy,
+and the freeze record are external governance conditions; workflow code and automated
+tests do not create or prove them.
+
+Promotion-input artifact names bind the producer run ID and run attempt: the candidate
+bundle, sealed MCP evidence, sealed real-LLM evidence, and reviewed-evidence bundle.
+All four are retained for 30 days; raw MCP and real-LLM producer outputs are retained
+for 14 days. `release-publish-preflight-diagnostics-<run-id>-<run-attempt>` is
+attempt-bound diagnostic output from the publish run, not a promotion input.
+`current-release-evidence.md` keeps the candidate run ID and candidate run attempt as
+its identity even when regenerated by the publish preflight; the publish run attempt
+must never be used as a fallback for a missing candidate attempt. Repository/environment
+secrets and explicit `GH_TOKEN` injection are limited to the steps that need them. The
+GitHub-created `GITHUB_TOKEN` is instead bounded by each job's minimum `permissions`,
+and actions can access the `github.token` context even when `GH_TOKEN` is not exported
+to a shell step. The publish workflow's before/after tag checks detect drift but cannot
+make a mutable tag immutable; protected tag rulesets and restricted `contents: write`
+governance remain release prerequisites.
 
 For a release runner, start from `config.release.example.yaml` as a private
 `config.yaml` overlay. It keeps the development default unchanged while making

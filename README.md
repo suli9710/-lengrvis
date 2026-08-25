@@ -133,13 +133,13 @@ lengrvis/
 
 ## 源码开发 setup
 
-正式发布包无需执行本节。普通用户解压完整发布包后，直接双击 `启动 Lengrvis.cmd` 即可启动。仅在从源码或 Git 仓库运行时，才需要安装开发依赖：
+正式发布包无需执行本节。普通用户解压完整发布包后，直接双击 `启动 Lengrvis.cmd` 即可启动。仅在从源码或 Git 仓库运行时，才需要 `Node.js 22+`（CI/正式发布使用 Node 24 LTS）、Python 3.12 与开发依赖：
 
 ```powershell
 .\scripts\setup_dev.ps1
 ```
 
-`setup_dev.ps1` 会创建 `.venv`，安装 Python 开发依赖，并按 `desktop/package-lock.json` 安装桌面/前端依赖。
+`setup_dev.ps1` 会创建 `.venv`，安装 Python 开发依赖，按根 `package-lock.json` 安装锁定的 QA 工具，并按 Desktop/Mobile 各自的 lockfile 安装界面依赖。`-SkipDesktop` / `-SkipMobile` 只跳过对应界面依赖，不会跳过根级 QA 工具。仅在明确不运行 MCP conformance 或发布命令的 Python-only 环境中，才可显式使用 `-SkipWorkspaceQa`；该模式不属于完整 QA setup。
 
 可选安装 pre-commit 钩子：
 
@@ -163,7 +163,9 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 python -m pip install --require-hashes -r requirements-dev-lock.txt
+npm ci --ignore-scripts --engine-strict
 npm --prefix desktop ci
+npm --prefix mobile ci
 ```
 
 开发者可选真实 AI 配置。普通用户应优先通过桌面端“设置”完成配置，不需要手动编辑 `.env` 或 `config.yaml`：
@@ -240,7 +242,7 @@ npm run mcp:conformance          # 官方 initialize/tools/SSE-resume conformanc
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract、Android back navigation、manifest/resource hardening 和 LAN TLS source/connected-test contract smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
 
-CI 在 push/PR 上运行 hygiene、deps:verify、SBOM、backend pytest、golden gate、real-LLM quality gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。缺少真实 LLM gate 凭据时，release evidence 会记录 skipped/incomplete，而不会标记为 machine gates passed。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不覆盖 portable GUI smoke、clean-machine 或真实设备人工验收。
+CI 在 push/PR 上运行 hygiene、deps:verify、SBOM、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。普通 PR 与非默认分支不取得真实 provider 凭据，real-LLM advisory gate 会明确记录 skipped/incomplete；只有默认分支的非 PR 运行可执行该 advisory step。正式发布质量证据只由 release-candidate workflow 的固定 `--release-evidence` producer 与 clean sealer 生成，CI skip 或本地报告都不能替代。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不覆盖 portable GUI smoke、clean-machine 或真实设备人工验收。
 
 ### 测试结果来源
 

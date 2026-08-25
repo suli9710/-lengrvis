@@ -10,8 +10,178 @@ permissions:
   artifact-metadata: write
 
 jobs:
+  mcp-conformance:
+    name: Produce raw MCP conformance results (no release secrets)
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.11.1"
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install locked conformance and backend dependencies
+        run: |
+          npm ci --ignore-scripts --engine-strict
+          python -m pip install --require-hashes -r requirements-dev-lock.txt
+
+      - name: Run official MCP conformance
+        shell: pwsh
+        run: |
+          if ((node --version).Trim() -ne "v24.11.1") {
+            throw "The MCP producer must use the pinned Node.js runtime."
+          }
+          if (Test-Path -LiteralPath ".tmp/qa-evidence/mcp-conformance") {
+            throw "The MCP producer output directory must be absent before execution."
+          }
+          npm run mcp:conformance
+
+      - name: Upload raw MCP conformance results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-conformance-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/mcp-conformance/**/checks.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  mcp-conformance-evidence:
+    name: Seal MCP conformance evidence in a clean job
+    needs: mcp-conformance
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.11.1"
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download raw MCP conformance results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mcp-conformance-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/mcp-conformance
+
+      - name: Seal commit-bound MCP conformance evidence
+        env:
+          MCP_CONFORMANCE_PRODUCER_NODE_VERSION: v24.11.1
+        run: >-
+          python scripts/mcp_conformance_evidence.py emit
+          --output .tmp/qa-evidence/mcp-conformance-job/mcp-conformance-evidence.json
+
+      - name: Upload sealed MCP conformance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-conformance-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/mcp-conformance-job/mcp-conformance-evidence.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  real-llm-quality:
+    name: Produce raw real LLM quality report
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: release-candidate
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Install locked backend dependencies
+        run: python -m pip install --require-hashes -r requirements-dev-lock.txt
+
+      - name: Run real-provider quality gate
+        env:
+          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
+          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
+          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+          LENGRVIS_MODE: efficiency
+        run: python scripts/run_real_llm_eval.py --quality-gate --release-evidence
+
+      - name: Upload raw real LLM quality report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-llm-quality-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  real-llm-evidence:
+    name: Seal real LLM evidence in a clean job
+    needs: real-llm-quality
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      LENGRVIS_RELEASE_BUILD_IDENTIFIER: rc-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download raw real LLM quality report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: real-llm-quality-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/real-llm-eval
+
+      - name: Seal candidate-bound real LLM evidence
+        run: python scripts/real_llm_evidence.py emit
+
+      - name: Upload sealed real LLM quality evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-llm-quality-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json
+            .tmp/qa-evidence/real-llm-eval/real-llm-quality-evidence.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   rc-gate:
     name: Build and verify immutable candidate artifacts
+    needs: [mcp-conformance-evidence, real-llm-evidence]
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: windows-latest
     timeout-minutes: 120
@@ -31,13 +201,36 @@ jobs:
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev-lock.txt
+
+      - name: Download isolated MCP conformance evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mcp-conformance-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/mcp-conformance-job
+
+      - name: Verify isolated MCP conformance evidence
+        run: >-
+          python scripts/mcp_conformance_evidence.py verify
+          --input .tmp/qa-evidence/mcp-conformance-job/mcp-conformance-evidence.json
+          --require-checkout-match
+
+      - name: Download isolated real LLM quality evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: real-llm-quality-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .tmp/qa-evidence/real-llm-eval
+
+      - name: Verify isolated real LLM quality evidence
+        run: >-
+          python scripts/real_llm_evidence.py verify
+          --require-checkout-match
 
       - name: Verify checked-out candidate binding
         run: python scripts/verify_release_candidate_binding.py --require-checkout-match
@@ -48,6 +241,9 @@ jobs:
 
       - name: Install backend dependencies
         run: python -m pip install --require-hashes -r requirements-dev-lock.txt
+
+      - name: Install locked workspace QA dependencies
+        run: npm ci --ignore-scripts --engine-strict
 
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
@@ -75,16 +271,6 @@ jobs:
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
         run: npm run qa:gate
-
-      - name: Run real-provider quality preflight
-        id: real_llm_quality
-        env:
-          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
-          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
-          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
-          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
-          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
-        run: python scripts/run_real_llm_eval.py --quality-gate
 
       - name: Run supply-chain preflight
         id: supply_chain
@@ -164,10 +350,6 @@ jobs:
         # this candidate run, never a synthetic all-success declaration.
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
-          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
-          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
-          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
           LENGRVIS_MODE: efficiency
           AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
@@ -294,7 +476,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-candidate-artifacts
+          name: release-candidate-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/delivery-candidate-verdict.json
             build/release-candidate-subjects.sha256
@@ -312,6 +494,7 @@ jobs:
             .tmp/release-evidence-packet/**
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 30
 
       - name: Upload blocked release candidate diagnostics
         if: failure()

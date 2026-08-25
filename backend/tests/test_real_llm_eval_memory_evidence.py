@@ -207,6 +207,7 @@ def test_expired_fixture_runs_real_recall_probe_and_reports_only_boolean_evidenc
     evidence = record["memory_fixture_evidence"]
     assert evidence == {
         "verified": True,
+        "verification_error": "",
         "seeded": True,
         "seed_active": True,
         "seed_user_confirmed": True,

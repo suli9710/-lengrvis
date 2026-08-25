@@ -482,6 +482,7 @@ Test-BackendDevRequirementsAlias -Root $resolvedRoot -Issues $issues
 Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "backend\requirements-build.txt" -LockRelativePath "backend\requirements-build-lock.txt" -Label "backend build dependency" -Issues $issues
 Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "scripts\acceleration-requirements.txt" -LockRelativePath "scripts\acceleration-requirements-lock.txt" -Label "acceleration dependency" -Issues $issues
 Test-GradleWrapperDistribution -Root $resolvedRoot -Issues $issues
+Test-NpmPackageLock -Root $resolvedRoot -PackageDir "." -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "desktop" -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "mobile" -Issues $issues
 

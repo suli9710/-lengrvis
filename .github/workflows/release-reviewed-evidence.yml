@@ -26,7 +26,6 @@ jobs:
     runs-on: windows-latest
     environment: production
     env:
-      GH_TOKEN: ${{ github.token }}
       LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY: ${{ vars.LENGRVIS_REVIEWED_EVIDENCE_PUBLIC_KEY }}
       LENGRVIS_RELEASE_CANDIDATE_REPOSITORY: ${{ github.repository }}
       LENGRVIS_RELEASE_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
@@ -43,6 +42,8 @@ jobs:
       - name: Validate candidate and reviewed-input provenance
         id: candidate_identity
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $candidateRunId = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID
           $candidateRunAttempt = [string]$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT
@@ -86,6 +87,19 @@ jobs:
           if ($commit -notmatch '^[0-9a-f]{40}$' -or $commit -ne ([string]$env:GITHUB_SHA).ToLowerInvariant()) {
             throw "Candidate run head_sha must equal this reviewed-evidence workflow commit."
           }
+          $currentRepository = gh api "repos/$env:GITHUB_REPOSITORY" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or
+              [string]$currentRepository.full_name -cne [string]$repository.full_name -or
+              [string]$currentRepository.default_branch -cne [string]$repository.default_branch) {
+            throw "Repository default branch identity changed before reviewed evidence sealing."
+          }
+          $encodedDefaultBranch = [Uri]::EscapeDataString([string]$currentRepository.default_branch)
+          $defaultBranchReference = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/$encodedDefaultBranch" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or
+              ([string]$defaultBranchReference.object.type).Trim().ToLowerInvariant() -cne "commit" -or
+              ([string]$defaultBranchReference.object.sha).Trim().ToLowerInvariant() -cne $commit) {
+            throw "Repository default branch must still resolve directly to the frozen candidate commit."
+          }
 
           $reviewRelease = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$reviewBundleTag" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "Unable to read the draft reviewed-input release." }
@@ -121,14 +135,19 @@ jobs:
 
       - name: Download immutable candidate artifacts
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $destination = "build/review-staging/candidate"
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name "release-candidate-artifacts" --dir $destination
+          $artifact = "release-candidate-artifacts-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID-$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT"
+          gh run download "$env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID" --name $artifact --dir $destination
           if ($LASTEXITCODE -ne 0) { throw "Unable to download immutable candidate artifacts." }
 
       - name: Download exact reviewed-input assets
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $destination = "build/review-staging/evidence"
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
@@ -210,7 +229,7 @@ jobs:
       - name: Upload immutable reviewed release evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-reviewed-evidence
+          name: release-reviewed-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/distribution-release-evidence-reviewed.json
             build/clean-machine-release-evidence-reviewed.json

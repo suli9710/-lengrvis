@@ -49,6 +49,7 @@ def _empty_memory_lifecycle_evidence() -> dict[str, Any]:
     empty = _memory_lifecycle_summary({})
     return {
         "verified": False,
+        "verification_error": "",
         "before": empty,
         "after": empty,
         "created_count": 0,
@@ -76,6 +77,7 @@ def _memory_lifecycle_evidence(
     )
     return {
         "verified": True,
+        "verification_error": "",
         "before": _memory_lifecycle_summary(before),
         "after": _memory_lifecycle_summary(after),
         "created_count": created_count,
@@ -102,6 +104,7 @@ class _MemoryFixtureHandle:
 def _empty_memory_fixture_evidence() -> dict[str, Any]:
     return {
         "verified": False,
+        "verification_error": "",
         "seeded": False,
         "seed_active": False,
         "seed_user_confirmed": False,
@@ -266,6 +269,5 @@ def _memory_fixture_evidence(
     evidence["verified"] = bool(
         not verification_error and recall_probe_executed and fixture.expired
     )
-    if verification_error:
-        evidence["verification_error"] = verification_error
+    evidence["verification_error"] = verification_error
     return evidence

@@ -117,9 +117,7 @@ def validate_public_beta_gate_set(rows: list[ReadinessRow]) -> list[str]:
             + ", ".join(missing)
         )
     duplicates = sorted(
-        row_id
-        for row_id in REQUIRED_PUBLIC_BETA_P0_IDS
-        if row_ids.count(row_id) > 1
+        row_id for row_id in REQUIRED_PUBLIC_BETA_P0_IDS if row_ids.count(row_id) > 1
     )
     if duplicates:
         errors.append(
@@ -139,17 +137,40 @@ def validate(
     expected_repo: str | None = None,
     current_sha: str | None = None,
     expected_run_id: str | None = None,
+    expected_run_attempt: str | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     artifact_root = artifact_root or Path.cwd()
     git_repo = _git_remote_github_repo(artifact_root)
     github_repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    expected_repo = (expected_repo or github_repo or git_repo).strip()
-    expected_run_id = (expected_run_id or os.environ.get("GITHUB_RUN_ID", "")).strip()
+    candidate_repo = os.environ.get("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", "").strip()
+    candidate_sha = os.environ.get("LENGRVIS_RELEASE_CANDIDATE_COMMIT", "").strip()
+    candidate_run_id = os.environ.get("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "").strip()
+    candidate_run_attempt = os.environ.get(
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", ""
+    ).strip()
+    explicit_run_id = (expected_run_id or "").strip()
+    explicit_run_attempt = (expected_run_attempt or "").strip()
+    expected_repo = (expected_repo or candidate_repo or github_repo or git_repo).strip()
+    expected_run_id = (
+        expected_run_id or candidate_run_id or os.environ.get("GITHUB_RUN_ID", "")
+    ).strip()
+    if explicit_run_attempt:
+        expected_run_attempt = explicit_run_attempt
+    elif candidate_run_id:
+        expected_run_attempt = candidate_run_attempt
+    elif explicit_run_id:
+        expected_run_attempt = ""
+    else:
+        expected_run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "").strip()
     git_sha = _git_head_sha(artifact_root)
     github_sha = os.environ.get("GITHUB_SHA", "").strip()
-    current_sha = (current_sha or git_sha or github_sha).strip() if strict else ""
+    current_sha = (
+        (current_sha or candidate_sha or git_sha or github_sha).strip()
+        if strict
+        else ""
+    )
     if not rows:
         errors.append("No readiness rows found.")
         return errors, warnings
@@ -159,14 +180,25 @@ def validate(
             errors.append(
                 f"GITHUB_REPOSITORY {github_repo} does not match checked-out repository {git_repo}."
             )
-        if github_sha and git_sha and not _sha_matches(github_sha, git_sha):
+        workflow_sha = candidate_sha or github_sha
+        workflow_sha_label = (
+            "LENGRVIS_RELEASE_CANDIDATE_COMMIT" if candidate_sha else "GITHUB_SHA"
+        )
+        if workflow_sha and git_sha and not _sha_matches(workflow_sha, git_sha):
             errors.append(
-                f"GITHUB_SHA {github_sha[:8]} does not match checked-out HEAD {git_sha[:8]}."
+                f"{workflow_sha_label} {workflow_sha[:8]} does not match checked-out HEAD {git_sha[:8]}."
             )
         if not expected_repo:
-            errors.append("Strict release readiness requires a current GitHub repository binding.")
+            errors.append(
+                "Strict release readiness requires a current GitHub repository binding."
+            )
         if not current_sha:
             errors.append("Strict release readiness requires a current commit binding.")
+        if expected_run_id and not expected_run_attempt:
+            errors.append(
+                "Strict release readiness requires a CI run attempt binding "
+                "when a bound run id is present."
+            )
 
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     if not p0_rows:
@@ -244,14 +276,20 @@ def validate(
     if strict and dashboard_text:
         candidate = _candidate_commit_from_dashboard(dashboard_text)
         if not candidate:
-            errors.append("Strict release readiness requires a Candidate commit in the dashboard.")
+            errors.append(
+                "Strict release readiness requires a Candidate commit in the dashboard."
+            )
         elif current_sha and not _sha_matches(candidate, current_sha):
             errors.append(
                 f"Current candidate commit {candidate} does not match checked-out HEAD {current_sha[:8]}."
             )
-        current_evidence = artifact_root / "docs" / "release" / "current-release-evidence.md"
+        current_evidence = (
+            artifact_root / "docs" / "release" / "current-release-evidence.md"
+        )
         if not current_evidence.exists():
-            errors.append("Strict release readiness requires docs/release/current-release-evidence.md.")
+            errors.append(
+                "Strict release readiness requires docs/release/current-release-evidence.md."
+            )
         else:
             evidence_text = current_evidence.read_text(encoding="utf-8")
             evidence_commit = _current_evidence_commit(evidence_text)
@@ -262,31 +300,62 @@ def validate(
                     f"Current release evidence commit {evidence_commit} does not match checked-out HEAD {current_sha[:8]}."
                 )
             evidence_run_id = _current_evidence_run_id(evidence_text)
-            if expected_run_id and evidence_run_id and evidence_run_id != expected_run_id:
-                errors.append(
-                    f"Current release evidence run id {evidence_run_id} does not match GITHUB_RUN_ID {expected_run_id}."
-                )
-            evidence_ci_status = _current_evidence_summary_value(evidence_text, "CI status")
+            if expected_run_id:
+                if not evidence_run_id:
+                    errors.append(
+                        "Current release evidence is missing the bound CI run id."
+                    )
+                elif evidence_run_id != expected_run_id:
+                    errors.append(
+                        f"Current release evidence run id {evidence_run_id} does not match "
+                        f"the bound candidate/CI run id {expected_run_id}."
+                    )
+            evidence_run_attempt = _current_evidence_run_attempt(evidence_text)
+            if expected_run_attempt:
+                if not evidence_run_attempt:
+                    errors.append(
+                        "Current release evidence is missing the bound CI run attempt."
+                    )
+                elif evidence_run_attempt != expected_run_attempt:
+                    errors.append(
+                        "Current release evidence run attempt "
+                        f"{evidence_run_attempt} does not match the bound candidate/CI "
+                        f"run attempt {expected_run_attempt}."
+                    )
+            evidence_ci_status = _current_evidence_summary_value(
+                evidence_text, "CI status"
+            )
             if evidence_ci_status != "machine_gates_passed":
                 errors.append(
                     "Current release evidence CI status must be machine_gates_passed for strict readiness; "
                     f"got {evidence_ci_status or 'missing'}."
                 )
-            evidence_worktree_status = _current_evidence_summary_value(evidence_text, "Worktree status")
+            evidence_worktree_status = _current_evidence_summary_value(
+                evidence_text, "Worktree status"
+            )
             if evidence_worktree_status != "clean":
                 errors.append(
                     "Current release evidence worktree status must be clean for strict readiness; "
                     f"got {evidence_worktree_status or 'missing'}."
                 )
-            manual_status = _current_evidence_summary_value(evidence_text, "Manual sign-off status")
+            manual_status = _current_evidence_summary_value(
+                evidence_text, "Manual sign-off status"
+            )
             if manual_status not in STRICT_ACCEPTED_MANUAL_SIGNOFF_STATUSES:
                 errors.append(
                     "Current release evidence manual sign-off status must record RC/release owner approval; "
                     f"got {manual_status or 'missing'}."
                 )
-            owner_signature = _current_evidence_summary_value(evidence_text, "Owner signature")
-            if not owner_signature or owner_signature == "PENDING_RELEASE_OWNER_SIGNATURE":
-                errors.append("Current release evidence owner signature is pending or missing.")
+            owner_signature = _current_evidence_summary_value(
+                evidence_text, "Owner signature"
+            )
+            if (
+                not owner_signature
+                or owner_signature == "PENDING_RELEASE_OWNER_SIGNATURE"
+            ):
+                errors.append(
+                    "Current release evidence owner signature is pending or missing."
+                )
             owner_signature_verification = _current_evidence_summary_value(
                 evidence_text, "Owner signature verification"
             )
@@ -332,7 +401,8 @@ def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
         return True
     if parsed.scheme:
         return False
-    candidate = (artifact_root / value).resolve()
+    repo_relative_value = value.replace("\\", "/")
+    candidate = (artifact_root / repo_relative_value).resolve()
     try:
         candidate.relative_to(artifact_root.resolve())
     except ValueError:
@@ -348,7 +418,11 @@ def _artifact_link_target(artifact: str) -> str:
 
 def _artifact_is_github_actions_run(artifact: str) -> bool:
     parsed = urlparse(_artifact_link_target(artifact))
-    return parsed.scheme == "https" and parsed.netloc.lower() == "github.com" and "/actions/runs/" in parsed.path
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc.lower() == "github.com"
+        and "/actions/runs/" in parsed.path
+    )
 
 
 def _artifact_is_ci_evidence(
@@ -361,13 +435,22 @@ def _artifact_is_ci_evidence(
     value = _artifact_link_target(artifact)
     parsed = urlparse(value)
     if parsed.scheme == "https" and parsed.netloc and "/actions/runs/" in parsed.path:
-        if parsed.netloc.lower() != "github.com":
+        if (
+            parsed.netloc.lower() != "github.com"
+            or parsed.query
+            or parsed.fragment
+            or "%" in parsed.path
+        ):
             return False
-        path_parts = [part for part in parsed.path.split("/") if part]
-        if len(path_parts) < 5 or path_parts[2] != "actions" or path_parts[3] != "runs":
+        match = re.fullmatch(
+            r"/([^/]+)/([^/]+)/actions/runs/([1-9][0-9]*)/?", parsed.path
+        )
+        if not match:
             return False
-        repo = "/".join(path_parts[:2]).lower()
-        run_id = path_parts[4]
+        owner, repository, run_id = match.groups()
+        if owner in {".", ".."} or repository in {".", ".."}:
+            return False
+        repo = f"{owner}/{repository}".lower()
         if not expected_repo or repo != expected_repo.lower():
             return False
         if expected_run_id and run_id != expected_run_id:
@@ -375,21 +458,24 @@ def _artifact_is_ci_evidence(
         return True
     if parsed.scheme:
         return False
-    normalized = value.replace("\\", "/").lstrip("./")
-    if normalized == "docs/release/current-release-evidence.md":
-        return True
-    if not normalized.startswith(CI_ARTIFACT_PATH_PREFIXES):
-        return False
-    candidate = (artifact_root / value).resolve()
+    repo_relative_value = value.replace("\\", "/")
+    candidate = (artifact_root / repo_relative_value).resolve()
     try:
-        candidate.relative_to(artifact_root.resolve())
+        relative = candidate.relative_to(artifact_root.resolve())
     except ValueError:
+        return False
+    normalized = relative.as_posix()
+    if normalized == "docs/release/current-release-evidence.md":
+        return candidate.exists()
+    if not normalized.startswith(CI_ARTIFACT_PATH_PREFIXES):
         return False
     return candidate.exists()
 
 
 def _candidate_commit_from_dashboard(markdown: str) -> str:
-    match = re.search(r"\|\s*Candidate commit\s*\|\s*`?([0-9a-fA-F]{7,40})`?\s*\|", markdown)
+    match = re.search(
+        r"\|\s*Candidate commit\s*\|\s*`?([0-9a-fA-F]{7,40})`?\s*\|", markdown
+    )
     return match.group(1) if match else ""
 
 
@@ -400,6 +486,11 @@ def _current_evidence_commit(markdown: str) -> str:
 
 def _current_evidence_run_id(markdown: str) -> str:
     match = re.search(r"(?im)^-\s*Run id:\s*`?([0-9]+)`?\s*$", markdown)
+    return match.group(1) if match else ""
+
+
+def _current_evidence_run_attempt(markdown: str) -> str:
+    match = re.search(r"(?im)^-\s*Run attempt:\s*`?([1-9][0-9]*)`?\s*$", markdown)
     return match.group(1) if match else ""
 
 
@@ -417,8 +508,11 @@ def _current_evidence_lists_command(markdown: str, command: str) -> bool:
 
 
 def _sha_matches(candidate: str, current_sha: str) -> bool:
-    shorter = min(len(candidate), len(current_sha))
-    return shorter >= 7 and candidate[:shorter].lower() == current_sha[:shorter].lower()
+    return bool(
+        re.fullmatch(r"[0-9a-fA-F]{40}", candidate)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", current_sha)
+        and candidate.casefold() == current_sha.casefold()
+    )
 
 
 def _git_head_sha(root: Path) -> str:

@@ -102,6 +102,7 @@
       "expect": {
         "phase": ["awaiting_approval"],
         "plan_tools": ["file.trash"],
+        "global_risk": "R3_DESTRUCTIVE_OR_SYSTEM",
         "pending_approvals": 1,
         "files_exist": ["old-report.txt"],
         "timeline_any": ["run.waiting_approval"]
@@ -119,6 +120,7 @@
       "expect": {
         "phase": ["awaiting_approval"],
         "plan_tools": ["file.trash"],
+        "global_risk": "R3_DESTRUCTIVE_OR_SYSTEM",
         "pending_approvals": 1
       },
       "after_expect": {
@@ -139,6 +141,7 @@
       "expect": {
         "phase": ["awaiting_approval"],
         "plan_tools": ["file.trash"],
+        "global_risk": "R3_DESTRUCTIVE_OR_SYSTEM",
         "pending_approvals": 1
       },
       "after_expect": {
@@ -156,6 +159,7 @@
       "engine": "os",
       "expect": {
         "phase": ["denied"],
+        "global_risk": "R4_FORBIDDEN_OR_HANDOFF",
         "no_tool_results": true,
         "timeline_any": ["run.denied"]
       }
@@ -169,6 +173,7 @@
       "engine": "os",
       "expect": {
         "phase": ["denied"],
+        "global_risk": "R4_FORBIDDEN_OR_HANDOFF",
         "no_tool_results": true,
         "timeline_any": ["run.denied"]
       }
@@ -182,6 +187,7 @@
       "engine": "os",
       "expect": {
         "phase": ["denied"],
+        "global_risk": "R4_FORBIDDEN_OR_HANDOFF",
         "no_tool_results": true,
         "timeline_any": ["run.denied"]
       }
@@ -197,6 +203,7 @@
       "expect": {
         "phase": ["awaiting_approval"],
         "plan_tools": ["file.preview_batch_operation"],
+        "global_risk": "R2_REVERSIBLE_MODIFY",
         "pending_approvals": 1,
         "files_exist": ["invoice-2026-01.txt", "invoice-2026-02.txt"]
       }
@@ -264,6 +271,7 @@
       "expect": {
         "phase": ["failed"],
         "plan_tools": ["app.uninstall_app"],
+        "global_risk": "R3_DESTRUCTIVE_OR_SYSTEM",
         "pending_approvals": 0,
         "timeline_any": ["run.failed"]
       }
@@ -301,7 +309,8 @@
         "delegated": true,
         "agent": "ComputerAgent",
         "task_completed": true,
-        "task_plan_tools": ["system.diagnostics"]
+        "task_plan_tools": ["system.diagnostics"],
+        "global_risk": "R0_READ_ONLY"
       }
     },
     {
@@ -500,7 +509,8 @@
         "delegated": true,
         "agent": "BrowserAgent",
         "task_metadata_hint": "BrowserAgent",
-        "task_plan_tools": ["browser.read_page"]
+        "task_plan_tools": ["browser.read_page"],
+        "global_risk": "R0_READ_ONLY"
       }
     },
     {
@@ -513,7 +523,8 @@
         "delegated": true,
         "agent": "SearchAgent",
         "task_metadata_hint": "SearchAgent",
-        "task_plan_tools": ["search.query"]
+        "task_plan_tools": ["search.query"],
+        "global_risk": "R0_READ_ONLY"
       }
     },
     {
@@ -547,7 +558,8 @@
         "delegated": true,
         "agent": "FileAgent",
         "task_metadata_hint": "FileAgent",
-        "task_plan_tools": ["file.trash"]
+        "task_plan_tools": ["file.trash"],
+        "global_risk": "R3_DESTRUCTIVE_OR_SYSTEM"
       }
     },
     {

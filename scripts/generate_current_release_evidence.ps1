@@ -274,11 +274,30 @@ else {
 }
 $worktreeDirtyCount = $gitStatusLines.Count
 
+$hasCandidateRunIdentity = -not [string]::IsNullOrWhiteSpace($env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID)
+$boundRunId = if ($hasCandidateRunIdentity) {
+    $env:LENGRVIS_RELEASE_CANDIDATE_RUN_ID.Trim()
+}
+else {
+    Get-FirstNonEmpty @($env:GITHUB_RUN_ID) "local/manual"
+}
+$boundRunAttempt = if ($hasCandidateRunIdentity) {
+    Get-FirstNonEmpty @($env:LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT) "missing"
+}
+else {
+    Get-FirstNonEmpty @($env:GITHUB_RUN_ATTEMPT) "local/manual"
+}
+$boundWorkflow = if ($hasCandidateRunIdentity) {
+    "release-candidate"
+}
+else {
+    Get-FirstNonEmpty @($env:GITHUB_WORKFLOW, "local/manual") "local/manual"
+}
 $runUrl = ""
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_SERVER_URL) -and
     -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY) -and
-    -not [string]::IsNullOrWhiteSpace($env:GITHUB_RUN_ID)) {
-    $runUrl = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+    $boundRunId -match '^[1-9][0-9]*$') {
+    $runUrl = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$boundRunId"
 }
 
 $artifactLinks = New-Object System.Collections.Generic.List[string]
@@ -343,6 +362,7 @@ $gates = @(
         job = "Backend pytest + golden task + MCP conformance gate"
         scope = "Backend pytest suite, golden task regression, and official MCP lifecycle/tools/SSE resume conformance"
         commands = @(
+            "npm ci --ignore-scripts --engine-strict",
             "python -m pip install --require-hashes -r requirements-dev-lock.txt",
             "python -m playwright install chromium",
             "python -m pytest backend/tests -q --maxfail=1",
@@ -568,9 +588,9 @@ $lines.Add("- Owner signature verification: $ownerSignatureVerificationStatus")
 $lines.Add("- Owner signature payload SHA-256: $ownerSignaturePayloadSha256")
 $lines.Add("- Owner signature key fingerprint: $ownerSignatureKeyFingerprint")
 $lines.Add("- Owner signature evidence: $ownerSignatureVerificationRelativePath")
-$lines.Add("- Workflow: $(Get-FirstNonEmpty @($env:GITHUB_WORKFLOW, 'local/manual') 'local/manual')")
-$lines.Add("- Run id: $(Get-FirstNonEmpty @($env:GITHUB_RUN_ID, 'local/manual') 'local/manual')")
-$lines.Add("- Run attempt: $(Get-FirstNonEmpty @($env:GITHUB_RUN_ATTEMPT, 'local/manual') 'local/manual')")
+$lines.Add("- Workflow: $boundWorkflow")
+$lines.Add("- Run id: $boundRunId")
+$lines.Add("- Run attempt: $boundRunAttempt")
 $lines.Add("")
 
 $lines.Add("## Machine Environment")

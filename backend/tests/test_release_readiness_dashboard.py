@@ -10,6 +10,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_release_readiness_dashboard.py"
 READINESS_PATH = REPO_ROOT / "docs" / "release" / "release-readiness-dashboard.md"
@@ -106,6 +108,92 @@ def test_strict_fails_on_blocked_p0():
     assert not any("RR-P0-002" in e for e in errors)
 
 
+def test_strict_publish_prefers_verified_candidate_over_dispatch_sha(
+    monkeypatch,
+    tmp_path,
+):
+    candidate_sha = "a" * 40
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "9")
+    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_REPOSITORY", "example/repo")
+    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_COMMIT", candidate_sha)
+    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "123")
+    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", "2")
+    monkeypatch.setattr(mod, "_git_remote_github_repo", lambda _root: "example/repo")
+    monkeypatch.setattr(mod, "_git_head_sha", lambda _root: candidate_sha)
+
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                f"- Commit SHA: {candidate_sha}",
+                "- Run id: 123",
+                "- Run attempt: 2",
+                "- CI status: machine_gates_passed",
+                "- Worktree status: clean",
+                "- Manual sign-off status: release_signoff_recorded",
+                "- Owner signature: release-owner-accepted",
+                "- Owner signature verification: verified",
+                f"- Owner signature payload SHA-256: sha256:{'1' * 64}",
+                f"- Owner signature key fingerprint: sha256:{'2' * 64}",
+                "",
+                "| CI job | Command |",
+                "| --- | --- |",
+                "| scorecard | `npm run review:scorecard` |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = f"| Field | Value |\n| --- | --- |\n| Candidate commit | `{candidate_sha}` |\n"
+
+    errors, _warnings = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+    )
+
+    assert errors == []
+
+
+def test_strict_candidate_run_does_not_fallback_to_publish_attempt(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "9")
+    monkeypatch.setenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ID", "123")
+    monkeypatch.delenv("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", raising=False)
+
+    errors, _ = mod.validate(
+        mod.parse_rows(SAMPLE),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+    )
+
+    assert ("Strict release readiness requires a CI run attempt binding when a bound run id is present.") in errors
+
+
+def test_strict_requires_attempt_with_explicit_run_id(monkeypatch):
+    monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+    errors, _warnings = mod.validate(
+        mod.parse_rows(SAMPLE),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+        expected_run_id="123",
+    )
+
+    assert any("CI run attempt binding" in error for error in errors)
+
+
 def test_passed_row_requires_owner_and_artifact():
     markdown = (
         "| ID | Area | Required evidence | Status | Artifact / link label | Owner | Expiry | Notes |\n"
@@ -142,6 +230,18 @@ def test_strict_requires_verifiable_artifact_for_passed_rows():
     )
     errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
     assert any("RR-P0-011" in e and "existing repo-relative path" in e for e in errors)
+
+
+def test_ci_artifact_paths_accept_dot_tmp_and_reject_normalized_traversal(tmp_path):
+    artifact_root = tmp_path / "repo"
+    evidence = artifact_root / ".tmp" / "qa-evidence" / "result.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("{}", encoding="utf-8")
+    (artifact_root / "private.json").write_text("{}", encoding="utf-8")
+
+    assert mod._artifact_is_ci_evidence(".tmp/qa-evidence/result.json", artifact_root)
+    assert mod._artifact_is_ci_evidence(".tmp\\qa-evidence\\result.json", artifact_root)
+    assert not mod._artifact_is_ci_evidence(".tmp/qa-evidence/../../private.json", artifact_root)
 
 
 def test_strict_requires_p0_artifact_to_point_to_ci_evidence():
@@ -198,6 +298,33 @@ def test_strict_rejects_actions_run_id_that_is_not_current_ci():
         expected_run_id="999",
     )
     assert any("RR-P0-016" in e and "CI-generated evidence" in e for e in errors)
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://github.com/example/repo/actions/runs/123/../999",
+        "https://github.com/example/repo/actions/runs/123/%2e%2e/999",
+        "https://github.com/example/repo/actions/runs/123%2f999",
+        "https://github.com/example/repo/actions/runs/123?attempt=2",
+    ),
+)
+def test_strict_rejects_noncanonical_actions_run_urls(url):
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"| RR-P0-016 | X | ev | passed | {url} | alice | 2026-01-01 | n |\n"
+    )
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=REPO_ROOT,
+        expected_repo="example/repo",
+        expected_run_id="123",
+    )
+
+    assert any("RR-P0-016" in error and "CI-generated evidence" in error for error in errors)
 
 
 def test_strict_requires_dashboard_candidate_commit(tmp_path):
@@ -289,13 +416,15 @@ def test_strict_rejects_pending_rr_p0_006_current_evidence(tmp_path):
 
 
 def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
+    commit = "abcdef1234567890abcdef1234567890abcdef12"
     evidence_dir = tmp_path / "docs" / "release"
     evidence_dir.mkdir(parents=True)
     (evidence_dir / "current-release-evidence.md").write_text(
         "\n".join(
             [
-                "- Commit SHA: abcdef1234567890",
+                f"- Commit SHA: {commit}",
                 "- Run id: 123",
+                "- Run attempt: 2",
                 "- CI status: machine_gates_passed",
                 "- Worktree status: clean",
                 "- Manual sign-off status: rc_signoff_recorded",
@@ -318,7 +447,7 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
         "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
         "| RR-P0-006 | RC handoff and release-owner sign-off | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
     )
-    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1234567890` |\n"
+    dashboard = f"| Field | Value |\n| --- | --- |\n| Candidate commit | `{commit}` |\n"
 
     errors, _ = mod.validate(
         mod.parse_rows(markdown),
@@ -327,11 +456,145 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
         artifact_root=tmp_path,
         dashboard_text=dashboard,
         expected_repo="example/repo",
-        current_sha="abcdef1234567890",
+        current_sha=commit,
         expected_run_id="123",
+        expected_run_attempt="2",
     )
 
     assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("attempt_line", "expected_error"),
+    (
+        ("", "Current release evidence is missing the bound CI run attempt."),
+        (
+            "- Run attempt: 3",
+            "does not match the bound candidate/CI run attempt 2",
+        ),
+    ),
+)
+def test_strict_requires_exact_bound_run_attempt(
+    tmp_path,
+    attempt_line,
+    expected_error,
+):
+    commit = "abcdef1234567890abcdef1234567890abcdef12"
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                f"- Commit SHA: {commit}",
+                "- Run id: 123",
+                attempt_line,
+                "- CI status: machine_gates_passed",
+                "- Worktree status: clean",
+                "- Manual sign-off status: rc_signoff_recorded",
+                "- Owner signature: release-owner-accepted-rc",
+                "- Owner signature verification: verified",
+                f"- Owner signature payload SHA-256: sha256:{'1' * 64}",
+                f"- Owner signature key fingerprint: sha256:{'2' * 64}",
+                "",
+                "| CI job | Command |",
+                "| --- | --- |",
+                "| scorecard | `npm run review:scorecard` |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = f"| Field | Value |\n| --- | --- |\n| Candidate commit | `{commit}` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha=commit,
+        expected_run_id="123",
+        expected_run_attempt="2",
+    )
+
+    assert any(expected_error in error for error in errors)
+
+
+def test_strict_rejects_short_sha_prefix_even_when_it_matches(tmp_path):
+    full_commit = "abcdef1234567890abcdef1234567890abcdef12"
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        "\n".join(
+            [
+                "- Commit SHA: abcdef1",
+                "- Run id: 123",
+                "- CI status: machine_gates_passed",
+                "- Worktree status: clean",
+                "- Manual sign-off status: rc_signoff_recorded",
+                "- Owner signature: release-owner-accepted-rc",
+                "- Owner signature verification: verified",
+                f"- Owner signature payload SHA-256: sha256:{'1' * 64}",
+                f"- Owner signature key fingerprint: sha256:{'2' * 64}",
+                "",
+                "| CI job | Command |",
+                "| --- | --- |",
+                "| scorecard | `npm run review:scorecard` |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = "| Field | Value |\n| --- | --- |\n| Candidate commit | `abcdef1` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha=full_commit,
+        expected_run_id="123",
+    )
+
+    assert any("candidate commit" in error.lower() and "does not match" in error for error in errors)
+    assert any("release evidence commit" in error.lower() and "does not match" in error for error in errors)
+
+
+def test_strict_requires_bound_run_id_in_current_evidence(tmp_path):
+    commit = "abcdef1234567890abcdef1234567890abcdef12"
+    evidence_dir = tmp_path / "docs" / "release"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "current-release-evidence.md").write_text(
+        f"- Commit SHA: {commit}\n",
+        encoding="utf-8",
+    )
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-006 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
+    )
+    dashboard = f"| Field | Value |\n| --- | --- |\n| Candidate commit | `{commit}` |\n"
+
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha=commit,
+        expected_run_id="123",
+    )
+
+    assert "Current release evidence is missing the bound CI run id." in errors
 
 
 def test_strict_rejects_current_release_evidence_without_scorecard_gate(tmp_path):

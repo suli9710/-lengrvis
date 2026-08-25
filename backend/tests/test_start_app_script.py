@@ -708,6 +708,19 @@ def test_setup_dev_owns_dependency_install(project_root: Path) -> None:
     assert "& $npm --prefix $DesktopDir install" in text
 
 
+def test_setup_dev_workspace_qa_install_is_independent_of_ui_skips(project_root: Path) -> None:
+    text = _setup_dev_text(project_root)
+
+    assert "[switch]$SkipWorkspaceQa" in text
+    workspace_start = text.index("if (-not $SkipWorkspaceQa) {")
+    desktop_start = text.index("if (-not $SkipDesktop) {", workspace_start)
+    workspace_block = text[workspace_start:desktop_start]
+
+    assert "& $npm ci --ignore-scripts --engine-strict" in workspace_block
+    assert "$SkipDesktop" not in workspace_block
+    assert "$SkipMobile" not in workspace_block
+
+
 def test_build_portable_initializes_electron_runtime_when_missing(project_root: Path) -> None:
     text = _build_portable_text(project_root)
 
@@ -1013,6 +1026,105 @@ def test_current_release_evidence_ci_success_still_requires_manual_signature(
     assert "npm run maintainability:gate" in text
     assert "| Supply chain lock + SBOM |" in text
     assert "| IPC + Skill/MCP + settings security gate |" in text
+
+
+def test_current_release_evidence_prefers_candidate_run_identity(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "current-release-evidence.md"
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_REPOSITORY": "example/lengrvis",
+            "GITHUB_RUN_ID": "999",
+            "GITHUB_RUN_ATTEMPT": "9",
+            "GITHUB_WORKFLOW": "Publish GitHub Release",
+            "LENGRVIS_RELEASE_CANDIDATE_RUN_ID": "123",
+            "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT": "2",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "a" * 40,
+            "-GeneratedAtUtc",
+            "2026-08-25T00:00:00Z",
+        ],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- Workflow: release-candidate" in text
+    assert "- Run id: 123" in text
+    assert "- Run attempt: 2" in text
+    assert "https://github.com/example/lengrvis/actions/runs/123" in text
+    assert "actions/runs/999" not in text
+
+
+def test_current_release_evidence_does_not_substitute_publish_attempt(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "current-release-evidence.md"
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_RUN_ID": "999",
+            "GITHUB_RUN_ATTEMPT": "9",
+            "LENGRVIS_RELEASE_CANDIDATE_RUN_ID": "123",
+        }
+    )
+    env.pop("LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT", None)
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "a" * 40,
+            "-GeneratedAtUtc",
+            "2026-08-25T00:00:00Z",
+        ],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- Run id: 123" in text
+    assert "- Run attempt: missing" in text
+    assert "- Run attempt: 9" not in text
 
 
 def test_current_release_evidence_accepts_explicit_manual_signoff_status(

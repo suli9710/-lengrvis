@@ -43,7 +43,7 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "npm was not found. Install Node.js 20+, then run .\scripts\setup_dev.ps1."
+    throw "npm was not found. Install Node.js 22+, then run .\scripts\setup_dev.ps1."
 }
 
 function Get-MissingPythonRequirements([string]$Python) {

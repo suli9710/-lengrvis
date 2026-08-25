@@ -1,5 +1,6 @@
 param(
     [switch]$SkipPython,
+    [switch]$SkipWorkspaceQa,
     [switch]$SkipDesktop,
     [switch]$SkipMobile,
     [switch]$UseSystemPython
@@ -42,7 +43,7 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "npm was not found. Install Node.js 20+, then rerun scripts\setup_dev.ps1."
+    throw "npm was not found. Install Node.js 22+, then rerun scripts\setup_dev.ps1."
 }
 
 function Assert-PythonVersion([string]$Python) {
@@ -93,6 +94,13 @@ if (-not $SkipPython) {
     Write-Step "Installing Python development dependencies"
     Invoke-Checked "Failed to upgrade pip. See the output above." { & $python -m pip install -U pip }
     Invoke-Checked "Failed to install Python development dependencies. See the output above." { & $python -m pip install --require-hashes -r $requirementsPath }
+}
+
+if (-not $SkipWorkspaceQa) {
+    $npm = Find-Npm
+
+    Write-Step "Installing locked workspace QA dependencies"
+    Invoke-Checked "Failed to install workspace QA dependencies. See the output above." { & $npm ci --ignore-scripts --engine-strict }
 }
 
 if (-not $SkipDesktop) {

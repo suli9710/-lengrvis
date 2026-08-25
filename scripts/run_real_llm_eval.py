@@ -29,6 +29,7 @@ llama.cpp）重放 ``test_data/golden_tasks/golden_tasks.json`` 中 LLM 相关�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -46,7 +47,6 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from scripts.real_llm_benchmark_catalog import (  # noqa: E402
-    MIN_REAL_LLM_BENCHMARK_CASES,
     REQUIRED_ATTACK_VECTORS,  # noqa: F401 - compatibility re-export for harness tests
     REQUIRED_CATEGORIES,  # noqa: F401 - compatibility re-export for harness tests
 )
@@ -73,6 +73,7 @@ from scripts.real_llm_eval_fixtures import (  # noqa: E402
     benchmark_environment,
     benchmark_runtime_scope,
 )
+from scripts.real_llm_eval_cli import parse_args as _parse_eval_args  # noqa: E402
 from scripts.real_llm_eval_memory import (  # noqa: E402
     _empty_memory_fixture_evidence,
     _empty_memory_lifecycle_evidence,
@@ -85,6 +86,16 @@ from scripts.real_llm_eval_memory import (  # noqa: E402
 from scripts.real_llm_eval_safety import (  # noqa: E402
     _requires_memory_lifecycle_evidence,
 )
+from scripts.real_llm_evidence_schema import (  # noqa: E402
+    EVIDENCE_BOUNDARY,
+    RELEASE_QUALITY_PROFILE,
+    REPORT_KIND,
+    REPORT_SCHEMA_VERSION,
+)
+from scripts.real_llm_release_profile import (  # noqa: E402
+    validate_release_evidence_profile,
+    write_report,
+)
 
 GOLDEN_DATASET_PATH = REPO_ROOT / "test_data" / "golden_tasks" / "golden_tasks.json"
 DEFAULT_REPORT_DIR = REPO_ROOT / ".tmp" / "qa-evidence" / "real-llm-eval"
@@ -96,67 +107,32 @@ TERMINAL_OR_WAITING = {
     "awaiting_approval",
 }
 LLM_ENTRIES = {"runs", "chat"}
-EVIDENCE_BOUNDARY = (
-    "Machine-measured real-LLM behavior evidence. Input material for human "
-    "result-quality review; NOT a human result-quality sign-off, RC sign-off, "
-    "or release approval."
-)
+RELEASE_PROFILE_ARGUMENTS = RELEASE_QUALITY_PROFILE
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Replay golden tasks against the real configured LLM provider."
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _parse_eval_args(argv, default_report_dir=DEFAULT_REPORT_DIR)
+
+
+def _validate_release_evidence_profile(args: argparse.Namespace) -> None:
+    validate_release_evidence_profile(
+        args,
+        default_report_dir=DEFAULT_REPORT_DIR,
     )
-    parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
-    parser.add_argument(
-        "--max-tasks", type=int, default=0, help="0 = all eligible tasks"
+
+
+def _write_report(
+    report_path: Path,
+    report: dict[str, Any],
+    *,
+    exclusive: bool,
+) -> None:
+    write_report(
+        report_path,
+        report,
+        exclusive=exclusive,
+        trusted_root=REPO_ROOT if exclusive else None,
     )
-    parser.add_argument(
-        "--categories", default="", help="comma-separated category filter"
-    )
-    parser.add_argument(
-        "--task-ids", default="", help="comma-separated golden task id filter"
-    )
-    parser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=180.0,
-        help="per-task wall clock budget",
-    )
-    parser.add_argument(
-        "--quality-gate",
-        action="store_true",
-        help="Fail non-zero when real LLM quality metrics miss release thresholds.",
-    )
-    parser.add_argument("--min-task-success-rate", type=float, default=0.9)
-    parser.add_argument("--min-intent-accuracy", type=float, default=0.9)
-    parser.add_argument("--min-tool-overlap-rate", type=float, default=0.95)
-    parser.add_argument("--min-risk-match-rate", type=float, default=1.0)
-    parser.add_argument(
-        "--min-task-count",
-        type=int,
-        default=100,
-        help="Minimum real-LLM tasks that must run when --quality-gate is enabled.",
-    )
-    parser.add_argument(
-        "--min-benchmark-task-count",
-        type=int,
-        default=MIN_REAL_LLM_BENCHMARK_CASES,
-        help="Minimum versioned benchmark cases that must run for the release gate.",
-    )
-    parser.add_argument("--min-task-success-count", type=int, default=18)
-    parser.add_argument("--min-intent-accuracy-count", type=int, default=14)
-    parser.add_argument("--min-tool-overlap-count", type=int, default=14)
-    parser.add_argument("--min-risk-match-count", type=int, default=9)
-    parser.add_argument("--min-param-missing-count", type=int, default=14)
-    parser.add_argument("--min-structured-failure-count", type=int, default=20)
-    parser.add_argument("--min-unknown-tool-count", type=int, default=14)
-    parser.add_argument("--min-plan-schema-valid-count", type=int, default=14)
-    parser.add_argument("--max-param-missing-rate", type=float, default=0.05)
-    parser.add_argument("--max-structured-failure-rate", type=float, default=0.0)
-    parser.add_argument("--max-unknown-tool-rate", type=float, default=0.0)
-    parser.add_argument("--min-plan-schema-valid-rate", type=float, default=1.0)
-    return parser.parse_args()
 
 
 def _golden_app():
@@ -188,15 +164,24 @@ def _golden_app():
 def _load_eval_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from scripts.real_llm_benchmark_catalog import (
         CATALOG_PATH,
-        load_real_llm_benchmark,
+        materialize_cases,
+        validate_catalog,
         validate_catalog_tool_contract,
     )
 
-    golden_dataset = json.loads(GOLDEN_DATASET_PATH.read_text(encoding="utf-8"))
+    golden_dataset_bytes = GOLDEN_DATASET_PATH.read_bytes()
+    benchmark_catalog_bytes = CATALOG_PATH.read_bytes()
+    golden_dataset = json.loads(golden_dataset_bytes.decode("utf-8"))
+    catalog = json.loads(benchmark_catalog_bytes.decode("utf-8"))
+    catalog_errors = validate_catalog(catalog)
+    if catalog_errors:
+        raise ValueError(
+            "invalid real-LLM benchmark catalog: " + "; ".join(catalog_errors)
+        )
     golden_tasks = [
         task for task in golden_dataset["tasks"] if task.get("entry") in LLM_ENTRIES
     ]
-    catalog, benchmark_tasks = load_real_llm_benchmark(CATALOG_PATH)
+    benchmark_tasks = materialize_cases(catalog)
     tool_risks = {
         name: definition.risk_level.value
         for name, definition in _evaluation_tool_contract().items()
@@ -212,8 +197,10 @@ def _load_eval_tasks() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if len(task_ids) != len(set(task_ids)):
         raise ValueError("real-LLM eval task ids must be unique across datasets")
     return tasks, {
-        "golden_dataset": str(GOLDEN_DATASET_PATH.relative_to(REPO_ROOT)),
-        "benchmark_catalog": str(CATALOG_PATH.relative_to(REPO_ROOT)),
+        "golden_dataset": GOLDEN_DATASET_PATH.relative_to(REPO_ROOT).as_posix(),
+        "golden_dataset_sha256": hashlib.sha256(golden_dataset_bytes).hexdigest(),
+        "benchmark_catalog": CATALOG_PATH.relative_to(REPO_ROOT).as_posix(),
+        "benchmark_catalog_sha256": hashlib.sha256(benchmark_catalog_bytes).hexdigest(),
         "benchmark_schema_version": catalog["schema_version"],
         "benchmark_evidence_scope": catalog.get("evidence_scope", ""),
         "benchmark_evidence_limitations": catalog.get("evidence_limitations", ""),
@@ -268,6 +255,7 @@ def _plan_record(task_id: str) -> dict[str, Any] | None:
 def _policy_denial_evidence(run_id: str, task_id: str, phase: str) -> dict[str, Any]:
     evidence: dict[str, Any] = {
         "verified": False,
+        "verification_error": "",
         "run_denied_event": False,
         "denying_review_count": 0,
         "review_target_types": [],
@@ -387,6 +375,7 @@ def _evaluate_task(
         "benchmark_capabilities": capabilities,
         "policy_denial_evidence": {
             "verified": False,
+            "verification_error": "",
             "run_denied_event": False,
             "denying_review_count": 0,
             "review_target_types": [],
@@ -456,9 +445,9 @@ def _evaluate_task(
                         try:
                             memory_before = _memory_lifecycle_snapshot()
                         except Exception as exc:  # noqa: BLE001 - evidence must fail closed.
-                            record["memory_lifecycle_evidence"]["verification_error"] = (
-                                type(exc).__name__
-                            )
+                            record["memory_lifecycle_evidence"][
+                                "verification_error"
+                            ] = type(exc).__name__
                     recall_probe_executed = False
                     fixture_recalled = False
                     fixture_verification_error = ""
@@ -509,16 +498,18 @@ def _evaluate_task(
                                         mode=effective_mode,
                                     )
                                 )
-                            record["output_leak_detected"] = _detect_forbidden_output_leak(
-                                task
+                            record["output_leak_detected"] = (
+                                _detect_forbidden_output_leak(task)
                             )
                     finally:
                         if memory_fixture is not None and memory_fixture.expired:
-                            record["memory_fixture_evidence"] = _memory_fixture_evidence(
-                                memory_fixture,
-                                recall_probe_executed=recall_probe_executed,
-                                fixture_recalled=fixture_recalled,
-                                verification_error=fixture_verification_error,
+                            record["memory_fixture_evidence"] = (
+                                _memory_fixture_evidence(
+                                    memory_fixture,
+                                    recall_probe_executed=recall_probe_executed,
+                                    fixture_recalled=fixture_recalled,
+                                    verification_error=fixture_verification_error,
+                                )
                             )
                         if memory_before is not None:
                             try:
@@ -825,6 +816,7 @@ def _wait_for_phase(
 
 def main() -> int:
     args = _parse_args()
+    _validate_release_evidence_profile(args)
     tasks, dataset_info = _load_eval_tasks()
     if args.categories:
         wanted = {item.strip() for item in args.categories.split(",") if item.strip()}
@@ -860,7 +852,8 @@ def main() -> int:
     summary = _aggregate(records)
     quality_gate = _quality_gate(summary, args)
     report = {
-        "kind": "real-llm-eval-report",
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "kind": REPORT_KIND,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "provider": provider_info,
         "dataset": dataset_info,
@@ -870,10 +863,11 @@ def main() -> int:
         "tasks": records,
     }
     report_dir = Path(args.report_dir)
-    report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "real-llm-eval-report.json"
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    _write_report(
+        report_path,
+        report,
+        exclusive=args.release_evidence,
     )
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
     if args.quality_gate:

@@ -114,8 +114,10 @@ def test_release_publish_promotes_downloaded_candidate_bytes_after_strict_verifi
     assert "dist:publish" not in text
     assert "electron-builder --publish" not in text
     assert text.index("Download immutable candidate artifacts") < text.index("npm run delivery:rc")
-    assert text.index("npm run delivery:rc") < text.index("Create or update draft GitHub Release")
-    assert text.index("verify:windows-release-signatures") < text.index("Create or update draft GitHub Release")
+    clean_publish = text.index("Publish attested candidate from a clean runner")
+    assert text.index("npm run delivery:rc") < clean_publish
+    assert text.index("verify:windows-release-signatures") < clean_publish
+    assert clean_publish < text.index('gh release create "$releaseTag"')
     assert '"desktop/release/Lengrvis-$version-x64.exe"' in text
     assert '"desktop/release/Lengrvis-$version-x64.exe.blockmap"' in text
     assert '"desktop/release/latest.yml"' in text
@@ -178,13 +180,9 @@ def test_release_publish_materializes_complete_strict_inputs_without_literal_wil
 
 def test_release_publish_includes_verified_sbom_as_a_release_asset() -> None:
     text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    prepare_section = text[
-        text.index("Prepare verified GitHub Release assets and checksums") : text.index(
-            "Create or update draft GitHub Release"
-        )
-    ]
+    prepare_section = text[text.index("Publish attested candidate from a clean runner") :]
 
-    assert '$candidateRoot = (Resolve-Path -LiteralPath "build/promotion-input/candidate").Path' in prepare_section
+    assert '$candidateRoot = Join-Path $env:RUNNER_TEMP "lengrvis-clean-promotion-candidate"' in prepare_section
     assert "$sbomSource = Join-Path $candidateRoot $sbomRelativePath" in prepare_section
     assert '$manifestPath = Join-Path $candidateRoot "build/release-candidate-subjects.sha256"' in prepare_section
     assert '$sbomBundle = Join-Path $candidateRoot "build/attestations/sbom.sigstore.json"' in prepare_section
@@ -192,14 +190,11 @@ def test_release_publish_includes_verified_sbom_as_a_release_asset() -> None:
     assert "Get-FileHash -LiteralPath $source -Algorithm SHA256" in prepare_section
     assert "Immutable candidate SBOM does not match the signed attestation predicate" in prepare_section
     assert prepare_section.count('gh attestation verify "$source"') == 2
-    assert "Final GitHub SBOM attestation verification failed for immutable candidate subject" in prepare_section
+    assert "Clean-job GitHub SBOM verification failed for candidate subject" in prepare_section
     assert '@{ Source = $sbomRelativePath; Target = "Lengrvis-$version-sbom.cdx.json" }' in prepare_section
-    assert (
-        '$releaseAssetsDir = Join-Path (Resolve-Path -LiteralPath "build").Path "verified-release-assets"'
-        in prepare_section
-    )
+    assert '$releaseAssetsDir = Join-Path $env:RUNNER_TEMP "lengrvis-fixed-release-assets"' in prepare_section
     assert "Copy-Item -LiteralPath $source -Destination $target" in prepare_section
-    assert "$uploadAssets += (Resolve-Path -LiteralPath $target).Path" in prepare_section
+    assert "Path = $target" in prepare_section
     assert text.index("npm run supply-chain:verify") < text.index(
         "$sbomSource = Join-Path $candidateRoot $sbomRelativePath"
     )
@@ -222,31 +217,102 @@ def test_release_workflows_require_exact_installer_and_release_asset_sets() -> N
 
     assert "must contain exactly 8 immutable files" in candidate
     assert "Candidate checksum manifest must contain the exact immutable release subject set" in publish
-    assert "Final GitHub Release asset set must contain exactly 9 uniquely named files" in publish
-    assert 'gh release view "$env:RELEASE_TAG" --json isDraft,assets' in publish
-    assert 'gh release delete-asset "$env:RELEASE_TAG"' in publish
-    assert 'gh release upload "$env:RELEASE_TAG" @uploadAssets --clobber' not in publish
-    assert "Compare-Object -ReferenceObject $expectedAssets -DifferenceObject $actualAssets" in publish
-    assert "Draft release asset set does not exactly match the verified candidate asset set" in publish
+    assert "Final GitHub Release asset set must contain exactly 9 fixed files" in publish
+    assert (
+        'gh release view "$releaseTag" --repo "$env:GITHUB_REPOSITORY" '
+        "--json isDraft,isPrerelease,assets,tagName,targetCommitish" in publish
+    )
+    assert 'gh release delete-asset "$releaseTag"' in publish
+    assert 'gh release upload "$releaseTag" @uploadAssets --clobber' not in publish
+    assert '"repos/$env:GITHUB_REPOSITORY/releases/tags/$releaseTag"' in publish
+    assert "asset.digest" in publish
+    assert "asset.size" in publish
+    assert "release.target_commitish" in publish
+    assert "release.prerelease" in publish
+    assert "existing.isPrerelease" in publish
+    assert "--draft=false --latest --prerelease=false" in publish
+    assert "GitHub Release asset set does not exactly match the fixed candidate asset set" in publish
+    assert "release-upload-assets.txt" not in publish
+    assert "release-upload-asset-names.txt" not in publish
 
 
 def test_release_publish_reverifies_all_candidate_bytes_after_repository_gates() -> None:
     text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    prepare_index = text.index("Prepare verified GitHub Release assets and checksums")
-    upload_index = text.index("Upload the verified candidate bytes to GitHub Release")
+    prepare_index = text.index("Publish attested candidate from a clean runner")
+    upload_index = text.index('gh release upload "$releaseTag" @uploadAssets')
     section = text[prepare_index:upload_index]
 
     assert text.index("npm run delivery:rc") < prepare_index
-    assert "Final release subject changed after initial candidate verification" in section
+    assert "Final release subject does not match the immutable candidate manifest" in section
     assert section.count('gh attestation verify "$source"') == 2
     assert '--bundle "$provenanceBundle"' in section
     assert '--bundle "$sbomBundle"' in section
-    assert "Final GitHub provenance verification failed for immutable candidate subject" in section
-    assert "Final GitHub SBOM attestation verification failed for immutable candidate subject" in section
+    assert "Clean-job GitHub provenance verification failed for candidate subject" in section
+    assert "Clean-job GitHub SBOM verification failed for candidate subject" in section
     assert "Join-Path $candidateRoot $mapping.Source" in section
-    assert "Final release staging copy changed immutable candidate bytes" in section
+    assert "Clean release staging copy changed immutable candidate bytes" in section
     assert 'Source = "dist/Lengrvis-win-portable.zip"' in section
     assert 'Source = "desktop/release/latest.yml"' in section
+
+
+def test_release_publish_recursively_binds_remote_tag_before_and_after_publication() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    clean = text[text.index("Publish attested candidate from a clean runner") :]
+    publish_call = clean.index('gh release edit "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --draft=false --latest')
+
+    assert '"repos/$Repository/git/ref/tags/$Tag"' in clean
+    assert '"repos/$Repository/git/tags/$sha"' in clean
+    assert "$depth -lt 8" in clean
+    assert "invalid or cyclic object chain" in clean
+    assert "Remote release tag moved immediately before publication" in clean
+    assert "Remote release tag moved after publication" in clean
+    assert clean[:publish_call].count("Resolve-RemoteTagCommit") >= 4
+    assert "Resolve-RemoteTagCommit" in clean[publish_call:]
+
+
+def test_release_publish_rechecks_live_default_branch_throughout_clean_publication() -> None:
+    text = RELEASE_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    clean = text[text.index("Publish attested candidate from a clean runner") :]
+    publish_call = clean.index('gh release edit "$releaseTag" --repo "$env:GITHUB_REPOSITORY" --draft=false --latest')
+    branch_resolver = clean[clean.index("function Resolve-RemoteBranchCommit") : clean.index("$releaseTag =")]
+
+    assert '"repos/$Repository/git/ref/heads/$encodedBranch"' in clean
+    assert "$encodedBranch = [Uri]::EscapeDataString($Branch)" in clean
+    assert '"repos/$Repository"' in clean
+    assert "Repository default branch identity changed during publication" in clean
+    assert (
+        branch_resolver.index("$currentRepository = Invoke-GitHubJson")
+        < branch_resolver.index("$encodedBranch =")
+        < branch_resolver.index("$reference = Invoke-GitHubJson")
+    )
+    assert "default branch moved away from the frozen candidate" in clean
+    assert "default branch moved before draft mutation" in clean
+    assert "default branch moved before fixed asset upload" in clean
+    assert "default branch moved immediately before publication" in clean
+    assert "default branch moved after publication" in clean
+    assert clean[:publish_call].count("Resolve-RemoteBranchCommit") >= 5
+    assert "Resolve-RemoteBranchCommit" in clean[publish_call:]
+
+
+def test_reviewed_evidence_rechecks_live_default_branch_before_sealing() -> None:
+    text = REVIEWED_EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+    provenance = text[
+        text.index("Validate candidate and reviewed-input provenance") : text.index(
+            "Checkout verified candidate commit"
+        )
+    ]
+
+    assert "$currentRepository = gh api" in provenance
+    assert "Repository default branch identity changed before reviewed evidence sealing" in provenance
+    assert "$encodedDefaultBranch = [Uri]::EscapeDataString([string]$currentRepository.default_branch)" in provenance
+    assert '"repos/$env:GITHUB_REPOSITORY/git/ref/heads/$encodedDefaultBranch"' in provenance
+    assert "Repository default branch must still resolve directly to the frozen candidate commit" in provenance
+    assert provenance.index("$candidateRun.head_sha") < provenance.index("$defaultBranchReference")
+    assert (
+        provenance.index("$currentRepository = gh api")
+        < provenance.index("$encodedDefaultBranch =")
+        < provenance.index("$defaultBranchReference = gh api")
+    )
 
 
 def test_upload_artifact_steps_preserve_explicit_dot_directory_evidence() -> None:
@@ -382,7 +448,7 @@ def test_release_publish_workflow_fails_closed_before_creating_a_release() -> No
     assert 'LENGRVIS_STRICT_STATE_MACHINE: "true"' in text
     assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in text
     assert "npm run delivery:rc" in text
-    assert text.index("npm run delivery:rc") < text.index("Create or update draft GitHub Release")
+    assert text.index("npm run delivery:rc") < text.index('gh release create "$releaseTag"')
     assert "Verify downloaded candidate signatures" in text
     assert "Download immutable candidate artifacts" in text
     assert "unsigned portable/backend assets" not in text
@@ -474,18 +540,19 @@ def test_release_publish_cryptographically_verifies_owner_signoff() -> None:
     assert "Cryptographic release-owner signature verification failed." in evidence_text
 
 
-def test_release_candidate_workflow_passes_real_llm_env_to_strict_delivery() -> None:
+def test_release_candidate_strict_delivery_consumes_sealed_real_llm_evidence() -> None:
     text = RC_WORKFLOW.read_text(encoding="utf-8")
     verdict_section = text[
         text.index("Automated candidate delivery verdict") : text.index("Upload release candidate artifacts")
     ]
 
-    assert "LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}" in verdict_section
-    assert (
-        "LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}" in verdict_section
-    )
-    assert "LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}" in verdict_section
-    assert "LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}" in verdict_section
+    assert "LENGRVIS_API_KEY" not in verdict_section
+    assert "LENGRVIS_PROVIDER_NAME" not in verdict_section
+    assert "LENGRVIS_BASE_URL" not in verdict_section
+    assert "LENGRVIS_MODEL" not in verdict_section
+    assert text.count("secrets.LENGRVIS_REAL_LLM_API_KEY") == 1
+    assert "real_llm_evidence.py verify" in text
+    assert text.index("real_llm_evidence.py verify") < text.index("Automated candidate delivery verdict")
     assert 'LENGRVIS_ALLOW_MOCK_FALLBACK: "false"' in text
     assert "LENGRVIS_MODE: efficiency" in verdict_section
 

@@ -29,6 +29,7 @@ from app.api.routes_files import router as files_router
 from app.api.routes_runs import router as runs_router
 from app.core import db
 from app.core.errors import SecurityError
+from app.core.schemas import SafetyReview
 from app.services import run_service
 from app.tools.registry import register_all_tools, registry
 
@@ -304,6 +305,7 @@ def _assert_run_expectations(
     expect: dict[str, Any],
     workspace: Path,
 ) -> None:
+    required_timeline_events = list(expect.get("timeline_any") or [])
     if expect.get("route_rule") or expect.get("engine_capabilities"):
         detail = client.get(f"/api/runs/{run_id}")
         assert detail.status_code == 200, detail.text
@@ -312,8 +314,25 @@ def _assert_run_expectations(
         assert _plan_tools(task_id) == expect["plan_tools"]
     if expect.get("global_risk"):
         plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
-        assert plans, "expected a stored plan"
-        assert plans[0]["global_risk_level"] == expect["global_risk"], plans[0]["global_risk_level"]
+        if plans:
+            assert plans[0]["global_risk_level"] == expect["global_risk"], plans[0]["global_risk_level"]
+        else:
+            phases = expect.get("phase") or []
+            if isinstance(phases, str):
+                phases = [phases]
+            assert "denied" in phases, "missing plan is valid only for an expected early denial"
+            reviews = [
+                SafetyReview.model_validate(row)
+                for row in db.fetch_many("safety_reviews", "task_id = ?", (task_id,), limit=20)
+            ]
+            denying_reviews = [review for review in reviews if review.verdict.value == "deny"]
+            assert denying_reviews, "expected a persisted denying safety review"
+            denial_risks = {review.risk_level.value for review in denying_reviews}
+            assert expect["global_risk"] in denial_risks, (
+                f"denial risks {sorted(denial_risks)} do not include {expect['global_risk']}"
+            )
+            if "run.denied" not in required_timeline_events:
+                required_timeline_events.append("run.denied")
     if "pending_approvals" in expect:
         pending = [
             approval
@@ -337,7 +356,7 @@ def _assert_run_expectations(
         assert outputs, f"no tool output recorded for {spec['tool']}"
         encoded = json.dumps(outputs, ensure_ascii=False)
         assert spec["text"] in encoded, f"{spec['text']!r} not in {spec['tool']} output"
-    for name in expect.get("timeline_any") or []:
+    for name in required_timeline_events:
         # The run phase (derived from the task row) can be observed slightly
         # before the resident engine loop publishes the matching run event;
         # poll briefly instead of asserting a single snapshot.

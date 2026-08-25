@@ -13,10 +13,10 @@
     "qa:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1 -- --maxfail=1 && npm --prefix desktop run smoke",
     "golden:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1",
     "eval:real-llm": "python scripts/run_real_llm_eval.py",
-    "mcp:conformance:initialize": "npx --yes @modelcontextprotocol/conformance@0.1.16 client --command \"python scripts/mcp_conformance_client.py\" --scenario initialize --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/initialize",
-    "mcp:conformance:tools": "npx --yes @modelcontextprotocol/conformance@0.1.16 client --command \"python scripts/mcp_conformance_client.py\" --scenario tools_call --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/tools-call",
+    "mcp:conformance:initialize": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario initialize --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/initialize",
+    "mcp:conformance:tools": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario tools_call --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/tools-call",
     "mcp:conformance:basic": "npm run mcp:conformance:initialize && npm run mcp:conformance:tools",
-    "mcp:conformance:sse-retry": "npx --yes @modelcontextprotocol/conformance@0.1.16 client --command \"python scripts/mcp_conformance_client.py\" --scenario sse-retry --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/sse-retry",
+    "mcp:conformance:sse-retry": "conformance client --command \"python scripts/mcp_conformance_client.py\" --scenario sse-retry --spec-version 2025-11-25 --output-dir .tmp/qa-evidence/mcp-conformance/sse-retry",
     "mcp:conformance": "npm run mcp:conformance:basic && npm run mcp:conformance:sse-retry",
     "audit:deps": "powershell -ExecutionPolicy Bypass -File ./scripts/run_dependency_audit.ps1",
     "security:secrets": "powershell -ExecutionPolicy Bypass -File ./scripts/secret_scan.ps1",
@@ -87,7 +87,10 @@
     "delivery:rc": "python scripts/delivery_pipeline.py --strict --output build/delivery-verdict.json",
     "delivery:paid-launch": "python scripts/delivery_pipeline.py --paid-launch --output build/delivery-verdict.json"
   },
+  "devDependencies": {
+    "@modelcontextprotocol/conformance": "0.1.16"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

@@ -5,7 +5,7 @@
 > 审查日期：2026-07-26
 > 范围：整个代码库（backend / desktop / mobile / scripts / CI / 根目录配置），共约 1472 个 git 跟踪文件（655 Python + 286 TS + 101 TSX + 6 Kotlin + 69 PowerShell + 9 workflow）。
 > 方法：19 个审查单元并行深审 → 主会话对高危发现读代码亲验（消除 agent 幻觉）→ 与 `PRODUCTIZATION_ISSUES.md` 及既有测试去重。
-> 维度：正确性 / 安全 / 代码质量 / 测试覆盖。**本轮只出报告，未修改任何代码。**
+> 维度：正确性 / 安全 / 代码质量 / 测试覆盖。**初始审查阶段只出报告、未修改代码；后续修复批次及验证记录见文末。**
 
 ---
 
@@ -354,7 +354,7 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 
 ---
 
-## 修复记录 · 批 7（2026-08-24）
+## 修复记录 · 批 7（2026-08-25）
 
 | 编号 | 修复 | 主要改动 | 回归测试 |
 |---|---|---|---|
@@ -371,16 +371,21 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 | B7-11 | CodeQL 二次扫描与遗留 high 收口 | 二次实扫暴露的 5 个 high 与 1 个 error 已逐项修复：timer sink 置于静态可证明的直接上界分支；HTTP proxy 用成对 `rawHeaders` 保留端到端/重复响应头，显式验证每个头名、头值及 `Connection` option 后剥离 hop-by-hop，畸形元数据封闭为固定 502；该透明代理边界没有自有安全头可被远端覆盖，使用 CodeQL 官方精确规则标注留证。Ed25519 公私钥都以 `0600` 创建；测试响应不再反射请求 URL；UI fake automation 正确调用父类初始化。同步修复默认分支遗留的 Bing lookalike、邮箱/文件名误判、敏感配置名日志与 `0666` 文件创建；UI 审批复核沿用同一服务端 `now_provider`，pytest 默认策略时钟固定而显式夜间测试不受影响。Mobile #215–#219 经主/guardian 双路安全传输、active-device JWT、逐事件 claims 过滤、有限字段重序列化及特权操作服务端复核查证为误报，已留证据并按 false positive 处置 | 受影响 Backend `209 passed, 5 skipped`，审批绑定/UI 组合 `113 passed`；Desktop proxy `5 passed`、全量 `98 files / 432 passed, 1 skipped`、typecheck/production build 通过；异常边界门禁通过，GitHub CodeQL required check 作为最终实扫凭据 |
 | B7-12 | Windows 私钥 DACL 冷启动预算 | reviewed-evidence keypair 生成器继续以受信 System32 PowerShell、路径文件身份和最终 DACL 复核 fail-closed，但将首次 PowerShell/`Add-Type` 的固定 15 秒预算改为不可由环境覆盖的 60 秒有界常量；超时保留明确根因且不重试，避免未知 ACL 状态竞争。测试自身的独立 ACL 复核使用相同上限，同步 `TimeoutExpired` 故障注入确认清理路径不残留私钥或公钥 | keypair 专项 `4 passed`；完整发布/证据专项 `150 passed`；Ruff check/format 通过 |
 | B7-13 | NTFS creation-time tunneling 闭环 | Windows required check 复现同名删除重建后 Python `st_ctime_ns`（CreationTime）被 NTFS tunneling 保留，证明等待或沿用 ctime 都不可靠。v3 改用 native ChangeTime、LastWriteTime 与 File ID，并按前态大小精确读取后额外探测 1 byte，避免持续追加导致无界 hash；真实 Windows 测试验证 ChangeTime 区别于 tunneled CreationTime，纯逻辑测试再模拟其余对象身份复用并确认整批零文件副作用 | 独立复审无阻断 finding；rollback 复核 `89 passed, 4 skipped`；Backend 最终全量通过 |
+| B7-14 | MCP conformance、Node LTS 与工具链锁 | Windows CI 的 Backend 与 golden gate 均通过后，官方 conformance CLI 在 Node 20 因使用 `fs.globSync` 且依赖要求 Node `>=22` 而启动失败。源码开发最低版本提升到 Node 22，CI、CodeQL、安全审计及候选/正式发布工作流统一使用当前 Node 24 LTS。conformance `0.1.16` 改为根级 exact devDependency，提交完整 SRI lock，CI/发布以 `npm ci --ignore-scripts --engine-strict` 安装；根 lock 同时纳入 Dependabot、依赖门禁、audit 与 SBOM，消除带发布权限流水线中的 `npx` 传递依赖漂移 | Node 24 根 lock clean install；本地官方 conformance：initialize `1/1`、tools `1/1`、SSE retry/resume `3/3`，全部通过；workflow/lock/startup 契约 `190 passed`；root npm audit 0，JSON/YAML 解析、依赖锁与 repo hygiene 通过 |
+| B7-15 | 发布 conformance producer/sealer 隔离 | 单纯 scrub 子进程 env 不能阻止第三方 CLI 改写同一工作区、污染后续解释器或留下后台进程，因此不再把它当发布安全边界。Candidate 先在无 environment、仅 `contents: read` 的 producer 运行 exact-lock CLI 并只上传原始 `checks.json`，再由 clean checkout、无第三方依赖的 sealer 解析同一份 bytes，输出 `mcp-conformance-job-evidence/v2`：绑定 repository、commit、run/attempt、根 lock SHA-256、conformance/Node 精确版本、完整 results summary 与原始结果摘要；raw JSON 全层级拒绝 NaN/Infinity 及 `1e999` 形成的非有限值。Candidate RC gate 与只读 publish preflight 均在安装依赖前验证 sealed artifact；strict/candidate/paid 不执行第三方 CLI，非 strict 本地 env 最小化仅作纵深防御。默认 setup 的 workspace QA 安装也与 UI skip 解耦 | evidence/summary、目录歧义、重复/未知检查、替换、篡改及非有限数专项通过；本地官方 conformance initialize `1/1`、tools `1/1`、SSE retry/resume `3/3` |
+| B7-16 | 真实 LLM 正式证据不可变绑定 | 正式 producer 仅在 provider 调用 step 注入受保护 API key，以 `--quality-gate --release-evidence` 固定档案运行；拒绝 mock、过滤器、任务/阈值/超时/报告路径覆盖，完整物化当前 25 个 eligible golden + 105 个 versioned benchmark。报告以 exclusive temp+hardlink 发布且拒绝 symlink/reparse、覆盖、身份切换和双读 TOCTOU。独立 clean sealer 无 environment、密钥或依赖安装，按当前语料逐任务重算 intent/tool/risk/schema/chat/denial/memory/benchmark contract、summary 与 quality gate，再输出 candidate-bound `real-llm-quality-evidence/v2`；所有有计划或拒绝语义的 corpus 都必须声明权威 `global_risk`，early DENY 必须由真实 `SafetyReview`、`run.denied` 与 actual/expected risk 共同绑定。普通 PR/非默认分支 CI 不取得 key，advisory skip 不能冒充正式 evidence | evidence 定向 `60 passed`；golden/real-LLM 完整相关回归 `280 passed`；语料扫描 plan/denied 风险遗漏为 0 |
+| B7-17 | 候选产物 run-attempt 与发布资产闭环 | Candidate、reviewed evidence 及两类 quality evidence 这四类 promotion-input artifact 名称全部绑定 run ID + attempt 并固定保留 30 天；两类 raw producer 输出保留 14 天。Attempt-bound publish preflight diagnostics 只是发布运行的诊断输出，不是 promotion input。局部 rerun 缺 producer/sealer 时 fail-closed。Readiness 优先使用显式 candidate repository/commit/run identity。Publish 从精确 attempt 下载候选与 reviewed evidence，保持 draft；只有远端 release tag、target candidate commit、唯一资产名、uploaded state、SHA-256 digest 和 byte size 全部一致才转正式发布 | delivery/readiness/signing/startup/quality-evidence 合同组合通过；YAML 解析与 artifact 命名/远端资产负向契约通过 |
+| B7-18 | Clean publish、tag 与 readiness 精确绑定 | 仓库代码 preflight 降为 `contents: read`；唯一 `contents: write` 移入全新 Windows runner 的单一内联步骤，该 job 不 checkout、不安装依赖、不执行仓库脚本，只下载原 candidate run-attempt artifact，并重新验证固定 8 个 manifest subject、provenance/SBOM attestation、SBOM predicate 与固定 9 个发布路径；删除可变资产清单文件。发布变更前、转公开前与公开后均经 GitHub API 递归 peel remote tag 到同一 candidate commit，并在每个 checkpoint 重新读取 repository 元数据以拒绝运行中默认分支重命名；reviewed-evidence 封存也执行同样的 live default-branch 复核。Strict readiness 改为完整 40 位 SHA、candidate run ID/attempt 精确匹配，candidate attempt 缺失不得回退 publish attempt；`.tmp`/反斜杠路径先解析并限制在证据根目录，Actions URL 只接受当前 repository/run 的规范路径 | clean-job 权限/无 checkout/无仓库执行契约、PowerShell AST、remote tag/default branch 前后绑定及 readiness 绕过测试通过 |
 
 ### 批 7 验证
 
-- Backend 最终全量：`4162 passed, 17 skipped`（10 分 54 秒，Windows）。
-- 发布/证据专项：`150 passed`；DENIED/审批确认专项：`121 passed`；启动脚本：`119 passed`。
-- Desktop：typecheck、`98 files / 432 passed, 1 skipped`、production renderer/Electron build、legal resources 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
-- Mobile：npm10 clean install、有效依赖树、Expo compatibility、EAS CLI 启动/build help/真实配置合并、typecheck 与 15 项行为 smoke 全通过；原生 debug APK + androidTest 编译 `420 actionable tasks` 通过。
+- Backend 最终全量：`4255 passed, 17 skipped`（10 分 34 秒，Windows）。
+- 发布、证据、golden、Android 契约与启动脚本最终组合：`591 passed`（2 分 37 秒）；官方 MCP conformance 实跑 initialize `1/1`、tools `1/1`、SSE retry/resume `3/3`。
+- Desktop 最终复测：typecheck、`98 files / 432 passed, 1 skipped`、production renderer build 与 bundle budget 全通过；renderer entry 201.7 KB、最大 chunk 129.8 KB、JS 总量 748.6 KB、CSS 186.0 KB。
+- Mobile 最终复测：typecheck 与 task-companion behavior smoke 通过；此前 npm10 clean install、有效依赖树、Expo compatibility、EAS CLI 与 Android 编译门禁结果保持通过。
 - PR-range Ruff/format（308 个 Backend Python 文件）及二次修复的 14 个 Python 文件、`git diff --check`、异常边界门禁、依赖哈希锁、repo hygiene、secret scan 与 agentic threat model 全通过。
-- 依赖审计全通过：Desktop/Mobile `npm audit` 均 0，四份 Python lock 均无已知漏洞；CycloneDX SBOM 共 1328 个组件（npm 1196、Python 132）。
-- Maintainability gate 通过：P95 `789/800`，Backend 最大文件 1399 行（阈值 1400）。
+- 依赖审计全通过：Workspace QA/Desktop/Mobile `npm audit` 均 0，四份 Python lock 均无已知漏洞；CycloneDX SBOM 共 1390 个组件（npm 1258、Python 132）。
+- Maintainability gate 通过：1048 个文件、P95 `799/800`，Backend 最大文件 1399 行（阈值 1400）。
 
 ### 剩余风险与外部条件
 
@@ -389,5 +394,7 @@ M22 过程中发现并修复了一个**既有失败测试**（`test_fts_search_m
 - 未纳入 task journal 的 direct 路由没有 durable replay 记录；由于缺少可信执行前后状态，这些路径已统一阻止自动回滚并转人工修复，而不是猜测性补偿。
 - `expo-doctor` 当前为 `19/22`：本地精确 pin EAS CLI 与提交原生 Android 目录是项目为可复现构建和原生安全审计做出的有意选择；另有 Expo SDK 56 / React Native 0.85 所带 Hermes V1 已知内存回归，彻底修复需独立升级至 Expo SDK 57 / React Native 0.86.2 以上并重新完成真机回归，本批不做跨代升级。
 - Mobile approval WebSocket 当前对已鉴权服务端 JSON 使用 TypeScript 类型断言而非完整运行时 schema；异常结构会被外围 catch/polling fallback 吸收，但后续仍应增加有数组上限和嵌套字段约束的 `parseApprovalEvent`，作为客户端韧性加固，不应误当作授权边界。
-- Maintainability P95 为 `790/800`，余量仍有限；后续新增共享执行逻辑应优先继续拆分，而不是扩大豁免。
-- `.github/CODEOWNERS` 的真实多人治理，以及 Android 真机、clean-machine、人工结果质量与 release-owner sign-off 等发布证据仍是外部上线条件；本次审查不伪造人员、设备或人工证据。
+- Maintainability P95 为 `799/800`，余量仅 1 行；后续新增共享执行逻辑应优先继续拆分，而不是扩大豁免。
+- 根级 QA/交付工具链当前已在 Node 22.0、22.20 与 24 实测 clean install，并在 Node 22/24 跑通 MCP conformance；正式 CI/发布统一使用 Node 24。为防未来 lock 更新引入未声明的 Node 24-only API，后续应增加独立轻量 Node 22 最低版本门禁，无需复制 Backend 全量矩阵。
+- MCP 与真实 LLM 的不受信 producer 已和 clean evidence sealer 分离，最终 GitHub 写操作也已移入不 checkout、不安装依赖、不执行仓库脚本的 clean publish job；candidate 签名/attestation 仍与此前执行过仓库构建代码的 runner 共存。Repository/environment secrets 与显式 shell/`gh` CLI token 注入已收敛到需要的 step 且输入有摘要/allowlist 绑定；GitHub 自动创建的 `GITHUB_TOKEN` 仍以 job-level 最小 `permissions` 为能力边界，未显式导出 `GH_TOKEN` 不代表 action 无法访问 `github.token`。进一步缩小 runner 级供应链 blast radius 仍需把 build/test 与 clean sign/attest 拆成独立 job。
+- Candidate 成功后到最终 publish 完成前，default branch 必须冻结在同一 candidate commit；若分支已前进，应生成并重新评审新候选。Protected branch/tag rulesets、release freeze 与 immutable-tag 记录、production environment reviewer、受限 `contents: write` 与 `.github/CODEOWNERS` 的真实多人治理，以及 Android 真机、clean-machine、人工结果质量与 release-owner sign-off 等发布证据都属于外部上线条件；workflow 的发布前后 tag 复核能检测漂移，但不能单独赋予 tag 不可变性，本次审查不伪造人员、设备、治理配置或人工证据。

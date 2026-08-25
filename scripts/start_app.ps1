@@ -97,7 +97,7 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "未找到 npm/Node.js 20+。"
+    throw "未找到 npm/Node.js 22+。"
 }
 
 function Test-TruthyEnv([string]$Value) {

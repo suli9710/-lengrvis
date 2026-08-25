@@ -1132,6 +1132,7 @@ def test_evaluate_task_captures_authoritative_early_policy_denial_without_callin
     assert record["actual_plan_tools"] == []
     assert record["policy_denial_evidence"] == {
         "verified": True,
+        "verification_error": "",
         "run_denied_event": True,
         "denying_review_count": 1,
         "review_target_types": ["agent_message:user_goal"],
@@ -2104,6 +2105,7 @@ def test_policy_denial_evidence_requires_run_event_and_persisted_deny_review(
 
     assert evidence == {
         "verified": True,
+        "verification_error": "",
         "run_denied_event": True,
         "denying_review_count": 1,
         "review_target_types": ["goal"],

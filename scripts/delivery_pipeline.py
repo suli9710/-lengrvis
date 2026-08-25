@@ -27,17 +27,56 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 DASHBOARD = "docs/release/release-readiness-dashboard.md"
 MARKET_DASHBOARD = "docs/business/market-readiness.md"
+ENVIRONMENT_INHERIT = "inherit"
+ENVIRONMENT_MCP_CONFORMANCE = "mcp-conformance-minimal"
+ENVIRONMENT_MCP_EVIDENCE = "mcp-evidence-minimal"
+ENVIRONMENT_REAL_LLM_EVIDENCE = "real-llm-evidence-minimal"
+
+_MCP_CONFORMANCE_ENV_ALLOWLIST = (
+    "APPDATA",
+    "CI",
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOCALAPPDATA",
+    "PATH",
+    "PATHEXT",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+)
+_MCP_EVIDENCE_BINDING_ENV_ALLOWLIST = (
+    "GITHUB_REPOSITORY",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_RUN_ID",
+    "GITHUB_SHA",
+    "LENGRVIS_RELEASE_CANDIDATE_COMMIT",
+    "LENGRVIS_RELEASE_CANDIDATE_REPOSITORY",
+    "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT",
+    "LENGRVIS_RELEASE_CANDIDATE_RUN_ID",
+    "LENGRVIS_RELEASE_BUILD_IDENTIFIER",
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +85,8 @@ class Stage:
     command: List[str]
     required: bool = True
     description: str = ""
+    environment_policy: str = ENVIRONMENT_INHERIT
+    timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -124,6 +165,49 @@ def release_owner_signature_stage() -> Stage:
     )
 
 
+def mcp_conformance_stage(*, require_isolated_evidence: bool) -> Stage:
+    if require_isolated_evidence:
+        return Stage(
+            "mcp-conformance",
+            [
+                sys.executable,
+                "scripts/mcp_conformance_evidence.py",
+                "verify",
+                "--input",
+                ".tmp/qa-evidence/mcp-conformance-job/mcp-conformance-evidence.json",
+                "--require-checkout-match",
+            ],
+            True,
+            "Verify commit-bound MCP conformance evidence from an unprivileged runner",
+            ENVIRONMENT_MCP_EVIDENCE,
+            30,
+        )
+    return Stage(
+        "mcp-conformance",
+        ["npm", "run", "mcp:conformance"],
+        True,
+        "Development-only direct MCP conformance with environment minimization",
+        ENVIRONMENT_MCP_CONFORMANCE,
+        300,
+    )
+
+
+def real_llm_evidence_stage() -> Stage:
+    return Stage(
+        "real-llm-eval",
+        [
+            sys.executable,
+            "scripts/real_llm_evidence.py",
+            "verify",
+            "--require-checkout-match",
+        ],
+        True,
+        "Verify candidate-bound real-LLM quality evidence from an isolated runner",
+        ENVIRONMENT_REAL_LLM_EVIDENCE,
+        30,
+    )
+
+
 def default_stages(
     *,
     strict: bool,
@@ -171,12 +255,7 @@ def default_stages(
             True,
             "Mock-provider deterministic golden tasks",
         ),
-        Stage(
-            "mcp-conformance",
-            ["npm", "run", "mcp:conformance"],
-            True,
-            "Official MCP lifecycle, tools, and SSE resume conformance",
-        ),
+        mcp_conformance_stage(require_isolated_evidence=effective_strict),
         Stage(
             "maintainability-gate",
             ["npm", "run", "maintainability:gate"],
@@ -243,7 +322,9 @@ def default_stages(
         ),
     ]
     if not effective_strict and not skip_signature_verify:
-        insert_at = next(i for i, stage in enumerate(stages) if stage.name == "market-readiness")
+        insert_at = next(
+            i for i, stage in enumerate(stages) if stage.name == "market-readiness"
+        )
         stages.insert(insert_at, release_artifact_preflight_stage())
         stages.insert(insert_at + 1, signed_artifacts_stage())
     if effective_strict:
@@ -269,12 +350,7 @@ def default_stages(
             by_name["maintainability-gate"],
             by_name["review-scorecard"],
             by_name["agentic-threat-model"],
-            Stage(
-                "real-llm-eval",
-                [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
-                True,
-                "Real provider golden replay quality gate",
-            ),
+            real_llm_evidence_stage(),
             by_name["supply-chain"],
             by_name["dependency-audit"],
             by_name["secret-scan"],
@@ -422,7 +498,12 @@ def default_stages(
             # be handed to reviewers. Human-reviewed evidence is necessarily a
             # later promotion input and must not make candidate creation
             # circular.
-            stages = stages[: stages.index(next(stage for stage in stages if stage.name == "signed-artifacts")) + 1]
+            stages = stages[
+                : stages.index(
+                    next(stage for stage in stages if stage.name == "signed-artifacts")
+                )
+                + 1
+            ]
     return stages
 
 
@@ -433,6 +514,8 @@ def build_plan(stages: List[Stage]) -> List[dict]:
             "command": " ".join(shlex.quote(part) for part in stage.command),
             "required": stage.required,
             "description": stage.description,
+            "environment_policy": stage.environment_policy,
+            "timeout_seconds": stage.timeout_seconds,
         }
         for stage in stages
     ]
@@ -471,10 +554,68 @@ def resolve_stage_command(command: List[str]) -> List[str]:
     return command
 
 
+def build_stage_environment(
+    stage: Stage,
+    source_environment: Optional[Mapping[str, str]] = None,
+) -> Optional[dict[str, str]]:
+    """Build the child environment for a delivery stage.
+
+    This is defense in depth for development-only direct execution, not the
+    release security boundary. Strict candidate/publish pipelines verify evidence
+    from a separate unprivileged runner and never execute the third-party CLI.
+    """
+    if stage.environment_policy == ENVIRONMENT_INHERIT:
+        return None
+    if stage.environment_policy not in {
+        ENVIRONMENT_MCP_CONFORMANCE,
+        ENVIRONMENT_MCP_EVIDENCE,
+        ENVIRONMENT_REAL_LLM_EVIDENCE,
+    }:
+        raise ValueError(
+            f"unsupported stage environment policy: {stage.environment_policy}"
+        )
+
+    source = os.environ if source_environment is None else source_environment
+    normalized = (
+        {key.upper(): value for key, value in source.items()}
+        if os.name == "nt"
+        else dict(source)
+    )
+    allowlist = _MCP_CONFORMANCE_ENV_ALLOWLIST
+    if stage.environment_policy in {
+        ENVIRONMENT_MCP_EVIDENCE,
+        ENVIRONMENT_REAL_LLM_EVIDENCE,
+    }:
+        allowlist += _MCP_EVIDENCE_BINDING_ENV_ALLOWLIST
+    environment = {key: normalized[key] for key in allowlist if key in normalized}
+    inherited_path = environment.get("PATH", "")
+    python_directory = str(Path(os.path.abspath(sys.executable)).parent)
+    environment["PATH"] = os.pathsep.join(
+        part for part in (python_directory, inherited_path) if part
+    )
+    environment.update({"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1"})
+    if stage.environment_policy == ENVIRONMENT_MCP_CONFORMANCE:
+        environment.update(
+            {
+                "npm_config_audit": "false",
+                "npm_config_fund": "false",
+                "npm_config_ignore_scripts": "true",
+                "npm_config_update_notifier": "false",
+                "npm_config_userconfig": os.devnull,
+            }
+        )
+    return environment
+
+
 def run_stage(stage: Stage, *, cwd: Path) -> StageResult:
     start = time.monotonic()
     try:
-        proc = subprocess.run(resolve_stage_command(stage.command), cwd=str(cwd))
+        proc = subprocess.run(
+            resolve_stage_command(stage.command),
+            cwd=str(cwd),
+            env=build_stage_environment(stage),
+            timeout=stage.timeout_seconds,
+        )
         code = proc.returncode
     except FileNotFoundError as exc:
         return StageResult(
@@ -484,6 +625,33 @@ def run_stage(stage: Stage, *, cwd: Path) -> StageResult:
             None,
             round(time.monotonic() - start, 3),
             f"command not found: {exc}",
+        )
+    except ValueError as exc:
+        return StageResult(
+            stage.name,
+            stage.required,
+            "failed",
+            None,
+            round(time.monotonic() - start, 3),
+            f"invalid environment policy: {exc}",
+        )
+    except subprocess.TimeoutExpired as exc:
+        return StageResult(
+            stage.name,
+            stage.required,
+            "failed",
+            None,
+            round(time.monotonic() - start, 3),
+            f"stage timed out after {exc.timeout} seconds",
+        )
+    except OSError as exc:
+        return StageResult(
+            stage.name,
+            stage.required,
+            "failed",
+            None,
+            round(time.monotonic() - start, 3),
+            f"stage launch failed: {exc}",
         )
     status = "passed" if code == 0 else "failed"
     return StageResult(

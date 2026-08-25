@@ -138,7 +138,7 @@ def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) ->
 
     kotlin_only = "${{ matrix.android-build }}"
     assert node_setup["if"] == kotlin_only
-    assert node_setup["with"]["node-version"] == "20"
+    assert node_setup["with"]["node-version"] == "24"
     assert java_setup["if"] == kotlin_only
     assert java_setup["with"] == {"distribution": "temurin", "java-version": "17"}
     assert mobile_install["if"] == kotlin_only

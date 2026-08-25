@@ -17,6 +17,22 @@ updates:
       - security
 
   - package-ecosystem: npm
+    directory: /
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:15"
+      timezone: Asia/Shanghai
+    groups:
+      workspace-qa-npm:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - security
+
+  - package-ecosystem: npm
     directory: /desktop
     open-pull-requests-limit: 2
     schedule:

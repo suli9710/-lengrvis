@@ -25,29 +25,46 @@ PYTHON_LOCK_SOURCES = (
     "scripts/acceleration-requirements-lock.txt",
 )
 NPM_LOCK_SOURCES = (
+    ("package-lock.json", "workspace-qa"),
     ("desktop/package-lock.json", "desktop"),
     ("mobile/package-lock.json", "mobile"),
 )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate a repository CycloneDX SBOM.")
-    parser.add_argument("--root", default="", help="Repository root. Defaults to the parent of scripts/.")
-    parser.add_argument("--output", default="", help="Output path for the CycloneDX JSON SBOM.")
+    parser = argparse.ArgumentParser(
+        description="Generate a repository CycloneDX SBOM."
+    )
+    parser.add_argument(
+        "--root",
+        default="",
+        help="Repository root. Defaults to the parent of scripts/.",
+    )
+    parser.add_argument(
+        "--output", default="", help="Output path for the CycloneDX JSON SBOM."
+    )
     args = parser.parse_args()
 
-    root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[1]
-    output = Path(args.output).resolve() if args.output else root / ".tmp" / "sbom" / "lengrvis-sbom.cdx.json"
+    root = (
+        Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[1]
+    )
+    output = (
+        Path(args.output).resolve()
+        if args.output
+        else root / ".tmp" / "sbom" / "lengrvis-sbom.cdx.json"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    commit_sha = git_value(root, ["rev-parse", "HEAD"]) or os.environ.get("GITHUB_SHA", "unknown")
+    commit_sha = git_value(root, ["rev-parse", "HEAD"]) or os.environ.get(
+        "GITHUB_SHA", "unknown"
+    )
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     components: dict[str, dict[str, Any]] = {}
 
     for source in PYTHON_LOCK_SOURCES:
         add_python_requirements(root / source, source, components)
     for source, project in NPM_LOCK_SOURCES:
-        add_npm_lock(root / source, project, components)
+        add_npm_lock(root / source, project, source, components)
 
     component_list = sorted(
         components.values(),
@@ -81,20 +98,29 @@ def main() -> int:
                 {"name": "lengrvis:commit_sha", "value": commit_sha},
                 {
                     "name": "lengrvis:source_files",
-                    "value": ";".join([*PYTHON_LOCK_SOURCES, *(source for source, _project in NPM_LOCK_SOURCES)]),
+                    "value": ";".join(
+                        [
+                            *PYTHON_LOCK_SOURCES,
+                            *(source for source, _project in NPM_LOCK_SOURCES),
+                        ]
+                    ),
                 },
             ],
         },
         "components": component_list,
     }
 
-    output.write_text(json.dumps(bom, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(bom, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     by_ecosystem: dict[str, int] = {}
     for component in component_list:
         for prop in component.get("properties", []):
             if prop.get("name") == "lengrvis:ecosystem":
-                by_ecosystem[prop.get("value", "unknown")] = by_ecosystem.get(prop.get("value", "unknown"), 0) + 1
+                by_ecosystem[prop.get("value", "unknown")] = (
+                    by_ecosystem.get(prop.get("value", "unknown"), 0) + 1
+                )
 
     print(f"SBOM generated: {output}")
     print(f"Components: {len(component_list)}")
@@ -103,7 +129,9 @@ def main() -> int:
     return 0
 
 
-def add_python_requirements(path: Path, source_label: str, components: dict[str, dict[str, Any]]) -> None:
+def add_python_requirements(
+    path: Path, source_label: str, components: dict[str, dict[str, Any]]
+) -> None:
     if not path.exists():
         raise FileNotFoundError(f"Missing Python lock file: {path}")
 
@@ -147,12 +175,17 @@ def add_python_requirements(path: Path, source_label: str, components: dict[str,
     for purl, component in python_components.items():
         if "hashes" in component:
             component["properties"].append(
-                {"name": "lengrvis:pypi_sha256_hash_count", "value": str(len(component["hashes"]))}
+                {
+                    "name": "lengrvis:pypi_sha256_hash_count",
+                    "value": str(len(component["hashes"])),
+                }
             )
         upsert_component(components, purl, component)
 
 
-def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]) -> None:
+def add_npm_lock(
+    path: Path, project: str, source_label: str, components: dict[str, dict[str, Any]]
+) -> None:
     if not path.exists():
         raise FileNotFoundError(f"Missing npm lock file: {path}")
 
@@ -167,7 +200,11 @@ def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]
         version = entry.get("version")
         if not isinstance(version, str) or not version:
             continue
-        name = entry.get("name") if isinstance(entry.get("name"), str) else npm_name_from_lock_path(package_path)
+        name = (
+            entry.get("name")
+            if isinstance(entry.get("name"), str)
+            else npm_name_from_lock_path(package_path)
+        )
         if not name:
             continue
         encoded_name = quote(name, safe="/")
@@ -176,9 +213,12 @@ def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]
         scope = "optional" if entry.get("optional") else "required"
         properties = [
             {"name": "lengrvis:ecosystem", "value": "npm"},
-            {"name": "lengrvis:source", "value": f"{project}/package-lock.json"},
+            {"name": "lengrvis:source", "value": source_label},
             {"name": "lengrvis:npm_project", "value": project},
-            {"name": "lengrvis:npm_dev_dependency", "value": "true" if entry.get("dev") else "false"},
+            {
+                "name": "lengrvis:npm_dev_dependency",
+                "value": "true" if entry.get("dev") else "false",
+            },
         ]
         integrity = entry.get("integrity")
         hashes = npm_integrity_hashes(integrity) if isinstance(integrity, str) else []
@@ -205,13 +245,17 @@ def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]
         )
 
 
-def upsert_component(components: dict[str, dict[str, Any]], key: str, component: dict[str, Any]) -> None:
+def upsert_component(
+    components: dict[str, dict[str, Any]], key: str, component: dict[str, Any]
+) -> None:
     existing = components.get(key)
     if existing is None:
         components[key] = component
         return
 
-    existing_props = {(prop.get("name"), prop.get("value")) for prop in existing.get("properties", [])}
+    existing_props = {
+        (prop.get("name"), prop.get("value")) for prop in existing.get("properties", [])
+    }
     for prop in component.get("properties", []):
         prop_key = (prop.get("name"), prop.get("value"))
         if prop_key not in existing_props:
@@ -223,7 +267,12 @@ def upsert_component(components: dict[str, dict[str, Any]], key: str, component:
     merge_unique_objects(existing, component, "licenses", ("expression", "license"))
 
 
-def merge_unique_objects(existing: dict[str, Any], component: dict[str, Any], key: str, identity_fields: tuple[str, ...]) -> None:
+def merge_unique_objects(
+    existing: dict[str, Any],
+    component: dict[str, Any],
+    key: str,
+    identity_fields: tuple[str, ...],
+) -> None:
     incoming = component.get(key)
     if not isinstance(incoming, list):
         return
@@ -233,7 +282,10 @@ def merge_unique_objects(existing: dict[str, Any], component: dict[str, Any], ke
         existing[key] = []
         existing_items = existing[key]
 
-    seen = {json.dumps(object_identity(item, identity_fields), sort_keys=True) for item in existing_items}
+    seen = {
+        json.dumps(object_identity(item, identity_fields), sort_keys=True)
+        for item in existing_items
+    }
     for item in incoming:
         item_key = json.dumps(object_identity(item, identity_fields), sort_keys=True)
         if item_key not in seen:
