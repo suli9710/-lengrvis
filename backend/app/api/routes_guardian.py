@@ -32,6 +32,7 @@ from app.security.desktop_api import (
     close_unauthorized_desktop_websocket,
     desktop_api_token_headers,
     desktop_health_challenge_proof,
+    desktop_websocket_subprotocol,
 )
 from app.security.lan import is_loopback_host, is_mobile_token_websocket_path, is_secure_mobile_transport
 from app.security.mobile_jwt import (
@@ -278,6 +279,7 @@ def create_schedule(payload: dict[str, Any] = Body(...)) -> Any:
         str(payload.get("goal") or ""),
         str(payload.get("mode") or "efficiency"),
         note=str(payload.get("note") or ""),
+        timezone=str(payload.get("timezone") or "UTC"),
     )
 
 
@@ -392,7 +394,7 @@ def reject_mobile_wakeup(wakeup_id: str, token: dict = Depends(require_mobile_to
 async def notification_messages(websocket: WebSocket):
     if await close_unauthorized_desktop_websocket(websocket):
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     seen: set[str] = set()
     try:
         await websocket.send_json({"type": "connected", "task_id": SYSTEM_TASK_ID})
@@ -547,11 +549,11 @@ async def proxy_websocket(websocket: WebSocket, path: str):
         return
     if await close_unauthorized_desktop_websocket(websocket):
         return
-    if runtime.shell_mode != "foreground":
-        await websocket.accept()
+    if runtime.shell_mode != "foreground" and not runtime._butler_resident():
+        await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
         await websocket.close(code=1013)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     try:
         await runtime.ensure_full_backend(reason=f"ws_proxy:/{path}")
         target = _full_backend_ws_url(path, websocket.url.query)

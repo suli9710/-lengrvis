@@ -1,0 +1,59 @@
+{
+  "review_date": "2026-10-18",
+  "head": "00500c4094608ac636ce9e55edae74ae9d7606bc",
+  "worktree": {
+    "modified_tracked": 176,
+    "untracked": 151
+  },
+  "source_size": {
+    "files": 1132,
+    "lines": 269887,
+    "p95": 789,
+    "largest": "scripts/portable_first_screen_smoke.ps1:2359"
+  },
+  "backend_pytest": {
+    "passed": 4815,
+    "skipped": 22,
+    "failed": 10,
+    "seconds": 949.31,
+    "failure_cause": "example.com resolves to 198.18.0.116 (fake-IP DNS) and is blocked by the outbound SSRF guard",
+    "dns_isolated_rerun": "28 passed",
+    "f01_f03_regressions": "50 passed"
+  },
+  "desktop": {
+    "typecheck": "passed",
+    "test_files": 107,
+    "tests_passed": 486,
+    "skipped": 1,
+    "renderer_build": "passed",
+    "bundle_budget": "passed"
+  },
+  "mobile": {
+    "typecheck": "passed",
+    "smoke": "not run this round"
+  },
+  "lint": {
+    "ruff_check": "passed",
+    "changed_python_format": "3 scripts would be reformatted (not gated by CI)"
+  },
+  "gates": {
+    "maintainability": "passed",
+    "secret_scan": "passed (17.82 MB)",
+    "repo_hygiene": "passed",
+    "threat_model": "passed"
+  },
+  "release": {
+    "strict_readiness": "failed",
+    "p0_total": 7,
+    "p0_in_progress": 7,
+    "candidate_commit": "307c968e421131fa7ce62afdadef404ff02e94a6",
+    "candidate_matches_head": false,
+    "worktree_clean": false,
+    "owner_signature": "pending",
+    "review_scorecard": "failed (dirty worktree; 94/100)"
+  },
+  "dependency_audit": {
+    "npm": "not completed (advisory endpoint timeouts in prior rounds; not retried to completion this round)",
+    "pip_audit": "not rerun this round"
+  }
+}

@@ -12,9 +12,12 @@ router = APIRouter()
 
 @router.get("/runtime/status")
 def runtime_status() -> dict:
+    from app.services.butler_residency import residency_required
+
     return {
         "mode": "full",
         "status": "running",
+        "butler_resident": residency_required(),
         **run_service.runtime_status(),
     }
 
@@ -26,6 +29,15 @@ def runtime_foreground() -> dict:
 
 @router.post("/runtime/background")
 async def runtime_background() -> dict:
+    from app.services.butler_residency import residency_required
+
+    if residency_required():
+        return {
+            "mode": "full",
+            "status": "background_resident",
+            "butler_resident": True,
+            **run_service.enter_foreground_runtime(),
+        }
     return {
         "mode": "full",
         "status": "background_ready",

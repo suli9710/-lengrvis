@@ -1,10 +1,12 @@
 import type { BackendProcessManager } from "./backendProcess";
 import { registerBackendIpcHandlers } from "./ipcBackendHandlers";
+import { registerButlerIpcHandlers } from "./ipcButlerHandlers";
 import { registerFeatureBridgeIpcHandlers } from "./ipcFeatureBridgeHandlers";
 import { registerMobilePairingIpcHandlers } from "./ipcMobilePairingHandlers";
 import { registerSystemSettingsIpcHandlers } from "./ipcSystemSettingsHandlers";
 import { registerTaskBridgeIpcHandlers } from "./ipcTaskBridgeHandlers";
 import { registerWindowPathIpcHandlers } from "./ipcWindowPathHandlers";
+import type { LocalPrivacyEraser } from "./ipcPrivacyErase";
 
 export { isSafeExternalUrl } from "./externalUrl";
 export { buildRequestUrl } from "./ipcValidation";
@@ -13,7 +15,7 @@ export { assertTrustedRenderer, isTrustedRendererUrl } from "./rendererTrust";
 
 export function registerIpcHandlers(
   backend: BackendProcessManager,
-  localPrivacyEraser?: { eraseLocalPrivateData: () => Promise<void> }
+  localPrivacyEraser?: LocalPrivacyEraser
 ): void {
   const context = {
     backend,
@@ -23,6 +25,7 @@ export function registerIpcHandlers(
   };
 
   registerBackendIpcHandlers(backend);
+  registerButlerIpcHandlers(backend);
   registerWindowPathIpcHandlers(context);
   registerTaskBridgeIpcHandlers(backend);
   registerFeatureBridgeIpcHandlers(backend);

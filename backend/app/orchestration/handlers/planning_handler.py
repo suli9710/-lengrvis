@@ -18,6 +18,8 @@ from app.orchestration.deterministic_contracts import (
     seal_deterministic_plan,
 )
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.workflow import WorkflowError
+from app.orchestration.workflow_plan import expand_workflow_steps
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error
@@ -60,6 +62,21 @@ def _planner_tool_spec(tool) -> str:
     required = schema.get("required") if isinstance(schema, dict) else None
     if required:
         spec += f" (required: {', '.join(str(item) for item in required)})"
+    if name.startswith(("ui_automation.", "browser.")) and isinstance(schema, dict):
+        # The planner receives text tool specs, not function-calling schemas.
+        # Include bounded parameter hints so it can actually use the contract.
+        parameters = []
+        for key, field in schema.get("properties", {}).items():
+            kind = field.get("type") or "|".join(item.get("type", "value") for item in field.get("anyOf", []))
+            parameters.append(f"{key}{'' if key in (required or []) else '?'}:{kind or 'value'}")
+            if key == "action" and isinstance(field.get("properties"), dict):
+                actions = field["properties"].get("kind", {}).get("enum", [])
+                parameters.append("action.kind=" + "|".join(actions))
+                parameters.append("action fields=" + ",".join(field["properties"]))
+        spec += f" (args: {', '.join(parameters)})"
+        alternatives = [item.get("required", []) for item in schema.get("anyOf", [])]
+        if alternatives:
+            spec += " (at least one: " + " / ".join(",".join(item) for item in alternatives) + ")"
     return spec
 
 
@@ -90,7 +107,7 @@ class PlanningHandler:
         if goal_review.verdict == SafetyVerdict.DENY:
             return orchestrator._set_status(task, TaskStatus.DENIED, final_summary=goal_review.safe_alternative)
 
-        memory_context = await orchestrator._recall_memory(goal)
+        memory_context = await orchestrator._recall_memory(goal, task_id=task.id)
         goal_context = self._goal_context_for_planning(task, goal)
         session_context = self._session_context_for_planning(task)
         agent_hint = normalize_supervisor_agent_hint((task.metadata or {}).get("supervisor_agent_hint")) or None
@@ -144,6 +161,13 @@ class PlanningHandler:
         memory_non_persistence = is_memory_non_persistence_goal(goal)
         if memory_non_persistence:
             visible_tools = [tool for tool in visible_tools if not tool.name.startswith("memory.")]
+        from app.policy.butler_context import managed_butler_task
+
+        if managed_butler_task(task.id):
+            # A long-lived matter may span files, documents, apps and pages.
+            # A keyword inferred from appended context must not hard-narrow the
+            # entire plan to one worker. Runtime scopes still gate each action.
+            agent_hint = None
         hint = normalize_supervisor_agent_hint(agent_hint)
         if hint:
             hinted_tools = [
@@ -175,6 +199,10 @@ class PlanningHandler:
                 )
             planner_kwargs = _filter_planner_kwargs(create_plan, planner_kwargs)
             plan = await create_plan(task.id, goal, mode, tools, **planner_kwargs)
+            try:
+                expand_workflow_steps(plan, orchestrator.registry, tools)
+            except WorkflowError as exc:
+                raise SupervisorHintPlanError(f"Cross-application plan is invalid: {exc}") from exc
             if memory_non_persistence:
                 blocked_memory_steps = [step.tool_name for step in plan.steps if step.tool_name.startswith("memory.")]
                 if blocked_memory_steps:

@@ -4,13 +4,14 @@ const path = require("node:path");
 const rendererDir = path.join(__dirname, "..", "dist", "renderer");
 const assetsDir = path.join(rendererDir, "assets");
 
-// Async collection states and local-library correctness fixes add a small,
-// measured baseline cost. Character stills remain external assets via
+// The Butler route, durable chat controls and scope/undo client add ~18 KB to
+// the previous 750 KB baseline (measured total: 767.1 KB on 2026-09-16).
+// Entry and per-chunk limits are unchanged. Character stills remain external assets via
 // `?no-inline`, so these limits cover application code rather than image data.
 const budgets = {
   entryJs: readBudget("LENGRVIS_RENDERER_ENTRY_JS_BUDGET_KB", 235),
   chunkJs: readBudget("LENGRVIS_RENDERER_CHUNK_JS_BUDGET_KB", 160),
-  totalJs: readBudget("LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB", 750),
+  totalJs: readBudget("LENGRVIS_RENDERER_TOTAL_JS_BUDGET_KB", 780),
   totalCss: readBudget("LENGRVIS_RENDERER_TOTAL_CSS_BUDGET_KB", 195),
 };
 

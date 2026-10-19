@@ -105,6 +105,66 @@ def test_git_worktree_diff_preview_reports_untracked_files(tmp_path) -> None:
     assert {"status": "??", "path": "backend/app/new_file.py"} in preview["changed_files"]
 
 
+def test_git_subdirectory_scope_hides_siblings_and_resolves_local_names(tmp_path):
+    from app.tools.developer_tools import git_status, shell_readonly
+
+    repo = tmp_path / "parent-repo"
+    workspace = repo / "authorized-project"
+    workspace.mkdir(parents=True)
+    sibling = repo / "private-sibling-name.txt"
+    local = workspace / "文档 with spaces.txt"
+    sibling.write_text("initial", encoding="utf-8")
+    local.write_text("initial", encoding="utf-8")
+    for args in (
+        ["init"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    sibling.write_text("unrelated private change", encoding="utf-8")
+    check = run_write_verification(
+        workspace=workspace,
+        allowed_directories=[str(workspace)],
+        goal="inspect project",
+        tool_events=[],
+    )
+    assert check["writes_detected"] is False
+    assert sibling.name not in json.dumps(check)
+    status = git_status({"cwd": str(workspace)}, {"allowed_directories": [str(workspace)]})
+    assert status["ok"] is True
+    assert sibling.name not in json.dumps(status)
+    shell_status = shell_readonly(
+        {"cwd": str(workspace), "command": "git status --short"},
+        {"allowed_directories": [str(workspace)]},
+    )
+    assert shell_status["ok"] is True
+    assert sibling.name not in json.dumps(shell_status)
+
+    local.write_text("local change", encoding="utf-8")
+    preview = git_worktree_diff_preview(workspace, allowed_directories=[str(workspace)])
+    assert preview["ok"] is True
+    assert preview["changed_files"] == [{"status": "M", "path": local.name}]
+    assert sibling.name not in json.dumps(preview)
+
+
+def test_git_renamed_file_with_unicode_and_spaces_has_correct_destination(tmp_path):
+    repo = tmp_path / "renames"
+    repo.mkdir()
+    old = repo / "old name.txt"
+    old.write_text("unchanged content", encoding="utf-8")
+    for args in (
+        ["init"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    # Unicode and spaces exercise Git's quoting and NUL rename-record format.
+    renamed = "新 文件.txt"
+    subprocess.run(["git", "mv", old.name, renamed], cwd=repo, check=True, capture_output=True)
+    preview = git_worktree_diff_preview(repo, allowed_directories=[str(repo)])
+    assert preview["changed_files"] == [{"status": "R", "path": renamed}]
+
+
 @pytest.mark.asyncio
 async def test_developer_engine_applies_write_verification_on_success(tmp_path, monkeypatch) -> None:
     from app.config import AppSettings

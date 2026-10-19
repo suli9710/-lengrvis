@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 from app.config import AppSettings
+from app.core.local_data_lifecycle import tracks_local_data
 from app.core.schemas import ToolResult
 from app.orchestration.runtime_context import LargeResultReference, TaskRuntimeContext
 from app.policy.policy_rules import BROWSER_CONTENT_TRUST
@@ -72,6 +73,7 @@ def apply_result_budget(
     return result
 
 
+@tracks_local_data
 def persist_large_result(
     settings: AppSettings,
     task_id: str,

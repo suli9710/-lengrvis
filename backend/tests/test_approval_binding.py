@@ -371,6 +371,26 @@ def test_preexecution_subagent_stop_expires_approved_approval(action, reason_fra
     assert reason_fragment in (refreshed_approval_data.get("expired_reason") or "").lower()
 
 
+def test_approved_bound_step_cannot_be_reported_complete_without_execution():
+    from app.core.step_inputs import StepInputBinding
+
+    orchestrator, task, plan, step, approval, calls = _setup_bound_approval()
+    step.input_bindings = {"path": StepInputBinding(step_id="read", path=["value"])}
+    step.depends_on = ["read"]
+    db.upsert_model("plans", plan)
+    orchestrator.subagents["FileAgent"] = ActionAgent(AgentAction(kind="done", rationale="Already done"))
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+
+    refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert calls == []
+    assert refreshed_task.status == TaskStatus.EXECUTION
+    assert refreshed_task.execution_stage == ExecutionStage.PAUSED
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+
+
 def test_approval_route_returns_conflict_when_execution_expires_approval(monkeypatch: pytest.MonkeyPatch):
     orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
     orchestrator.subagents["FileAgent"] = ActionAgent(AgentAction(kind="done", rationale="Already done."))

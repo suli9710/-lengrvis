@@ -60,7 +60,7 @@ class GuardianScheduler:
             schedule = ScheduledTask.model_validate(row)
             schedule.last_run_at = now_dt.replace(microsecond=0).isoformat()
             schedule.last_status = "waiting_user_confirmation"
-            schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
+            schedule.next_run_at = _next_run(schedule.cron, base=now_dt, timezone=schedule.timezone)
             schedule.updated_at = now_iso()
             claimed = db.claim_scheduled_task_run(
                 schedule.id,

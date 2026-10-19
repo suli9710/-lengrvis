@@ -11,6 +11,7 @@ from typing import Any
 from app.config import get_env
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+from app.perception.ui_automation_identity import UI_AUTOMATION_IDENTITY_VERSION, UI_AUTOMATION_RESOURCE_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,10 @@ def candidate_resource_paths(
 ) -> list[Path]:
     values: list[Any] = []
     _collect_path_values(args, "", values, top_level=True, path_keys=PATH_ARG_KEYS)
+    if getattr(tool, "name", "") in {"document.create_xlsx", "document.create_docx"}:
+        from app.services.office_artifacts import execution_paths
+
+        values = execution_paths(tool.name, args, context) or values
     if preview:
         _collect_preview_path_values(preview, values)
     values.extend(_tool_specific_path_values(str(getattr(tool, "name", "")), args, context))
@@ -259,8 +264,36 @@ def validate_write_preconditions(
     if args.get("dry_run") is True or not _is_modifying_tool(tool):
         return
     expected_states = canonical_state_list(expected_approval_state or [])
-    if expected_states:
-        mismatch = compare_resource_states(expected_states, current_state)
+    # Only the built-in semantic UIA actions revalidate this resource kind
+    # inside their native action boundary. Every other state, including custom
+    # resources without filesystem paths, still requires a matching snapshot.
+    native_uia_validation = (
+        getattr(tool, "name", "") in {"ui_automation.click", "ui_automation.type_text", "ui_automation.hotkey"}
+        and getattr(tool, "trust_tier", "") == "builtin"
+    )
+    browser_validation = (
+        getattr(tool, "name", "")
+        in {"browser.act", "browser.fill_form", "browser.click_element", "browser.submit_form", "browser.navigate"}
+        and getattr(tool, "trust_tier", "") == "builtin"
+        and bool(context.get("butler_matter_id"))
+    )
+    runtime_states = [
+        state
+        for state in expected_states
+        if not (
+            native_uia_validation
+            and state.get("kind") == UI_AUTOMATION_RESOURCE_KIND
+            and state.get("identity_version") == UI_AUTOMATION_IDENTITY_VERSION
+            and not state.get("path")
+            or browser_validation
+            and state.get("kind") == "browser_control"
+            and state.get("identity_version") == "browser-control/v1"
+            and bool(state.get("fingerprint"))
+            and not state.get("path")
+        )
+    ]
+    if expected_states and (runtime_states or current_state):
+        mismatch = compare_resource_states(runtime_states, current_state)
         if mismatch:
             raise StaleResourceStateError(
                 "Resource state changed after preview; run a fresh preview before writing.",
@@ -305,6 +338,10 @@ def compare_resource_states(expected: Any, current: Any) -> dict[str, Any]:
     current_list = canonical_state_list(current or [])
     if expected_list == current_list:
         return {}
+    expected_non_file = [state for state in expected_list if not state.get("path") and not state.get("normalized_path")]
+    current_non_file = [state for state in current_list if not state.get("path") and not state.get("normalized_path")]
+    if expected_non_file != current_non_file:
+        return {"expected": expected_list, "current": current_list}
     expected_by_path = _states_by_path(expected_list)
     current_by_path = _states_by_path(current_list)
     if expected_by_path and current_by_path:

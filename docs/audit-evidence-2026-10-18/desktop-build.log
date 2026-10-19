@@ -1,0 +1,93 @@
+
+> lengrvis-desktop@0.1.2 build:renderer
+> vite build && node scripts/verify-renderer-bundle-budget.cjs
+
+vite v6.4.3 building for production...
+transforming...
+✓ 1868 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/renderer/assets/working_still-Do3CJSdF.png                                    0.67 kB
+dist/renderer/assets/standby_still-B0aIcjQU.png                                    0.69 kB
+dist/renderer/assets/fc_screen_working_main_still-BWu-scgX.png                     0.82 kB
+dist/renderer/assets/fc_screen_working_win_use_still-NEu3aiEl.png                  0.99 kB
+dist/renderer/assets/sleeping_still-xCtxLcl_.png                                   1.03 kB
+dist/renderer/index.html                                                           1.10 kB │ gzip:  0.51 kB
+dist/renderer/assets/salute_still-BsSUh3gA.png                                     1.10 kB
+dist/renderer/assets/fc_screen_working_search_or_browser_use_still-BkD63T4x.png    1.17 kB
+dist/renderer/assets/running_treadmill_cropped_still-Clnf3zKR.png                  1.44 kB
+dist/renderer/assets/fc_screen_working_file_use_still-D5jsFMhd.png                 2.12 kB
+dist/renderer/assets/fc_drink_coffee_still-B1hDAhGn.png                            2.27 kB
+dist/renderer/assets/fc_screen_working_apk_use_still-CiAmp6yJ.png                  2.41 kB
+dist/renderer/assets/fc_pooping-0_cropped_still-C43YNaWr.png                       2.76 kB
+dist/renderer/assets/fc_walking_h_still-BJnCImdL.png                               3.10 kB
+dist/renderer/assets/screen_on-DcSaPqPW.png                                        3.46 kB
+dist/renderer/assets/screen_img-B3vJU3Tn.png                                       4.08 kB
+dist/renderer/assets/toilet-CVlip3ME.png                                          13.20 kB
+dist/renderer/assets/chair-aF3NZCaS.png                                           15.65 kB
+dist/renderer/assets/treadmill-BabuJ5fO.png                                       16.41 kB
+dist/renderer/assets/water_bar--C6JPW-t.png                                       30.34 kB
+dist/renderer/assets/desk-CwjMs1PR.png                                            34.04 kB
+dist/renderer/assets/standby-DBPr3GzI.gif                                         34.26 kB
+dist/renderer/assets/running_treadmill_cropped-CUx20sVn.gif                       36.09 kB
+dist/renderer/assets/desk_boss-v3AuK7OJ.png                                       41.47 kB
+dist/renderer/assets/working-Dt4wtMoJ.gif                                         42.84 kB
+dist/renderer/assets/sleeping-Btl2dxp1.gif                                        49.43 kB
+dist/renderer/assets/chair_boss-S8Y6nWTk.png                                      54.43 kB
+dist/renderer/assets/salute-BZ_wt0QE.gif                                          63.99 kB
+dist/renderer/assets/fc_pooping-0_cropped-jrcZ7_Cr.gif                            81.50 kB
+dist/renderer/assets/fc_walking_h-C8FUE7Lk.gif                                    82.81 kB
+dist/renderer/assets/fc_screen_working_win_use-C4us8ycN.gif                       86.22 kB
+dist/renderer/assets/fc_screen_working_search_or_browser_use-BB7975Ib.gif         88.70 kB
+dist/renderer/assets/fc_screen_working_main-DX-bvb3w.gif                          93.32 kB
+dist/renderer/assets/shadow-G7JXLKhZ.png                                         138.62 kB
+dist/renderer/assets/shadow_boss-Adwqy6t7.png                                    139.32 kB
+dist/renderer/assets/fc_screen_working_file_use-8kfwf-mV.gif                     141.30 kB
+dist/renderer/assets/fc_drink_coffee-DRWXJgta.gif                                141.71 kB
+dist/renderer/assets/fc_screen_working_apk_use-xyTjnUmy.gif                      187.44 kB
+dist/renderer/assets/index-DalsWczj.css                                          194.96 kB │ gzip: 31.48 kB
+dist/renderer/assets/motion-DNlT1fzo.js                                            0.35 kB │ gzip:  0.22 kB
+dist/renderer/assets/ButlerRoute-ChIc-eFJ.js                                       0.52 kB │ gzip:  0.37 kB
+dist/renderer/assets/Panel-DiNu4zXA.js                                             0.60 kB │ gzip:  0.29 kB
+dist/renderer/assets/state-DJnl1Tom.js                                             0.65 kB │ gzip:  0.39 kB
+dist/renderer/assets/SkillsRoute-noqSQS_O.js                                       0.73 kB │ gzip:  0.43 kB
+dist/renderer/assets/MemoryRoute-CexAqvZX.js                                       0.75 kB │ gzip:  0.44 kB
+dist/renderer/assets/LocalLibraryRoute-BTsipLkP.js                                 0.76 kB │ gzip:  0.44 kB
+dist/renderer/assets/AuditLogPanel-DhMBZBbK.js                                     0.98 kB │ gzip:  0.52 kB
+dist/renderer/assets/SafetyRoute-CmXQ3Ddz.js                                       0.99 kB │ gzip:  0.50 kB
+dist/renderer/assets/ComputerRoute-CHEtGMJD.js                                     1.05 kB │ gzip:  0.56 kB
+dist/renderer/assets/BrowserRoute-COZv9mQg.js                                      1.13 kB │ gzip:  0.54 kB
+dist/renderer/assets/SettingsRoute-DwlGftSy.js                                     1.16 kB │ gzip:  0.58 kB
+dist/renderer/assets/FilesRoute-CPORB6A9.js                                        1.59 kB │ gzip:  0.78 kB
+dist/renderer/assets/useCollectionPanelState-DhyXTTZC.js                           1.97 kB │ gzip:  0.85 kB
+dist/renderer/assets/AgentConversationPanel-CkyHL0Zw.js                            2.28 kB │ gzip:  1.08 kB
+dist/renderer/assets/SafetyReviewPanel-BpX3Te-7.js                                 2.36 kB │ gzip:  1.01 kB
+dist/renderer/assets/PlanViewer-B4DyS_C0.js                                        2.53 kB │ gzip:  1.13 kB
+dist/renderer/assets/AgentsRoute-COL6XWxi.js                                       2.54 kB │ gzip:  1.09 kB
+dist/renderer/assets/ChatRoute-BqjBCOSs.js                                         2.77 kB │ gzip:  1.39 kB
+dist/renderer/assets/MetricsPanel-C97_yslW.js                                      2.85 kB │ gzip:  1.46 kB
+dist/renderer/assets/PrivacyDataPanel-DaavWzxB.js                                  2.97 kB │ gzip:  1.47 kB
+dist/renderer/assets/TechnicalDetails-CEQxUKuK.js                                  3.23 kB │ gzip:  1.54 kB
+dist/renderer/assets/ArtifactsPanel-C5FXkpl_.js                                    3.66 kB │ gzip:  1.73 kB
+dist/renderer/assets/SchedulePanel-xGRVxWBy.js                                     5.00 kB │ gzip:  2.07 kB
+dist/renderer/assets/HardwareAccelerationCard-Cmn3eLlP.js                          5.07 kB │ gzip:  2.03 kB
+dist/renderer/assets/MemoryPanel-BgHrSuke.js                                       6.60 kB │ gzip:  2.60 kB
+dist/renderer/assets/taskResultTimeline-Co-6s5ST.js                                7.12 kB │ gzip:  2.63 kB
+dist/renderer/assets/SkillsView-D6UTuz5f.js                                       10.90 kB │ gzip:  3.98 kB
+dist/renderer/assets/CommercePanel-CorJYRPu.js                                    12.19 kB │ gzip:  4.58 kB
+dist/renderer/assets/LocalLibraryView-COhCAsit.js                                 13.25 kB │ gzip:  5.12 kB
+dist/renderer/assets/BrowserActivityPanel-gvcurgsU.js                             13.29 kB │ gzip:  4.50 kB
+dist/renderer/assets/ChatPanel-C23xwnIb.js                                        13.37 kB │ gzip:  5.12 kB
+dist/renderer/assets/AppSurfaceApprovalDialog-CRXbeQgR.js                         14.15 kB │ gzip:  5.28 kB
+dist/renderer/assets/SystemInfoPanel-CDDa69SU.js                                  17.96 kB │ gzip:  6.02 kB
+dist/renderer/assets/ButlerView-DU1v7HXD.js                                       18.34 kB │ gzip:  6.05 kB
+dist/renderer/assets/TaskTimeline-DChFr1tm.js                                     25.34 kB │ gzip:  7.77 kB
+dist/renderer/assets/PairingVisualCode-DRVKN0u6.js                                26.51 kB │ gzip: 10.12 kB
+dist/renderer/assets/icons-B-VhLLAD.js                                            30.42 kB │ gzip: 10.38 kB
+dist/renderer/assets/FileSearchPanel-TmEQ8H-5.js                                  52.77 kB │ gzip: 15.28 kB
+dist/renderer/assets/OfficeScene-gpDH57Am.js                                      60.32 kB │ gzip: 18.54 kB
+dist/renderer/assets/SettingsPanel-YcnMWTPZ.js                                    77.89 kB │ gzip: 22.16 kB
+dist/renderer/assets/react-X-08Hddo.js                                           132.87 kB │ gzip: 42.96 kB
+dist/renderer/assets/index-Bq6IRABx.js                                           212.66 kB │ gzip: 64.77 kB
+✓ built in 3.00s
+Renderer bundle budget passed: entry 207.7 KB, largest chunk 129.8 KB, total JS 775.8 KB, CSS 190.4 KB.

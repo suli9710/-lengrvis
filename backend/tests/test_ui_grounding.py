@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from app.config import AppSettings
+from app.llm import registry as llm_registry
 from app.tools import ui_automation_tools
 
 
@@ -65,7 +67,7 @@ def test_vision_fallback_scales_ratios_to_screen_coordinates(monkeypatch):
     )
     monkeypatch.setattr(
         "app.tools.vision_tools._run_vision",
-        lambda prompt, image_path, task="vision": (
+        lambda prompt, image_path, task="vision", settings=None: (
             '{"found": true, "x_ratio": 0.5, "y_ratio": 0.25, "confidence": 0.9, "label": "Save button"}'
         ),
     )
@@ -90,13 +92,55 @@ def test_vision_fallback_not_found_is_actionable(monkeypatch):
     )
     monkeypatch.setattr(
         "app.tools.vision_tools._run_vision",
-        lambda prompt, image_path, task="vision": '{"found": false, "confidence": 0.0, "label": ""}',
+        lambda prompt, image_path, task="vision", settings=None: '{"found": false, "confidence": 0.0, "label": ""}',
     )
 
     result = ui_automation_tools.locate_on_screen({"target": "a button that does not exist"}, {})
 
     assert result["ok"] is False
     assert "could not find" in result["error"]
+
+
+def test_screen_grounding_keeps_privacy_settings_when_global_mode_is_efficiency(monkeypatch):
+    settings = AppSettings(mode="efficiency", provider_name="openai", api_key="test-cloud-key")
+    cloud_calls = []
+    local_modes = []
+
+    class LocalVisionProvider:
+        name = "ollama"
+
+        async def vision(self, image_path, prompt, model=None):
+            return '{"found": true, "x_ratio": 0.5, "y_ratio": 0.25, "confidence": 0.9}'
+
+    def local_provider(settings):
+        local_modes.append(settings.mode)
+        return LocalVisionProvider()
+
+    def cloud_provider(settings):
+        cloud_calls.append(settings.mode)
+        return LocalVisionProvider()
+
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None, approval_context=None: _FakeTarget(
+            element=None, screenshot=_fake_screenshot_payload()
+        ),
+    )
+    monkeypatch.setattr(llm_registry, "get_effective_settings", lambda: settings)
+    monkeypatch.setattr(llm_registry, "_build_local_provider", local_provider)
+    monkeypatch.setattr(llm_registry, "_build_cloud_provider", cloud_provider)
+
+    result = ui_automation_tools.locate_on_screen(
+        {"target": "the Save button"}, {"settings": settings.model_copy(update={"mode": "privacy"})}
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "vision"
+    assert (result["x"], result["y"]) == (960, 270)
+    assert local_modes == ["privacy"]
+    assert cloud_calls == []
+    assert settings.mode == "efficiency"
 
 
 def test_vision_fallback_rejects_oversized_screenshot(monkeypatch):

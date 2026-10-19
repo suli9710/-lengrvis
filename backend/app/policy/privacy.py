@@ -42,6 +42,25 @@ def can_use_cloud_model(settings: AppSettings, task: str = "default") -> Privacy
     return PrivacyDecision(False, f"Unknown mode '{mode}'.")
 
 
+def can_use_image_provider(settings: AppSettings, *, task: str = "vision") -> PrivacyDecision:
+    from app.core.outbound_url import is_local_base_url
+
+    model = can_use_cloud_model(settings, task=task)
+    if not model.allowed:
+        return model
+    if settings.provider_name.lower() in {
+        "ollama",
+        "lmstudio",
+        "llamacpp",
+        "llama.cpp",
+        "vllm_local",
+        "local",
+        "onnx",
+    } and is_local_base_url(settings.base_url):
+        return PrivacyDecision(True, "The configured image provider is local.")
+    return can_upload_file_content(settings)
+
+
 def can_use_browser_writes(settings: AppSettings) -> PrivacyDecision:
     mode = (settings.mode or "efficiency").lower()
     if mode == "privacy":

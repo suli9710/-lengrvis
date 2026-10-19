@@ -1219,7 +1219,7 @@ def edit_xlsx(
     if not sheet_name or not cell_ref:
         raise ValueError("document.edit_xlsx requires non-empty 'sheet' and 'cell'.")
     _ensure_parseable_file_size(path_obj)
-    workbook = load_workbook(path_obj)
+    workbook = load_workbook(path_obj, keep_vba=path_obj.suffix.lower() in {".xlsm", ".xltm"})
     if sheet_name not in workbook.sheetnames:
         raise ValueError(f"Sheet not found: {sheet_name}")
     worksheet = workbook[sheet_name]
@@ -1269,29 +1269,26 @@ def _apply_redaction_docx(
     doc = Document(str(path))
     compiled = [(label, re.compile(pattern)) for label, pattern in _redaction_patterns(custom_patterns).items()]
 
-    def _redact_paragraph(paragraph: Any) -> None:
-        text = paragraph.text
-        for label, regex in compiled:
-            text = regex.sub(f"[REDACTED:{label}]", text)
-        if text != paragraph.text:
-            paragraph.text = text
+    from docx.oxml.ns import qn
 
-    # Cover body paragraphs AND table cells (and nested tables). doc.paragraphs
-    # excludes table-cell paragraphs, but findings are counted over parsed text
-    # that includes table content, so skipping tables would silently leave PII
-    # unredacted while reporting success.
-    for paragraph in doc.paragraphs:
-        _redact_paragraph(paragraph)
-
-    def _redact_tables(tables: Any) -> None:
-        for table in tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        _redact_paragraph(paragraph)
-                    _redact_tables(cell.tables)
-
-    _redact_tables(doc.tables)
+    # Include headers, footers, nested tables and drawing/textbox paragraphs.
+    # Match across runs while keeping unrelated package parts and drawings.
+    for part in doc.part.package.parts:
+        element = getattr(part, "element", None)
+        if element is None:
+            continue
+        for paragraph in element.iter(qn("w:p")):
+            nodes = [
+                node for node in paragraph.iter(qn("w:t")) if next(node.iterancestors(qn("w:p")), None) is paragraph
+            ]
+            original = "".join(node.text or "" for node in nodes)
+            text = original
+            for label, regex in compiled:
+                text = regex.sub(f"[REDACTED:{label}]", text)
+            if nodes and text != original:
+                nodes[0].text = text
+                for node in nodes[1:]:
+                    node.text = ""
     _safe_save_office_document(path, lambda: doc.save(str(path)), abort_context)
 
 

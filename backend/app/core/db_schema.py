@@ -4,6 +4,12 @@ import logging
 import sqlite3
 from collections.abc import Callable
 
+from app.core.db_tables import (
+    _ENSURE_COLUMNS_TABLES,
+    _SAFE_COLUMN_DEFINITION_RE,
+    _SAFE_COLUMN_NAME_RE,
+)
+
 EnsureColumns = Callable[[sqlite3.Connection, str, dict[str, str]], None]
 
 logger = logging.getLogger(__name__)
@@ -26,6 +32,22 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_created_at
             ON tasks(created_at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS butler_matters (
+            id TEXT PRIMARY KEY, data TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS autonomy_scopes (
+            id TEXT PRIMARY KEY, data TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS butler_events (
+            id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, scope_version INTEGER NOT NULL,
+            object_key TEXT NOT NULL, data TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+            due_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_butler_events_due ON butler_events(status, due_at);
+        CREATE INDEX IF NOT EXISTS idx_butler_events_object ON butler_events(scope_id, object_key, status);
         CREATE TABLE IF NOT EXISTS chat_messages (
             id TEXT PRIMARY KEY,
             data TEXT NOT NULL,
@@ -421,7 +443,7 @@ def ensure_document_chunks_fts(conn: sqlite3.Connection) -> str:
         FTS_MODE_TRIGRAM if existing_mode == FTS_MODE_TRIGRAM or _sqlite_supports_trigram(conn) else FTS_MODE_PLAIN
     )
 
-    if ddl and existing_mode not in {desired_mode, FTS_MODE_UNAVAILABLE}:
+    if ddl and (existing_mode not in {desired_mode, FTS_MODE_UNAVAILABLE} or "chunk_id" not in ddl.lower()):
         _drop_fts_table(conn)
         ddl = None
         existing_mode = FTS_MODE_UNAVAILABLE
@@ -489,7 +511,10 @@ def _drop_fts_table(conn: sqlite3.Connection) -> None:
 def _create_fts_table(conn: sqlite3.Connection, mode: str) -> str:
     tokenizer = ", tokenize='trigram'" if mode == FTS_MODE_TRIGRAM else ""
     try:
-        conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(file_id, path, text{tokenizer})")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} "
+            f"USING fts5(file_id, path, text, chunk_id UNINDEXED{tokenizer})"
+        )
     except sqlite3.OperationalError as exc:
         logger.info("could not create %s document chunk FTS table: %s", mode, exc)
         return FTS_MODE_UNAVAILABLE
@@ -500,8 +525,8 @@ def _backfill_document_chunks_fts(conn: sqlite3.Connection) -> None:
     fts_count_sql = "SELECT COUNT(*) AS count FROM document_chunks_fts"
     fts_delete_sql = "DELETE FROM document_chunks_fts"
     fts_backfill_sql = """
-        INSERT INTO document_chunks_fts (file_id, path, text)
-        SELECT dc.file_id, f.normalized_path, dc.text
+        INSERT INTO document_chunks_fts (file_id, path, text, chunk_id)
+        SELECT dc.file_id, f.normalized_path, dc.text, dc.id
         FROM document_chunks dc
         JOIN indexed_files f ON f.id = dc.file_id
         ORDER BY dc.file_id, dc.chunk_index
@@ -519,3 +544,19 @@ def _backfill_document_chunks_fts(conn: sqlite3.Connection) -> None:
         conn.execute(fts_backfill_sql)
     except sqlite3.Error as exc:
         logger.debug("could not backfill document chunk FTS table: %s", exc, exc_info=True)
+
+
+def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    if table not in _ENSURE_COLUMNS_TABLES:
+        return
+    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            # P1-6 fix: Validate column name before using it in ALTER TABLE.
+            # SQLite does not support parameterized identifiers in DDL, so we
+            # validate against a strict regex to prevent SQL injection.
+            if not _SAFE_COLUMN_NAME_RE.fullmatch(name):
+                raise ValueError(f"Invalid column name for ALTER TABLE: {name!r}")
+            if not _SAFE_COLUMN_DEFINITION_RE.fullmatch(definition):
+                raise ValueError(f"Invalid column definition for ALTER TABLE: {definition!r}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")

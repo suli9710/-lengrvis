@@ -1,0 +1,133 @@
+=== source size gate ===
+Source size check failed.
+Scanned source files: 1132
+Total source lines: 269887
+P95 file size: 789 lines
+Largest file: scripts/portable_first_screen_smoke.ps1: 2359 lines
+Max lines threshold: 900
+Max P95 threshold: 800
+Area summary:
+ - android_native: 9 files, 1958 lines, max 790
+ - backend: 450 files, 128734 lines, max 1391
+ - desktop: 401 files, 62078 lines, max 880
+ - desktop_scripts: 37 files, 10377 lines, max 1976
+ - desktop_styles: 40 files, 12601 lines, max 636
+ - mobile: 55 files, 11792 lines, max 819
+ - mobile_scripts: 20 files, 4551 lines, max 1042
+ - scripts: 120 files, 37796 lines, max 2359
+Largest source files:
+ - scripts/portable_first_screen_smoke.ps1: 2359 lines
+ - scripts/verify_android_release_gate.ps1: 2039 lines
+ - desktop/scripts/ipc-security-smoke.cjs: 1976 lines
+ - desktop/scripts/browser-activity-smoke.cjs: 1678 lines
+ - backend/app/context/management.py: 1391 lines
+ - backend/app/services/run_service.py: 1369 lines
+ - backend/app/services/ollama_service.py: 1355 lines
+ - backend/app/services/browser_activity_runtime.py: 1321 lines
+ - backend/app/services/document_intelligence_service.py: 1307 lines
+ - desktop/scripts/settings-local-model-experience-smoke.cjs: 1289 lines
+ - backend/app/orchestration/os_execution_engine.py: 1260 lines
+ - backend/app/tools/developer_tools.py: 1258 lines
+ - backend/app/tools/app_tools.py: 1240 lines
+ - backend/app/commerce/licensing.py: 1233 lines
+ - backend/app/orchestration/developer_engine.py: 1231 lines
+ - backend/app/perception/ui_automation.py: 1227 lines
+ - backend/app/policy/policy_engine.py: 1203 lines
+ - backend/app/api/routes_remote.py: 1154 lines
+ - backend/app/llm/openai_compatible.py: 1103 lines
+ - backend/app/integrations/lengrvis_code.py: 1100 lines
+ - scripts/verify_packaging.ps1: 1098 lines
+ - backend/app/commerce/activation.py: 1085 lines
+ - backend/app/tools/vision_tools.py: 1047 lines
+ - mobile/scripts/mobile-token-smoke.cjs: 1042 lines
+ - backend/app/services/task_explain_service.py: 1000 lines
+Files above threshold:
+ - scripts/portable_first_screen_smoke.ps1: 2359 lines
+ - scripts/verify_android_release_gate.ps1: 2039 lines
+ - desktop/scripts/ipc-security-smoke.cjs: 1976 lines
+ - desktop/scripts/browser-activity-smoke.cjs: 1678 lines
+ - backend/app/context/management.py: 1391 lines
+ - backend/app/services/run_service.py: 1369 lines
+ - backend/app/services/ollama_service.py: 1355 lines
+ - backend/app/services/browser_activity_runtime.py: 1321 lines
+ - backend/app/services/document_intelligence_service.py: 1307 lines
+ - desktop/scripts/settings-local-model-experience-smoke.cjs: 1289 lines
+ - backend/app/orchestration/os_execution_engine.py: 1260 lines
+ - backend/app/tools/developer_tools.py: 1258 lines
+ - backend/app/tools/app_tools.py: 1240 lines
+ - backend/app/commerce/licensing.py: 1233 lines
+ - backend/app/orchestration/developer_engine.py: 1231 lines
+ - backend/app/perception/ui_automation.py: 1227 lines
+ - backend/app/policy/policy_engine.py: 1203 lines
+ - backend/app/api/routes_remote.py: 1154 lines
+ - backend/app/llm/openai_compatible.py: 1103 lines
+ - backend/app/integrations/lengrvis_code.py: 1100 lines
+ - scripts/verify_packaging.ps1: 1098 lines
+ - backend/app/commerce/activation.py: 1085 lines
+ - backend/app/tools/vision_tools.py: 1047 lines
+ - mobile/scripts/mobile-token-smoke.cjs: 1042 lines
+ - backend/app/services/task_explain_service.py: 1000 lines
+ - mobile/scripts/remote-input-grant-smoke.cjs: 992 lines
+ - backend/app/tools/cluster_tools.py: 986 lines
+ - desktop/scripts/first-launch-smoke.cjs: 979 lines
+ - backend/app/llm/onnx_provider.py: 962 lines
+ - scripts/verify_mobile_lan_wss_preflight.ps1: 930 lines
+ - backend/app/services/cleanup_planner_service.py: 920 lines
+EXIT=1
+=== maintainability gate ===
+
+> lengrvis@0.1.2 maintainability:gate
+> python scripts/check_source_size.py --top 25 --max-lines 900 --allow-over-max-lines scripts/portable_first_screen_smoke.ps1 --allow-over-max-lines backend/app/services/ollama_service.py --allow-over-max-lines backend/app/services/run_service.py --allow-over-max-lines backend/app/context/management.py --allow-over-max-lines backend/app/api/routes_activation_admin.py --allow-over-max-lines backend/app/orchestration/os_execution_engine.py --allow-over-max-lines backend/app/services/document_intelligence_service.py --allow-over-max-lines backend/app/tools/developer_tools.py --allow-over-max-lines backend/app/services/browser_activity_runtime.py --allow-over-max-lines backend/app/commerce/licensing.py --allow-over-max-lines backend/app/policy/policy_engine.py --allow-over-max-lines scripts/verify_android_release_gate.ps1 --allow-over-max-lines scripts/verify_packaging.ps1 --allow-over-max-lines backend/app/commerce/activation.py --allow-over-max-lines backend/app/orchestration/developer_engine.py --allow-over-max-lines backend/app/perception/ui_automation.py --allow-over-max-lines backend/app/tools/vision_tools.py --allow-over-max-lines backend/app/api/routes_remote.py --allow-over-max-lines backend/app/services/task_explain_service.py --allow-over-max-lines backend/app/integrations/lengrvis_code.py --allow-over-max-lines backend/app/tools/cluster_tools.py --allow-over-max-lines backend/app/llm/onnx_provider.py --allow-over-max-lines backend/app/tools/app_tools.py --allow-over-max-lines scripts/verify_mobile_lan_wss_preflight.ps1 --allow-over-max-lines backend/app/services/cleanup_planner_service.py --allow-over-max-lines backend/app/llm/openai_compatible.py --allow-over-max-lines desktop/scripts/ipc-security-smoke.cjs --allow-over-max-lines desktop/scripts/settings-local-model-experience-smoke.cjs --allow-over-max-lines desktop/scripts/browser-activity-smoke.cjs --allow-over-max-lines desktop/scripts/first-launch-smoke.cjs --allow-over-max-lines mobile/scripts/mobile-token-smoke.cjs --allow-over-max-lines mobile/scripts/remote-input-grant-smoke.cjs --max-p95-lines 800 --max-area-max-lines backend=1400 --max-area-max-lines desktop=900 --max-area-max-lines desktop_scripts=2000 --max-area-max-lines desktop_styles=700 --max-area-max-lines mobile=900 --max-area-max-lines mobile_scripts=1100 --max-area-max-lines android_native=900 --max-area-max-lines scripts=2400
+
+Source size check passed.
+Scanned source files: 1132
+Total source lines: 269887
+P95 file size: 789 lines
+Largest file: scripts/portable_first_screen_smoke.ps1: 2359 lines
+Max lines threshold: 900
+Max P95 threshold: 800
+Area max-file thresholds:
+ - android_native: 900 lines
+ - backend: 1400 lines
+ - desktop: 900 lines
+ - desktop_scripts: 2000 lines
+ - desktop_styles: 700 lines
+ - mobile: 900 lines
+ - mobile_scripts: 1100 lines
+ - scripts: 2400 lines
+Area summary:
+ - android_native: 9 files, 1958 lines, max 790
+ - backend: 450 files, 128734 lines, max 1391
+ - desktop: 401 files, 62078 lines, max 880
+ - desktop_scripts: 37 files, 10377 lines, max 1976
+ - desktop_styles: 40 files, 12601 lines, max 636
+ - mobile: 55 files, 11792 lines, max 819
+ - mobile_scripts: 20 files, 4551 lines, max 1042
+ - scripts: 120 files, 37796 lines, max 2359
+Largest source files:
+ - scripts/portable_first_screen_smoke.ps1: 2359 lines
+ - scripts/verify_android_release_gate.ps1: 2039 lines
+ - desktop/scripts/ipc-security-smoke.cjs: 1976 lines
+ - desktop/scripts/browser-activity-smoke.cjs: 1678 lines
+ - backend/app/context/management.py: 1391 lines
+ - backend/app/services/run_service.py: 1369 lines
+ - backend/app/services/ollama_service.py: 1355 lines
+ - backend/app/services/browser_activity_runtime.py: 1321 lines
+ - backend/app/services/document_intelligence_service.py: 1307 lines
+ - desktop/scripts/settings-local-model-experience-smoke.cjs: 1289 lines
+ - backend/app/orchestration/os_execution_engine.py: 1260 lines
+ - backend/app/tools/developer_tools.py: 1258 lines
+ - backend/app/tools/app_tools.py: 1240 lines
+ - backend/app/commerce/licensing.py: 1233 lines
+ - backend/app/orchestration/developer_engine.py: 1231 lines
+ - backend/app/perception/ui_automation.py: 1227 lines
+ - backend/app/policy/policy_engine.py: 1203 lines
+ - backend/app/api/routes_remote.py: 1154 lines
+ - backend/app/llm/openai_compatible.py: 1103 lines
+ - backend/app/integrations/lengrvis_code.py: 1100 lines
+ - scripts/verify_packaging.ps1: 1098 lines
+ - backend/app/commerce/activation.py: 1085 lines
+ - backend/app/tools/vision_tools.py: 1047 lines
+ - mobile/scripts/mobile-token-smoke.cjs: 1042 lines
+ - backend/app/services/task_explain_service.py: 1000 lines
+EXIT=0

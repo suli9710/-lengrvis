@@ -43,6 +43,11 @@ async def full_backend_lifespan(app: FastAPI):
         session_store = _load_session_context()
         await _start_scheduler(stack)
         await _start_file_environment(stack, settings)
+        from app.services.butler_service import get_butler
+
+        butler = get_butler()
+        await butler.start()
+        stack.push_async_callback(butler.stop)
         stack.callback(session_store.save)
         _register_runtime_cleanups(stack)
         yield

@@ -11,6 +11,7 @@ sign-off.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -382,6 +383,20 @@ def validate(
                 errors.append(
                     "Current release evidence owner signature key fingerprint is missing or invalid."
                 )
+            if owner_signature_verification == "verified":
+                try:
+                    _verify_owner_signature_evidence(
+                        artifact_root,
+                        evidence_text,
+                        repository=expected_repo,
+                        commit=current_sha or candidate,
+                        run_id=expected_run_id or evidence_run_id,
+                        run_attempt=expected_run_attempt or evidence_run_attempt,
+                    )
+                except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+                    errors.append(
+                        f"Current release evidence independent owner signature verification failed: {exc}"
+                    )
             for command in REQUIRED_CURRENT_EVIDENCE_COMMANDS:
                 if not _current_evidence_lists_command(evidence_text, command):
                     errors.append(
@@ -390,6 +405,65 @@ def validate(
                     )
 
     return errors, warnings
+
+
+def _verify_owner_signature_evidence(
+    root: Path,
+    text: str,
+    *,
+    repository: str,
+    commit: str,
+    run_id: str,
+    run_attempt: str,
+) -> None:
+    trusted_key = os.environ.get("LENGRVIS_RELEASE_OWNER_PUBLIC_KEY", "").strip()
+    if not trusted_key:
+        raise ValueError("trusted release-owner public key is not configured")
+    reference = _current_evidence_summary_value(text, "Owner signature evidence")
+    path = (root / reference).resolve()
+    if not reference or not path.is_relative_to(root.resolve()):
+        raise ValueError(
+            "signature evidence must be a local file inside the repository"
+        )
+    evidence = json.loads(path.read_text(encoding="utf-8"))
+    spec = importlib.util.spec_from_file_location(
+        "readiness_release_owner_signature",
+        Path(__file__).with_name("release_owner_signature.py"),
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError("signature verifier is unavailable")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    verified = verifier.verify_release_owner_signature(
+        public_key_text=trusted_key,
+        signature_text=evidence["signature"],
+        payload=evidence["payload"],
+    )
+    for label, key in (
+        ("Owner signature", "signature"),
+        ("Owner signature payload SHA-256", "payload_sha256"),
+        ("Owner signature key fingerprint", "public_key_fingerprint"),
+    ):
+        if verified[key] != _current_evidence_summary_value(text, label):
+            raise ValueError(f"{label} does not match the verified signature")
+    payload = verified["payload"]
+    expected = {
+        "repository": repository,
+        "candidate_commit": commit,
+        "candidate_run_id": run_id,
+        "candidate_run_attempt": run_attempt,
+        "release_owner": _current_evidence_summary_value(text, "Release owner"),
+        "manual_signoff_status": _current_evidence_summary_value(
+            text, "Manual sign-off status"
+        ),
+        "build_identifier": _current_evidence_summary_value(text, "Build identifier"),
+    }
+    for key, value in expected.items():
+        if not value or payload[key] != value:
+            raise ValueError(f"signed {key} does not match the current candidate")
+    version = _current_evidence_summary_value(text, "Release version").removeprefix("v")
+    if not version or payload["release_tag"].removeprefix("v") != version:
+        raise ValueError("signed release_tag does not match the current release")
 
 
 def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:

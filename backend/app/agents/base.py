@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -71,7 +72,7 @@ class BaseAgent:
         if deterministic is not None:
             return deterministic
 
-        from app.llm.registry import get_provider
+        from app.llm.registry import get_provider, get_settings_for_mode
 
         messages = [
             {"role": "system", "content": self.system_prompt()},
@@ -92,7 +93,7 @@ class BaseAgent:
             },
         }
         try:
-            prov = provider or get_provider(task="subagent")
+            prov = provider or get_provider(get_settings_for_mode(context.mode), task="subagent")
             payload = await prov.structured_chat(messages, schema)
             return AgentAction(
                 **{k: payload.get(k, "") for k in ("kind", "tool_name", "rationale", "follow_up_question")},
@@ -199,7 +200,7 @@ def _act_user_prompt(
     if observation is not None:
         ok_text = "succeeded" if observation.ok else "failed"
         observation_block = f"Last observation {ok_text}: {observation.observation or observation.error}"
-    return render_prompt(
+    prompt = render_prompt(
         "agent_act_user.md",
         {
             "task_mode": context.mode,
@@ -212,6 +213,15 @@ def _act_user_prompt(
             "observation_block": observation_block,
         },
     )
+    if step.tool_name.startswith(("ui_automation.", "browser.")) and context.registry is not None:
+        try:
+            tool = context.registry.get(step.tool_name)
+        except KeyError:
+            return prompt
+        prompt += "\nTool input contract (omit optional fields you do not know):\n" + json.dumps(
+            tool.input_schema, ensure_ascii=False, separators=(",", ":")
+        )
+    return prompt
 
 
 def _format_reflection(step: PlanStep, result: ToolResult, agent_name: str, domain_summary: str) -> str:

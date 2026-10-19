@@ -117,6 +117,7 @@ def element_from_native(
         "is_enabled": getattr(native, "CurrentIsEnabled", None),
         "is_keyboard_focusable": getattr(native, "CurrentIsKeyboardFocusable", None),
         "is_offscreen": getattr(native, "CurrentIsOffscreen", None),
+        "is_password": getattr(native, "CurrentIsPassword", None),
         "has_keyboard_focus": getattr(native, "CurrentHasKeyboardFocus", None),
         "bounding_box": bounding_box,
         "text": text_reader(native),

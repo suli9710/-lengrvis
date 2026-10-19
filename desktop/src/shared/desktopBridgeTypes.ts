@@ -75,6 +75,7 @@ export interface DesktopMemorySaveRequest {
   tags?: string[];
   taskId?: string;
   kind?: string;
+  supersedes?: string;
 }
 
 export interface DesktopMemoryRecallRequest {
@@ -95,6 +96,7 @@ export interface DesktopMemoryReviewRequest {
 
 export interface DesktopScheduleCreateRequest {
   cron: string;
+  timezone?: string;
   goal: string;
   mode: DesktopRunMode;
   note?: string;

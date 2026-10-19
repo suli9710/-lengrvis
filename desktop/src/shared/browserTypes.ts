@@ -32,6 +32,7 @@ export interface BrowserAction {
   selector?: string;
   text?: string;
   fields?: Record<string, string>;
+  selectors?: Record<string, string>;
   dry_run?: boolean;
   approved?: boolean;
   approval_id?: string;
@@ -41,6 +42,9 @@ export interface BrowserAction {
 export interface BrowserSession {
   id: string;
   task_id?: string;
+  account_id?: string;
+  scope_id?: string;
+  allowed_origins?: string[];
   current_url: string;
   title: string;
   status: "idle" | "loading" | "running" | "paused" | "stopped" | "error" | "awaiting_approval" | string;
@@ -104,6 +108,10 @@ export interface BrowserHostActionResult {
   event?: BrowserActivityEvent;
   snapshot?: BrowserHostSnapshot;
   error?: string;
+  inspection?: { fingerprint: string; origin: string; preview?: unknown[] };
+  commit_state?: "not_submitted" | "submitted";
+  // Named static receipt elements are part of the explicit observation, not the passive snapshot.
+  observation?: { url: string; title: string; text: string; links: BrowserLinkResult[]; observed_at: string; truncated?: boolean; present?: boolean; controls?: Record<string, unknown>[]; extracted?: Record<string, { text: string; matched: boolean; truncated: boolean }> };
 }
 
 export interface BrowserReplayExport {

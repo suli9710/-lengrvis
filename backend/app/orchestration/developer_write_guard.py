@@ -75,7 +75,7 @@ def git_worktree_diff_preview(
     root = Path(workspace).expanduser().resolve(strict=False)
     allowed = list(allowed_directories or [str(root)])
     command, error = _trusted_guarded_git_command(
-        ["status", "--porcelain=v1", "--untracked-files=all"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
         root=root,
         allowed_directories=allowed,
     )
@@ -94,45 +94,60 @@ def git_worktree_diff_preview(
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     changed_files: list[dict[str, str]] = []
-    for line in stdout.splitlines():
-        if not line.strip():
+    prefix = ""
+    if stdout and result.get("returncode") == 0:
+        prefix_command, prefix_error = _trusted_guarded_git_command(
+            ["rev-parse", "--show-prefix"], root=root, allowed_directories=allowed
+        )
+        prefix_result = _run_command(prefix_command, cwd=root, shell=False) if prefix_command else None
+        if prefix_result is None or prefix_result.get("returncode") != 0:
+            result["returncode"] = 1
+            stderr = prefix_error or "Unable to resolve the Git workspace prefix."
+            stdout = ""
+        else:
+            prefix = str(prefix_result.get("stdout") or "").rstrip("\r\n")
+    for status, repo_path in _parse_git_status_records(stdout):
+        # Porcelain paths are repository-relative even when Git is launched
+        # from a subdirectory. Never combine them directly with the cwd.
+        if not repo_path.startswith(prefix):
             continue
-        parsed = _parse_git_status_line(line)
-        if parsed is None:
-            continue
-        status, rel_path = parsed
-        if not rel_path:
-            continue
+        rel_path = repo_path[len(prefix) :]
         try:
-            resolve_authorized(root / rel_path, allowed)
+            candidate = resolve_authorized(root / rel_path, allowed)
+            if not candidate.is_relative_to(root):
+                continue
             changed_files.append({"status": status, "path": rel_path})
         except SecurityError as exc:
             changed_files.append({"status": status, "path": rel_path, "error": str(exc)})
-    diff_text, truncated = _truncate_text(stdout, DIFF_PREVIEW_LIMIT)
+    # Use the filtered paths, not raw Git output (rename source paths can be
+    # outside the requested scope even when a pathspec was supplied).
+    preview = "\n".join(f"{item['status']} {item['path']}" for item in changed_files)
+    diff_text, truncated = _truncate_text(preview, DIFF_PREVIEW_LIMIT)
     return {
         "ok": result.get("returncode") == 0,
         "dry_run": True,
         "workspace": str(root),
         "changed_files": changed_files,
         "diff_preview": diff_text,
-        "diff_truncated": truncated,
+        "diff_truncated": truncated or bool(result.get("stdout_truncated")),
         "stderr": stderr[:500],
         "returncode": result.get("returncode"),
     }
 
 
-def _parse_git_status_line(line: str) -> tuple[str, str] | None:
-    if len(line) < 4:
-        return None
-    status = line[:2].strip() or line[:2]
-    rel_path = line[3:].strip()
-    if not rel_path:
-        return None
-    if " -> " in rel_path:
-        rel_path = rel_path.rsplit(" -> ", 1)[1].strip()
-    if len(rel_path) >= 2 and rel_path[0] == rel_path[-1] == '"':
-        rel_path = rel_path[1:-1]
-    return status, rel_path
+def _parse_git_status_records(output: str) -> list[tuple[str, str]]:
+    records = iter(output.split("\0")[:-1])
+    parsed: list[tuple[str, str]] = []
+    for record in records:
+        if len(record) < 4 or record[2] != " ":
+            continue
+        status, path = record[:2], record[3:]
+        if "R" in status or "C" in status:
+            # NUL format places the destination first, then the source.
+            if next(records, None) is None:
+                break
+        parsed.append((status.strip() or status, path))
+    return parsed
 
 
 def infer_verification_command(goal: str, changed_paths: list[str]) -> str | None:

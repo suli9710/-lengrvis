@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.schemas import now_iso
+from app.llm.registry import get_effective_settings
 from app.perception.app_context import get_current_app_context
 from app.perception.context_store import handle_perception_event, update_screen_state
 from app.perception.schemas import AppContext, PerceptionEvent, PerceptionProvider, ScreenState
@@ -44,6 +45,7 @@ class ScreenMonitorConfig:
     vision_context: dict[str, Any] = field(default_factory=dict)
     temp_dir: str | None = None
     frame_diff_gate_enabled: bool = True
+    follow_global_settings: bool = False
 
     @classmethod
     def from_settings(cls, settings: Any) -> ScreenMonitorConfig:
@@ -57,6 +59,7 @@ class ScreenMonitorConfig:
             ),
             quality=int(getattr(settings, "perception_jpeg_quality", DEFAULT_JPEG_QUALITY) or DEFAULT_JPEG_QUALITY),
             frame_diff_gate_enabled=bool(getattr(settings, "perception_frame_diff_gate_enabled", True)),
+            follow_global_settings=True,
             vision_context={
                 "settings": settings,
                 "allowed_directories": list(getattr(settings, "allowed_directories", []) or []),
@@ -174,6 +177,12 @@ class ScreenMonitor(PerceptionProvider):
 
     def _vision_context(self, temp_dir: Path) -> dict[str, Any]:
         context = dict(self.config.vision_context or {})
+        if self.config.follow_global_settings:
+            # Application-wide monitors outlive global mode/provider changes.
+            # Explicit task contexts retain the settings snapshot they supplied.
+            settings = get_effective_settings()
+            context["settings"] = settings
+            context["allowed_directories"] = list(getattr(settings, "allowed_directories", []) or [])
         allowed = list(context.get("allowed_directories") or [])
         temp_dir_text = str(temp_dir)
         if temp_dir_text not in allowed:

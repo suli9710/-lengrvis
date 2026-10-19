@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
-import concurrent.futures
 import json
 import re
 import tempfile
@@ -13,20 +11,21 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from app.config import AppSettings
 from app.perception.ui_automation import UnavailableUIAutomationTarget, create_ui_automation_target
 from app.perception.ui_automation_observability import (
     record_action_result,
-    record_screenshot_capture_result,
 )
 from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
+from app.tools import ui_automation_contracts as contracts
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
+from app.tools.ui_automation_runner import run_ui_automation as _run_ui_automation
 
 MAX_VISION_GROUNDING_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS = ((MAX_VISION_GROUNDING_IMAGE_BYTES + 2) // 3) * 4
-DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS = 30.0
 _APPROVAL_ACTIONS = frozenset({"click", "type_text", "click_at", "drag", "key_press", "hotkey"})
 _ToolAction = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -35,6 +34,29 @@ def is_dry_run(args: dict[str, Any]) -> bool:
     """Only an explicit JSON boolean false may request a live UI action."""
 
     return args.get("dry_run", True) is not False
+
+
+def _validated_tool_action(action: str) -> Callable[[_ToolAction], _ToolAction]:
+    def decorate(fn: _ToolAction) -> _ToolAction:
+        @wraps(fn)
+        def validated(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+            raise_if_tool_aborted(context)
+            try:
+                contracts.validate_arguments(action, args, context)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_code": "invalid_tool_arguments",
+                    "next_actions": [
+                        f"Correct the parameters using the ui_automation.{action} input schema before retrying."
+                    ],
+                }
+            return fn(args, context)
+
+        return validated
+
+    return decorate
 
 
 def _observed_tool_action(action: str) -> Callable[[_ToolAction], _ToolAction]:
@@ -59,76 +81,8 @@ def _observed_tool_action(action: str) -> Callable[[_ToolAction], _ToolAction]:
     return decorate
 
 
-async def _with_timeout(coro, timeout_seconds: float | None, abort_context: dict[str, Any] | None) -> Any:
-    task = asyncio.create_task(coro)
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout_seconds is None or timeout_seconds <= 0 else loop.time() + timeout_seconds
-    try:
-        while True:
-            raise_if_tool_aborted(abort_context)
-            remaining = None if deadline is None else deadline - loop.time()
-            if remaining is not None and remaining <= 0:
-                raise TimeoutError
-            wait_for = 0.05 if remaining is None else min(0.05, remaining)
-            done, _ = await asyncio.wait({task}, timeout=wait_for)
-            if task in done:
-                return await task
-    finally:
-        if not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-
-def _run_ui_automation(
-    coro,
-    action: str,
-    *,
-    timeout_seconds: float | None = DEFAULT_UI_AUTOMATION_TIMEOUT_SECONDS,
-    abort_context: dict[str, Any] | None = None,
-) -> Any:
-    try:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            result = asyncio.run(_with_timeout(coro, timeout_seconds, abort_context))
-        else:
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(asyncio.run, _with_timeout(coro, timeout_seconds, abort_context))
-            try:
-                guard_timeout = None if timeout_seconds is None or timeout_seconds <= 0 else timeout_seconds + 1
-                result = future.result(timeout=guard_timeout)
-            finally:
-                if not future.done():
-                    future.cancel()
-                pool.shutdown(wait=False, cancel_futures=True)
-    except TimeoutError:
-        return record_screenshot_capture_result(
-            action,
-            {
-                "ok": False,
-                "error": f"UIAutomation {action} timed out.",
-                "error_code": "ui_automation_timeout",
-            },
-            terminal="timeout",
-        )
-    except ToolAbortedError:
-        record_screenshot_capture_result(action, None, terminal="aborted")
-        raise
-    except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: UIAutomation adapters should fail inline for tool callers.
-        return record_screenshot_capture_result(
-            action,
-            {
-                "ok": False,
-                "error": f"UIAutomation {action} failed: {exc}",
-                "error_code": "ui_automation_adapter_error",
-            },
-            terminal="exception",
-        )
-    return record_screenshot_capture_result(action, result)
-
-
 @_observed_tool_action("active_window")
+@_validated_tool_action("active_window")
 def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     app_context = _run_ui_automation(target.active_window(), "active_window", abort_context=context)
@@ -138,12 +92,13 @@ def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 
 
 @_observed_tool_action("observe")
+@_validated_tool_action("observe")
 def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return _run_ui_automation(
         target.observe(
             _selector_args(args),
-            max_depth=int(args.get("max_depth") or args.get("maxDepth") or 2),
+            max_depth=int(args.get("max_depth", args.get("maxDepth", 2))),
             max_elements=int(args.get("max_elements") or args.get("maxElements") or 200),
         ),
         "observe",
@@ -152,6 +107,7 @@ def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("find_element")
+@_validated_tool_action("find_element")
 def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     result = _run_ui_automation(
@@ -166,6 +122,7 @@ def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 
 @_observed_tool_action("wait_for_element")
+@_validated_tool_action("wait_for_element")
 def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     if unavailable := _unavailable_target_result(target):
@@ -173,10 +130,11 @@ def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     element = _run_ui_automation(
         target.wait_for_element(
             _selector_args(args),
-            timeout_seconds=float(args.get("timeout_seconds") or args.get("timeoutSeconds") or 5),
+            timeout_seconds=float(args.get("timeout_seconds", args.get("timeoutSeconds", 5))),
             poll_interval_seconds=float(args.get("poll_interval_seconds") or args.get("pollIntervalSeconds") or 0.25),
         ),
         "wait_for_element",
+        timeout_seconds=float(args.get("timeout_seconds", args.get("timeoutSeconds", 5))) + 1,
         abort_context=context,
     )
     if isinstance(element, dict):
@@ -185,6 +143,7 @@ def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
 
 
 @_observed_tool_action("click")
+@_validated_tool_action("click")
 def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     selector = _selector_args(args)
     if is_dry_run(args):
@@ -206,6 +165,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("type_text")
+@_validated_tool_action("type_text")
 def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     selector = _selector_args(args)
     text = str(args.get("text") or "")
@@ -229,12 +189,14 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("focus")
+@_validated_tool_action("focus")
 def focus(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return _run_ui_automation(target.focus(_selector_args(args)), "focus", abort_context=context)
 
 
 @_observed_tool_action("list_windows")
+@_validated_tool_action("list_windows")
 def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     if unavailable := _unavailable_target_result(target):
@@ -246,6 +208,7 @@ def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 
 @_observed_tool_action("focus_window")
+@_validated_tool_action("focus_window")
 def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return _run_ui_automation(
@@ -262,6 +225,7 @@ def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 
 @_observed_tool_action("click_at")
+@_validated_tool_action("click_at")
 def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     x = int(args.get("x") or 0)
     y = int(args.get("y") or 0)
@@ -293,6 +257,7 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("drag")
+@_validated_tool_action("drag")
 def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     detail = {
         "start_x": int(args.get("start_x") or args.get("startX") or 0),
@@ -326,6 +291,7 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("key_press")
+@_validated_tool_action("key_press")
 def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     key = str(args.get("key") or "")
     if not key:
@@ -349,6 +315,7 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("hotkey")
+@_validated_tool_action("hotkey")
 def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     keys = args.get("keys") or []
     if isinstance(keys, str):
@@ -356,7 +323,11 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     keys = [str(key) for key in keys]
     if not keys:
         return {"ok": False, "error": "At least one key is required."}
+    selector = _selector_args(args)
+    scoped = any(selector.values())
     if is_dry_run(args):
+        if scoped:
+            return _semantic_preview("hotkey", selector, context, detail={"keys": keys})
         return _preview("hotkey", {"keys": keys})
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("hotkey")
@@ -364,6 +335,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return _run_ui_automation(
         target.hotkey(
             keys,
+            **({"element": selector} if scoped else {}),
             task_id=_task_id(context),
             step_id=_step_id(context),
             approved=bool(args.get("approved")),
@@ -375,6 +347,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("screenshot")
+@_validated_tool_action("screenshot")
 def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return _run_ui_automation(
@@ -389,6 +362,7 @@ def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 @_observed_tool_action("get_property")
+@_validated_tool_action("get_property")
 def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     prop = str(args.get("prop") or args.get("property") or "")
     if not prop:
@@ -401,12 +375,39 @@ def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
         "get_property",
         abort_context=context,
     )
-    if isinstance(value, dict):
+    if isinstance(value, dict) and value.get("ok") is False:
         return value
-    return {"ok": value is not None, "property": prop, "value": value}
+    result = {"ok": value is not None, "property": prop, "value": value}
+    if "expected_value" in args:
+        actual, expected = value, args["expected_value"]
+        if args.get("text_comparison") == "normalize_newlines":
+            if isinstance(actual, str):
+                actual = actual.replace("\r\n", "\n").replace("\r", "\n")
+            expected = expected.replace("\r\n", "\n").replace("\r", "\n")
+            result["text_comparison"] = "normalize_newlines"
+        # JSON comparison preserves string contents and distinguishes booleans
+        # from numbers, including inside containers (Python True == 1).
+        try:
+            verified = value is not None and json.dumps(actual, sort_keys=True, allow_nan=False) == json.dumps(
+                expected, sort_keys=True, allow_nan=False
+            )
+        except (TypeError, ValueError):
+            verified = False
+        result.update(ok=verified, verified=verified)
+        if not verified:
+            result.update(
+                error="The observed property does not match the expected value.",
+                error_code="ui_automation_postcondition_failed",
+                next_actions=[
+                    "Inspect the target control and the source observation before proposing a new action.",
+                    "Do not report the transfer complete or repeat a write without a new approval.",
+                ],
+            )
+    return result
 
 
 @_observed_tool_action("get_children")
+@_validated_tool_action("get_children")
 def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     if unavailable := _unavailable_target_result(target):
@@ -422,6 +423,7 @@ def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 
 @_observed_tool_action("locate_on_screen")
+@_validated_tool_action("locate_on_screen")
 def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """Operator-style grounding chain: semantic UIA lookup, then vision fallback.
 
@@ -479,10 +481,12 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
             "error_code": screenshot_payload.get("error_code", "ui_automation_screenshot_capture_failed"),
             "error": f"Vision grounding fallback needs a screenshot, but capture failed: {error}",
         }
-    return _vision_grounding(description, screenshot_payload)
+    return _vision_grounding(description, screenshot_payload, settings=context.get("settings"))
 
 
-def _vision_grounding(description: str, screenshot_payload: dict[str, Any]) -> dict[str, Any]:
+def _vision_grounding(
+    description: str, screenshot_payload: dict[str, Any], *, settings: AppSettings | None = None
+) -> dict[str, Any]:
     from app.llm.prompts import render_prompt
     from app.tools.vision_tools import _run_vision
 
@@ -501,7 +505,7 @@ def _vision_grounding(description: str, screenshot_payload: dict[str, Any]) -> d
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
             temp_path = Path(handle.name)
             handle.write(image_bytes)
-        answer = _run_vision(prompt, temp_path, task="vision")
+        answer = _run_vision(prompt, temp_path, task="vision", settings=settings)
     finally:
         if temp_path is not None:
             with suppress(OSError):
@@ -786,7 +790,7 @@ def register(registry) -> None:
             hotkey,
             RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
             True,
-            "Press a keyboard shortcut after approval.",
+            "Press an approved shortcut; a target control selector binds the document and verifies keyboard focus.",
             ["keyboard", "input", "write"],
         ),
         (
@@ -813,7 +817,7 @@ def register(registry) -> None:
             get_property,
             RiskLevel.R0_READ_ONLY,
             False,
-            "Read a property from a semantic UIAutomation element.",
+            "Read a semantic UIAutomation property; optional expected_value fails the step on a readback mismatch.",
             ["observe", "inspect"],
         ),
         (
@@ -830,24 +834,40 @@ def register(registry) -> None:
             ToolDefinition(
                 name=name,
                 description=description,
-                input_schema={"type": "object", "additionalProperties": True},
-                output_schema={"type": "object"},
+                input_schema=contracts.input_schema(name.split(".", 1)[1]),
+                output_schema=contracts.output_schema(),
+                # Native text is bounded to 65,536 UTF-16 units. Preserve its
+                # complete JSON value for dependency bindings, even when every
+                # character needs a six-character JSON escape.
+                max_result_size=(65536 * 6 + 4096) if name == "ui_automation.get_property" else 20000,
                 risk_level=risk,
                 agent_owner="ComputerAgent",
                 supports_dry_run=supports_dry_run,
                 requires_authorized_path=False,
                 execute=fn,
+                validate_input=contracts.validator(name.split(".", 1)[1]),
                 search_hint=(
                     "semantic ui automation accessibility windows app control gui desktop screen mouse keyboard"
                 ),
                 effects=effects,
+                fast_path_eligible=(risk == RiskLevel.R0_READ_ONLY and name != "ui_automation.vision_find")
+                or name in {"ui_automation.focus", "ui_automation.focus_window"},
                 concurrency_safe=risk == RiskLevel.R0_READ_ONLY,
                 concurrency_key=(
                     "desktop_gui_input"
                     if supports_dry_run or name in {"ui_automation.focus", "ui_automation.focus_window"}
                     else ""
                 ),
-                sensitive_arg_keys=["text"] if name == "ui_automation.type_text" else [],
-                tool_version="3" if name in {"ui_automation.click", "ui_automation.type_text"} else "1",
+                sensitive_arg_keys={
+                    "ui_automation.type_text": ["text"],
+                    "ui_automation.get_property": ["expected_value"],
+                }.get(name, []),
+                tool_version=(
+                    "3"
+                    if name in {"ui_automation.click", "ui_automation.type_text", "ui_automation.get_property"}
+                    else "2"
+                    if name == "ui_automation.hotkey"
+                    else "1"
+                ),
             )
         )

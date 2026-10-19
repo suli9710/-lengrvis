@@ -1088,7 +1088,7 @@ class OSExecutionEngine(ExecutionEngine):
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=denial_summary)
             return Plan(task_id=task.id, goal=task.user_goal, steps=[])
 
-        memory_context = await orchestrator._recall_memory(task.user_goal)
+        memory_context = await orchestrator._recall_memory(task.user_goal, task_id=task.id)
         goal_context = orchestrator.planning_handler._goal_context_for_planning(task, task.user_goal)
         session_context = orchestrator.planning_handler._session_context_for_planning(task)
         from app.agents.worker_agents import normalize_supervisor_agent_hint
@@ -1118,6 +1118,7 @@ class OSExecutionEngine(ExecutionEngine):
 
     def _build_turn_context(self, state: RunState, task: Task, plan: Plan) -> dict[str, Any]:
         context = self._orchestrator()._tool_context()
+        context["settings"] = context["settings"].model_copy(update={"mode": task.mode})
         context.update(
             {
                 "run_id": state.run_id,

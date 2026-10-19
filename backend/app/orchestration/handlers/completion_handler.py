@@ -158,6 +158,7 @@ class CompletionHandler:
             try:
                 store.remember_summary(
                     merged_summary,
+                    source_mode=task.mode,
                     last_message_id=messages[-1].id,
                     summary_envelope=summary_envelope,
                     expected_updated_at=context.updated_at,

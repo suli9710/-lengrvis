@@ -197,6 +197,7 @@ def register_all_tools(
         file_tools,
         memory_tools,
         notification_tools,
+        office_document_tools,
         remote_tools,
         search_tools,
         system_tools,
@@ -213,6 +214,7 @@ def register_all_tools(
     memory_tools.register(reg)
     developer_tools.register(reg)
     document_tools.register(reg)
+    office_document_tools.register(reg)
     notification_tools.register(reg)
     system_tools.register(reg)
     remote_tools.register(reg)

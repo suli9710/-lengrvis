@@ -18,6 +18,7 @@ import { useAppStoreSnapshot } from "./app/useAppStoreSnapshot";
 import { useHomeSignals } from "./app/useHomeSignals";
 import { useRealtimeStatusHandlers } from "./app/useRealtimeStatusHandlers";
 import { useTaskSubmission } from "./app/useTaskSubmission";
+import { useButler } from "./features/butler/useButler";
 import { useTaskRealtimeSync } from "./app/useTaskRealtimeSync";
 import { useWorkspaceRefresh } from "./app/useWorkspaceRefresh";
 import {
@@ -138,6 +139,7 @@ export function App() {
     settings
   });
   const recentReadableMessages = useMemo(() => recentReadableChatMessages(messages, 8), [messages]);
+  const butler = useButler(api, mode, connectionState === "online");
 
   useEffect(() => {
     backendStatusRef.current = backendStatus;
@@ -201,6 +203,14 @@ export function App() {
     onRealtimeBadMessage: handleRealtimeBadMessage
   });
 
+  const butlerTaskId = butler.selectedMatter?.active_task_id;
+  useEffect(() => {
+    if (activeView === "chat" && butlerTaskId) {
+      chatStartedTaskIds.current.add(butlerTaskId);
+      setFocusedTaskId(butlerTaskId);
+    }
+  }, [activeView, butlerTaskId, chatStartedTaskIds, setFocusedTaskId]);
+
   const {
     draft,
     setDraft,
@@ -211,6 +221,7 @@ export function App() {
     submitHeroPrompt,
     requestCleanupApproval
   } = useTaskSubmission({
+    submitButlerMessage: butler.submit,
     api,
     mode,
     backendStatusRef,
@@ -531,6 +542,15 @@ export function App() {
 
   return (
     <AppSurface
+      butler={butler}
+      onOpenButlerApproval={(matter) => {
+        butler.selectMatter(matter.id);
+        setFocusedTaskId(matter.active_task_id || matter.task_ids.at(-1) || null);
+        setApprovalSelectionContext("task");
+        setApprovalError(null);
+        setIsApprovalOpen(true);
+        void refreshTaskSnapshot().catch(() => undefined);
+      }}
       api={api}
       activeView={activeView}
       connectionState={connectionState}

@@ -27,7 +27,7 @@ from app.llm.onnx_provider import (
 from app.llm.registry import get_effective_settings
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.policy.redaction import redact_public_text
-from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_websocket_subprotocol
 from app.security.middleware import reject_audit_fail_closed_websocket
 from app.security.sensitive_confirmation import (
     create_permission_policy_confirmation,
@@ -282,7 +282,7 @@ async def install_local_model_stream(websocket: WebSocket, model: str | None = N
     except ValueError:
         await websocket.close(code=1008)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     try:
         async for progress in ollama_service.install_local_model(model):
             await websocket.send_json(progress)

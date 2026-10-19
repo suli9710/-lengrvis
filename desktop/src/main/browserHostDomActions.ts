@@ -54,6 +54,7 @@ export function observeScript(): string {
       url: location.href,
       title: document.title,
       text: document.body ? document.body.innerText.slice(0, 4000) : "",
+      truncated: Boolean(document.body && document.body.innerText.length > 4000),
       links: Array.from(document.links).slice(0, 40).map((link) => ({
         text: link.innerText.slice(0, 120),
         url: link.href

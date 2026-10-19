@@ -15,12 +15,8 @@ from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
 from app.core.db_migrations import apply_schema_migrations
+from app.core.db_schema import ensure_columns as _ensure_columns
 from app.core.db_schema import ensure_document_chunks_fts, initialize_schema
-from app.core.db_tables import (
-    _ENSURE_COLUMNS_TABLES,
-    _SAFE_COLUMN_DEFINITION_RE,
-    _SAFE_COLUMN_NAME_RE,
-)
 from app.core.db_tables import (
     DATA_TABLES as DATA_TABLES,
 )
@@ -54,7 +50,9 @@ AUDIT_FAIL_CLOSED_ENV_VAR = "LENGRVIS_AUDIT_FAIL_CLOSED"
 AUDIT_ANCHOR_FILE = "audit_chain.anchor.json"
 SENSITIVE_RECORD_INTEGRITY_VERSION = 1
 SENSITIVE_RECORD_INTEGRITY_TABLE = "sensitive_record_integrity"
-SENSITIVE_RECORD_INTEGRITY_KINDS = frozenset({"approvals", "app_settings", "permission_policies", "audit_chain_heads"})
+SENSITIVE_RECORD_INTEGRITY_KINDS = frozenset(
+    {"approvals", "app_settings", "permission_policies", "audit_chain_heads", "autonomy_scopes", "butler_matters"}
+)
 AUDIT_APPEND_ONLY_TRIGGERS = frozenset(
     {
         "audit_events_no_update",
@@ -115,6 +113,12 @@ def _notify_settings_invalidated() -> None:
     from app.core.db_settings import notify_settings_invalidated
 
     notify_settings_invalidated()
+
+
+def unregister_settings_invalidation_hook(fn: Callable[[], None]) -> None:
+    from app.core.db_settings import unregister_settings_invalidation_hook as _unregister_hook
+
+    _unregister_hook(fn)
 
 
 def _now_iso() -> str:
@@ -344,22 +348,6 @@ def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
     return _fetch_one(table, record_id)
 
 
-def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-    if table not in _ENSURE_COLUMNS_TABLES:
-        return
-    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    for name, definition in columns.items():
-        if name not in existing:
-            # P1-6 fix: Validate column name before using it in ALTER TABLE.
-            # SQLite does not support parameterized identifiers in DDL, so we
-            # validate against a strict regex to prevent SQL injection.
-            if not _SAFE_COLUMN_NAME_RE.fullmatch(name):
-                raise ValueError(f"Invalid column name for ALTER TABLE: {name!r}")
-            if not _SAFE_COLUMN_DEFINITION_RE.fullmatch(definition):
-                raise ValueError(f"Invalid column definition for ALTER TABLE: {definition!r}")
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-
-
 def fetch_many_by_fields(
     table: str,
     filters: dict[str, Any] | None = None,
@@ -453,9 +441,9 @@ def complete_scheduled_task_run(
     schedule_id: str,
     *,
     expected_last_run_at: str,
-    expected_next_run_at: str,
     last_status: str,
     last_task_id: str = "",
+    expected_last_status: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any] | None:
     from app.core.db_scheduling import complete_scheduled_task_run as _complete_scheduled_task_run
@@ -463,9 +451,9 @@ def complete_scheduled_task_run(
     return _complete_scheduled_task_run(
         schedule_id,
         expected_last_run_at=expected_last_run_at,
-        expected_next_run_at=expected_next_run_at,
         last_status=last_status,
         last_task_id=last_task_id,
+        expected_last_status=expected_last_status,
         updated_at=updated_at,
     )
 
@@ -482,16 +470,20 @@ def set_scheduled_task_enabled(
     return _set_scheduled_task_enabled(schedule_id, enabled, next_run_at=next_run_at, updated_at=updated_at)
 
 
-def insert_perception_observation(payload: dict[str, Any]) -> None:
+def insert_perception_observation(
+    payload: dict[str, Any], *, expected_generation: tuple[str, int] | None = None
+) -> bool:
     from app.core.db_scheduling import insert_perception_observation as _insert_perception_observation
 
-    _insert_perception_observation(payload)
+    return _insert_perception_observation(payload, expected_generation=expected_generation)
 
 
-def insert_perception_suggestion(payload: dict[str, Any]) -> None:
+def insert_perception_suggestion(
+    payload: dict[str, Any], *, expected_generation: tuple[str, int] | None = None
+) -> bool:
     from app.core.db_scheduling import insert_perception_suggestion as _insert_perception_suggestion
 
-    _insert_perception_suggestion(payload)
+    return _insert_perception_suggestion(payload, expected_generation=expected_generation)
 
 
 def next_run_event_sequence(run_id: str) -> int:

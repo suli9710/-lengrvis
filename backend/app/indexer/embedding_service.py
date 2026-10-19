@@ -6,9 +6,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.config import AppSettings
 from app.indexer.clustering import hashing_vectorize
 from app.indexer.local_embedding_provider import get_local_embedding_provider
+from app.llm.profiles import profile_for_provider
 from app.llm.registry import get_effective_settings, get_provider
+from app.policy.privacy import can_upload_file_content
 
 Embedder = Callable[[list[str]], Awaitable[list[list[float]]] | list[list[float]]]
 logger = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ async def embed_texts(
     *,
     embedder: Embedder | None = None,
     timeout_seconds: float | None = DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+    settings: AppSettings | None = None,
 ) -> list[list[float]]:
     normalized = [str(text or "") for text in texts]
     if not normalized:
@@ -35,7 +39,7 @@ async def embed_texts(
         if hasattr(vectors, "__await__"):
             vectors = await _with_timeout(vectors, timeout_seconds)  # type: ignore[arg-type,assignment]
         return [_coerce_vector(vector) for vector in vectors]  # type: ignore[arg-type]
-    settings = get_effective_settings()
+    settings = settings or get_effective_settings()
     local_provider = get_local_embedding_provider(settings)
     if local_provider is not None:
         try:
@@ -47,8 +51,16 @@ async def embed_texts(
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: local embeddings should degrade to the configured provider.
             logger.debug("Local embedding provider failed; falling back to configured provider: %s", exc, exc_info=True)
     try:
+        provider = get_provider(settings, task="embed")
+        # The routing wrapper retains request settings, while its profile
+        # describes the actual backend (including an auto-detected local model).
+        profile = getattr(provider, "profile", None) or profile_for_provider(provider, settings)
+        # Index, memory and query text can all contain local file content.
+        # A failed local model must not turn into an unconsented upload.
+        if not can_upload_file_content(settings).allowed and profile.capabilities.cloud:
+            return hashing_vectorize(normalized, dim=64)
         vectors = await _with_timeout(
-            get_provider(settings, task="embed").embed(normalized, model=settings.embedding_model),
+            provider.embed(normalized, model=settings.embedding_model),
             timeout_seconds,
         )
         return [_coerce_vector(vector) for vector in vectors]
@@ -61,9 +73,10 @@ def embed_texts_sync(
     *,
     embedder: Embedder | None = None,
     timeout_seconds: float | None = DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+    settings: AppSettings | None = None,
 ) -> list[list[float]]:
     return run_async(
-        embed_texts(texts, embedder=embedder, timeout_seconds=timeout_seconds),
+        embed_texts(texts, embedder=embedder, timeout_seconds=timeout_seconds, settings=settings),
         timeout_seconds=timeout_seconds,
     )
 

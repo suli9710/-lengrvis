@@ -16,6 +16,7 @@ from app.config import AppSettings
 from app.context.agent_message_projection import llm_safe_agent_message
 from app.context.management import project_ledger_for_llm
 from app.core import db
+from app.core.local_data_lifecycle import data_generation, local_data_operation, tracks_local_data
 from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole
 
 GLOBAL_TASK_ID = "__global__"
@@ -37,7 +38,8 @@ _PERSIST_QUEUE_MAX_SIZE = int(os.environ.get("LENGRVIS_PERSIST_QUEUE_MAX_SIZE", 
 _PERSIST_BACKPRESSURE_TIMEOUT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_TIMEOUT", "5.0"))
 _PERSIST_BACKPRESSURE_MAX_WAIT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_MAX_WAIT", "30.0"))
 _PERSIST_FAILURE_LIMIT = int(os.environ.get("LENGRVIS_PERSIST_FAILURE_LIMIT", "1000"))
-_PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue(maxsize=_PERSIST_QUEUE_MAX_SIZE)
+_PersistItem = tuple[AgentMessage, str, tuple[str, int]]
+_PERSIST_QUEUE: queue.Queue[_PersistItem] = queue.Queue(maxsize=_PERSIST_QUEUE_MAX_SIZE)
 _PERSIST_STATE = threading.Condition()
 _PERSIST_PENDING = 0
 _PERSIST_THREAD: threading.Thread | None = None
@@ -48,27 +50,32 @@ _PERSIST_THREAD_LOCK = threading.Lock()
 class _PersistFailure:
     message: AgentMessage
     data_dir: str
+    generation: tuple[str, int]
     error: str
 
 
 _PERSIST_FAILURES: deque[_PersistFailure] = deque(maxlen=_PERSIST_FAILURE_LIMIT)
-_PERSIST_FAILURE_OVERFLOW_DIRS: set[str] = set()
+_PERSIST_FAILURE_OVERFLOW_GENERATIONS: set[tuple[str, int]] = set()
 
 
 def _persist_worker() -> None:
     global _PERSIST_PENDING
     while True:
-        message, data_dir = _PERSIST_QUEUE.get()
+        message, data_dir, generation = _PERSIST_QUEUE.get()
         try:
             with db.using_data_dir(data_dir):
-                db.init_db()
-                db.upsert_model("agent_messages", message)
+                with local_data_operation(expected_generation=generation) as current:
+                    if current:
+                        db.init_db()
+                        db.upsert_model("agent_messages", message)
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             logger.exception("agent_bus: failed to persist message %s", message.id)
             with _PERSIST_STATE:
                 if len(_PERSIST_FAILURES) >= _PERSIST_FAILURE_LIMIT:
-                    _PERSIST_FAILURE_OVERFLOW_DIRS.add(data_dir)
-                _PERSIST_FAILURES.append(_PersistFailure(message=message, data_dir=data_dir, error=str(exc)))
+                    _PERSIST_FAILURE_OVERFLOW_GENERATIONS.add(_PERSIST_FAILURES[0].generation)
+                _PERSIST_FAILURES.append(
+                    _PersistFailure(message=message, data_dir=data_dir, generation=generation, error=str(exc))
+                )
         finally:
             with _PERSIST_STATE:
                 _PERSIST_PENDING -= 1
@@ -87,6 +94,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
     global _PERSIST_PENDING
     _ensure_persist_thread()
     data_dir = str(db.db_path().parent)
+    generation = data_generation()
 
     # --- P1 fix: Backpressure instead of unbounded growth ---
     queue_depth = _PERSIST_QUEUE.qsize()
@@ -108,7 +116,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
     with _PERSIST_STATE:
         _PERSIST_PENDING += 1
 
-    item = (message, data_dir)
+    item = (message, data_dir, generation)
     try:
         if _running_in_event_loop():
             _PERSIST_QUEUE.put_nowait(item)
@@ -124,7 +132,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
         raise
 
 
-def _put_persist_item_with_backpressure(item: tuple[AgentMessage, str], message_id: str) -> None:
+def _put_persist_item_with_backpressure(item: _PersistItem, message_id: str) -> None:
     deadline = time.monotonic() + max(0.0, _PERSIST_BACKPRESSURE_MAX_WAIT)
     while True:
         remaining = deadline - time.monotonic()
@@ -158,25 +166,28 @@ def _running_in_event_loop() -> bool:
     return True
 
 
+@tracks_local_data
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
     """Block until all queued message writes are committed (or timeout)."""
     if threading.current_thread() is _PERSIST_THREAD:
         return True
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     data_dir = str(db.db_path().parent)
+    generation = data_generation()
     with _PERSIST_STATE:
         while _PERSIST_PENDING > 0:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
             _PERSIST_STATE.wait(remaining)
-        should_recover = _persist_failures_for_dir_locked(data_dir) or data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS
+        _discard_erased_failures_locked(data_dir, generation)
+        should_recover = _persist_failures_for_dir_locked(data_dir)
     if should_recover:
         _recover_persist_failures_for_dir(data_dir)
     with _PERSIST_STATE:
         failures = _persist_failure_messages_for_dir_locked(data_dir)
-        if failures or data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS:
-            overflow = "failure history overflowed; " if data_dir in _PERSIST_FAILURE_OVERFLOW_DIRS else ""
+        if failures or generation in _PERSIST_FAILURE_OVERFLOW_GENERATIONS:
+            overflow = "failure history overflowed; " if generation in _PERSIST_FAILURE_OVERFLOW_GENERATIONS else ""
             raise AgentMessagePersistError(
                 "agent_messages persistence failed; read refused to avoid a split live/durable timeline: "
                 + overflow
@@ -188,7 +199,20 @@ def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
 def reset_agent_message_persist_failures_for_tests() -> None:
     with _PERSIST_STATE:
         _PERSIST_FAILURES.clear()
-        _PERSIST_FAILURE_OVERFLOW_DIRS.clear()
+        _PERSIST_FAILURE_OVERFLOW_GENERATIONS.clear()
+
+
+def _discard_erased_failures_locked(data_dir: str, generation: tuple[str, int]) -> None:
+    global _PERSIST_FAILURES
+    _PERSIST_FAILURES = deque(
+        (failure for failure in _PERSIST_FAILURES if failure.data_dir != data_dir or failure.generation == generation),
+        maxlen=_PERSIST_FAILURE_LIMIT,
+    )
+    _PERSIST_FAILURE_OVERFLOW_GENERATIONS.difference_update(
+        previous
+        for previous in list(_PERSIST_FAILURE_OVERFLOW_GENERATIONS)
+        if previous[0] == generation[0] and previous != generation
+    )
 
 
 def _persist_failures_for_dir_locked(data_dir: str) -> list[_PersistFailure]:
@@ -207,8 +231,10 @@ def _recover_persist_failures_for_dir(data_dir: str) -> None:
     for failure in failures:
         try:
             with db.using_data_dir(data_dir):
-                db.init_db()
-                db.upsert_model("agent_messages", failure.message)
+                with local_data_operation(expected_generation=failure.generation) as current:
+                    if current:
+                        db.init_db()
+                        db.upsert_model("agent_messages", failure.message)
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: recovery is best-effort; reads still fail closed below.
             logger.warning(
                 "agent_bus: failed to recover persisted message %s: %s",

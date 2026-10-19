@@ -1,0 +1,29 @@
+{
+  "coordination_enabled_case": [
+    {
+      "operation": "chat",
+      "mode": "efficiency",
+      "base_url": "https://example.com/v1",
+      "contains_private_goal": true,
+      "contains_private_preference": false
+    }
+  ],
+  "coordination_disabled_memory_case": [
+    {
+      "operation": "embedding",
+      "mode": "privacy",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "contains_private_preference": true
+    },
+    {
+      "operation": "chat",
+      "mode": "efficiency",
+      "base_url": "https://example.com/v1",
+      "contains_private_goal": false,
+      "contains_private_preference": true
+    }
+  ],
+  "source_matter_mode": "privacy",
+  "allow_file_content_upload": false,
+  "network_requests_sent": 0
+}

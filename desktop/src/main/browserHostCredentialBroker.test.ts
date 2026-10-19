@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserHost } from "./browserHost";
 import { CredentialUseTicketBroker } from "./credentialUseTicketBroker";
 import { CredentialVault } from "./credentialVault";
+import { BrowserProfileRegistry } from "./browserProfileRegistry";
+import { BrowserScreenshotStore } from "./browserScreenshotStore";
 
 const tempDirs: string[] = [];
 
@@ -118,7 +120,9 @@ describe("BrowserHost credential broker", () => {
       }
     });
     const tickets = new CredentialUseTicketBroker();
-    const host = new BrowserHost(() => null, vault, tickets);
+    const host = new BrowserHost(() => null, vault, tickets,
+      new BrowserProfileRegistry(() => join(directory, "profiles.json"), async () => {}),
+      new BrowserScreenshotStore(join(directory, "screenshots")));
     const ref = vault.store("https://example.test:8443", { username: "alice", password: "secret" });
     const binding = {
       credential_ref_id: ref.id,

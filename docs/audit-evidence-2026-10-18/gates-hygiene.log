@@ -1,0 +1,7 @@
+=== repo hygiene ===
+
+> lengrvis@0.1.2 hygiene
+> powershell -ExecutionPolicy Bypass -File ./scripts/check_repo_hygiene.ps1
+
+Repo hygiene check passed: no tracked local runtime artifacts.
+EXIT=0

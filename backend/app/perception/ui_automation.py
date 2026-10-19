@@ -5,13 +5,13 @@ import ctypes
 import logging
 import sys
 import time
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
 import psutil
 
 from app.core.schemas import Approval, SafetyReview
+from app.perception import ui_automation_com as _com
 from app.perception import ui_automation_identity as _identity
 from app.perception.app_context import get_current_app_context
 from app.perception.schemas import AppContext
@@ -87,8 +87,11 @@ from app.perception.ui_automation_elements import (
 from app.perception.ui_automation_elements import (
     selector_has_terms as _selector_has_terms,
 )
+from app.perception.ui_automation_target import UIAutomationTarget as UIAutomationTarget
+from app.perception.ui_automation_target import UnavailableUIAutomationTarget as UnavailableUIAutomationTarget
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 logger = logging.getLogger(__name__)
 _element_action_fingerprint = _identity.element_action_fingerprint
@@ -162,177 +165,6 @@ def _pyautogui_exception_types() -> tuple[type[BaseException], ...]:
     return tuple(candidate for candidate in candidates if isinstance(candidate, type))
 
 
-class UIAutomationTarget(ABC):
-    """Async UIAutomation contract used by app/workflow skills."""
-
-    @abstractmethod
-    async def active_window(self) -> AppContext:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def observe(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        max_depth: int = 2,
-        max_elements: int = 200,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def find_element(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        name: str = "",
-        control_type: str = "",
-        automation_id: str = "",
-    ) -> UIAutomationElement | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def inspect_selector(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        max_candidates: int = 10,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def wait_for_element(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        timeout_seconds: float = 5.0,
-        poll_interval_seconds: float = 0.25,
-    ) -> UIAutomationElement | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def click(
-        self,
-        element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def type_text(
-        self,
-        element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
-        text: str,
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def focus(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def list_windows(self) -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def focus_window(
-        self,
-        *,
-        title: str = "",
-        title_contains: str = "",
-        class_name: str = "",
-        process_id: int | None = None,
-        hwnd: int | None = None,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def click_at(
-        self,
-        x: int,
-        y: int,
-        *,
-        button: str = "left",
-        clicks: int = 1,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def drag(
-        self,
-        start_x: int,
-        start_y: int,
-        end_x: int,
-        end_y: int,
-        *,
-        duration_seconds: float = 0.2,
-        button: str = "left",
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def key_press(
-        self,
-        key: str,
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def hotkey(
-        self,
-        keys: list[str],
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def screenshot(
-        self,
-        *,
-        max_width: int = 1280,
-        max_height: int = 720,
-        quality: int = 50,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_property(
-        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str
-    ) -> Any:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_children(
-        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
-    ) -> list[UIAutomationElement]:
-        raise NotImplementedError
-
-
 class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     """Windows COM UIAutomation adapter with graceful degradation."""
 
@@ -346,6 +178,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         self.policy_engine = policy_engine or PolicyEngine()
         self.approval_context = approval_context or {}
         self._automation = automation
+        self._native_provider = automation is None and sys.platform == "win32"
         self._available_error = ""
         if automation is None:
             self._automation = self._create_automation()
@@ -358,6 +191,15 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     def unavailable_reason(self) -> str:
         return self._available_error
 
+    async def _run_com(self, fn: Callable[..., Any], *args: Any) -> Any:
+        def checked_call() -> Any:
+            raise_if_tool_aborted(self.approval_context)
+            return fn(*args)
+
+        if self._native_provider:
+            return await _com.run_async(checked_call)
+        return await asyncio.to_thread(checked_call)
+
     async def active_window(self) -> AppContext:
         return await asyncio.to_thread(get_current_app_context)
 
@@ -368,7 +210,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         max_depth: int = 2,
         max_elements: int = 200,
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        return await self._run_com(
             self._observe_sync,
             _coerce_selector(selector),
             _bounded_int(max_depth, default=2, minimum=0, maximum=8),
@@ -384,7 +226,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         automation_id: str = "",
     ) -> UIAutomationElement | None:
         normalized = _coerce_selector(selector, name=name, control_type=control_type, automation_id=automation_id)
-        element, match_count, search_truncated = await asyncio.to_thread(self._find_unique_element_sync, normalized)
+        element, match_count, search_truncated = await self._run_com(self._find_unique_element_sync, normalized)
         return element if match_count == 1 and not search_truncated else None
 
     async def inspect_selector(
@@ -393,7 +235,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         *,
         max_candidates: int = 10,
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        return await self._run_com(
             self._inspect_selector_sync,
             _coerce_selector(selector),
             _bounded_int(max_candidates, default=10, minimum=1, maximum=100),
@@ -447,12 +289,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         if target_error:
             return target_error
         try:
-            target_element = await asyncio.to_thread(
+            target_element = await self._run_com(
                 self._click_revalidated_sync,
                 target_element,
                 normalized,
                 True,
             )
+        except ToolAbortedError:
+            raise
         except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "click", "element": target_element.to_dict()}
@@ -490,13 +334,15 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         if target_error:
             return target_error
         try:
-            target_element = await asyncio.to_thread(
+            target_element = await self._run_com(
                 self._type_text_revalidated_sync,
                 target_element,
                 normalized,
                 True,
                 text,
             )
+        except ToolAbortedError:
+            raise
         except _ui_action_error_types() as exc:
             return {"ok": False, "error": str(exc), "selector": normalized.as_query()}
         return {"ok": True, "action": "type_text", "characters": len(text), "element": target_element.to_dict()}
@@ -507,7 +353,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         if target_error:
             return target_error
         try:
-            target_element = await asyncio.to_thread(
+            target_element = await self._run_com(
                 self._focus_revalidated_sync,
                 target_element,
                 normalized,
@@ -666,6 +512,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         self,
         keys: list[str],
         *,
+        element: UIAutomationElement | UIAutomationSelector | dict[str, Any] | None = None,
         task_id: str = "",
         step_id: str | None = None,
         approved: bool = False,
@@ -674,12 +521,20 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         normalized = [_normalize_key(key) for key in keys if _normalize_key(key)]
         if not normalized:
             return {"ok": False, "error": "At least one key is required."}
+        selector = _selector_from_element(element) if element is not None else None
+        if selector is not None and not _selector_has_terms(selector):
+            return {"ok": False, "error": "A targeted hotkey requires a nonempty selector."}
+        if selector is None and _identity.has_approved_semantic_resource_state(
+            self.approval_context.get("_expected_resource_state")
+        ):
+            return {"ok": False, "error": "The approved hotkey target selector is missing; no input was sent."}
         review = self._review_action(
             task_id,
             step_id,
             "ui_automation.hotkey",
             {
                 "keys": normalized,
+                **({"selector": selector.as_query()} if selector is not None else {}),
                 "dry_run": False,
                 "approved": approved,
                 "approval_id": approval_id,
@@ -690,6 +545,17 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return {"ok": False, "denied": True, "reasons": review.reasons}
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
+        if selector is not None:
+            target_element, target_error = await self._resolve_action_target(element, selector)
+            if target_error:
+                return target_error
+            try:
+                await self._run_com(self._hotkey_revalidated_sync, target_element, selector, normalized)
+            except ToolAbortedError:
+                raise
+            except _ui_action_error_types() as exc:
+                return {"ok": False, "error": str(exc), "selector": selector.as_query()}
+            return {"ok": True, "action": "hotkey", "keys": normalized, "selector": selector.as_query()}
         try:
             await asyncio.to_thread(_send_hotkey, normalized)
         except _ui_action_error_types() as exc:
@@ -716,9 +582,26 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(element)
         if target_element is None:
             return None
-        if prop in target_element.properties:
-            return target_element.properties[prop]
-        return getattr(target_element.native, prop, None)
+        # Return serializable observations, never a native method/COM pointer.
+        aliases = {
+            "Name": "name",
+            "CurrentName": "name",
+            "CurrentAutomationId": "automation_id",
+            "CurrentControlType": "control_type",
+            "CurrentClassName": "class_name",
+            "CurrentProcessId": "process_id",
+            "CurrentIsEnabled": "is_enabled",
+            "CurrentIsPassword": "is_password",
+            "CurrentIsKeyboardFocusable": "is_keyboard_focusable",
+            "CurrentIsOffscreen": "is_offscreen",
+            "CurrentHasKeyboardFocus": "has_keyboard_focus",
+            "CurrentBoundingRectangle": "bounding_box",
+            "CurrentLocalizedControlType": "localized_control_type",
+        }
+        key = aliases.get(prop, prop)
+        if key in {"name", "automation_id", "control_type", "class_name", "process_id"}:
+            return getattr(target_element, key)
+        return target_element.properties.get(key)
 
     async def get_children(
         self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
@@ -726,19 +609,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(element)
         if target_element is None:
             return []
-        return await asyncio.to_thread(self._children_sync, target_element.native)
+        return await self._run_com(self._children_sync, target_element.native)
 
     def _create_automation(self) -> Any | None:
         if sys.platform != "win32":
             self._available_error = "Windows UIAutomation COM is only available on Windows."
             return None
         try:
-            import comtypes.client  # type: ignore[import-not-found]
-        except _OPTIONAL_UI_PROVIDER_ERRORS as exc:  # pragma: no cover - depends on host packages.
-            self._available_error = f"comtypes is not installed or unavailable: {exc}"
-            return None
-        try:
-            return comtypes.client.CreateObject("UIAutomationClient.CUIAutomation")
+            return _com.run_sync(_com.create_automation)
         except _ui_provider_activation_error_types() as exc:  # pragma: no cover - host-specific COM errors.
             self._available_error = f"Could not create UIAutomation COM object: {exc}"
             return None
@@ -756,7 +634,11 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             }
         native = getattr(self._automation, "GetRootElement", lambda: None)()
         if _selector_has_terms(selector):
-            found = self._find_in_tree(native, selector)
+            if self._native_provider and selector.process_id:
+                matches = self._search_matches_sync(selector, [0, 0])
+                found = matches[0] if matches else None
+            else:
+                found = self._find_in_tree(native, selector)
             native = found.native if found is not None else None
         if native is None:
             return {
@@ -782,6 +664,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     def _find_element_sync(self, selector: UIAutomationSelector) -> UIAutomationElement | None:
         if not self.available:
             return None
+        if self._native_provider and selector.process_id:
+            matches = self._search_matches_sync(selector, [0, 0])
+            return matches[0] if matches else None
         root = getattr(self._automation, "GetRootElement", lambda: None)()
         return self._find_in_tree(root, selector)
 
@@ -790,11 +675,11 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
         selector: UIAutomationSelector,
     ) -> tuple[UIAutomationElement | None, dict[str, Any] | None]:
-        target, match_count, search_truncated = await asyncio.to_thread(self._find_unique_element_sync, selector)
+        target, match_count, search_truncated = await self._run_com(self._find_unique_element_sync, selector)
         if search_truncated:
             return None, {
                 "ok": False,
-                "error": "UI selector search exceeded the safe traversal limit; refine the selector.",
+                "error": "UI selector search was incomplete or exceeded the safe traversal limit; refine the selector.",
                 "selector": selector.as_query(),
                 "match_count": match_count,
                 "search_truncated": True,
@@ -821,7 +706,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             self.approval_context.get("_expected_resource_state")
         )
         if expected_window is not None:
-            current_window = self._owning_window_fingerprint(target)
+            current_window = await self._run_com(self._owning_window_fingerprint, target)
             if current_window != expected_window:
                 return None, {
                     "ok": False,
@@ -846,9 +731,8 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
                 "match_count": 0,
                 "candidates": [],
             }
-        root = getattr(self._automation, "GetRootElement", lambda: None)()
         visited = [0, 0]
-        matches = self._find_matches_in_tree(root, selector, visited=visited, limit=5000)
+        matches = self._search_matches_sync(selector, visited)
         search_truncated = bool(visited[1])
         candidates = [item.to_dict() for item in matches[:max_candidates]]
         payload: dict[str, Any] = {
@@ -861,7 +745,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             "search_truncated": search_truncated,
         }
         if search_truncated:
-            payload["error"] = "UI selector search exceeded the safe traversal limit; refine the selector."
+            payload["error"] = (
+                "UI selector search was incomplete or exceeded the safe traversal limit; refine the selector."
+            )
         elif len(matches) == 1:
             element = matches[0]
             payload["element"] = element.to_dict()
@@ -938,11 +824,24 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     ) -> tuple[UIAutomationElement | None, int, bool]:
         if not self.available:
             return None, 0, False
-        root = getattr(self._automation, "GetRootElement", lambda: None)()
         visited = [0, 0]
-        matches = self._find_matches_in_tree(root, selector, visited=visited, limit=5000)
+        matches = self._search_matches_sync(selector, visited)
         search_truncated = bool(visited[1])
         return (matches[0] if len(matches) == 1 and not search_truncated else None), len(matches), search_truncated
+
+    def _search_matches_sync(self, selector: UIAutomationSelector, visited: list[int]) -> list[UIAutomationElement]:
+        if self._native_provider and selector.process_id:
+            # Limit native traversal to this application's top-level windows.
+            # Reading every control on the desktop can otherwise exhaust the
+            # traversal budget before the requested application is reached.
+            roots = _com.process_windows(self._automation, selector.process_id)
+        else:
+            roots = [getattr(self._automation, "GetRootElement", lambda: None)()]
+        matches = []
+        for native in roots:
+            raise_if_tool_aborted(self.approval_context)
+            matches.extend(self._find_matches_in_tree(native, selector, visited=visited, limit=5000))
+        return matches
 
     def _find_matches_in_tree(
         self,
@@ -966,9 +865,16 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return []
         element = _element_from_native(native)
         matches = [element] if _matches_selector(element, selector) else []
-        if depth >= max_depth:
+        try:
+            children = self._children_sync(native, require_complete=True)
+        except _ui_action_error_types():
+            visited[1] = 1
             return matches
-        for child in self._children_sync(native):
+        if depth >= max_depth:
+            if children:
+                visited[1] = 1
+            return matches
+        for child in children:
             matches.extend(
                 self._find_matches_in_tree(
                     child.native,
@@ -1007,6 +913,11 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
                     "UI target window, process, parent chain, or account context changed after approval; "
                     "action was not performed."
                 )
+            current_state = _identity.semantic_resource_state(
+                selector=selector.as_query(), element=current, target_window=current_window
+            )
+            if self.approval_context.get("_expected_resource_state") != [current_state]:
+                raise UIAutomationUnavailable("UI target or selector changed after approval; action was not performed.")
         elif has_approved_state:
             raise UIAutomationUnavailable(
                 "Approved UI target is missing a complete window identity; action was not performed."
@@ -1024,6 +935,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         selector_based: bool,
     ) -> UIAutomationElement:
         current = self._revalidate_action_target_sync(expected, selector, selector_based)
+        raise_if_tool_aborted(self.approval_context)
         self._click_sync(current.native)
         return current
 
@@ -1035,7 +947,12 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         text: str,
     ) -> UIAutomationElement:
         current = self._revalidate_action_target_sync(expected, selector, selector_based)
-        self._type_text_sync(current.native, text)
+        raise_if_tool_aborted(self.approval_context)
+        self._type_text_sync(
+            current.native,
+            text,
+            before_keyboard_input=lambda: self._revalidate_action_target_sync(expected, selector, selector_based),
+        )
         return current
 
     def _focus_revalidated_sync(
@@ -1047,6 +964,27 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         current = self._revalidate_action_target_sync(expected, selector, selector_based)
         self._focus_sync(current.native)
         return current
+
+    def _hotkey_revalidated_sync(
+        self,
+        expected: UIAutomationElement,
+        selector: UIAutomationSelector,
+        keys: list[str],
+    ) -> None:
+        current = self._revalidate_action_target_sync(expected, selector, True)
+        raise_if_tool_aborted(self.approval_context)
+        current.native.SetFocus()
+        # Focus can trigger a tab switch, a modal dialog or replacement of the
+        # editor. Recheck the approved document after that application callback.
+        current = self._revalidate_action_target_sync(expected, selector, True)
+        self._require_keyboard_focus_sync(current.native)
+        raise_if_tool_aborted(self.approval_context)
+        _send_hotkey(keys)
+
+    def _require_keyboard_focus_sync(self, native: Any) -> None:
+        focused = self._automation.GetFocusedElement()
+        if focused is None or not self._automation.CompareElements(native, focused):
+            raise UIAutomationUnavailable("The approved control did not receive keyboard focus; no input was sent.")
 
     def _find_in_tree(
         self,
@@ -1094,48 +1032,72 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
 
         return visit(native, 0), flat
 
-    def _children_sync(self, native: Any) -> list[UIAutomationElement]:
+    def _children_sync(self, native: Any, *, require_complete: bool = False) -> list[UIAutomationElement]:
         try:
             children = native.FindAll(2, self._automation.CreateTrueCondition())
+            length = int(getattr(children, "Length", 0) or 0)
         except _ui_action_error_types():
+            if require_complete:
+                raise
             return []
-        length = int(getattr(children, "Length", 0) or 0)
         result: list[UIAutomationElement] = []
         for index in range(length):
             try:
                 result.append(_element_from_native(children.GetElement(index)))
             except _ui_action_error_types():
+                if require_complete:
+                    raise
                 continue
         return result
 
     def _click_sync(self, native: Any) -> None:
         try:
-            pattern = native.GetCurrentPattern(10000)
+            pattern = _com.current_pattern(native, 10000, "IUIAutomationInvokePattern")
+        except _ui_action_error_types() as exc:
+            logger.debug("UIA invoke pattern unavailable, falling back to pointer click: %s", exc, exc_info=True)
+        else:
+            # If Invoke itself fails, its outcome may be unknown. Do not click
+            # again via coordinates and potentially submit the action twice.
             pattern.Invoke()
             return
-        except _ui_action_error_types() as exc:
-            logger.debug("UIA invoke pattern failed, falling back to pointer click: %s", exc, exc_info=True)
-        rect = getattr(native, "CurrentBoundingRectangle", None)
-        if rect is not None:
-            x = int((getattr(rect, "left", 0) + getattr(rect, "right", 0)) / 2)
-            y = int((getattr(rect, "top", 0) + getattr(rect, "bottom", 0)) / 2)
+        rect = _rect_payload(getattr(native, "CurrentBoundingRectangle", None))
+        if rect and rect["width"] > 0 and rect["height"] > 0:
+            x = rect["x"] + rect["width"] // 2
+            y = rect["y"] + rect["height"] // 2
             native.SetFocus()
             _send_mouse_click(x, y)
             return
-        native.SetFocus()
+        raise UIAutomationUnavailable("Cannot click: InvokePattern and usable target bounds are unavailable.")
 
     def _focus_sync(self, native: Any) -> None:
         native.SetFocus()
 
-    def _type_text_sync(self, native: Any, text: str) -> None:
+    def _type_text_sync(
+        self, native: Any, text: str, *, before_keyboard_input: Callable[[], Any] | None = None
+    ) -> None:
         try:
-            value_pattern = native.GetCurrentPattern(10002)
+            value_pattern = _com.current_pattern(native, 10002, "IUIAutomationValuePattern")
+        except _ui_action_error_types() as exc:
+            logger.debug("UIA value pattern unavailable, falling back to keyboard input: %s", exc, exc_info=True)
+        else:
             value_pattern.SetValue(text)
             return
-        except _ui_action_error_types() as exc:
-            logger.debug("UIA value pattern failed, falling back to keyboard input: %s", exc, exc_info=True)
+        if (
+            any(newline in text for newline in ("\r", "\n"))
+            and _control_type_name(getattr(native, "CurrentControlType", "")).casefold() != "document"
+        ):
+            raise UIAutomationUnavailable(
+                "Keyboard multiline entry requires a Document control; Enter may submit a single-line field."
+            )
         native.SetFocus()
-        _send_text(text)
+        if before_keyboard_input is not None:
+            before_keyboard_input()
+
+        def before_character() -> None:
+            raise_if_tool_aborted(self.approval_context)
+            self._require_keyboard_focus_sync(native)
+
+        _send_text(text, before_input=before_character)
 
     def _review_action(
         self,
@@ -1171,168 +1133,6 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             tool_name=tool_name,
             args=args,
         )
-
-
-class UnavailableUIAutomationTarget(UIAutomationTarget):
-    def __init__(self, reason: str = "UIAutomation provider is unavailable.") -> None:
-        self.reason = reason
-
-    async def active_window(self) -> AppContext:
-        return AppContext(platform=sys.platform, error=self.reason)
-
-    async def observe(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        max_depth: int = 2,
-        max_elements: int = 200,
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False, "elements": [], "count": 0}
-
-    async def find_element(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        name: str = "",
-        control_type: str = "",
-        automation_id: str = "",
-    ) -> UIAutomationElement | None:
-        return None
-
-    async def inspect_selector(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        max_candidates: int = 10,
-    ) -> dict[str, Any]:
-        return {
-            "ok": False,
-            "available": False,
-            "error": self.reason,
-            "selector": _coerce_selector(selector).as_query(),
-            "match_count": 0,
-            "candidates": [],
-        }
-
-    async def wait_for_element(
-        self,
-        selector: UIAutomationSelector | dict[str, Any] | None = None,
-        *,
-        timeout_seconds: float = 5.0,
-        poll_interval_seconds: float = 0.25,
-    ) -> UIAutomationElement | None:
-        return None
-
-    async def click(
-        self,
-        element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def type_text(
-        self,
-        element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
-        text: str,
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def focus(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def list_windows(self) -> list[dict[str, Any]]:
-        return []
-
-    async def focus_window(
-        self,
-        *,
-        title: str = "",
-        title_contains: str = "",
-        class_name: str = "",
-        process_id: int | None = None,
-        hwnd: int | None = None,
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def click_at(
-        self,
-        x: int,
-        y: int,
-        *,
-        button: str = "left",
-        clicks: int = 1,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def drag(
-        self,
-        start_x: int,
-        start_y: int,
-        end_x: int,
-        end_y: int,
-        *,
-        duration_seconds: float = 0.2,
-        button: str = "left",
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def key_press(
-        self,
-        key: str,
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def hotkey(
-        self,
-        keys: list[str],
-        *,
-        task_id: str = "",
-        step_id: str | None = None,
-        approved: bool = False,
-        approval_id: str = "",
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def screenshot(
-        self,
-        *,
-        max_width: int = 1280,
-        max_height: int = 720,
-        quality: int = 50,
-    ) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "available": False}
-
-    async def get_property(
-        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str
-    ) -> Any:
-        return None
-
-    async def get_children(
-        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
-    ) -> list[UIAutomationElement]:
-        return []
 
 
 def create_ui_automation_target(
@@ -1390,10 +1190,38 @@ def _element_from_native(native: Any) -> UIAutomationElement:
     )
 
 
+def _complete_native_text(value: Any) -> str:
+    text = str(value or "")
+    if len(text.encode("utf-16-le", errors="surrogatepass")) > 65536 * 2:
+        raise UIAutomationUnavailable("UI text exceeds the supported text limit; use a document or file tool.")
+    return text
+
+
 def _native_text(native: Any) -> str:
     try:
-        value_pattern = native.GetCurrentPattern(10002)
-        value = str(getattr(value_pattern, "CurrentValue", "") or "")
-        return value or str(getattr(native, "CurrentName", "") or "")
+        is_password = bool(getattr(native, "CurrentIsPassword", False))
     except _ui_action_error_types():
-        return str(getattr(native, "CurrentName", "") or "")
+        return ""
+    if is_password:
+        return ""
+    try:
+        edit_value = _com.edit_control_text(native, 65536)
+    except OSError as exc:
+        raise UIAutomationUnavailable(str(exc)) from exc
+    if edit_value is not None:
+        return _complete_native_text(edit_value)
+    try:
+        value_pattern = _com.current_pattern(native, 10002, "IUIAutomationValuePattern")
+        # An empty edit value is still a value; its accessible name is a label.
+        value = value_pattern.CurrentValue
+    except _ui_action_error_types():
+        pass
+    else:
+        return _complete_native_text(value)
+    try:
+        text_pattern = _com.current_pattern(native, 10014, "IUIAutomationTextPattern")
+        # Sample one extra unit so a truncated document never looks complete.
+        value = text_pattern.DocumentRange.GetText(65537)
+    except _ui_action_error_types():
+        return _complete_native_text(getattr(native, "CurrentName", ""))
+    return _complete_native_text(value)

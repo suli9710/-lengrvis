@@ -55,7 +55,68 @@ def _approval_authorization_error(conn, data: dict[str, Any], consumed_at: str) 
         return _desktop_authorization_error(auth_context, authorized_at)
     if channel == "mobile":
         return _mobile_authorization_error(conn, data, auth_context, consumed_timestamp)
+    if channel == "autonomy_scope":
+        return _autonomy_authorization_error(conn, data, auth_context)
     return "Approval authentication channel is invalid."
+
+
+def _autonomy_authorization_error(conn, data: dict[str, Any], auth: dict[str, Any]) -> str:
+    from app.core.butler_models import AutonomyScope, ButlerMatter, MatterStatus
+    from app.core.schemas import Task
+    from app.orchestration.butler_runtime import REVERSIBLE_FILE_TOOLS
+    from app.services.butler_scopes import action_scope
+
+    if data.get("source") != "autonomy_scope" or not str(data.get("risk_level", "")).startswith("R2"):
+        return "Autonomy approval is not a reversible operation."
+    if data.get("tool_name") not in REVERSIBLE_FILE_TOOLS:
+        return "This tool has no approved autonomy rollback contract."
+    scope_id = str(auth.get("scope_id") or "")
+    if scope_id != data.get("source_grant_id"):
+        return "Autonomy approval scope does not match."
+    scope_row = conn.execute("SELECT data FROM autonomy_scopes WHERE id=?", (scope_id,)).fetchone()
+    task_row = conn.execute("SELECT data FROM tasks WHERE id=?", (data.get("task_id"),)).fetchone()
+    if scope_row is None or task_row is None:
+        return "Autonomy scope or task is unavailable."
+    db._require_sensitive_record_integrity(conn, "autonomy_scopes", scope_id, scope_row["data"])
+    scope = AutonomyScope.model_validate_json(scope_row["data"])
+    task = Task.model_validate_json(task_row["data"])
+    if not scope.enabled or scope.version != auth.get("scope_version"):
+        return "Autonomy scope was revoked or changed."
+    if not scope.authorization.get("desktop_native_confirmed") and not env_flag("LENGRVIS_TEST"):
+        return "Autonomy scope lacks native user authorization."
+    matter_id = str(task.metadata.get("butler_matter_id") or "")
+    row = conn.execute("SELECT data FROM butler_matters WHERE id=?", (matter_id,)).fetchone()
+    if row is None or matter_id != auth.get("matter_id"):
+        return "Autonomy matter is unavailable."
+    db._require_sensitive_record_integrity(conn, "butler_matters", matter_id, row["data"])
+    matter = ButlerMatter.model_validate_json(row["data"])
+    if (
+        matter.active_task_id != task.id
+        or matter.scope_versions.get(scope_id) != scope.version
+        or matter.execution_ticket != task.metadata.get("butler_execution_ticket")
+        or matter.status in {MatterStatus.PAUSED, MatterStatus.CANCELLED, MatterStatus.COMPLETED}
+    ):
+        return "Autonomy matter authorization changed."
+    settings_row = conn.execute("SELECT value FROM app_settings WHERE key='butler_paused'").fetchone()
+    if settings_row:
+        db._require_sensitive_record_integrity(conn, "app_settings", "butler_paused", settings_row["value"])
+        if json.loads(settings_row["value"]):
+            return "The butler is paused."
+    plan_row = conn.execute(
+        "SELECT data FROM plans WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task.id,)
+    ).fetchone()
+    steps = json.loads(plan_row["data"]).get("steps", []) if plan_row else []
+    step = next(
+        (
+            item
+            for item in steps
+            if item.get("id") == data.get("step_id") and item.get("tool_name") == data.get("tool_name")
+        ),
+        None,
+    )
+    if step is None or action_scope(data["tool_name"], step.get("args") or {}, [scope], action="file_modify") is None:
+        return "Autonomy operation leaves the authorized resources."
+    return ""
 
 
 def _desktop_authorization_error(auth_context: dict[str, Any], authorized_at: datetime) -> str:

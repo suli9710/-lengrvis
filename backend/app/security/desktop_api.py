@@ -123,6 +123,21 @@ async def close_unauthorized_desktop_websocket(websocket: WebSocket) -> bool:
     raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="unauthorized")
 
 
+def desktop_websocket_subprotocol(websocket: WebSocket) -> str | None:
+    """Select only the already-offered, authenticated desktop protocol.
+
+    Browser/Undici clients reject a handshake which ignores their offered
+    subprotocol; header-authenticated clients may legitimately offer none.
+    """
+    expected = desktop_api_token()
+    for protocol in _websocket_protocols(websocket):
+        if protocol.startswith(DESKTOP_API_WS_PROTOCOL_PREFIX) and hmac.compare_digest(
+            protocol[len(DESKTOP_API_WS_PROTOCOL_PREFIX) :], expected
+        ):
+            return protocol
+    return None
+
+
 def _is_desktop_api_token_exempt_path(path: str) -> bool:
     if path in {"/health", "/api/health", "/api/pair", "/api/pair/confirm"}:
         return True

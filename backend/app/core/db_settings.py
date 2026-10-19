@@ -17,6 +17,12 @@ def register_settings_invalidation_hook(fn: Callable[[], None]) -> None:
             _SETTINGS_INVALIDATION_HOOKS.append(fn)
 
 
+def unregister_settings_invalidation_hook(fn: Callable[[], None]) -> None:
+    with _SETTINGS_HOOK_LOCK:
+        if fn in _SETTINGS_INVALIDATION_HOOKS:
+            _SETTINGS_INVALIDATION_HOOKS.remove(fn)
+
+
 def notify_settings_invalidated() -> None:
     with _SETTINGS_HOOK_LOCK:
         hooks = tuple(_SETTINGS_INVALIDATION_HOOKS)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import (
@@ -27,6 +27,7 @@ from app.core.content_lineage import (
 from app.core.content_lineage import (
     ContentLineageEdge as ContentLineageEdge,
 )
+from app.core.step_inputs import StepInputBinding
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
@@ -307,6 +308,7 @@ class PlanStep(BaseModel):
     status: StepStatus = StepStatus.PENDING
     step_phase: StepPhase = StepPhase.PENDING
     depends_on: list[str] = Field(default_factory=list)
+    input_bindings: dict[str, StepInputBinding] = Field(default_factory=dict, max_length=32)
     rollback_strategy: str = ""
     tool_effects: list[str] = Field(default_factory=list)
     resource_kinds: list[str] = Field(default_factory=list)
@@ -512,6 +514,8 @@ class ToolCall(BaseModel):
     risk_review_id: str = ""
     risk_binding_version: str = ""
     execution_intent_key: str = ""
+    submission_digest: str = ""
+    submission_binding_hmac: str = ""
     execution_key: str = Field(default_factory=lambda: new_id("exec"))
     plan_revision: int = 0
     approval_id: str = ""
@@ -674,6 +678,7 @@ class DocumentChunk(BaseModel):
 class ScheduledTask(BaseModel):
     id: str = Field(default_factory=lambda: new_id("schedule"))
     cron: str
+    timezone: str = "UTC"
     goal: str
     mode: str = "efficiency"
     enabled: bool = True
@@ -727,6 +732,9 @@ class Memory(BaseModel):
     tags: list[str] = Field(default_factory=list)
     task_id: str = ""
     source: str = "user"
+    source_mode: Literal["", "efficiency", "privacy", "hybrid"] = ""
+    allow_cloud_context: bool = False
+    context_policy_hmac: str = ""
     state: MemoryState = MemoryState.ACTIVE
     user_confirmed: bool = False
     expires_at: str = ""

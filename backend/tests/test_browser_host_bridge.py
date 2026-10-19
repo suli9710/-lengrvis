@@ -9,6 +9,17 @@ from httpx import Response
 from app.main import app
 
 
+def test_browser_host_bridge_negotiates_the_authenticated_browser_subprotocol(monkeypatch) -> None:
+    from app.security.desktop_api import desktop_api_token
+
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "false")
+    protocol = "lengrvis.desktop.token." + desktop_api_token()
+    client = TestClient(app, client=("127.0.0.1", 50100))
+    with client.websocket_connect("/api/ws/browser-host", subprotocols=[protocol]) as websocket:
+        assert websocket.accepted_subprotocol == protocol
+        assert websocket.receive_json()["type"] == "connected"
+
+
 def test_browser_host_bridge_publishes_latest_redacted_snapshot() -> None:
     client = TestClient(app, client=("127.0.0.1", 50100))
     snapshot = {

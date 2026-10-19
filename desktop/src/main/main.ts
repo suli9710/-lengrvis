@@ -568,6 +568,9 @@ if (!gotSingleInstanceLock) {
       registerPackagedRendererProtocol(join(__dirname, "../renderer"));
     }
     hardenDefaultSessionPermissions();
+    await browserHost.initializeScreenshotStore().catch(() => {
+      console.error("Browser screenshot startup cleanup was incomplete; explicit privacy erase can retry it.");
+    });
     disposeApprovalSessionPowerRotation = registerApprovalSessionPowerRotation(
       powerMonitor,
       () => backend.rotateApprovalSessionGeneration(),

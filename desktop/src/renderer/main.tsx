@@ -21,6 +21,7 @@ import "./styles.home-trust.css";
 import "./styles.details.css";
 import "./styles.technical-details.css";
 import "./styles.chat.css";
+import "./styles.butler.css";
 import "./styles.timeline-files.css";
 import "./styles.timeline-cleanup.css";
 import "./styles.file-tools.css";

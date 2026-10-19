@@ -18,6 +18,7 @@ from app.core.content_provenance import (
     revalidate_content_envelope,
     stable_content_hash,
 )
+from app.core.context_egress import memory_context_allowed, memory_context_policy_hmac
 from app.core.memory_namespace import (
     DEFAULT_MEMORY_DOMAIN_SCOPE,
     DEFAULT_MEMORY_PRINCIPAL_ID,
@@ -34,6 +35,7 @@ from app.core.schemas import (
     now_iso,
 )
 from app.indexer.embedding_service import embed_texts
+from app.llm.registry import get_settings_for_mode
 
 
 class MemoryAgent(BaseAgent):
@@ -56,9 +58,21 @@ class MemoryAgent(BaseAgent):
             domain_scope=domain_scope,
         )
 
-    async def _embed(self, text: str) -> list[float]:
+    async def _embed(self, text: str, *, task_id: str = "", mode: str | None = None) -> list[float]:
         try:
-            vectors = await embed_texts([text])
+            task = db.fetch_one("tasks", task_id) if task_id else None
+            # Persisted tasks retain their mode even after global settings change.
+            # Matter-only callers bind it explicitly before a task exists.
+            effective_mode = task["mode"] if task else mode
+            # A superseding private memory remains local even when authored by
+            # a cloud-mode task; restrictions inherited from its source win.
+            if mode == "privacy":
+                effective_mode = "privacy"
+            if effective_mode is not None:
+                settings = get_settings_for_mode(effective_mode)
+                vectors = await embed_texts([text], settings=settings)
+            else:
+                vectors = await embed_texts([text])
             if vectors and isinstance(vectors[0], list):
                 return [float(value) for value in vectors[0]]
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
@@ -70,6 +84,7 @@ class MemoryAgent(BaseAgent):
         content: str,
         *,
         task_id: str = "",
+        mode: str | None = None,
         kind: str = "fact",
         version: int | None = None,
         supersedes: str = "",
@@ -83,6 +98,8 @@ class MemoryAgent(BaseAgent):
         principal_id: str | None = None,
         workspace_id: str | None = None,
         domain_scope: str | None = None,
+        embedding: list[float] | None = None,
+        publish: bool = True,
     ) -> Memory:
         namespace = self._resolve_namespace(
             principal_id=principal_id,
@@ -92,6 +109,10 @@ class MemoryAgent(BaseAgent):
         normalized_kind = str(kind or "fact").strip() or "fact"
         normalized_supersedes = str(supersedes or "").strip()
         effective_version = 1 if version is None else int(version)
+        task = db.fetch_one("tasks", task_id) if task_id else None
+        source_mode = get_settings_for_mode(task["mode"] if task else mode).mode
+        cloud_allowed = source_mode in {"efficiency", "hybrid"}
+        parent = None
         if normalized_supersedes:
             parent_row = db.get_memory(
                 normalized_supersedes,
@@ -107,6 +128,9 @@ class MemoryAgent(BaseAgent):
             effective_version = parent.version + 1 if version is None else int(version)
             if effective_version <= parent.version:
                 raise ValueError("a superseding memory must have a higher version")
+            cloud_allowed = cloud_allowed and memory_context_allowed(parent, "efficiency")
+            if parent.source_mode == "privacy":
+                source_mode = "privacy"
         confirmed = source.strip().casefold() == "user" if user_confirmed is None else bool(user_confirmed)
         quarantined = not confirmed if quarantine is None else bool(quarantine)
         state = MemoryState.QUARANTINED if quarantined else MemoryState.ACTIVE
@@ -126,11 +150,14 @@ class MemoryAgent(BaseAgent):
             tags=tags or [],
             task_id=task_id,
             source=source,
+            source_mode=source_mode,
+            allow_cloud_context=cloud_allowed,
             state=state,
             user_confirmed=confirmed,
             expires_at=expires_at,
             last_used_at=now_iso(),
         )
+        memory.context_policy_hmac = memory_context_policy_hmac(memory)
         memory.content_envelope = self._memory_envelope(
             normalized_content,
             task_id=task_id or memory.id,
@@ -139,11 +166,25 @@ class MemoryAgent(BaseAgent):
             quarantined=quarantined,
             content_envelope=content_envelope,
         )
-        vector = await self._embed(memory.content)
+        # Callers may prepare embeddings before an atomic local transaction.
+        # A supplied vector makes this persistence path synchronous (no await).
+        embedding_mode = "privacy" if not cloud_allowed else mode
+        vector = (
+            embedding
+            if embedding is not None
+            else await self._embed(memory.content, task_id=task_id, mode=embedding_mode)
+        )
         memory.embedding_dim = len(vector)
         payload = memory.model_dump()
         payload["embedding"] = vector
         db.upsert_memory(payload)
+        if publish:
+            self.publish_remembered(memory)
+        return memory
+
+    def publish_remembered(self, memory: Memory) -> None:
+        """Publish audit and live events after the caller's transaction commits."""
+        task_id = memory.task_id
         record(
             "memory.remembered",
             self.name,
@@ -180,13 +221,13 @@ class MemoryAgent(BaseAgent):
                 )
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: bus failures should not block memory persistence.
             record("memory.bus_publish_failed", self.name, {"error": str(exc)}, task_id=task_id)
-        return memory
 
     async def remember_lesson(
         self,
         lesson: dict[str, Any],
         *,
         task_id: str = "",
+        mode: str | None = None,
         tags: list[str] | None = None,
         source: str = "system",
         user_confirmed: bool = False,
@@ -207,6 +248,7 @@ class MemoryAgent(BaseAgent):
         return await self.remember(
             content,
             task_id=task_id,
+            mode=mode,
             kind="lesson",
             tags=["lesson", tool_tag, *(tags or [])],
             source=source,
@@ -220,6 +262,8 @@ class MemoryAgent(BaseAgent):
         self,
         query: str,
         *,
+        task_id: str = "",
+        mode: str | None = None,
         k: int = 5,
         tags: list[str] | None = None,
         kind: str | None = None,
@@ -227,6 +271,8 @@ class MemoryAgent(BaseAgent):
         workspace_id: str | None = None,
         domain_scope: str | None = None,
     ) -> list[Memory]:
+        task = db.fetch_one("tasks", task_id) if task_id else None
+        destination_mode = get_settings_for_mode(task["mode"] if task else mode).mode
         namespace = self._resolve_namespace(
             principal_id=principal_id,
             workspace_id=workspace_id,
@@ -253,10 +299,12 @@ class MemoryAgent(BaseAgent):
             if integrity_error:
                 self._quarantine_recall_failure(memory, row, integrity_error)
                 continue
+            if not memory_context_allowed(memory, destination_mode):
+                continue
             active_rows.append((memory, row))
         if not active_rows:
             return []
-        query_vector = await self._embed(query)
+        query_vector = await self._embed(query, task_id=task_id, mode=mode)
         scored: list[tuple[float, Memory, dict[str, Any]]] = []
         for memory, row in active_rows:
             vector = row.get("embedding") or []

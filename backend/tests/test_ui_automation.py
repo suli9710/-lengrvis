@@ -182,6 +182,68 @@ class FakeAutomation:
         return object()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("focus_change", ["none", "other_control", "other_document", "replaced_control", "unavailable"])
+@pytest.mark.parametrize("action", ["hotkey", "text_fallback"])
+async def test_scoped_input_rechecks_document_and_actual_focus_before_input(monkeypatch, focus_change, action):
+    editor = FakeNative(name="Editor", automation_id="editor", control_type="Document")
+    window = _window_with_child(editor, name="Owned temporary document")
+    automation = FakeAutomation(window)
+    other = FakeNative(name="Other editor", automation_id="other", runtime_id=(8, 8, 8))
+    _stub_process_identity(monkeypatch)
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=automation)
+    selector = {"process_id": 42, "automation_id": "editor", "control_type": "Document"}
+    preview = await target.inspect_selector(selector)
+    target.approval_context["_expected_resource_state"] = [preview["resource_state"]]
+    sent = []
+
+    def focus():
+        editor.focused = True
+        if focus_change == "other_document":
+            window.CurrentName = "Another document in the same application"
+        elif focus_change == "replaced_control":
+            editor.runtime_id = (9, 9, 9)
+
+    def focused():
+        if focus_change == "unavailable":
+            raise RuntimeError("Focused element is unavailable")
+        return other if focus_change == "other_control" else editor
+
+    monkeypatch.setattr(editor, "SetFocus", focus)
+    monkeypatch.setattr(automation, "GetFocusedElement", focused, raising=False)
+    monkeypatch.setattr(automation, "CompareElements", lambda left, right: left is right, raising=False)
+    monkeypatch.setattr(uia, "_send_hotkey", lambda keys: sent.append(keys))
+    if action == "text_fallback":
+
+        def unavailable_pattern(pattern_id):
+            raise RuntimeError("ValuePattern unavailable")
+
+        monkeypatch.setattr(editor, "GetCurrentPattern", unavailable_pattern)
+
+        def guarded_text(text, *, before_input):
+            before_input()
+            sent.append(text)
+
+        monkeypatch.setattr(uia, "_send_text", guarded_text)
+        result = await target.type_text(selector, "中文😀")
+    else:
+        result = await target.hotkey(["ctrl", "s"], element=selector)
+    assert editor.focused
+    assert result["ok"] is (focus_change == "none"), result
+    assert sent == (["中文😀" if action == "text_fallback" else ["control", "s"]] if focus_change == "none" else [])
+
+
+@pytest.mark.asyncio
+async def test_scoped_hotkey_cannot_drop_its_approved_target(monkeypatch):
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(FakeNative()))
+    target.approval_context["_expected_resource_state"] = [{"kind": "ui_automation_element"}]
+    sent = []
+    monkeypatch.setattr(uia, "_send_hotkey", lambda keys: sent.append(keys))
+    result = await target.hotkey(["ctrl", "s"])
+    assert not result["ok"]
+    assert sent == []
+
+
 def _stub_process_identity(monkeypatch: pytest.MonkeyPatch, *, executable: str = "mail-client") -> None:
     monkeypatch.setattr(
         uia,
@@ -291,10 +353,11 @@ def test_factory_returns_graceful_target_when_provider_missing():
 
 
 def test_windows_adapter_reports_expected_com_activation_errors(monkeypatch):
-    def fail_create_object(_prog_id: str):
+    def fail_create_object():
         raise OSError("activation failed")
 
-    _install_fake_comtypes(monkeypatch, fail_create_object)
+    monkeypatch.setattr(uia._com, "create_automation", fail_create_object)
+    monkeypatch.setattr(uia._com, "run_sync", lambda fn: fn())
     monkeypatch.setattr(uia.sys, "platform", "win32")
 
     target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy())
@@ -304,10 +367,11 @@ def test_windows_adapter_reports_expected_com_activation_errors(monkeypatch):
 
 
 def test_windows_adapter_does_not_swallow_unexpected_com_activation_bugs(monkeypatch):
-    def fail_create_object(_prog_id: str):
+    def fail_create_object():
         raise AssertionError("activation bug")
 
-    _install_fake_comtypes(monkeypatch, fail_create_object)
+    monkeypatch.setattr(uia._com, "create_automation", fail_create_object)
+    monkeypatch.setattr(uia._com, "run_sync", lambda fn: fn())
     monkeypatch.setattr(uia.sys, "platform", "win32")
 
     with pytest.raises(AssertionError, match="activation bug"):
@@ -382,6 +446,53 @@ async def test_selector_search_fails_closed_when_traversal_limit_is_exceeded():
     assert inspection["ok"] is False
     assert inspection["search_truncated"] is True
     assert "traversal limit" in inspection["error"]
+
+
+@pytest.mark.asyncio
+async def test_selector_search_does_not_claim_uniqueness_when_a_deep_branch_is_omitted():
+    first = FakeNative(automation_id="shared", runtime_id=(1,))
+    branch = FakeNative(automation_id="shared", runtime_id=(2,))
+    for index in range(12):
+        branch = FakeNative(automation_id=f"nested_{index}", children=[branch])
+    root = FakeNative(automation_id="root", children=[first, branch])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+
+    inspection = await target.inspect_selector({"automation_id": "shared"})
+    result = await target.click({"automation_id": "shared"})
+
+    assert inspection["ok"] is False
+    assert inspection["search_truncated"] is True
+    assert result["ok"] is False
+    assert first.invoked is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["enumeration", "child"])
+async def test_selector_search_does_not_claim_uniqueness_when_a_provider_branch_fails(failure):
+    first = FakeNative(automation_id="shared", runtime_id=(1,))
+
+    class StaleCollection:
+        Length = 1
+
+        def GetElement(self, _):
+            raise RuntimeError("Provider child became unavailable")
+
+    class UnavailableBranch(FakeNative):
+        def FindAll(self, *_):
+            if failure == "enumeration":
+                raise RuntimeError("Provider branch became unavailable")
+            return StaleCollection()
+
+    root = FakeNative(automation_id="root", children=[first, UnavailableBranch(automation_id="branch")])
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
+
+    inspection = await target.inspect_selector({"automation_id": "shared"})
+    result = await target.click({"automation_id": "shared"})
+
+    assert inspection["ok"] is False
+    assert inspection["search_truncated"] is True
+    assert result["ok"] is False
+    assert first.invoked is False
 
 
 @pytest.mark.asyncio
@@ -730,6 +841,36 @@ async def test_click_revalidates_runtime_identity_and_blocks_replaced_target():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["click", "type_text"])
+async def test_semantic_write_rejects_replacement_already_present_before_action_lookup(monkeypatch, action):
+    button = FakeNative(runtime_id=(1, 2, 3))
+    automation = FakeAutomation(_window_with_child(button))
+    _stub_process_identity(monkeypatch)
+    preview_target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=automation)
+    selector = {"automation_id": "send_button"}
+    reviewed = await preview_target.inspect_selector(selector)
+    approval_context = {"_expected_resource_state": [reviewed["resource_state"]]}
+    mark_execution_approved(approval_context)
+    # Same selector and owning window, but a new control instance appeared
+    # after the last approval refresh and before both execution-time lookups.
+    button.runtime_id = (9, 9, 9)
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(), automation=automation, approval_context=approval_context
+    )
+    args = {"approved": True, "approval_id": "approved_original_control"}
+
+    if action == "click":
+        result = await target.click(selector, **args)
+    else:
+        result = await target.type_text(selector, "private text", **args)
+
+    assert result["ok"] is False
+    assert "changed after approval" in result["error"]
+    assert button.invoked is False
+    assert button.value == ""
+
+
+@pytest.mark.asyncio
 async def test_click_revalidates_approved_window_account_at_action_boundary(monkeypatch):
     button = FakeNative(runtime_id=(1, 2, 3))
     window = FakeNative(
@@ -1037,9 +1178,16 @@ def test_type_text_sync_falls_back_to_keyboard_when_value_pattern_unavailable(mo
             return super().GetCurrentPattern(pattern_id)
 
     sent_text: list[str] = []
-    monkeypatch.setattr(uia, "_send_text", sent_text.append)
+
+    def guarded_text(text, *, before_input):
+        before_input()
+        sent_text.append(text)
+
+    monkeypatch.setattr(uia, "_send_text", guarded_text)
     native = NativeWithoutValuePattern()
     target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(native))
+    monkeypatch.setattr(target._automation, "GetFocusedElement", lambda: native, raising=False)
+    monkeypatch.setattr(target._automation, "CompareElements", lambda left, right: left is right, raising=False)
 
     target._type_text_sync(native, "hello")
 

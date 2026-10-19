@@ -1,5 +1,5 @@
 import { AlertTriangle, Bot, CheckCircle2, CircleDashed, Pencil, Play, Send, Sparkles, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../shared/catalogTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
@@ -10,6 +10,7 @@ import { TechnicalDetails } from "./TechnicalDetails";
 import { VoiceInputButton } from "./VoiceInputButton";
 
 interface ChatPanelProps {
+  context?: ReactNode;
   messages: ChatMessage[];
   connectionState: "online" | "offline" | "checking";
   onSend: (content: string) => Promise<SendResult>;
@@ -30,6 +31,7 @@ export function ChatPanel({
   initialDraft = "",
   autoFocus = false,
   suggestions = [],
+  context,
   api
 }: ChatPanelProps) {
   const [draft, setDraft] = useState(initialDraft);
@@ -98,6 +100,7 @@ export function ChatPanel({
         <Badge tone="warning">{connectionState === "checking" ? "正在连接 Lengrvis" : "助手暂时连不上"}</Badge>
       )}
     >
+      {context}
       <div className="chat-log" aria-live="polite">
         {messages.length ? (
           messages.map((message) => (

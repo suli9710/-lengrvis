@@ -23,7 +23,7 @@ from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_s
 from app.core.session_context import SessionContext, get_session_context_store
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
-from app.llm.registry import get_provider
+from app.llm.registry import get_provider, get_settings_for_mode
 from app.perception.context_store import latest_perception_context
 from app.perception.intent_predictor import IntentPredictor, IntentSuggestion
 from app.perception.schemas import AppContext, ScreenState
@@ -105,7 +105,7 @@ class SupervisorAgent:
             return fallback
 
         try:
-            provider = get_provider(task="supervisor")
+            provider = get_provider(get_settings_for_mode(mode), task="supervisor")
             payload = await asyncio.wait_for(
                 provider.structured_chat(self._supervisor_messages(message, mode), SUPERVISOR_SCHEMA),
                 timeout=SUPERVISOR_TIMEOUT_SECONDS,

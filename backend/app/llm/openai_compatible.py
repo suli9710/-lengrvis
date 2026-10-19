@@ -860,6 +860,13 @@ class OpenAICompatibleProvider(LLMProvider):
         if error or path is None:
             return error or f"[vision] file not found: {image_path}"
 
+        from app.policy.privacy import can_upload_file_content, can_use_cloud_model
+
+        if not self._allow_private_base(self.settings.base_url) and not (
+            can_use_cloud_model(self.settings, task="vision").allowed and can_upload_file_content(self.settings).allowed
+        ):
+            raise ValueError("Cloud vision requires file upload permission.")
+
         suffix = path.suffix.lstrip(".").lower()
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         mime = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
@@ -1058,6 +1065,13 @@ def _is_native_schema_unsupported(exc: Exception) -> bool:
         return False
     text = _http_error_text(exc).lower()
     schema_terms = ("response_format", "json_schema", "json schema", "text.format")
+    # A locally valid JSON Schema can exceed a provider's strict subset,
+    # e.g. the planner's dynamic args/input_bindings maps. Auto mode may use
+    # the existing prompt path, which still validates against the original
+    # schema. Explicit native mode continues to fail closed. Gateways may
+    # wrap the upstream JSON error inside their message string.
+    if "invalid_json_schema" in text and any(term in text for term in schema_terms):
+        return True
     unsupported_terms = (
         "unsupported",
         "not support",

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, type AppStateStatus, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
-import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, refreshMobileSession, type PairingSession, type RemoteInputGrant } from "../src/api/client";
+import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, type PairingSession, type RemoteInputGrant } from "../src/api/client";
 import { resolveAndroidBack } from "../src/androidBackNavigation";
 import { addApprovalNotificationResponseListener, getLastApprovalNotificationApprovalId } from "../src/notifications";
 import { reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs, isRemoteInputGrantUsable } from "../src/remoteInputGrant";
@@ -11,7 +11,7 @@ import { ConsentScreen } from "../src/screens/ConsentScreen";
 import { PairScreen } from "../src/screens/PairScreen";
 import { MobileCompanionProvider, useMobileCompanion } from "../src/state/MobileCompanionContext";
 import { mobileSessionTransition, sessionRefreshDelayMs, sessionRefreshRetryDelayMs } from "../src/sessionLifecycle";
-import { clearSession, loadSession, replaceSessionIfTokenMatches } from "../src/store/auth";
+import { clearSession, loadAndRefreshSession, refreshAndStoreSession, SessionChangedError } from "../src/sessionManager";
 import { loadConsentState } from "../src/store/consent";
 import { colors } from "../src/ui/theme";
 
@@ -90,20 +90,9 @@ export default function RootLayout() {
       sessionLockEpochRef.current === lockEpoch
     );
     setSessionLoadState("loading");
-    void loadSession()
-      .then(async (storedSession) => {
+    void loadAndRefreshSession()
+      .then((stored) => {
         if (!canCommitSession()) return;
-        let stored = storedSession;
-        if (stored) {
-          const refreshed = await refreshMobileSession(stored);
-          const replaced = await replaceSessionIfTokenMatches(stored.token, refreshed);
-          if (!canCommitSession()) return;
-          if (!replaced) {
-            setSessionLoadAttempt((attempt) => attempt + 1);
-            return;
-          }
-          stored = refreshed;
-        }
         if (!stored) {
           setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
           router.replace("/");
@@ -111,8 +100,12 @@ export default function RootLayout() {
         setSession(stored);
         setSessionLoadState("ready");
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!canCommitSession()) return;
+        if (error instanceof SessionChangedError) {
+          setSessionLoadAttempt((attempt) => attempt + 1);
+          return;
+        }
         setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "cleared" }));
         setSession(null);
         setSessionLoadState("failed");
@@ -145,6 +138,7 @@ export default function RootLayout() {
   }, [remoteInputGrant]);
 
   const clearLocalSessionOrShowRecovery = useCallback(() => {
+    sessionLockEpochRef.current += 1;
     resetShellState();
     setSession(null);
     setSessionLoadState("loading");
@@ -173,11 +167,10 @@ export default function RootLayout() {
     );
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const refreshTimer = setTimeout(() => {
-      void refreshMobileSession(baseSession)
-        .then(async (nextSession) => {
-          const replaced = await replaceSessionIfTokenMatches(baseSession.token, nextSession);
+      void refreshAndStoreSession(baseSession)
+        .then((nextSession) => {
           if (!canCommitSession()) return;
-          if (!replaced) {
+          if (!nextSession) {
             setSession(null);
             setSessionLoadState("loading");
             setSessionLoadAttempt((attempt) => attempt + 1);
@@ -215,6 +208,7 @@ export default function RootLayout() {
       }
       return;
     }
+    sessionLockEpochRef.current += 1;
     resetShellState();
     setSessionLoadState("ready");
     setSession(nextSession);

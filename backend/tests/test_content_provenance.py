@@ -833,7 +833,7 @@ def test_dependency_context_preserves_every_parent_envelope() -> None:
         "B": ToolResult(tool_call_id="call-b", ok=True, content_envelope=document),
     }
     context = {"task_id": "task-1", "nested": {"unchanged": True}}
-    step = SimpleNamespace(depends_on=["A", "B"])
+    step = SimpleNamespace(depends_on=["A", "B"], input_bindings={})
 
     bound = StepSchedulerHandler(SimpleNamespace())._context_with_dependency_provenance(context, step, observations)
     envelopes = collect_content_envelopes(bound)

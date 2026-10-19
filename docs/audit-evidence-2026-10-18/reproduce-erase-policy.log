@@ -1,0 +1,4 @@
+policy_before_erase default
+policy_after_erase_attempt1=SensitiveRecordIntegrityError:Sensitive permission policy record is missing for default
+rebootstrap_ok=True checked=0
+policy_after_erase_attempt2=SensitiveRecordIntegrityError:Sensitive permission policy record is missing for default

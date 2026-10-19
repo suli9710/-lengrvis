@@ -56,9 +56,9 @@ def _run_async(coro, *, timeout_seconds: float | None = DEFAULT_LLM_TIMEOUT_SECO
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-def _provider(task: str = "subagent"):
+def _provider(task: str = "subagent", *, settings=None):
     try:
-        return get_provider(task=task)
+        return get_provider(settings, task=task)
     except Exception:  # noqa: BLE001 - broad-exception-boundary
         return None
 

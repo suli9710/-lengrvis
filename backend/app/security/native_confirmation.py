@@ -374,7 +374,14 @@ def _legacy_hmac_allowed() -> bool:
     return env_flag("LENGRVIS_TEST") or bool(str(get_env("PYTEST_CURRENT_TEST") or "").strip())
 
 
-_NATIVE_CONFIRMATION_ACTIONS = {"approve", "reject", "rollback_task", "erase_local_data"}
+_NATIVE_CONFIRMATION_ACTIONS = {
+    "approve",
+    "reject",
+    "rollback_task",
+    "erase_local_data",
+    "butler_scope_create",
+    "butler_undo",
+}
 
 
 def _clean_action(action: str) -> str:

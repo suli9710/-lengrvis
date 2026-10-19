@@ -18,6 +18,7 @@ from app.agents.safety_review_agent import SafetyReviewAgent
 from app.agents.search_agent import SearchAgent
 from app.core import db
 from app.core.audit import record
+from app.core.local_data_lifecycle import tracks_local_data
 from app.core.schemas import (
     AgentAction,
     AgentMessage,
@@ -154,6 +155,7 @@ class OrchestratorAgent:
             self.recovery_handler.cleanup_task(task.id)
         return task
 
+    @tracks_local_data
     def create_task_shell(self, goal: str, mode: str, *, metadata: dict[str, Any] | None = None) -> Task:
         task = Task(user_goal=goal, mode=mode, status=TaskStatus.PLANNING, metadata=dict(metadata or {}))
         db.upsert_model("tasks", task)
@@ -172,10 +174,12 @@ class OrchestratorAgent:
         )
         return task
 
+    @tracks_local_data
     async def handle_user_goal(self, goal: str, mode: str) -> Task:
         task = self.create_task_shell(goal, mode)
         return await self.run_task(task)
 
+    @tracks_local_data
     async def run_task(self, task: Task) -> Task:
         return await self.planning_handler.run_task(task)
 
@@ -499,10 +503,10 @@ class OrchestratorAgent:
         if newest and newest > self._supervision_cursor.get(task_id, ""):
             self._supervision_cursor[task_id] = newest
 
-    async def _recall_memory(self, goal: str) -> list:
+    async def _recall_memory(self, goal: str, *, task_id: str = "") -> list:
         try:
-            memories = await self.memory.recall(goal, k=3)
-            lessons = await self.memory.recall(goal, k=3, tags=["lesson"])
+            memories = await self.memory.recall(goal, k=3, task_id=task_id)
+            lessons = await self.memory.recall(goal, k=3, tags=["lesson"], task_id=task_id)
             seen: set[str] = set()
             combined = []
             for item in [*lessons, *memories]:

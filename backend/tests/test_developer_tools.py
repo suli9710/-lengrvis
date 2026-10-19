@@ -196,7 +196,7 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     assert "core.fsmonitor=false" in command
     assert "core.hooksPath=" in command
     assert "diff.external=" in command
-    assert calls[0]["command"][-2:] == ["status", "--short"]
+    assert calls[0]["command"][-5:] == ["status", "--short", "--no-renames", "--", "."]
 
 
 def test_shell_readonly_executes_builtins_without_process_spawn(
@@ -323,7 +323,7 @@ def test_shell_readonly_normalizes_executable_tokens_before_trusted_lookup(
     assert result["ok"] is True
     assert result["readonly"] is True
     assert calls[0]["command"][0] == str(trusted_git.resolve(strict=False))
-    assert calls[0]["command"][-2:] == ["status", "--short"]
+    assert calls[0]["command"][-5:] == ["status", "--short", "--no-renames", "--", "."]
 
 
 def _trusted_test_executable(workspace: Path, name: str) -> Path:

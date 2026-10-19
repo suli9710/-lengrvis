@@ -210,7 +210,7 @@ export function registerFeatureBridgeIpcHandlers(backend: BackendProcessManager)
     await confirmNativeDesktopAction(event, {
       title: "Confirm memory write",
       message: "Save this memory for future agent context?",
-      detail: `Kind: ${body.kind ?? "fact"}\n\nMemory text:\n${truncateForDialog(body.content)}`
+      detail: `Kind: ${body.kind ?? "fact"}${body.supersedes ? `\nReplaces memory: ${body.supersedes}` : ""}\n\nMemory text:\n${truncateForDialog(body.content)}`
     });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/memories",
@@ -219,7 +219,8 @@ export function registerFeatureBridgeIpcHandlers(backend: BackendProcessManager)
         content: body.content,
         tags: body.tags ?? [],
         task_id: body.taskId ?? "",
-        kind: body.kind ?? "fact"
+        kind: body.kind ?? "fact",
+        ...(body.supersedes ? { supersedes: body.supersedes } : {})
       }
     });
   });
@@ -308,6 +309,7 @@ export function registerFeatureBridgeIpcHandlers(backend: BackendProcessManager)
       message: "Create this schedule?",
       detail: [
         `Cron: ${body.cron}`,
+        `Time zone: ${body.timezone || "UTC"}`,
         `Mode: ${body.mode}`,
         "",
         "Goal:",

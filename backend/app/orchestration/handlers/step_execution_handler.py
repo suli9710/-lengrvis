@@ -12,6 +12,7 @@ from app.core.content_provenance import (
     revalidate_content_envelope,
 )
 from app.core.schemas import (
+    AgentAction,
     Approval,
     ApprovalStatus,
     MessageType,
@@ -28,12 +29,14 @@ from app.orchestration.deterministic_contracts import deterministic_contract_sta
 from app.orchestration.execution_models import APPROVAL_REMAINING_STEPS_SUMMARY
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.plan_input_binding import bind_plan_step_inputs
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
 from app.policy.approval_binding import (
     args_binding_hmac,
     binding_preview,
+    canonical_json,
     permission_policy_version,
     preview_hmac,
     settings_fingerprint,
@@ -65,6 +68,19 @@ class StepExecutionHandler:
         if threaded_tools:
             await asyncio.sleep(0)
 
+    @staticmethod
+    def _require_execution_evidence(step: PlanStep, action: AgentAction | None) -> None:
+        if action is None or action.kind != "done":
+            return
+        if step.input_bindings or (
+            step.tool_name in {"ui_automation.get_property", "file.read_text"} and "expected_value" in step.args
+        ):
+            action.kind = "request_revision"
+            action.rationale = "A step with bound data or a postcondition requires actual tool execution evidence."
+            action.follow_up_question = (
+                "Revise the plan if this step is no longer needed; it cannot be marked complete."
+            )
+
     def _runtime_context(self, task: Task, context: dict[str, Any] | None = None) -> TaskRuntimeContext:
         orchestrator = self.orchestrator
         raw = context or orchestrator._tool_context()
@@ -91,6 +107,13 @@ class StepExecutionHandler:
         runtime.extra_context["task_id"] = task.id
         runtime.extra_context["step_id"] = step.id
         runtime.extra_context["explicit_path_scope"] = task.user_goal
+        if task.metadata.get("butler_matter_id"):
+            from app.orchestration.butler_runtime import tool_context_for_task
+
+            butler_context = tool_context_for_task(task)
+            if "allowed_directories" in butler_context:
+                runtime.allowed_directories = butler_context.pop("allowed_directories")
+            runtime.extra_context.update(butler_context)
         return runtime
 
     def _bind_automation_authorization_context(
@@ -132,6 +155,13 @@ class StepExecutionHandler:
                 task_id=task.id,
             )
             return StepExecutionOutcome("fatal_denied")
+        try:
+            bind_plan_step_inputs(step, context.get("dependency_tool_results", {}))
+        except ValueError as exc:
+            set_step_status(step, StepStatus.FAILED, actor="StepExecutionHandler")
+            result = ToolResult(tool_call_id=f"{step.id}_input_binding", ok=False, error=str(exc))
+            record("plan.input_binding_failed", "StepExecutionHandler", {"step_id": step.id}, task_id=task.id)
+            return StepExecutionOutcome("fatal_failed", result)
         orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
         await self._yield_if_parallel(threaded_tools)
         try:
@@ -164,6 +194,7 @@ class StepExecutionHandler:
             else await orchestrator._consult_subagent(task, step, observation=observation)
         )
         await self._yield_if_parallel(threaded_tools)
+        self._require_execution_evidence(step, action)
         if action and action.kind == "done":
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             result = ToolResult(
@@ -206,6 +237,48 @@ class StepExecutionHandler:
                 if proposed_tool_name == step.tool_name
                 else dict(action.args or {})
             )
+            # Bound data must survive model reasoning unchanged. For readback
+            # postconditions, freeze the entire call: switching to the source
+            # window, path or another property would no longer verify the write.
+            protected_keys = set(step.input_bindings or {})
+            if (
+                original_tool_name in {"ui_automation.get_property", "file.read_text"}
+                and "expected_value" in original_args
+            ):
+                protected_keys.update(original_args)
+                protected_keys.update(proposed_args)
+            bound_mutations = [
+                key
+                for key in protected_keys
+                if proposed_tool_name != original_tool_name
+                or (key in proposed_args) != (key in original_args)
+                or canonical_json(proposed_args.get(key)) != canonical_json(original_args.get(key))
+            ]
+            if bound_mutations:
+                action.kind = "request_revision"
+                action.rationale = (
+                    "The subagent attempted to rewrite a bound input or postcondition argument: "
+                    + ", ".join(sorted(bound_mutations))
+                )
+                action.follow_up_question = (
+                    "Replan from a fresh dependency observation; bound data and its verification "
+                    "expectation are immutable."
+                )
+                orchestrator._handle_subagent_revision_request(task, step, action)
+                result = ToolResult(
+                    tool_call_id=f"{step.id}_bound_input_mutation",
+                    ok=True,
+                    observation=action.follow_up_question,
+                )
+                if not orchestrator._supervise_new_agent_messages(task.id, "subagent_bound_input_mutation"):
+                    set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+                    orchestrator._set_status(
+                        task,
+                        TaskStatus.DENIED,
+                        final_summary="SafetyReviewAgent stopped the task after a bound input mutation was blocked.",
+                    )
+                    return StepExecutionOutcome("fatal_denied", result)
+                return StepExecutionOutcome("revision_requested", result)
             if threaded_tools and (proposed_tool_name != original_tool_name or proposed_args != original_args):
                 action.kind = "request_revision"
                 action.rationale = action.rationale or (
@@ -336,6 +409,7 @@ class StepExecutionHandler:
             if approval.approval_type == "remote_input" or deterministic_status == "valid"
             else await orchestrator._consult_subagent(task, step, observation=None)
         )
+        self._require_execution_evidence(step, action)
         if action and action.kind == "done":
             db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent marked approved step already done.")
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
@@ -360,7 +434,7 @@ class StepExecutionHandler:
         if action and action.kind == "propose_tool":
             proposed_tool_name = action.tool_name or step.tool_name
             merged_args = {**dict(step.args or {}), **dict(action.args or {})}
-            if proposed_tool_name != step.tool_name or merged_args != step.args:
+            if proposed_tool_name != step.tool_name or canonical_json(merged_args) != canonical_json(step.args):
                 db.expire_approval_if_unconsumed(
                     approval.id, now_iso(), "Subagent proposed a different tool call before approved execution."
                 )
@@ -505,11 +579,18 @@ class StepExecutionHandler:
             envelopes = collect_content_envelopes(raw_envelopes)
             if not envelopes:
                 return ""
+            current = collect_content_envelopes(runtime.extra_context.get("upstream_content_envelopes"))
+            covered = {canonical_json(envelope.model_dump(mode="json")) for envelope in envelopes}
+            if any(canonical_json(envelope.model_dump(mode="json")) not in covered for envelope in current):
+                return "Approval does not cover the current source content; obtain a fresh preview."
             payload = content_binding_payload(args)
             runtime.extra_context["approved_content_envelopes"] = [
                 revalidate_content_envelope(envelope, payload, task_scope=task_id).model_dump(mode="json")
                 for envelope in envelopes
             ]
+            # Replace only the exact covered sources. Retaining their original
+            # unconfirmed copies would reject a valid approval after restart.
+            runtime.extra_context["upstream_content_envelopes"] = runtime.extra_context["approved_content_envelopes"]
         except (TypeError, ValueError) as exc:
             return f"Approval content provenance is invalid: {exc}"
         return ""

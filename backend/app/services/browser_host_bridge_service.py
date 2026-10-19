@@ -22,7 +22,9 @@ _MAX_NESTING = 8
 _MAX_CONTAINER_ITEMS = 64
 _MAX_SNAPSHOT_CHARS = 512_000
 _MAX_SCREENSHOT_ARTIFACT_URL_CHARS = 2048
-_SCREENSHOT_DIRECTORY_RE = re.compile(r"^lengrvis-browser-screenshots-\d+-[0-9a-f-]{36}$", re.IGNORECASE)
+_SCREENSHOT_DIRECTORY_RE = re.compile(
+    r"^lengrvis-browser-screenshots-(?:[0-9a-f]{16}|\d+-[0-9a-f-]{36})$", re.IGNORECASE
+)
 _SCREENSHOT_FILE_RE = re.compile(r"^[0-9a-f-]{36}\.png$", re.IGNORECASE)
 
 
@@ -115,6 +117,33 @@ class BrowserHostBridgeHub:
             with self._lock:
                 self._pending.pop(request_id, None)
 
+    async def request_authorized_action(self, authorization: dict, *, timeout_seconds: float = 30) -> dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        response: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+        with self._lock:
+            websocket, socket_loop = self._websocket, self._socket_loop
+            if websocket is None or socket_loop is None:
+                raise BrowserHostBridgeUnavailable("Persistent browser requires the connected desktop app.")
+            self._pending[request_id] = response
+        sent = False
+        try:
+            await self._send(
+                websocket,
+                socket_loop,
+                {"type": "authorized_action", "request_id": request_id, "authorization": authorization},
+            )
+            sent = True
+            return await asyncio.wait_for(asyncio.wrap_future(response), timeout=timeout_seconds)
+        except (TimeoutError, BrowserHostBridgeUnavailable) as exc:
+            if sent:
+                raise TimeoutError(
+                    "Browser command outcome is unknown; inspect the existing session before continuing."
+                ) from exc
+            raise
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
     async def request_task_cancel(self, *, task_id: str, timeout_seconds: float = 0.5) -> dict[str, Any]:
         normalized_task_id = str(task_id or "").strip()
         if not normalized_task_id:
@@ -146,6 +175,25 @@ class BrowserHostBridgeHub:
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
+
+    async def request_scope_cancel(self, scope_id: str) -> None:
+        from app.core import butler_store as store
+        from app.core.butler_models import AutonomyScope
+
+        scope = store.get(AutonomyScope, scope_id)
+        with self._lock:
+            websocket, loop = self._websocket, self._socket_loop
+        if websocket is not None and loop is not None and scope is not None:
+            await self._send(
+                websocket,
+                loop,
+                {
+                    "type": "cancel_scope",
+                    "scope_id": scope_id,
+                    "version": scope.version,
+                    "request_id": uuid.uuid4().hex,
+                },
+            )
 
     async def _send(
         self,
@@ -215,22 +263,61 @@ def _sanitize_result(result: dict[str, Any]) -> dict[str, Any]:
             # bounded screenshot store. Keep that reference for an explicit
             # screenshot command result; snapshots and data URLs remain redacted.
             event["screenshot_url"] = budget.take(screenshot_url)
+    inspection_budget = _SanitizeBudget(remaining=min(131072, budget.remaining), string_limit=65536)
+    inspection = _sanitize_json(result.get("inspection"), depth=0, budget=inspection_budget)
+    budget.remaining -= min(131072, budget.remaining) - inspection_budget.remaining
     return {
         "ok": bool(result.get("ok")),
+        "inspection": inspection,
+        "commit_state": result.get("commit_state")
+        if result.get("commit_state") in {"submitted", "not_submitted"}
+        else None,
+        "observation": _sanitize_observation(result.get("observation"), budget=budget),
         "session": _sanitize_json(result.get("session"), depth=0, budget=budget),
         "event": event,
         "error": _bounded_string(result.get("error"), budget=budget),
     }
 
 
+def _sanitize_observation(value: Any, *, budget: _SanitizeBudget) -> Any:
+    if not isinstance(value, dict):
+        return None
+    # Explicit command observations have a larger bounded text contract than
+    # background snapshots. Never silently treat a clipped value as complete.
+    raw_text = str(value.get("text") or "")
+    limit = min(65536, max(0, budget.remaining))
+    text = raw_text[:limit]
+    budget.remaining -= len(text)
+    result = _sanitize_json(
+        {key: item for key, item in value.items() if key not in {"text", "extracted"}}, depth=0, budget=budget
+    )
+    result["text"] = text
+    result["truncated"] = bool(value.get("truncated")) or len(text) < len(raw_text)
+    result["extracted"] = {}
+    fields = value.get("extracted")
+    for label, field in list(fields.items())[:32] if isinstance(fields, dict) else []:
+        if not isinstance(field, dict) or not isinstance(label, str) or len(label) > 160:
+            continue
+        raw = str(field.get("text") or "")
+        selected = raw[: min(65536, max(0, budget.remaining))]
+        budget.remaining -= len(selected)
+        result["extracted"][label] = {
+            "text": selected,
+            "matched": field.get("matched") is True,
+            "truncated": bool(field.get("truncated")) or len(selected) != len(raw),
+        }
+    return result
+
+
 @dataclass
 class _SanitizeBudget:
     remaining: int = _MAX_SNAPSHOT_CHARS
+    string_limit: int = _MAX_STRING_CHARS
 
     def take(self, value: str) -> str:
         if self.remaining <= 0:
             return "[truncated]"
-        bounded = value[: min(_MAX_STRING_CHARS, self.remaining)]
+        bounded = value[: min(self.string_limit, self.remaining)]
         self.remaining -= len(bounded)
         return bounded
 

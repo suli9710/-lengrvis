@@ -82,6 +82,9 @@ describe("SchedulePanel", () => {
     });
 
     expect(createSchedule).toHaveBeenCalledTimes(1);
+    expect(createSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    }));
     expect(listSchedules).toHaveBeenCalledTimes(2);
     expect(textContent(renderer)).toContain("每日生成工作摘要");
     expect(renderer.root.findByProps({ "aria-label": "任务目标" }).props.value).toBe("");

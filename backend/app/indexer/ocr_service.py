@@ -27,7 +27,7 @@ from app.acceleration.onnx_sessions import (
 from app.config import AppSettings, get_env
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.registry import get_effective_settings, get_provider
-from app.policy.privacy import can_use_cloud_model
+from app.policy.privacy import can_use_image_provider
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 _MIN_PDF_TEXT_CHARS = 24
@@ -85,9 +85,7 @@ def ocr_image_result(
         return local
 
     effective = settings or get_effective_settings()
-    cloud_allowed = allow_cloud_fallback
-    if cloud_allowed is None:
-        cloud_allowed = can_use_cloud_model(effective, task="ocr").allowed
+    cloud_allowed = allow_cloud_fallback is not False and can_use_image_provider(effective, task="ocr").allowed
     if not cloud_allowed:
         return OCRResult(
             ok=False,
@@ -287,6 +285,9 @@ def provider_ocr_image(
     settings: AppSettings | None = None,
     timeout_seconds: float | None = DEFAULT_PROVIDER_OCR_TIMEOUT_SECONDS,
 ) -> OCRResult:
+    effective = settings or get_effective_settings()
+    if effective.mode != "privacy" and not can_use_image_provider(effective, task="ocr").allowed:
+        return OCRResult(ok=False, source="vision_provider", error="Cloud OCR requires file upload permission.")
     try:
         provider = get_provider(settings=settings, task="ocr")
         text = str(_run_async(provider.ocr(str(image_path)), timeout_seconds=timeout_seconds) or "").strip()

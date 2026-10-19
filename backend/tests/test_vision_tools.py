@@ -11,6 +11,8 @@ import pytest
 
 from app.config import AppSettings
 from app.core import db
+from app.llm import registry as llm_registry
+from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
 from app.tools import vision_tools
 from app.tools.registry import register_all_tools
@@ -49,6 +51,7 @@ def test_mock_provider_ocr_returns_string():
 
 
 def test_describe_image_tool_uses_provider(sample_png, monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_ALLOW_FILE_CONTENT_UPLOAD", "true")
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
@@ -79,14 +82,14 @@ def test_vision_tools_use_injected_local_provider(sample_png, monkeypatch, tmp_p
         async def ocr(self, image_path: str) -> str:
             return "local ocr text"
 
-    monkeypatch.setattr(vision_tools, "get_provider", lambda task="vision": _LocalVisionProvider())
+    monkeypatch.setattr(vision_tools, "get_provider", lambda settings=None, task="vision": _LocalVisionProvider())
     monkeypatch.setattr(
         "app.indexer.ocr_service.get_provider",
         lambda settings=None, task="ocr": _LocalVisionProvider(),
     )
     context = {
         "allowed_directories": [str(tmp_path)],
-        "settings": AppSettings(mode="efficiency", provider_name="openai", api_key="sk-test"),
+        "settings": AppSettings(mode="efficiency", provider_name="ollama", base_url="http://127.0.0.1:11434/v1"),
     }
 
     description = vision_tools.describe_image({"path": str(sample_png)}, context)
@@ -98,6 +101,76 @@ def test_vision_tools_use_injected_local_provider(sample_png, monkeypatch, tmp_p
     assert ocr["text"] == "local ocr text"
 
 
+@pytest.mark.parametrize("tool_name", ["describe_image", "describe_images", "compare_images"])
+def test_vision_tools_keep_request_privacy_when_global_mode_is_efficiency(tool_name, sample_png, monkeypatch, tmp_path):
+    global_settings = AppSettings(mode="efficiency", provider_name="openai", api_key="test-cloud-key")
+    request_settings = global_settings.model_copy(update={"mode": "privacy"})
+    cloud_calls = []
+    local_modes = []
+    vision_calls = []
+
+    class LocalVisionProvider:
+        name = "ollama"
+
+        def __init__(self, settings):
+            self.settings = settings.model_copy(
+                update={"provider_name": "ollama", "base_url": "http://127.0.0.1:11434/v1"}
+            )
+
+        async def vision(self, image_path, prompt, model=None):
+            vision_calls.append(image_path)
+            return "A local document image."
+
+    def cloud_provider(settings):
+        cloud_calls.append(settings.mode)
+        return LocalVisionProvider(settings)
+
+    def local_provider(settings):
+        local_modes.append(settings.mode)
+        return LocalVisionProvider(settings)
+
+    monkeypatch.setattr(llm_registry, "get_effective_settings", lambda: global_settings)
+    monkeypatch.setattr(llm_registry, "_build_cloud_provider", cloud_provider)
+    monkeypatch.setattr(llm_registry, "_build_local_provider", local_provider)
+    context = {"allowed_directories": [str(tmp_path)], "settings": request_settings}
+    args = {"path": str(sample_png), "path_a": str(sample_png), "path_b": str(sample_png)}
+
+    result = getattr(vision_tools, tool_name)(args, context)
+
+    assert result["ok"] is True
+    expected_calls = 2 if tool_name == "compare_images" else 1
+    assert len(vision_calls) == expected_calls
+    assert local_modes == ["privacy"] * expected_calls
+    assert cloud_calls == []
+    assert global_settings.mode == "efficiency"
+
+
+def test_privacy_vision_local_failure_does_not_retry_cloud(sample_png, monkeypatch, tmp_path):
+    global_settings = AppSettings(mode="efficiency", provider_name="openai", api_key="test-cloud-key")
+    cloud_calls = []
+
+    def unavailable_local(settings):
+        assert settings.mode == "privacy"
+        raise LocalBackendUnavailable("local unavailable")
+
+    def cloud_provider(settings):
+        cloud_calls.append(settings.mode)
+        raise AssertionError("cloud must not be selected")
+
+    monkeypatch.setattr(llm_registry, "get_effective_settings", lambda: global_settings)
+    monkeypatch.setattr(llm_registry, "_build_local_provider", unavailable_local)
+    monkeypatch.setattr(llm_registry, "_build_cloud_provider", cloud_provider)
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": global_settings.model_copy(update={"mode": "privacy"}),
+    }
+
+    result = vision_tools.describe_image({"path": str(sample_png)}, context)
+
+    assert "vision unavailable" in result["description"]
+    assert cloud_calls == []
+
+
 def test_run_vision_times_out_slow_provider(sample_png, monkeypatch):
     class _SlowVisionProvider:
         name = "slow-vision"
@@ -106,10 +179,12 @@ def test_run_vision_times_out_slow_provider(sample_png, monkeypatch):
             await asyncio.sleep(1.0)
             return "late description"
 
-    monkeypatch.setattr(vision_tools, "get_provider", lambda task="vision": _SlowVisionProvider())
+    monkeypatch.setattr(vision_tools, "get_provider", lambda settings=None, task="vision": _SlowVisionProvider())
 
     started = time.monotonic()
-    description = vision_tools._run_vision("describe", sample_png, timeout_seconds=0.01)
+    description = vision_tools._run_vision(
+        "describe", sample_png, timeout_seconds=0.01, settings=AppSettings(mode="privacy")
+    )
 
     assert description == "[vision timed out]"
     assert time.monotonic() - started < 0.5
@@ -123,10 +198,12 @@ def test_run_vision_timeout_returns_from_running_event_loop(sample_png, monkeypa
             await asyncio.sleep(1.0)
             return "late description"
 
-    monkeypatch.setattr(vision_tools, "get_provider", lambda task="vision": _SlowVisionProvider())
+    monkeypatch.setattr(vision_tools, "get_provider", lambda settings=None, task="vision": _SlowVisionProvider())
 
     async def invoke() -> str:
-        return vision_tools._run_vision("describe", sample_png, timeout_seconds=0.01)
+        return vision_tools._run_vision(
+            "describe", sample_png, timeout_seconds=0.01, settings=AppSettings(mode="privacy")
+        )
 
     started = time.monotonic()
     description = asyncio.run(invoke())

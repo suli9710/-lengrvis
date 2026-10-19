@@ -464,7 +464,7 @@ def test_public_action_wrapper_fans_out_target_gate_once(
 
 
 def test_missing_tool_approval_records_tool_guard() -> None:
-    result = ui_automation_tools.drag({"dry_run": False}, {})
+    result = ui_automation_tools.drag({"dry_run": False, "start_x": 0, "start_y": 0, "end_x": 10, "end_y": 10}, {})
 
     assert result["ok"] is False
     assert result["approval_required"] is True

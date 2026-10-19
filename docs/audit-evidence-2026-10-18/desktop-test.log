@@ -1,0 +1,126 @@
+=== typecheck ===
+
+> lengrvis-desktop@0.1.2 typecheck
+> tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json
+
+=== vitest ===
+
+> lengrvis-desktop@0.1.2 test
+> vitest run
+
+
+ RUN  v4.1.11 D:/Desktop/mavris/desktop
+
+ ✓ src/main/signedBuildConfigPolicy.test.ts (2 tests) 74ms
+ ✓ src/main/browserHostPinnedProxy.test.ts (5 tests) 54ms
+ ✓ src/main/approvalSessionGeneration.test.ts (11 tests | 1 skipped) 62ms
+ ✓ src/main/rendererProtocol.test.ts (28 tests) 58ms
+ ✓ src/main/browserSubmissionGuard.test.ts (14 tests) 12ms
+ ✓ src/main/browserTargetSnapshot.test.ts (6 tests) 19ms
+ ✓ src/renderer/components/file-search/FileSearchModels.test.ts (3 tests) 21ms
+ ✓ src/main/backendControlTransport.test.ts (23 tests) 164ms
+ ✓ src/renderer/components/RendererErrorBoundary.test.ts (3 tests) 18ms
+ ✓ src/main/browserProfileRegistry.test.ts (2 tests) 18ms
+ ✓ src/renderer/components/SystemInfoPanel.test.ts (1 test) 38ms
+ ✓ src/renderer/app/useTaskSubmission.test.ts (6 tests) 24ms
+ ✓ src/renderer/lib/api/backendLifecycleClient.test.ts (4 tests) 34ms
+ ✓ src/renderer/components/BrowserActivityPanel.test.ts (3 tests) 27ms
+ ✓ src/renderer/lib/api/apiRequestSession.test.ts (11 tests) 38ms
+ ✓ src/renderer/components/SchedulePanel.test.ts (4 tests) 65ms
+ ✓ src/renderer/components/MemoryPanel.test.ts (13 tests) 97ms
+ ✓ src/renderer/components/settings/AdvancedRuntimeControlSection.test.ts (2 tests) 17ms
+ ✓ src/renderer/components/settings/HardwareAccelerationCard.test.ts (1 test) 18ms
+ ✓ src/renderer/views/SkillsView.test.ts (1 test) 17ms
+ ✓ src/renderer/features/butler/useButler.test.ts (2 tests) 19ms
+ ✓ src/renderer/lib/api/browserClient.test.ts (4 tests) 20ms
+ ✓ src/main/browserHostDomActions.test.ts (4 tests) 17ms
+ ✓ src/renderer/features/office/OfficeInspector.test.ts (2 tests) 35ms
+ ✓ src/main/ipc/validation/memorySchedule.test.ts (4 tests) 24ms
+ ✓ src/main/browserScreenshotStore.test.ts (5 tests) 329ms
+ ✓ src/main/browserHostNetworkGuard.test.ts (6 tests) 12ms
+ ✓ src/renderer/app/SurfaceErrorBoundary.test.ts (2 tests) 19ms
+ ✓ src/renderer/components/settings/CommercePanel.test.ts (1 test) 19ms
+ ✓ src/renderer/features/office/officeTaskPresentation.test.ts (3 tests) 9ms
+ ✓ src/main/browserPrivacyBoundary.test.ts (1 test) 11ms
+ ✓ src/main/credentialVault.test.ts (3 tests) 14ms
+ ✓ src/renderer/lib/api/__tests__/transport.test.ts (22 tests) 11ms
+ ✓ src/renderer/components/VoiceInputButton.test.ts (2 tests) 22ms
+ ✓ src/renderer/lib/api/diagnosticMappers.test.ts (3 tests) 9ms
+ ✓ src/main/browserHostValidation.test.ts (5 tests) 11ms
+ ✓ src/main/ipcPrivacyErase.test.ts (6 tests) 9ms
+ ✓ src/renderer/components/file-search/FileCleanupWorkspace.test.ts (3 tests) 10ms
+ ✓ src/main/atomicJsonStore.test.ts (1 test) 8ms
+ ✓ src/main/browserHostRuntime.test.ts (6 tests) 8ms
+ ✓ src/renderer/components/file-search/FileDocumentWorkspace.test.ts (3 tests) 13ms
+ ✓ src/renderer/components/ChatPanel.test.ts (1 test) 15ms
+ ✓ src/renderer/lib/api/realtimeTransport.test.ts (4 tests) 11ms
+ ✓ src/main/browserCredentialIpcHandlers.test.ts (3 tests) 9ms
+ ✓ src/renderer/features/office/ponyMotion.test.ts (8 tests) 6ms
+ ✓ src/renderer/lib/api/catalogMappers.test.ts (3 tests) 9ms
+ ✓ src/main/ipcApiProxy.test.ts (1 test) 29ms
+ ✓ src/main/browserHostWebContentsHardening.test.ts (8 tests) 11ms
+ ✓ src/main/credentialUseTicketBroker.test.ts (3 tests) 8ms
+ ✓ src/main/emergencyStop.test.ts (3 tests) 5ms
+ ✓ src/main/ipc/validation/butler.test.ts (4 tests) 7ms
+ ✓ src/renderer/lib/api/__tests__/mappers.test.ts (9 tests) 13ms
+ ✓ src/renderer/lib/api/fileLibraryClient.test.ts (2 tests) 9ms
+ ✓ src/renderer/lib/api/scheduleClient.test.ts (2 tests) 5ms
+ ✓ src/renderer/lib/api/__tests__/executionMappers.test.ts (7 tests) 16ms
+ ✓ src/renderer/lib/api/libraryMappers.test.ts (4 tests) 6ms
+ ✓ src/renderer/lib/api/memoryClient.test.ts (2 tests) 7ms
+ ✓ src/renderer/features/office/model.test.ts (6 tests) 5ms
+ ✓ src/renderer/lib/api/hardwareAccelerationMappers.test.ts (4 tests) 6ms
+ ✓ src/main/mainWindowDisplayConstraints.test.ts (5 tests) 9ms
+ ✓ src/main/ipc/validation/settings.test.ts (3 tests) 6ms
+ ✓ src/renderer/lib/api/commerceMappers.test.ts (5 tests) 6ms
+ ✓ src/renderer/lib/uiPreferences.test.ts (6 tests) 7ms
+ ✓ src/renderer/lib/api/browserMappers.test.ts (4 tests) 7ms
+ ✓ src/main/browserCredentialDom.test.ts (2 tests) 6ms
+ ✓ src/renderer/events/runEvents.test.ts (2 tests) 6ms
+ ✓ src/shared/browserHostRedaction.test.ts (5 tests) 7ms
+ ✓ src/renderer/lib/technicalDetails.test.ts (3 tests) 6ms
+ ✓ src/renderer/features/office/ponyTextures.test.ts (5 tests) 6ms
+ ✓ src/main/browserExecutionGrant.test.ts (7 tests) 7ms
+ ✓ src/renderer/lib/api/specializedIpcContract.test.ts (1 test) 10ms
+ ✓ src/main/browserHostIpcHandlers.test.ts (8 tests) 21ms
+ ✓ src/renderer/lib/api/client.hardwareAcceleration.test.ts (2 tests) 7ms
+ ✓ src/main/mainWindowSizing.test.ts (8 tests) 6ms
+ ✓ src/main/consentManager.test.ts (1 test) 10ms
+ ✓ src/renderer/lib/api/client.endpointGroups.test.ts (15 tests) 21ms
+ ✓ src/main/browserHostBridge.test.ts (6 tests) 93ms
+ ✓ src/renderer/lib/api/localModelMappers.test.ts (3 tests) 5ms
+ ✓ src/renderer/lib/api/mobilePairingClient.test.ts (2 tests) 6ms
+ ✓ src/renderer/components/settings/LocalModelInstaller.test.ts (1 test) 34ms
+ ✓ src/renderer/features/task-results/taskResultTimeline.test.ts (5 tests) 6ms
+ ✓ src/renderer/lib/api/settingsMappers.test.ts (3 tests) 6ms
+ ✓ src/renderer/lib/api/transport.security.test.ts (4 tests) 6ms
+ ✓ src/shared/updateHealth.test.ts (8 tests) 6ms
+ ✓ src/main/browserPrivacyErase.test.ts (1 test) 12ms
+ ✓ src/main/ipc/validation/apiRequestUrl.test.ts (4 tests) 5ms
+ ✓ src/renderer/components/SettingsPanel.test.ts (1 test) 71ms
+ ✓ src/main/approvalSessionStartupContract.test.ts (5 tests) 5ms
+ ✓ src/main/browserHostCredentialBroker.test.ts (3 tests) 45ms
+ ✓ src/renderer/lib/api/llmContextMappers.test.ts (3 tests) 5ms
+ ✓ src/main/backendLifecycle.test.ts (2 tests) 6ms
+ ✓ src/renderer/lib/motion.test.ts (3 tests) 4ms
+ ✓ src/renderer/views/LocalLibraryView.test.ts (11 tests) 99ms
+ ✓ src/main/backendProcessLogging.test.ts (2 tests) 5ms
+ ✓ src/main/ipcInflight.test.ts (2 tests) 3ms
+ ✓ src/shared/apiRequestAllowlist.test.ts (4 tests) 3ms
+ ✓ src/shared/consent.test.ts (2 tests) 3ms
+ ✓ src/renderer/lib/api/documentMappers.test.ts (3 tests) 4ms
+ ✓ src/shared/backendError.test.ts (4 tests) 3ms
+ ✓ src/main/ipcNativeConfirmation.test.ts (4 tests) 3ms
+ ✓ src/renderer/components/taskTimelinePresentation.test.ts (1 test) 3ms
+ ✓ src/main/updateHealthGate.test.ts (1 test) 2ms
+ ✓ src/renderer/appViewModel.test.ts (2 tests) 4ms
+ ✓ src/main/updateRollbackMessage.test.ts (1 test) 2ms
+ ✓ src/renderer/components/TaskExplainDialog.test.ts (4 tests) 3ms
+ ✓ src/renderer/components/TaskTimeline.test.ts (2 tests) 2ms
+ ✓ src/renderer/features/office/OfficeStage.test.ts (3 tests) 2ms
+
+ Test Files  107 passed (107)
+      Tests  486 passed | 1 skipped (487)
+   Start at  22:21:58
+   Duration  2.71s (transform 24.88s, setup 1.90s, import 37.09s, tests 2.28s, environment 11ms)
+

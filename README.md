@@ -237,10 +237,17 @@ npm --prefix desktop run dev
 .\scripts\run_tests.ps1          # backend pytest（xdist）+ desktop/mobile typecheck + mobile smokes
 npm run qa:gate                  # 上述 + desktop 全量 smoke
 npm run golden:gate              # golden tasks 报告（≥95% 通过率）
+npm run eval:windows-agent       # 真实模型 + 隔离 Windows 原生窗口跨应用验收
 npm run mcp:conformance          # 官方 initialize/tools/SSE-resume conformance
 ```
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract、Android back navigation、manifest/resource hardening 和 LAN TLS source/connected-test contract smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
+
+`eval:windows-agent` 需要 Windows、已激活的 Python 虚拟环境及项目设置中的真实模型配置；可用 `--base-url` 和 `--model` 临时覆盖地址与模型，密钥仍从项目设置读取。它创建两个自有测试窗口和独立任务数据库，通过正常任务入口验证源文本读取、目标写入审批、执行与回读；只批准这两个测试窗口范围内的指定写入。默认报告为 `.tmp/qa-evidence/windows-agent-acceptance.json`。接口失败、MockProvider、越界计划或核验失败均以非零状态退出。该报告只证明隔离场景，不替代真实业务应用或正式发布验收。
+
+已安装系统计算器的 Windows 测试机还可设置 `MAVRIS_NATIVE_APP_ACCEPTANCE=1`，运行 `python -m pytest backend/tests/test_app_launch_native.py -q`，验证应用激活、正常任务入口和宿主中的窗口定位，以及通过逐步审批计算 37×19、把显示结果传到隔离编辑框并精确读回。它会打开计算器和自有测试窗口，结束后关闭本次新建进程；已有计算器实例则跳过。默认测试不打开真实业务应用，此项使用确定性打开应用模板或已知操作计划，不代表真实模型验收。
+
+同一开关下，`python -m pytest backend/tests/test_notepad_native.py -q` 验证现代 Windows 记事本：从隔离源窗口传入中文、emoji 和多行文本，经目标文档审批执行保存，再由 FileAgent 精确核验完整 UTF-8 文件。分别覆盖 ValuePattern 和模拟缺少 ValuePattern 时的真实 SendInput 键盘回退。它只编辑本次创建的临时文档，已有记事本进程则跳过；运行时请保持桌面空闲约一分钟，前台切换失败会停止输入。测试提供已知计划，不计作真实模型规划成功。
 
 CI 在 push/PR 上运行 hygiene、deps:verify、SBOM、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。普通 PR 与非默认分支不取得真实 provider 凭据，real-LLM advisory gate 会明确记录 skipped/incomplete；只有默认分支的非 PR 运行可执行该 advisory step。正式发布质量证据只由 release-candidate workflow 的固定 `--release-evidence` producer 与 clean sealer 生成，CI skip 或本地报告都不能替代。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不覆盖 portable GUI smoke、clean-machine 或真实设备人工验收。
 
@@ -533,6 +540,16 @@ Windows GUI automation 通过 UIAutomation COM、截图、窗口聚焦、语义�
 - 付费商业闭环尚未完成：没有在线 checkout、订单/税务/发票、订阅续费、在线吊销同步或正式客服工单系统；离线退款吊销需要部署签名清单。在 `market:readiness:paid` 和 `evidence:commercial-loop` 通过前不得对外收款、开票、发布付费价格，或宣称付费套餐已正式可用。
 
 ## Phase 5 AI OS Loop
+
+### 个人 AI 管家（源码版）
+
+桌面侧栏新增「AI 管家」：统一查看正在处理、待跟进、待决策、已结束和可撤销事项。对话支持补充原事项、修改目标、暂停与恢复；“另外……”可插入新事项。明确偏好可用“记住：报告默认使用表格”保存，并在原记忆界面管理。
+
+在「自主处理范围」中新增或调整目录、应用与网站，再开启主动管理。具有可靠回滚契约的文件操作可自动执行；外部提交仍需确认具体内容。缩到托盘后会保留授权观察和未完成事项，重启后先核对现场。此功能需要真实模型；MockProvider 不会被当作真实规划器使用。
+
+实现范围、验收证据与第三方网站限制见 [AI 管家实现记录](docs/ai-butler-implementation-2026-09-14.md)。可用 `npm run eval:butler` 跑通用契约集，`npm run eval:butler:real -- --prompt-key` 跑独立临时目录中的真实模型验收。
+
+完整流程新增结构化资料合并、原网页接续、标准 HTML 表单的一次具体确认、回执逐项核验及结果保存。先运行 `npm --prefix desktop run build:electron:dev`，再用 `npm run eval:butler:flow` 验证真实后端与 Electron；`-- --scenario receipt_delay` 验证回执超时后的自动接续。默认使用固定规划器，真实模型使用 `-- --real-model --prompt-key`。范围和证据见 [完整流程升级记录](docs/ai-butler-complete-flow-2026-09-16.md)。
 
 - 语音输入在 `backend/app/perception/voice_input.py`：可选 `pywhispercpp` / `whisper.cpp` 转写，测试用 deterministic fallback，支持 wake-word gating、`VoiceInputEvent`，并可自动提交到 `POST /api/chat`。
 - 意图建议在 `backend/app/perception/intent_predictor.py`：`ScreenState`、`AppContext`、`SessionContext` 会生成 1-3 条规则建议；无可选模型 hook 时，结果标记为 `source="rules"`、`model_enabled=false`。

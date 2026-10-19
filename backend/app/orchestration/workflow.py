@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.step_inputs import StepInputBinding as WorkflowInputBinding
+from app.core.step_inputs import resolve_inputs
 from app.policy.redaction import redact_public_text, redact_value
 
 
@@ -48,7 +50,7 @@ class BestEffortWindowFocus:
             return False
         try:
             windows = pygetwindow.getWindowsWithTitle(target_app)
-            if not windows:
+            if len(windows) != 1:
                 return False
             windows[0].activate()
             return True
@@ -62,6 +64,8 @@ class WorkflowStep(BaseModel):
     id: str = Field(min_length=1)
     target_app: str = Field(default="", validation_alias="target_app")
     action: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    input_bindings: dict[str, WorkflowInputBinding] = Field(default_factory=dict, max_length=32)
     data_transfer: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     ui_selector: dict[str, Any] = Field(default_factory=dict)
@@ -74,7 +78,7 @@ class Workflow(BaseModel):
 
     id: str = Field(min_length=1)
     name: str = ""
-    steps: list[WorkflowStep] = Field(default_factory=list)
+    steps: list[WorkflowStep] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def validate_dag(self) -> Workflow:
@@ -87,6 +91,9 @@ class Workflow(BaseModel):
             missing = [dependency for dependency in step.depends_on if dependency not in known]
             if missing:
                 raise ValueError(f"step {step.id} depends on unknown steps: {', '.join(missing)}")
+            for binding in step.input_bindings.values():
+                if binding.step_id not in step.depends_on:
+                    raise ValueError(f"step {step.id} input source {binding.step_id} must be an explicit dependency")
         topological_order(self.steps)
         return self
 
@@ -117,24 +124,66 @@ class WorkflowRuntime:
         errors: list[str] = []
         for step_id in order:
             step = by_id[step_id]
-            focus_ok = self.focus_provider.focus(step.target_app) if step.target_app else False
-            clipboard_restore = self._prepare_clipboard(step)
-            try:
-                result = await self._run_step(step, handlers)
-                result.setdefault("focus_ok", focus_ok)
-                if not result.get("ok", False):
-                    result = _public_workflow_failure_result(result)
-                results[step.id] = result
-                if not result.get("ok", False):
-                    errors.append(_safe_workflow_error(result.get("error") or f"step {step.id} failed"))
-            except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: workflow handlers are user-provided integrations.
-                error = _safe_workflow_error(exc)
-                results[step.id] = {"ok": False, "error": error, "focus_ok": focus_ok}
-                errors.append(error)
-            finally:
-                if clipboard_restore is not None:
-                    self.clipboard.set_text(clipboard_restore)
+            blocked = [dependency for dependency in step.depends_on if results[dependency].get("ok") is not True]
+            if blocked:
+                result = {
+                    "ok": False,
+                    "status": "skipped",
+                    "blocked_by": blocked,
+                    "error_code": "workflow_dependency_failed",
+                    "error": f"Step {step.id} skipped because a dependency did not succeed.",
+                    "next_actions": ["Resolve the failed dependency before retrying this step."],
+                }
+            else:
+                result = await self._execute_step(step, handlers, results)
+            if not result.get("ok", False):
+                result = _public_workflow_failure_result(result)
+                errors.append(_safe_workflow_error(result.get("error") or f"step {step.id} failed"))
+            results[step.id] = result
         return WorkflowExecutionResult(ok=not errors, order=order, step_results=results, errors=errors)
+
+    async def _execute_step(
+        self, step: WorkflowStep, handlers: dict[str, Any], results: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        if not (handlers.get(step.action) or handlers.get(step.interface)):
+            return {
+                "ok": False,
+                "error": "No workflow handler registered.",
+                "error_code": "workflow_handler_missing",
+                "step_id": step.id,
+                "next_actions": ["Register a validated tool runtime handler for this action."],
+            }
+        result: dict[str, Any] = {}
+        focus_ok = False
+        clipboard_restore = None
+        try:
+            bound_step = bind_step_inputs(step, results)
+            if step.target_app:
+                focus_ok = await asyncio.to_thread(self.focus_provider.focus, step.target_app)
+                if not focus_ok:
+                    return {
+                        "ok": False,
+                        "focus_ok": False,
+                        "error_code": "workflow_focus_failed",
+                        "error": "Target application could not be uniquely focused; action was not performed.",
+                        "next_actions": ["Locate a unique application window before retrying."],
+                    }
+            clipboard_restore = self._prepare_clipboard(bound_step)
+            result = await self._run_step(bound_step, handlers)
+            result.setdefault("focus_ok", focus_ok)
+        except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: workflow adapters fail as an individual step.
+            result = {"ok": False, "error": _safe_workflow_error(exc), "focus_ok": focus_ok}
+        finally:
+            if clipboard_restore is not None:
+                try:
+                    self.clipboard.set_text(clipboard_restore)
+                except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: clipboard restoration is part of the step outcome.
+                    result.update(
+                        ok=False,
+                        error_code="workflow_clipboard_restore_failed",
+                        error=_safe_workflow_error(f"Clipboard restoration failed: {exc}"),
+                    )
+        return result
 
     def _prepare_clipboard(self, step: WorkflowStep) -> str | None:
         transfer = step.data_transfer or {}
@@ -154,7 +203,6 @@ class WorkflowRuntime:
 
 
 def topological_order(steps: list[WorkflowStep]) -> list[str]:
-    {step.id: step for step in steps}
     incoming = {step.id: set(step.depends_on) for step in steps}
     outgoing: dict[str, set[str]] = {step.id: set() for step in steps}
     for step in steps:
@@ -174,6 +222,12 @@ def topological_order(steps: list[WorkflowStep]) -> list[str]:
     if len(order) != len(steps):
         raise WorkflowError("workflow contains a dependency cycle")
     return order
+
+
+def bind_step_inputs(step: WorkflowStep, results: dict[str, dict[str, Any]]) -> WorkflowStep:
+    """Resolve explicit dependency output paths as data, without evaluating text."""
+    args = resolve_inputs(step.args, step.input_bindings, step.depends_on, results)
+    return step.model_copy(update={"args": args})
 
 
 def _public_workflow_failure_result(result: dict[str, Any]) -> dict[str, Any]:

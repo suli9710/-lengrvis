@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core import db
+from app.core.local_data_lifecycle import data_generation, local_data_operation
 
 
 def claim_scheduled_task_run(
@@ -62,9 +63,9 @@ def complete_scheduled_task_run(
     schedule_id: str,
     *,
     expected_last_run_at: str,
-    expected_next_run_at: str,
     last_status: str,
     last_task_id: str = "",
+    expected_last_status: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any] | None:
     """Persist a schedule execution result without overwriting newer schedule state."""
@@ -78,7 +79,9 @@ def complete_scheduled_task_run(
         stored = json.loads(row["data"])
         if str(stored.get("last_run_at") or "") != expected_last_run_at:
             return None
-        if str(stored.get("next_run_at") or "") != expected_next_run_at:
+        # Enabling a paused schedule changes next_run_at, but does not replace
+        # its active execution. Only a newer claim changes last_run_at.
+        if expected_last_status is not None and stored.get("last_status", "") != expected_last_status:
             return None
         stored["last_status"] = last_status
         stored["last_task_id"] = last_task_id
@@ -140,7 +143,18 @@ def set_scheduled_task_enabled(
     return stored
 
 
-def insert_perception_observation(payload: dict[str, Any]) -> None:
+def insert_perception_observation(
+    payload: dict[str, Any], *, expected_generation: tuple[str, int] | None = None
+) -> bool:
+    generation = expected_generation if expected_generation is not None else data_generation()
+    with local_data_operation(expected_generation=generation) as current:
+        if not current:
+            return False
+        _insert_perception_observation(payload)
+        return True
+
+
+def _insert_perception_observation(payload: dict[str, Any]) -> None:
     body = dict(payload)
     body.setdefault("id", f"pobs_{uuid4().hex}")
     body.setdefault("created_at", db._now_iso())
@@ -171,7 +185,18 @@ def insert_perception_observation(payload: dict[str, Any]) -> None:
         )
 
 
-def insert_perception_suggestion(payload: dict[str, Any]) -> None:
+def insert_perception_suggestion(
+    payload: dict[str, Any], *, expected_generation: tuple[str, int] | None = None
+) -> bool:
+    generation = expected_generation if expected_generation is not None else data_generation()
+    with local_data_operation(expected_generation=generation) as current:
+        if not current:
+            return False
+        _insert_perception_suggestion(payload)
+        return True
+
+
+def _insert_perception_suggestion(payload: dict[str, Any]) -> None:
     body = dict(payload)
     body.setdefault("id", f"psug_{uuid4().hex}")
     body.setdefault("created_at", db._now_iso())

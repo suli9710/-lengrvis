@@ -1,0 +1,53 @@
+.butler-view { display: grid; gap: 18px; max-width: 1260px; margin-inline: auto; }
+.butler-coordination { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-block: 18px; }
+.butler-coordination section { padding: 14px; border: 1px solid var(--line); border-radius: var(--r-md); min-width: 0; }
+.butler-coordination h3 { font-size: 14px; margin: 0 0 10px; }
+.butler-coordination ul { list-style: none; padding: 0; margin: 0; }
+.butler-coordination li { border-top: 1px solid var(--line); padding-block: 8px; }
+.butler-coordination button { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.butler-actions, .butler-control-row, .butler-context-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.butler-control-row, .butler-context-row { justify-content: space-between; }
+.butler-control-row p, .butler-note { color: var(--muted); line-height: 1.6; font-size: 13px; }
+.butler-error { color: var(--red); background: var(--red-soft); padding: 10px 12px; border-radius: var(--r-sm); }
+.butler-tabs { display: flex; gap: 8px; overflow-x: auto; padding-block: 14px; border-bottom: 1px solid var(--line); }
+.butler-tabs button { display: flex; gap: 7px; align-items: center; border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted); padding: 9px 12px; background: transparent; white-space: nowrap; }
+.butler-tabs button[aria-selected="true"] { color: var(--brand-deep); background: var(--brand-soft); border-color: var(--line); }
+.butler-tabs button span { font-size: 12px; padding: 1px 5px; border-radius: 5px; background: var(--surface); }
+.butler-matters, .butler-scopes { display: grid; gap: 12px; padding-block: 14px; }
+.butler-matter, .butler-scope { border: 1px solid var(--line); border-radius: var(--r-md); padding: 16px; background: var(--surface); min-width: 0; }
+.butler-matter > header, .butler-scope > header { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.butler-matter h3 { font-size: 15px; line-height: 1.5; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.butler-matter > p { font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.butler-matter .badge { flex-shrink: 0; }
+.butler-matter .butler-actions { margin-top: 12px; }
+.butler-interaction, .butler-scope-form { display: grid; gap: 12px; border-radius: var(--r-md); padding: 16px; background: var(--surface-soft); margin-block: 14px; }
+.butler-interaction > p { margin: 0; line-height: 1.6; white-space: pre-wrap; }
+.butler-scope-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.butler-scope-form > fieldset, .butler-scope-form > .butler-error { grid-column: 1 / -1; }
+.butler-scope-form label, .butler-interaction label, .butler-context-row label { display: grid; gap: 6px; font-size: 13px; line-height: 1.5; min-width: 0; }
+.butler-scope-form input:not([type="checkbox"]), .butler-scope-form textarea, .butler-interaction input, .butler-interaction textarea, .butler-interaction select, .butler-context-row select { width: 100%; min-width: 0; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 9px 10px; font: inherit; }
+.butler-scope-form textarea, .butler-interaction textarea { resize: vertical; }
+.butler-scope-form fieldset { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px; display: flex; flex-wrap: wrap; gap: 16px; }
+.butler-scope-form label.butler-check { display: flex; align-items: center; gap: 6px; }
+.butler-scope-form > button { justify-self: start; }
+.butler-scope dl { display: grid; grid-template-columns: 50px minmax(0, 1fr); gap: 6px; font-size: 13px; }
+.butler-scope dt, .butler-evidence dt { color: var(--muted); }
+.butler-scope dd, .butler-evidence dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.butler-evidence { margin-block: 12px; font-size: 12px; }
+.butler-evidence summary { cursor: pointer; color: var(--brand-deep); }
+.butler-evidence dl { border-left: 2px solid var(--line); padding-left: 10px; }
+.butler-evidence dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; }
+.butler-chat-context { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.butler-chat-context > p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.butler-context-row label { flex: 1; }
+@media (max-width: 760px) {
+  .butler-coordination { grid-template-columns: minmax(0, 1fr); }
+  .butler-scope-form { grid-template-columns: minmax(0, 1fr); }
+  .butler-matter > header { flex-direction: column; }
+  .butler-control-row > .butler-actions { width: 100%; }
+}
+.butler-artifacts { display: grid; gap: 10px; margin: 12px 0; }
+.butler-artifact { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.butler-artifact > div { min-width: 0; overflow-wrap: anywhere; }
+.butler-artifact p { margin: 4px 0 0; font-size: 12px; }
+.butler-artifact button { flex-shrink: 0; }

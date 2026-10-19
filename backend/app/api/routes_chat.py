@@ -10,7 +10,7 @@ from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatRespons
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.perception.intent_predictor import IntentSuggestion
-from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_websocket_subprotocol
 from app.services import perception_suggestion_service
 from app.services.notification_service import SYSTEM_TASK_ID
 from app.services.task_service import handle_chat, list_chat_messages
@@ -53,7 +53,7 @@ _SENT_MESSAGE_ID_LIMIT = 2048
 async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
     if await close_unauthorized_desktop_websocket(websocket):
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     task_bus = orchestrator_registry.bus_for_task(task_id, fallback=bus)
     queue = task_bus.subscribe(task_id)
     sent_message_ids: set[str] = set()

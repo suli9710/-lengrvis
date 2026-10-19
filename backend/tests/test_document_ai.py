@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,13 +16,14 @@ from app.core.content_provenance import (
     content_envelope_for_tool_output,
     take_tool_output_provenance,
 )
+from app.indexer import ocr_service
 from app.llm.mock_provider import MockProvider
 from app.services import document_intelligence_service, document_service
 from app.tools import document_tools
 
 
 class _StubProvider:
-    name = "stub"
+    name = "local"
 
     def __init__(self, replies: list[str] | None = None, raise_on_chat: bool = False) -> None:
         self.replies = replies or ["<<LLM RESPONSE>>"]
@@ -37,7 +39,7 @@ class _StubProvider:
 
 
 class _SlowProvider:
-    name = "slow"
+    name = "local"
 
     def __init__(self, delay_seconds: float = 1.0) -> None:
         self.delay_seconds = delay_seconds
@@ -74,7 +76,7 @@ def context(tmp_path: Path) -> dict[str, Any]:
 
 
 def _inject_provider(monkeypatch: pytest.MonkeyPatch, provider: Any) -> None:
-    monkeypatch.setattr(document_tools, "_provider", lambda task="subagent": provider)
+    monkeypatch.setattr(document_tools, "_provider", lambda task="subagent", **kwargs: provider)
 
 
 def test_summarize_calls_llm_chat(monkeypatch, sample_text, context):
@@ -376,6 +378,44 @@ def test_extract_text_rejects_file_over_shared_parse_limit(monkeypatch, tmp_path
 
     with pytest.raises(document_intelligence_service.DocumentTooLargeError, match="parse size limit"):
         document_tools.extract_text({"path": str(path)}, context)
+
+
+@pytest.mark.parametrize("tool_name", ["extract_text", "summarize", "qa", "convert_to_markdown"])
+def test_pdf_tools_keep_request_privacy_through_ocr_fallback(monkeypatch, tmp_path, tool_name):
+    from PIL import Image
+
+    path = tmp_path / "scanned.pdf"
+    path.write_bytes(b"synthetic PDF fixture")
+    image_file = SimpleNamespace(name="scan.png", image=Image.new("RGB", (1, 1), "white"))
+    page = SimpleNamespace(extract_text=lambda: "", images=[image_file])
+    monkeypatch.setattr("pypdf.PdfReader", lambda _path: SimpleNamespace(pages=[page]))
+    global_settings = AppSettings(
+        mode="efficiency", provider_name="openai", api_key="test-cloud-key", plan="pro", allow_file_content_upload=True
+    )
+    request_settings = global_settings.model_copy(update={"mode": "privacy"})
+    local_modes = []
+    cloud_calls = []
+
+    def failed_local_ocr(_path, *, settings=None):
+        local_modes.append(settings.mode if settings else None)
+        return ocr_service.OCRResult(ok=False, source="local", error="local OCR unavailable")
+
+    def cloud_ocr(_path, *, settings=None):
+        cloud_calls.append(settings.mode if settings else None)
+        return ocr_service.OCRResult(ok=True, text="cloud OCR must remain unused", source="vision_provider")
+
+    monkeypatch.setattr(ocr_service, "get_effective_settings", lambda: global_settings)
+    monkeypatch.setattr(ocr_service, "local_ocr_image", failed_local_ocr)
+    monkeypatch.setattr(ocr_service, "provider_ocr_image", cloud_ocr)
+    monkeypatch.setattr(document_tools, "_provider", lambda *args, **kwargs: None)
+    context = {"allowed_directories": [str(tmp_path)], "settings": request_settings}
+
+    result = getattr(document_tools, tool_name)({"path": str(path), "question": "What is in the scan?"}, context)
+
+    assert "error" not in result
+    assert local_modes == ["privacy"]
+    assert cloud_calls == []
+    assert global_settings.mode == "efficiency"
 
 
 def test_analyze_csv_rejects_file_over_shared_parse_limit(monkeypatch, tmp_path: Path, context):

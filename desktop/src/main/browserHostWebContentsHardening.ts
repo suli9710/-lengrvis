@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import type { BrowserHostRequest } from "./browserSubmissionGuard";
 
 import {
   isBlockedBrowserHostNavigation,
@@ -11,6 +12,7 @@ export interface BrowserHostDownloadAttempt {
 
 export interface BrowserHostWebContentsHardeningOptions {
   onDownloadBlocked?: (attempt: BrowserHostDownloadAttempt) => void;
+  onBeforeRequest?: (request: BrowserHostRequest, networkAllowed: boolean) => boolean;
 }
 
 interface BrowserHostDownloadEvent {
@@ -23,6 +25,10 @@ interface BrowserHostDownloadItem {
 }
 
 const REDACTED_URL_VALUE = "[redacted]";
+// Electron keeps only the last listener per Session. Route shared-profile tabs
+// through one listener so opening another tab cannot replace its neighbour's guard.
+const requestRoutes = new WeakMap<WebContents["session"], Map<number, BrowserHostWebContentsHardeningOptions>>();
+const routeCleanup = new WeakMap<WebContents["session"], (id: number) => void>();
 
 export function hardenEmbeddedWebContents(
   webContents: WebContents,
@@ -36,12 +42,35 @@ export function hardenEmbeddedWebContents(
       event.preventDefault();
     }
   });
-  webContents.session.webRequest.onBeforeRequest((details, callback) => {
-    void handleBrowserHostBeforeRequest(details, callback);
-  });
-  webContents.session.on("will-download", (event, item) => {
-    blockBrowserHostDownload(event, item, options.onDownloadBlocked);
-  });
+  let routes = requestRoutes.get(webContents.session);
+  if (!routes) {
+    routes = new Map();
+    requestRoutes.set(webContents.session, routes);
+    const session = webContents.session;
+    const sessionRoutes = routes;
+    const onDownload = (event: BrowserHostDownloadEvent, item: BrowserHostDownloadItem, source?: WebContents) => {
+      const route = source ? sessionRoutes.get(source.id) : sessionRoutes.size === 1 ? sessionRoutes.values().next().value : undefined;
+      blockBrowserHostDownload(event, item, route?.onDownloadBlocked);
+    };
+    session.on("will-download", onDownload);
+    // The last tab releases callbacks, so its closed matter cannot be retained
+    // by the shared Session or receive another tab's download notifications.
+    const removeRoute = (id: number) => {
+      sessionRoutes.delete(id);
+      if (!sessionRoutes.size) {
+        session.removeListener("will-download", onDownload);
+        requestRoutes.delete(session);
+        routeCleanup.delete(session);
+      }
+    };
+    routeCleanup.set(webContents.session, removeRoute);
+    webContents.session.webRequest.onBeforeRequest((details, callback) => {
+      const route = details.webContentsId === undefined ? undefined : sessionRoutes.get(details.webContentsId);
+      void handleBrowserHostBeforeRequest(details, callback, route?.onBeforeRequest);
+    });
+  }
+  routes.set(webContents.id, options);
+  webContents.on("destroyed", () => routeCleanup.get(webContents.session)?.(webContents.id));
   webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });
@@ -95,11 +124,14 @@ function redactBrowserHostEventUrl(value: string): string {
 }
 
 export async function handleBrowserHostBeforeRequest(
-  details: { url: string },
-  callback: (response: { cancel?: boolean }) => void
+  details: BrowserHostRequest,
+  callback: (response: { cancel?: boolean }) => void,
+  filter?: BrowserHostWebContentsHardeningOptions["onBeforeRequest"]
 ): Promise<void> {
   try {
-    callback({ cancel: !(await isBrowserHostRequestAllowed(details.url)) });
+    const networkAllowed = await isBrowserHostRequestAllowed(details.url);
+    const approved = filter ? filter(details, networkAllowed) : true;
+    callback({ cancel: !networkAllowed || !approved });
   } catch {
     callback({ cancel: true });
   }

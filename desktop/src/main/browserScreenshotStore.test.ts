@@ -1,6 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -39,5 +42,79 @@ describe("BrowserScreenshotStore", () => {
     await store.clear();
     expect(existsSync(fileURLToPath(third))).toBe(false);
     expect(existsSync(fileURLToPath(fourth))).toBe(false);
+  });
+
+  it("cleans snapshots left by an exited process at initialization and explicit erase", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "lengrvis-screenshot-restart-test-"));
+    tempDirs.push(sandbox);
+    const root = join(sandbox, "screenshots");
+    for (const name of ["browserScreenshotStore", "browserScreenshotCleanup"]) {
+      const source = readFileSync(resolve("src/main", `${name}.ts`), "utf8");
+      writeFileSync(join(sandbox, `${name}.js`), transpileModule(source, {
+        compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 }
+      }).outputText);
+    }
+    const child = spawnSync(process.execPath, ["-e", `
+      const { BrowserScreenshotStore } = require(process.argv[1]);
+      new BrowserScreenshotStore(process.argv[2]).save("child-session", Buffer.from("synthetic-private-png"))
+        .then(url => process.stdout.write(url));
+    `, join(sandbox, "browserScreenshotStore.js"), root], { encoding: "utf8" });
+    expect(child.status, child.stderr).toBe(0);
+    const orphan = fileURLToPath(child.stdout);
+    expect(existsSync(orphan)).toBe(true);
+    const restarted = new BrowserScreenshotStore(root);
+    await restarted.initialize();
+    expect(existsSync(orphan)).toBe(false);
+    const next = await restarted.save("next-session", Buffer.from("next-private-png"));
+    // Explicit deletion also works before any new screenshot was saved by a
+    // replacement store, so it covers an immediate erase after a restart.
+    await new BrowserScreenshotStore(root).clear();
+    expect(existsSync(fileURLToPath(next))).toBe(false);
+  });
+
+  it("cleans only dead legacy processes with the exact application artifact layout", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "lengrvis-screenshot-legacy-test-"));
+    tempDirs.push(sandbox);
+    const uuid = "11111111-2222-3333-4444-555555555555";
+    const legacy = join(sandbox, `lengrvis-browser-screenshots-2147483646-${uuid}`);
+    const live = join(sandbox, `lengrvis-browser-screenshots-${process.pid}-${uuid}`);
+    const unrelated = join(sandbox, "lengrvis-browser-screenshots-unrelated");
+    for (const dir of [legacy, live, unrelated]) { mkdirSync(dir); writeFileSync(join(dir, `${uuid}.png`), "private"); }
+    const store = new BrowserScreenshotStore(join(sandbox, "new-root"), undefined, sandbox);
+    await store.initialize();
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("refuses unknown files and unowned fixed roots without deleting their contents", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lengrvis-screenshot-unowned-test-"));
+    tempDirs.push(root);
+    const original = join(root, "original.txt");
+    writeFileSync(original, "must be preserved");
+    await expect(new BrowserScreenshotStore(root).clear()).rejects.toThrow(/unowned/);
+    expect(existsSync(original)).toBe(true);
+  });
+
+  it("refuses a foreign owner marker, directory junction, and hard-linked artifacts", async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "lengrvis-screenshot-links-test-"));
+    tempDirs.push(sandbox);
+    const root = join(sandbox, "owned");
+    const store = new BrowserScreenshotStore(root);
+    const artifact = fileURLToPath(await store.save("session", Buffer.from("private")));
+    writeFileSync(join(root, ".lengrvis-screenshot-owner"), "foreign owner");
+    await expect(store.clear()).rejects.toThrow(/ownership/);
+    expect(existsSync(artifact)).toBe(true);
+    const junction = join(sandbox, "junction");
+    symlinkSync(root, junction, "junction");
+    await expect(new BrowserScreenshotStore(junction).clear()).rejects.toThrow(/linked/);
+    expect(existsSync(artifact)).toBe(true);
+    const hardRoot = join(sandbox, "hard-links");
+    const hardStore = new BrowserScreenshotStore(hardRoot);
+    const hardArtifact = fileURLToPath(await hardStore.save("session", Buffer.from("private")));
+    const outside = join(sandbox, "outside-copy.png");
+    linkSync(hardArtifact, outside);
+    await expect(hardStore.clear()).rejects.toThrow(/unowned/);
+    expect(existsSync(outside)).toBe(true);
   });
 });

@@ -296,6 +296,7 @@ export interface AuditLogEntry {
 }
 
 export interface LengrvisDesktopBridge {
+  butler?: import("./butlerTypes").ButlerDesktopBridge;
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>

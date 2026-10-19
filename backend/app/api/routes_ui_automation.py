@@ -176,6 +176,8 @@ def action(payload: dict | None = None):
             "error": "Unknown GUI automation action. Supported actions: "
             + ", ".join(sorted(key for key in _ACTION_TO_TOOL if not key.startswith("ui_automation."))),
         }
+    for dispatch_key in ("action", "kind", "tool"):
+        payload.pop(dispatch_key, None)
     context = _context()
     tool = _tool_definition(tool_name)
     review = _review_tool_call(tool_name, payload, context)

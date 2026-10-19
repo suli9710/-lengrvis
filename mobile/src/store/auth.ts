@@ -112,7 +112,7 @@ async function loadSessionUnlocked(): Promise<PairingSession | null> {
       throw error;
     }
   } catch (error) { // broad-exception-boundary
-    if (error instanceof SessionRecoveryError) {
+    if (error instanceof SessionRecoveryError || error instanceof SessionUnlockError) {
       throw error;
     }
     await clearStoredSessionStrict();
@@ -164,13 +164,17 @@ export async function clearSession(): Promise<void> {
 
 async function clearSessionUnlocked(): Promise<void> {
   clearRemoteInputGrantTokens();
-  await Promise.all([
+  // Keep the storage queue locked even when one backend fails before another
+  // finishes deleting. Otherwise a late old delete could erase a new pairing.
+  const results = await Promise.allSettled([
     clearNativeTlsTrust(),
     asyncStorageRemoveItem(SESSION_KEY),
     secureStoreDeleteItem(TOKEN_KEY),
     secureStoreDeleteItem(REFRESH_TOKEN_KEY),
     ...LEGACY_ASYNC_STORAGE_KEYS.map((key) => asyncStorageRemoveItem(key)),
   ]);
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
 }
 
 /**
@@ -246,7 +250,9 @@ async function secureStoreGetItem(key: string): Promise<string | null> {
     if (isStorageBackendUnavailable(error)) {
       return memorySecureStore.get(key) ?? null;
     }
-    throw error;
+    // Cancellation, a locked keychain or a transient native failure does not
+    // establish that the stored pairing is invalid. Keep it available to retry.
+    throw new SessionUnlockError(error);
   }
 }
 
@@ -315,6 +321,14 @@ async function clearStoredSessionStrict(): Promise<void> {
     await clearSessionUnlocked();
   } catch (error) { // broad-exception-boundary
     throw new SessionRecoveryError(error);
+  }
+}
+
+export class SessionUnlockError extends Error {
+  constructor(cause?: unknown) {
+    super("尚未解锁配对会话，请重试身份验证。");
+    this.name = "SessionUnlockError";
+    this.cause = cause;
   }
 }
 

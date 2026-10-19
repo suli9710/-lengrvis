@@ -8,6 +8,7 @@ import type { BackendScheduledTask } from "./scheduleBackendTypes";
 
 export interface ScheduleInput {
   cron: string;
+  timezone?: string;
   goal: string;
   mode: DesktopRunMode;
   note?: string;

@@ -4,11 +4,15 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import ScheduledTask, now_iso
+from app.core.local_data_lifecycle import tracks_local_data
+from app.core.schemas import ScheduledTask, Task, now_iso
 from app.observability.best_effort import log_best_effort_failure
+from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.task_phase import TERMINAL_TASK_PHASES
 from app.policy.redaction import redact_public_text, redact_value
 
 try:
@@ -27,7 +31,11 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _next_run(cron_expr: str, *, base: datetime | None = None) -> str:
+def _next_run(cron_expr: str, *, base: datetime | None = None, timezone: str = "UTC") -> str:
+    try:
+        zone = ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Invalid schedule timezone") from exc
     if not _CRONITER_AVAILABLE:
         # Minimal fallback: assume 5-minute fixed interval when croniter missing.
         # The next run must be strictly in the future, otherwise the schedule
@@ -35,7 +43,9 @@ def _next_run(cron_expr: str, *, base: datetime | None = None) -> str:
         ref = base or _utc_now()
         return (ref + timedelta(minutes=5)).replace(microsecond=0).isoformat()
     ref = base or _utc_now()
-    itr = _Croniter(cron_expr, ref)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=UTC)
+    itr = _Croniter(cron_expr, ref.astimezone(zone))
     next_dt = itr.get_next(datetime)
     if next_dt.tzinfo is None:
         next_dt = next_dt.replace(tzinfo=UTC)
@@ -103,7 +113,9 @@ class Scheduler:
                         execution.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
 
-    def schedule(self, cron: str, goal: str, mode: str = "efficiency", *, note: str = "") -> ScheduledTask:
+    def schedule(
+        self, cron: str, goal: str, mode: str = "efficiency", *, note: str = "", timezone: str = "UTC"
+    ) -> ScheduledTask:
         if not _CRONITER_AVAILABLE:
             raise RuntimeError("croniter is not installed; scheduling is disabled.")
         if not _Croniter.is_valid(cron):
@@ -113,7 +125,8 @@ class Scheduler:
             goal=goal,
             mode=mode,
             note=note,
-            next_run_at=_next_run(cron),
+            timezone=timezone,
+            next_run_at=_next_run(cron, timezone=timezone),
         )
         db.upsert_model("scheduled_tasks", item)
         record("scheduler.created", "Scheduler", {"cron": cron, "goal": goal, "mode": mode}, task_id=item.id)
@@ -134,13 +147,20 @@ class Scheduler:
         record("scheduler.cancelled", "Scheduler", {"id": schedule_id}, task_id=schedule_id)
         return True
 
+    def delete(self, schedule_id: str) -> bool:
+        with db.connect() as conn:
+            deleted = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (schedule_id,)).rowcount
+        if deleted:
+            record("scheduler.deleted", "Scheduler", {"id": schedule_id}, task_id=schedule_id)
+        return bool(deleted)
+
     def enable(self, schedule_id: str, enabled: bool) -> ScheduledTask | None:
         item = self.get(schedule_id)
         if not item:
             return None
         next_run_at = item.next_run_at
         if enabled and _CRONITER_AVAILABLE:
-            next_run_at = _next_run(item.cron)
+            next_run_at = _next_run(item.cron, timezone=item.timezone)
         updated = db.set_scheduled_task_enabled(
             schedule_id,
             enabled,
@@ -165,20 +185,23 @@ class Scheduler:
             else:
                 break
 
+    @tracks_local_data
     async def tick(self, *, now: datetime | None = None) -> list[str]:
         """Run one tick. Returns list of schedule ids that fired."""
         fired: list[str] = []
         now_dt = now or _utc_now()
+        self._reconcile_outcomes()
         for row in db.fetch_many("scheduled_tasks", "enabled = 1", (), limit=500):
             if not _due(row, now=now_dt):
                 continue
             schedule = ScheduledTask.model_validate(row)
             schedule.last_run_at = now_dt.replace(microsecond=0).isoformat()
             schedule.last_status = "running"
+            schedule.last_task_id = ""
             # Always advance next_run_at. When croniter is unavailable, _next_run
             # returns the +5min fallback; leaving it unchanged would keep the row
             # perpetually due and re-fire it on every tick.
-            schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
+            schedule.next_run_at = _next_run(schedule.cron, base=now_dt, timezone=schedule.timezone)
             schedule.updated_at = now_iso()
             claimed = db.claim_scheduled_task_run(
                 schedule.id,
@@ -195,19 +218,31 @@ class Scheduler:
             execution.add_done_callback(self._executions.discard)
         return fired
 
+    @tracks_local_data
     async def _execute(self, schedule: ScheduledTask) -> None:
         last_status = "completed"
         last_task_id = ""
         try:
             if self._executor is not None:
-                task_id = await self._executor(schedule.goal, schedule.mode)
+                result = await self._executor(schedule.goal, schedule.mode)
+                if isinstance(result, Task):
+                    last_task_id = result.id
+                    last_status = _task_outcome(result)
+                else:
+                    last_task_id = str(result or "")
+                    stored = db.fetch_one("tasks", last_task_id) if last_task_id else None
+                    if stored:
+                        last_status = _task_outcome(Task.model_validate(stored))
             else:
                 from app.agents.orchestrator_agent import OrchestratorAgent
 
                 orchestrator = OrchestratorAgent()
                 task = await orchestrator.handle_user_goal(schedule.goal, schedule.mode)
-                task_id = task.id
-            last_task_id = str(task_id or "")
+                last_task_id = task.id
+                last_status = _task_outcome(task)
+        except asyncio.CancelledError:
+            last_status = "cancelled"
+            raise
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             safe_error = _safe_scheduler_error(exc)
             last_status = f"failed: {safe_error}"
@@ -222,22 +257,53 @@ class Scheduler:
             persisted = db.complete_scheduled_task_run(
                 schedule.id,
                 expected_last_run_at=schedule.last_run_at,
-                expected_next_run_at=schedule.next_run_at,
                 last_status=last_status,
                 last_task_id=last_task_id,
             )
             if persisted is not None:
                 schedule = ScheduledTask.model_validate(persisted)
-            else:
-                schedule.last_status = last_status
-                schedule.last_task_id = last_task_id
 
+        if persisted is not None:
+            self._notify_outcome(schedule)
+
+    def _reconcile_outcomes(self) -> None:
+        # Approval and pause continuations outlive handle_user_goal(). Track
+        # their durable Task, including schedules that have since been paused.
+        for row in db.fetch_many("scheduled_tasks", limit=500):
+            item = ScheduledTask.model_validate(row)
+            if not item.last_task_id or _terminal_outcome(item.last_status):
+                continue
+            raw_task = db.fetch_one("tasks", item.last_task_id)
+            if not raw_task:
+                continue
+            status = _task_outcome(Task.model_validate(raw_task))
+            if status == item.last_status:
+                continue
+            persisted = db.complete_scheduled_task_run(
+                item.id,
+                expected_last_run_at=item.last_run_at,
+                expected_last_status=item.last_status,
+                last_status=status,
+                last_task_id=item.last_task_id,
+            )
+            if persisted is not None:
+                self._notify_outcome(ScheduledTask.model_validate(persisted))
+
+    def _notify_outcome(self, schedule: ScheduledTask) -> None:
+        if not _terminal_outcome(schedule.last_status):
+            return
         try:
             from app.services import notification_service
 
-            ok = "failed" not in (schedule.last_status or "").lower()
+            ok = schedule.last_status == "completed"
+            title = {
+                "cancelled": "定时任务已取消",
+                "denied": "定时任务已拒绝",
+                "rolled_back": "定时任务已回滚",
+                "repair_required": "定时任务需要修复",
+            }.get(schedule.last_status, f"定时任务{'完成' if ok else '失败'}")
             notification_service.notify(
-                f"定时任务{'完成' if ok else '失败'}",
+                title,
                 schedule.goal or schedule.id,
                 task_id=schedule.id,
                 severity="info" if ok else "error",
@@ -276,3 +342,15 @@ def status() -> dict[str, Any]:
 
 def _safe_scheduler_error(value: Any) -> str:
     return redact_public_text(str(redact_value(str(value or "")) or "")) or value.__class__.__name__
+
+
+def _task_outcome(task: Task) -> str:
+    if task.phase in TERMINAL_TASK_PHASES:
+        return task.phase.value
+    if task.execution_stage in {ExecutionStage.AWAITING_APPROVAL, ExecutionStage.PAUSED}:
+        return task.execution_stage.value
+    return "running"
+
+
+def _terminal_outcome(status: str) -> bool:
+    return status in TERMINAL_TASK_PHASES or status.startswith("failed:")

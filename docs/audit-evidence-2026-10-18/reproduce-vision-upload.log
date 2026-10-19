@@ -1,0 +1,4 @@
+allow_file_content_upload= False
+provider_calls= [('vision', 'C:\\Users\\Suli\\AppData\\Local\\Temp\\lengrvis-image-vghk25z3\\receipt.png', 'Describe what is sho')]
+ok= True
+CLOUD_VISION_UPLOAD_CONFIRMED

@@ -253,7 +253,10 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       Buffer.from(`signed:${payload}`, "utf8").toString("base64url")
   };
   let localPrivacyEraseCalls = 0;
+  let localPrivacyPending = false;
   registerIpcHandlers(backend, {
+    beginLocalPrivateDataErase: () => { const prior = localPrivacyPending; localPrivacyPending = true; return prior; },
+    finishLocalPrivateDataErase: () => { localPrivacyPending = false; },
     eraseLocalPrivateData: async () => {
       localPrivacyEraseCalls += 1;
     }
@@ -342,6 +345,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     if (pathname.endsWith("/native-confirmation-challenge")) {
       return nativeChallengeResponse(pathname);
     }
+    if (pathname === "/api/system/privacy/erase-local-data/prepare") {
+      return new Response(JSON.stringify({ operation_id: "privacy-operation-1", reservation_token: "main-only-reservation", backend: "pending", desktop: "pending" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (pathname === "/api/system/privacy/erase-local-data") {
+      return new Response(JSON.stringify({ backend: "complete" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "content-type": "application/json" }
@@ -349,6 +358,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   };
 
   try {
+    for (const [name, channel] of Object.entries(IPC_CHANNELS).filter(([name]) => name.startsWith("butler"))) {
+      const handler = ipcHandlers.get(channel);
+      assert.ok(handler, `${name} must register a handler`);
+      const before = fetchCalls.length;
+      await assert.rejects(async () => handler(eventFor("https://evil.example/app"), {}), /unknown renderer|untrusted renderer/);
+      await assert.rejects(async () => handler(eventFor("http://127.0.0.1:5173/butler"), "invalid"));
+      assert.equal(fetchCalls.length, before, `${name} must reject invalid requests before backend access`);
+    }
     const apiResponse = await Promise.resolve(
       apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
         endpoint: "/api/health",
@@ -776,9 +793,9 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         name: "privacy erase",
         channel: IPC_CHANNELS.privacyEraseLocalData,
         args: [{ confirmationText: "删除本机数据", includeSettings: false }],
-        expectedUrl: "http://127.0.0.1:8000/api/system/privacy/erase-local-data",
+        expectedUrl: "http://127.0.0.1:8000/api/system/privacy/erase-local-data/complete",
         expectedMethod: "POST",
-        expectedBody: JSON.stringify({ confirm: "erase-local-data", include_settings: false }),
+        expectedBody: JSON.stringify({ operation_id: "privacy-operation-1", desktop_complete: true }),
         nativeChallenge: true
       },
       {
@@ -1015,16 +1032,24 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         `${testCase.name} native confirmation policy must match handler behavior`
       );
       const usesNativeChallenge = Boolean(testCase.nativeChallenge);
+      const coordinatedErase = testCase.name === "privacy erase";
       assert.equal(
         fetchCalls.length,
-        usesNativeChallenge ? 2 : 1,
+        coordinatedErase ? 5 : usesNativeChallenge ? 2 : 1,
         `${testCase.name} explicit bridge should use the expected backend requests`
       );
       const backendCall = fetchCalls[fetchCalls.length - 1];
       if (usesNativeChallenge) {
         assert.match(fetchCalls[0].url, /\/native-confirmation-challenge$/);
         assert.equal(fetchCalls[0].init.method, "POST");
-        assertNativeConfirmationHeaders(backendCall.init.headers, `${testCase.name} final backend request`);
+        assertNativeConfirmationHeaders((coordinatedErase ? fetchCalls[1] : backendCall).init.headers, `${testCase.name} native-confirmed backend request`);
+        if (coordinatedErase) {
+          assert.match(fetchCalls[1].url, /\/prepare$/);
+          assert.match(fetchCalls[2].url, /\/complete$/);
+          assert.match(fetchCalls[3].url, /\/erase-local-data$/);
+          for (const phase of fetchCalls.slice(2)) assert.equal(phase.init.headers["X-Lengrvis-Erase-Reservation-Token"], "main-only-reservation");
+          assert.equal(localPrivacyPending, false, "completed coordinated erase should release the desktop gate");
+        }
       }
       assert.equal(backendCall.url, testCase.expectedUrl);
       assert.equal(backendCall.init.method, testCase.expectedMethod);
@@ -1117,7 +1142,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         `${testCase.name} should stop when native confirmation is denied`
       );
       assert.equal(messageBoxCalls.length, 1, `${testCase.name} denied path should ask exactly once`);
-      if (testCase.nativeChallenge) {
+      if (testCase.nativeChallenge && testCase.name !== "privacy erase") {
         assert.equal(fetchCalls.length, 1, `${testCase.name} denied path may fetch a challenge only`);
         assert.match(fetchCalls[0].url, /\/native-confirmation-challenge$/);
       } else {

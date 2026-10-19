@@ -3,10 +3,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from app.core.schemas import new_id, now_iso
 from app.orchestration.events import Event
+from app.perception.generation import capture_generation
 
 
 class Rect(BaseModel):
@@ -27,6 +28,7 @@ class UIElement(BaseModel):
 
 
 class AppContext(BaseModel):
+    _data_generation: tuple[str, int] = PrivateAttr(default_factory=capture_generation)
     platform: str = ""
     available: bool = False
     active_window_title: str = ""
@@ -39,6 +41,7 @@ class AppContext(BaseModel):
 
 
 class ScreenState(BaseModel):
+    _data_generation: tuple[str, int] = PrivateAttr(default_factory=capture_generation)
     id: str = Field(default_factory=lambda: new_id("screen"))
     captured_at: str = Field(default_factory=now_iso)
     description: str = ""
@@ -62,6 +65,7 @@ class PerceptionProvider(ABC):
 
 
 class PerceptionEvent(Event):
+    _data_generation: tuple[str, int] = PrivateAttr(default_factory=capture_generation)
     event_type: str = "perception.screen_state"
     task_id: str = ""
     source_agent: str = "ScreenMonitor"

@@ -34,6 +34,10 @@ def deterministic_contract_status(step: PlanStep) -> DeterministicContractStatus
     marker = model_action.get(DETERMINISTIC_CONTRACT_KEY)
     if marker is None:
         return "none"
+    # Version 1 contracts bind concrete arguments only. A later-added dynamic
+    # input must not be able to rewrite a sealed deterministic call.
+    if step.input_bindings:
+        return "invalid"
     if not isinstance(marker, dict):
         return "invalid"
     if marker.get("schema_version") != DETERMINISTIC_CONTRACT_SCHEMA:

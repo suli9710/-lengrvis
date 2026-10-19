@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-import threading
+import weakref
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from app.core import db
+from app.core.local_data_lifecycle import (
+    advance_data_generation,
+    data_generation,
+    data_identity,
+    local_data_lock,
+)
 from app.core.schemas import ContentEnvelope, new_id, now_iso
 
 DEFAULT_SESSION_ID = "session_current"
 _SESSION_CONTEXT_WRITE_RETRIES = 3
+_live_stores: weakref.WeakSet[SessionContextStore] = weakref.WeakSet()
 
 
 class SessionSummaryConflictError(RuntimeError):
@@ -19,6 +26,7 @@ class SessionSummaryConflictError(RuntimeError):
 
 
 class SessionContext(BaseModel):
+    _data_generation: tuple[str, int] = PrivateAttr(default_factory=data_generation)
     id: str = Field(default_factory=lambda: new_id("session"))
     parent_session_id: str = ""
     resumed_from_task_id: str = ""
@@ -29,6 +37,7 @@ class SessionContext(BaseModel):
     learned_preferences: dict[str, Any] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
     conversation_summary: str = ""
+    conversation_summary_policy: dict[str, Any] = Field(default_factory=dict)
     last_summarized_message_id: str = ""
     conversation_summary_envelope: ContentEnvelope | None = None
     token_stats: dict[str, Any] = Field(default_factory=dict)
@@ -49,6 +58,7 @@ class SessionContext(BaseModel):
             "learned_preferences": self.learned_preferences,
             "notes": self.notes[-5:],
             "conversation_summary": self.conversation_summary,
+            "_conversation_summary_policy": dict(self.conversation_summary_policy),
             "last_summarized_message_id": self.last_summarized_message_id,
             "token_stats": self.public_token_stats(),
             "lineage": lineage,
@@ -169,11 +179,14 @@ class SessionContext(BaseModel):
 
 class SessionContextStore:
     def __init__(self, *, session_id: str = DEFAULT_SESSION_ID) -> None:
-        self.session_id = session_id
-        self.current = SessionContext(id=session_id)
-        self._lock = threading.RLock()
-        self._loaded = False
-        db.init_db()
+        self._lock = local_data_lock
+        with self._lock:
+            self._data_identity = data_identity()
+            self.session_id = session_id
+            self.current = SessionContext(id=session_id)
+            self._loaded = False
+            db.init_db()
+            _live_stores.add(self)
 
     def load(self, session_id: str | None = None) -> SessionContext:
         with self._lock:
@@ -246,6 +259,8 @@ class SessionContextStore:
     ) -> SessionContext:
         with self._lock:
             target = context or self.current
+            if target._data_generation != data_generation():
+                raise SessionSummaryConflictError("session context belongs to erased local data")
             target.ensure_summary_provenance()
             previous_updated_at = target.updated_at
             target.updated_at = _next_updated_at(previous_updated_at)
@@ -314,6 +329,7 @@ class SessionContextStore:
         resumed_from_task_id: str = "",
         resumed_from_boundary_id: str = "",
         parent_session_id: str = "",
+        source_mode: str = "",
     ) -> SessionContext:
         with self._lock:
             if not self._loaded:
@@ -365,6 +381,17 @@ class SessionContextStore:
                         source_message_ids=source_message_ids,
                     )
                     effective_token_stats["summary_source_message_ids"] = source_message_ids
+                from app.core.context_egress import summary_context_allowed, summary_context_policy
+
+                # A new summary can include every previous summary. Preserve the
+                # most restrictive source policy, including for legacy records.
+                cloud_allowed = source_mode in {"efficiency", "hybrid"} and (
+                    not candidate.conversation_summary
+                    or summary_context_allowed(candidate.context_for_planning(), "efficiency")
+                )
+                candidate.conversation_summary_policy = summary_context_policy(
+                    candidate.id, text, cloud_allowed=cloud_allowed
+                )
                 candidate.conversation_summary = text
                 candidate.conversation_summary_envelope = candidate_envelope
                 effective_token_stats[SUMMARY_ENVELOPE_TOKEN_KEY] = candidate_envelope.model_dump(mode="json")
@@ -407,6 +434,17 @@ class SessionContextStore:
 
 
 _store: SessionContextStore | None = None
+
+
+def clear_live_session_contexts() -> None:
+    """Invalidate snapshots and callbacks already retained by workers/lifespan."""
+    with local_data_lock:
+        advance_data_generation()
+        identity = data_identity()
+        for store in list(_live_stores):
+            if store._data_identity == identity:
+                store.current = SessionContext(id=store.session_id)
+                store._loaded = False
 
 
 def get_session_context_store() -> SessionContextStore:

@@ -286,7 +286,7 @@ async def test_planning_handler_reads_task_metadata_hint(monkeypatch):
                     reasons=[],
                 )
 
-        async def _recall_memory(self, goal):  # noqa: ARG002
+        async def _recall_memory(self, goal, **kwargs):  # noqa: ARG002
             return []
 
         async def _process_steps(self, task, plan):  # noqa: ARG002

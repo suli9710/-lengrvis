@@ -23,11 +23,12 @@ from app.acceleration.onnx_sessions import (
     run_session,
     session_input_names,
 )
+from app.config import AppSettings
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, guess_language, ocr_image_result
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt
 from app.llm.registry import get_effective_settings, get_provider
-from app.policy.privacy import can_use_cloud_model
+from app.policy.privacy import can_upload_file_content, can_use_cloud_model, can_use_image_provider
 from app.policy.redaction import redact_public_text
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -188,9 +189,13 @@ def _run_vision(
     task: str = "vision",
     *,
     timeout_seconds: float | None = DEFAULT_VISION_TIMEOUT_SECONDS,
+    settings: AppSettings | None = None,
 ) -> str:
+    settings = settings or get_effective_settings()
+    if can_use_cloud_model(settings, task=task).allowed and not can_use_image_provider(settings, task=task).allowed:
+        return "[vision unavailable: file content upload is disabled]"
     try:
-        provider = get_provider(task=task)
+        provider = get_provider(settings, task=task)
         return str(_run_awaitable(provider.vision(str(image_path), prompt), timeout_seconds=timeout_seconds))
     except TimeoutError:
         return "[vision timed out]"
@@ -212,8 +217,11 @@ def describe_image(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     metadata = extract_image_metadata(image_path)
     description = str(metadata.get("description_hint") or "").strip()
     if not description:
+        settings = context.get("settings") or get_effective_settings()
+        if can_use_cloud_model(settings, task="vision").allowed and not can_use_image_provider(settings).allowed:
+            return {"ok": False, "error": "Cloud vision requires file upload permission.", "path": str(image_path)}
         prompt = load_prompt("vision_describe_image.md")
-        description = _run_vision(prompt, image_path, task="vision")
+        description = _run_vision(prompt, image_path, task="vision", settings=context.get("settings"))
     structured_labels = structure_image_labels(description, metadata)
     return {
         "ok": True,
@@ -277,7 +285,7 @@ def image_embedding(
     if accelerated.get("ok"):
         return accelerated
 
-    cloud_allowed = can_use_cloud_model(settings, task="vision").allowed
+    cloud_allowed = can_use_image_provider(settings).allowed
     if cloud_allowed:
         provider = context.get("image_embedding_provider")
         if provider is not None:
@@ -298,7 +306,9 @@ def image_embedding(
     fallback_profile = profile or _embedding_fallback_profile(image_path, context, settings=settings)
     label_text = image_label_text(fallback_profile)
     text_embedder = context.get("embedder")
-    if text_embedder is None and not can_use_cloud_model(settings, task="embed").allowed:
+    if text_embedder is None and (
+        not can_use_cloud_model(settings, task="embed").allowed or not can_upload_file_content(settings).allowed
+    ):
         from app.indexer.clustering import hashing_vectorize
 
         vector = hashing_vectorize([label_text], dim=64)[0]
@@ -306,7 +316,7 @@ def image_embedding(
         from app.indexer.embedding_service import embed_texts_sync
 
         try:
-            vectors = embed_texts_sync([label_text], embedder=text_embedder)
+            vectors = embed_texts_sync([label_text], embedder=text_embedder, settings=settings)
             vector = vectors[0] if vectors else []
         except _TEXT_EMBEDDING_FALLBACK_ERRORS:
             from app.indexer.clustering import hashing_vectorize
@@ -331,9 +341,12 @@ def compare_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     b = _resolve_image({"path": path_b_raw}, context)
     if not (a and b):
         return {"ok": False, "error": "invalid paths"}
+    settings = context.get("settings") or get_effective_settings()
+    if can_use_cloud_model(settings, task="vision").allowed and not can_use_image_provider(settings).allowed:
+        return {"ok": False, "error": "Cloud vision requires file upload permission."}
     prompt = load_prompt("vision_compare_image.md")
-    desc_a = _run_vision(prompt, a)
-    desc_b = _run_vision(prompt, b)
+    desc_a = _run_vision(prompt, a, settings=context.get("settings"))
+    desc_b = _run_vision(prompt, b, settings=context.get("settings"))
     similarity = _string_similarity(desc_a, desc_b)
     return {
         "ok": True,
@@ -520,7 +533,7 @@ def _safe_embedding_error(exc: Exception) -> str:
 
 
 def _embedding_fallback_profile(image_path: Path, context: dict[str, Any], *, settings: Any) -> dict[str, Any]:
-    if can_use_cloud_model(settings, task="vision").allowed:
+    if can_use_image_provider(settings).allowed:
         return describe_image({"path": str(image_path)}, context)
     metadata = extract_image_metadata(image_path)
     return {

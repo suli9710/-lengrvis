@@ -31,6 +31,17 @@ tags = ["lengrvis", "android", "secret"]
 # --- Allowlist ---
 
 [[allowlists]]
+description = "Runtime-generated HMAC keys in isolated Butler acceptance fixtures"
+targetRules = ["lengrvis-audit-secret"]
+condition = "AND"
+regexTarget = "match"
+paths = [
+  '''(?:^|/)scripts/run_butler_browser_flow\.py$''',
+  '''(?:^|/)scripts/run_butler_office_flow\.py$''',
+]
+regexes = ['''^LENGRVIS_AUDIT_HMAC_SECRE[T]=secrets\.token_hex\(32\),?$''']
+
+[[allowlists]]
 description = "Allowed source-level test fixtures only"
 condition = "AND"
 regexTarget = "match"

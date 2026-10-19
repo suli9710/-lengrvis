@@ -317,3 +317,47 @@ def test_watch_directories_backward_compat():
     result = watch_directories(["/some/path"])
     assert "watching" in result
     assert result["watching"] == ["/some/path"]
+
+
+def test_revoked_scope_drops_queued_events_before_reading(allowed_dir: Path):
+    async def run():
+        watcher = file_watcher_module.FileWatcher(debounce_seconds=0.01)
+        notifications = []
+        watcher.subscribe_changes(lambda path, action: notifications.append(path))
+        db.set_setting("allowed_directories", [str(allowed_dir)])
+        await watcher.start([str(allowed_dir)])
+        try:
+            path = allowed_dir / "queued.txt"
+            path.write_text("revoked scope marker", encoding="utf-8")
+            watcher._queue.put_nowait((str(path), "upsert"))
+            db.set_setting("allowed_directories", [])
+            await asyncio.sleep(0.8)
+            assert notifications == []
+            with db.connect() as conn:
+                assert conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0] == 0
+        finally:
+            await watcher.stop()
+
+    asyncio.run(run())
+
+
+def test_new_authorized_directory_is_watched_without_restart(allowed_dir: Path, tmp_path: Path):
+    async def run():
+        watcher = file_watcher_module.FileWatcher(debounce_seconds=0.01)
+        second = tmp_path / "new-scope"
+        second.mkdir()
+        db.set_setting("allowed_directories", [str(allowed_dir)])
+        await watcher.start([str(allowed_dir)])
+        try:
+            db.set_setting("allowed_directories", [str(second)])
+            path = second / "new.txt"
+            path.write_text("newly authorized marker", encoding="utf-8")
+            for _ in range(40):
+                await asyncio.sleep(0.05)
+                if FTSIndex().search("newly authorized marker", allowed_directories=[str(second)]):
+                    break
+            assert FTSIndex().search("newly authorized marker", allowed_directories=[str(second)])
+        finally:
+            await watcher.stop()
+
+    asyncio.run(run())

@@ -1,0 +1,625 @@
+........................................................................ [  1%]
+........................................................................ [  2%]
+.......................sss.............................................. [  4%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+...................................................s.................... [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+..................................s..................................... [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+.......................................................................s [ 40%]
+........................................................................ [ 41%]
+..................sss..s..............s................................. [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+.......................................ss............................... [ 49%]
+........................................................................ [ 50%]
+.....................................................s.................. [ 51%]
+...............................................ssss..................... [ 53%]
+........................................................................ [ 54%]
+....................................s................................... [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+.......FFFFFFF.F........................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+...............FF..........................................ss........... [ 72%]
+...................................................s.................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+.......................                                                  [100%]
+================================== FAILURES ===================================
+_ test_private_matters_and_memories_never_enter_cloud_planner[True-efficiency] _
+
+send_boundary = [], mode = 'efficiency', coordination = True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+    @pytest.mark.parametrize("coordination", [True, False])
+    async def test_private_matters_and_memories_never_enter_cloud_planner(send_boundary, mode, coordination):
+        coordinator = ButlerCoordinator()
+        private = store.save(ButlerMatter(goal="PRIVATE_PAUSED_GOAL", mode="privacy", status=MatterStatus.PAUSED))
+        completed = await coordinator.remember_preference(PRIVATE_PREFERENCE, "privacy")
+        fact = store.save(ButlerMatter(goal=PRIVATE_FACT, mode="privacy", memory_inputs=[PRIVATE_FACT]))
+        saved = await save_proposals(
+            fact, [MemoryProposal(content=fact.goal, evidence=fact.goal, kind="fact", reason="context")]
+        )
+        assert saved.memory_ids
+        for memory_id in saved.memory_ids:
+            persisted = db.get_memory(memory_id)
+            assert persisted["source_mode"] == "privacy" and not persisted["allow_cloud_context"]
+        await coordinator.remember_preference(PUBLIC_PREFERENCE, "efficiency")
+        public = store.save(ButlerMatter(goal="PUBLIC_RELATED_GOAL", mode="hybrid", status=MatterStatus.PAUSED))
+        current = store.save(
+            ButlerMatter(goal="PUBLIC_CURRENT_GOAL", mode=mode, depends_on=[private.id, completed["matter"]["id"]])
+        )
+        store.set_control(coordination_enabled=coordination)
+        send_boundary.clear()
+>       await coordinator.decide(current)
+
+backend\tests\test_planning_context_privacy.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:304: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+__ test_private_matters_and_memories_never_enter_cloud_planner[True-hybrid] ___
+
+send_boundary = [], mode = 'hybrid', coordination = True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+    @pytest.mark.parametrize("coordination", [True, False])
+    async def test_private_matters_and_memories_never_enter_cloud_planner(send_boundary, mode, coordination):
+        coordinator = ButlerCoordinator()
+        private = store.save(ButlerMatter(goal="PRIVATE_PAUSED_GOAL", mode="privacy", status=MatterStatus.PAUSED))
+        completed = await coordinator.remember_preference(PRIVATE_PREFERENCE, "privacy")
+        fact = store.save(ButlerMatter(goal=PRIVATE_FACT, mode="privacy", memory_inputs=[PRIVATE_FACT]))
+        saved = await save_proposals(
+            fact, [MemoryProposal(content=fact.goal, evidence=fact.goal, kind="fact", reason="context")]
+        )
+        assert saved.memory_ids
+        for memory_id in saved.memory_ids:
+            persisted = db.get_memory(memory_id)
+            assert persisted["source_mode"] == "privacy" and not persisted["allow_cloud_context"]
+        await coordinator.remember_preference(PUBLIC_PREFERENCE, "efficiency")
+        public = store.save(ButlerMatter(goal="PUBLIC_RELATED_GOAL", mode="hybrid", status=MatterStatus.PAUSED))
+        current = store.save(
+            ButlerMatter(goal="PUBLIC_CURRENT_GOAL", mode=mode, depends_on=[private.id, completed["matter"]["id"]])
+        )
+        store.set_control(coordination_enabled=coordination)
+        send_boundary.clear()
+>       await coordinator.decide(current)
+
+backend\tests\test_planning_context_privacy.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:309: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+_ test_private_matters_and_memories_never_enter_cloud_planner[False-efficiency] _
+
+send_boundary = [], mode = 'efficiency', coordination = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+    @pytest.mark.parametrize("coordination", [True, False])
+    async def test_private_matters_and_memories_never_enter_cloud_planner(send_boundary, mode, coordination):
+        coordinator = ButlerCoordinator()
+        private = store.save(ButlerMatter(goal="PRIVATE_PAUSED_GOAL", mode="privacy", status=MatterStatus.PAUSED))
+        completed = await coordinator.remember_preference(PRIVATE_PREFERENCE, "privacy")
+        fact = store.save(ButlerMatter(goal=PRIVATE_FACT, mode="privacy", memory_inputs=[PRIVATE_FACT]))
+        saved = await save_proposals(
+            fact, [MemoryProposal(content=fact.goal, evidence=fact.goal, kind="fact", reason="context")]
+        )
+        assert saved.memory_ids
+        for memory_id in saved.memory_ids:
+            persisted = db.get_memory(memory_id)
+            assert persisted["source_mode"] == "privacy" and not persisted["allow_cloud_context"]
+        await coordinator.remember_preference(PUBLIC_PREFERENCE, "efficiency")
+        public = store.save(ButlerMatter(goal="PUBLIC_RELATED_GOAL", mode="hybrid", status=MatterStatus.PAUSED))
+        current = store.save(
+            ButlerMatter(goal="PUBLIC_CURRENT_GOAL", mode=mode, depends_on=[private.id, completed["matter"]["id"]])
+        )
+        store.set_control(coordination_enabled=coordination)
+        send_boundary.clear()
+>       await coordinator.decide(current)
+
+backend\tests\test_planning_context_privacy.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:304: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+__ test_private_matters_and_memories_never_enter_cloud_planner[False-hybrid] __
+
+send_boundary = [], mode = 'hybrid', coordination = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+    @pytest.mark.parametrize("coordination", [True, False])
+    async def test_private_matters_and_memories_never_enter_cloud_planner(send_boundary, mode, coordination):
+        coordinator = ButlerCoordinator()
+        private = store.save(ButlerMatter(goal="PRIVATE_PAUSED_GOAL", mode="privacy", status=MatterStatus.PAUSED))
+        completed = await coordinator.remember_preference(PRIVATE_PREFERENCE, "privacy")
+        fact = store.save(ButlerMatter(goal=PRIVATE_FACT, mode="privacy", memory_inputs=[PRIVATE_FACT]))
+        saved = await save_proposals(
+            fact, [MemoryProposal(content=fact.goal, evidence=fact.goal, kind="fact", reason="context")]
+        )
+        assert saved.memory_ids
+        for memory_id in saved.memory_ids:
+            persisted = db.get_memory(memory_id)
+            assert persisted["source_mode"] == "privacy" and not persisted["allow_cloud_context"]
+        await coordinator.remember_preference(PUBLIC_PREFERENCE, "efficiency")
+        public = store.save(ButlerMatter(goal="PUBLIC_RELATED_GOAL", mode="hybrid", status=MatterStatus.PAUSED))
+        current = store.save(
+            ButlerMatter(goal="PUBLIC_CURRENT_GOAL", mode=mode, depends_on=[private.id, completed["matter"]["id"]])
+        )
+        store.set_control(coordination_enabled=coordination)
+        send_boundary.clear()
+>       await coordinator.decide(current)
+
+backend\tests\test_planning_context_privacy.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:309: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+______ test_missing_or_invalid_memory_source_policy_stays_local[legacy] _______
+
+send_boundary = [], policy = 'legacy'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", ["legacy", "tampered", "copied"])
+    async def test_missing_or_invalid_memory_source_policy_stays_local(send_boundary, policy):
+        agent = MemoryAgent()
+        memory = await agent.remember("LOCAL_ONLY_MARKER", mode="privacy", kind="preference", embedding=[1.0, 0.0])
+        row = db.get_memory(memory.id)
+        if policy == "legacy":
+            for key in ("source_mode", "allow_cloud_context", "context_policy_hmac"):
+                row.pop(key)
+        else:
+            row.update(source_mode="efficiency", allow_cloud_context=True)
+            if policy == "copied":
+                public = await agent.remember("PUBLIC_OTHER", mode="efficiency", embedding=[1.0, 0.0])
+                row["context_policy_hmac"] = public.context_policy_hmac
+        db.upsert_memory(row)
+        agent.promote(memory.id)
+        send_boundary.clear()
+>       await ButlerCoordinator().decide(ButlerMatter(goal="PUBLIC_QUERY", mode="hybrid"))
+
+backend\tests\test_planning_context_privacy.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:309: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+_____ test_missing_or_invalid_memory_source_policy_stays_local[tampered] ______
+
+send_boundary = [], policy = 'tampered'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", ["legacy", "tampered", "copied"])
+    async def test_missing_or_invalid_memory_source_policy_stays_local(send_boundary, policy):
+        agent = MemoryAgent()
+        memory = await agent.remember("LOCAL_ONLY_MARKER", mode="privacy", kind="preference", embedding=[1.0, 0.0])
+        row = db.get_memory(memory.id)
+        if policy == "legacy":
+            for key in ("source_mode", "allow_cloud_context", "context_policy_hmac"):
+                row.pop(key)
+        else:
+            row.update(source_mode="efficiency", allow_cloud_context=True)
+            if policy == "copied":
+                public = await agent.remember("PUBLIC_OTHER", mode="efficiency", embedding=[1.0, 0.0])
+                row["context_policy_hmac"] = public.context_policy_hmac
+        db.upsert_memory(row)
+        agent.promote(memory.id)
+        send_boundary.clear()
+>       await ButlerCoordinator().decide(ButlerMatter(goal="PUBLIC_QUERY", mode="hybrid"))
+
+backend\tests\test_planning_context_privacy.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:309: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+______ test_missing_or_invalid_memory_source_policy_stays_local[copied] _______
+
+send_boundary = [], policy = 'copied'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", ["legacy", "tampered", "copied"])
+    async def test_missing_or_invalid_memory_source_policy_stays_local(send_boundary, policy):
+        agent = MemoryAgent()
+        memory = await agent.remember("LOCAL_ONLY_MARKER", mode="privacy", kind="preference", embedding=[1.0, 0.0])
+        row = db.get_memory(memory.id)
+        if policy == "legacy":
+            for key in ("source_mode", "allow_cloud_context", "context_policy_hmac"):
+                row.pop(key)
+        else:
+            row.update(source_mode="efficiency", allow_cloud_context=True)
+            if policy == "copied":
+                public = await agent.remember("PUBLIC_OTHER", mode="efficiency", embedding=[1.0, 0.0])
+                row["context_policy_hmac"] = public.context_policy_hmac
+        db.upsert_memory(row)
+        agent.promote(memory.id)
+        send_boundary.clear()
+>       await ButlerCoordinator().decide(ButlerMatter(goal="PUBLIC_QUERY", mode="hybrid"))
+
+backend\tests\test_planning_context_privacy.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:309: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+______ test_unattributed_session_preferences_cannot_bypass_memory_filter ______
+
+send_boundary = []
+
+    @pytest.mark.asyncio
+    async def test_unattributed_session_preferences_cannot_bypass_memory_filter(send_boundary):
+        now = datetime.now(UTC)
+        session = get_session_context_store()
+        session.learn_preference(
+            "inferred",
+            {
+                "value": "PRIVATE_INFERENCE",
+                "source": "local observation",
+                "observed_at": now.isoformat(),
+                "expires_at": (now + timedelta(days=1)).isoformat(),
+            },
+        )
+>       await ButlerCoordinator().decide(ButlerMatter(goal="PUBLIC_QUERY", mode="efficiency"))
+
+backend\tests\test_planning_context_privacy.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\app\services\butler_service.py:88: in decide
+    provider = get_provider(settings, task="planner")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:318: in get_provider
+    provider = get_provider_for_mode(effective, task=task)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:304: in get_provider_for_mode
+    return _build_cloud_provider(effective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\app\llm\registry.py:243: in _build_cloud_provider
+    validate_outbound_http_url(settings.base_url, allow_private=False)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+url = 'https://example.com/v1'
+
+    def validate_outbound_http_url(
+        url: str,
+        *,
+        allow_private: bool = False,
+        resolver: OutboundResolver | None = None,
+    ) -> str:
+        """Validate an outbound HTTP(S) URL and return it unchanged when allowed."""
+        raw = str(url or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only absolute http(s) URLs are allowed.")
+        hostname = parsed.hostname or ""
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+        if not allow_private and _is_blocked_outbound_host(hostname, resolver=resolver):
+>           raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+E           ValueError: URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.
+
+backend\app\core\outbound_url.py:54: ValueError
+_____ test_parallel_request_modes_do_not_mutate_or_share_global_settings ______
+
+routing = ({'local_available': True, 'settings': AppSettings(provider_name='openai_compatible', base_url='https://example.com/v1...的 JSON。\\n\'}, {\'role\': \'user\', \'content\': "Mode: privacy\\nUser message: private-chat-marker: let\'s talk"}]')])
+
+    @pytest.mark.asyncio
+    async def test_parallel_request_modes_do_not_mutate_or_share_global_settings(routing):
+        import asyncio
+    
+        state, calls = routing
+        await asyncio.gather(
+            handle_chat("private-chat-marker: let's talk", "privacy"),
+            handle_chat("public-chat-marker: let's talk", "efficiency"),
+        )
+>       assert {(mode, base_url) for _, mode, base_url, _ in calls} == {
+            ("privacy", "http://127.0.0.1:11434/v1"),
+            ("efficiency", "https://example.com/v1"),
+        }
+E       AssertionError: assert {('privacy', ....1:11434/v1')} == {('efficiency....1:11434/v1')}
+E         
+E         Extra items in the right set:
+E         ('efficiency', 'https://example.com/v1')
+E         Use -v to get more diff
+
+backend\tests\test_request_mode_routing.py:193: AssertionError
+______ test_cloud_embedding_spy_detects_the_efficiency_positive_control _______
+
+routing = ({'local_available': True, 'settings': AppSettings(provider_name='openai_compatible', base_url='https://example.com/v1...hots=False, environment_event_retention_days=7, environment_rules=[], local_metrics_enabled=False, jwt_secret='')}, [])
+
+    @pytest.mark.asyncio
+    async def test_cloud_embedding_spy_detects_the_efficiency_positive_control(routing):
+        _state, calls = routing
+        memory = await MemoryAgent().remember("public-memory-marker")
+>       assert memory.embedding_dim == 2
+E       AssertionError: assert 64 == 2
+E        +  where 64 = Memory(id='mem_2c3c683994bb476e856cdab683b39717', principal_id='local-user', workspace_id='default', domain_scope='gen...nt=0, last_used_at='2026-10-18T14:30:24.411702+00:00', embedding_dim=64, created_at='2026-10-18T14:30:24.411702+00:00').embedding_dim
+
+backend\tests\test_request_mode_routing.py:207: AssertionError
+=========================== short test summary info ===========================
+SKIPPED [3] backend\tests\test_app_launch_native.py:62: Set MAVRIS_NATIVE_APP_ACCEPTANCE=1 to test an installed Windows application
+SKIPPED [1] backend\tests\test_developer_tools.py:477: symlink creation not permitted on this platform/session
+SKIPPED [1] backend\tests\test_file_tools_path_sandbox.py:63: dir_fd no-follow is unavailable
+SKIPPED [1] backend\tests\test_licensing.py:725: Unix permission model
+SKIPPED [1] backend\tests\test_local_secret.py:82: DPAPI is the secure backend on Windows
+SKIPPED [1] backend\tests\test_local_secret.py:97: DPAPI is the secure backend on Windows
+SKIPPED [1] backend\tests\test_local_secret.py:112: DPAPI is the secure backend on Windows
+SKIPPED [1] backend\tests\test_local_secret.py:153: DPAPI migration is covered on Windows
+SKIPPED [1] backend\tests\test_managed_backup_identity.py:66: POSIX object IDs are rejected earlier on Windows.
+SKIPPED [2] backend\tests\test_notepad_native.py:101: Set MAVRIS_NATIVE_APP_ACCEPTANCE=1 to test an installed Windows application
+SKIPPED [1] backend\tests\test_onnx_sessions_security.py:26: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_resolve_onnx_model_path_r0\\outside' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_resolve_onnx_model_path_r0\\models\\linked'
+SKIPPED [1] backend\tests\test_openai_compatible_resilience.py:960: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_ex0\\secret.env' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_ex0\\photo.png'
+SKIPPED [1] backend\tests\test_openai_compatible_resilience.py:960: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_wi0\\secret.env' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_wi0\\photo.png'
+SKIPPED [1] backend\tests\test_openai_compatible_resilience.py:960: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_es0\\outside\\real.png' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_rejects_symlink_es0\\workspace\\photo.png'
+SKIPPED [1] backend\tests\test_openai_compatible_resilience.py:960: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_reads_authorized_s0\\workspace\\real.png' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_vision_reads_authorized_s0\\workspace\\link.png'
+SKIPPED [1] backend\tests\test_path_security.py:125: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rejects_symlink_escape0\\outside' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rejects_symlink_escape0\\workspace\\linked-outside'
+SKIPPED [1] backend\tests\test_rollback.py:229: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rollback_does_not_treat_d0\\missing-target.md' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rollback_does_not_treat_d0\\report.md'
+SKIPPED [1] backend\tests\test_rollback.py:256: symlink creation is unavailable on this platform: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rollback_state_capture_do0\\outside-secret.txt' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_rollback_state_capture_do0\\workspace\\task-output.txt'
+SKIPPED [1] backend\tests\test_rollback_evidence_binding.py:548: symlink creation is unavailable: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_managed_backup_is_revalid3\\data\\file-tool-backups\\replacement.txt' -> 'C:\\Users\\Suli\\AppData\\Local\\Temp\\pytest-of-Suli\\pytest-2594\\test_managed_backup_is_revalid3\\data\\file-tool-backups\\original.bak'
+FAILED backend\tests\test_planning_context_privacy.py::test_private_matters_and_memories_never_enter_cloud_planner[True-efficiency]
+FAILED backend\tests\test_planning_context_privacy.py::test_private_matters_and_memories_never_enter_cloud_planner[True-hybrid]
+FAILED backend\tests\test_planning_context_privacy.py::test_private_matters_and_memories_never_enter_cloud_planner[False-efficiency]
+FAILED backend\tests\test_planning_context_privacy.py::test_private_matters_and_memories_never_enter_cloud_planner[False-hybrid]
+FAILED backend\tests\test_planning_context_privacy.py::test_missing_or_invalid_memory_source_policy_stays_local[legacy]
+FAILED backend\tests\test_planning_context_privacy.py::test_missing_or_invalid_memory_source_policy_stays_local[tampered]
+FAILED backend\tests\test_planning_context_privacy.py::test_missing_or_invalid_memory_source_policy_stays_local[copied]
+FAILED backend\tests\test_planning_context_privacy.py::test_unattributed_session_preferences_cannot_bypass_memory_filter
+FAILED backend\tests\test_request_mode_routing.py::test_parallel_request_modes_do_not_mutate_or_share_global_settings
+FAILED backend\tests\test_request_mode_routing.py::test_cloud_embedding_spy_detects_the_efficiency_positive_control
+10 failed, 4815 passed, 22 skipped in 949.31s (0:15:49)

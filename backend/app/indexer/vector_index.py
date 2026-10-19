@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from app.config import AppSettings
 from app.core import db
 from app.indexer.embedding_service import Embedder, embed_texts_sync
 from app.indexer.embedding_storage import cosine_similarity_batch, vector_from_storage
@@ -32,6 +33,7 @@ class VectorIndex:
         candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
         scan_limit: int = DEFAULT_SCAN_LIMIT,
         allowed_directories: list[str] | None = None,
+        settings: AppSettings | None = None,
     ) -> dict[str, Any]:
         db.init_db()
         query = str(query or "").strip()
@@ -41,35 +43,30 @@ class VectorIndex:
         if not allowed_bases:
             return {"query": query, "results": [], "count": 0, "candidate_count": 0, "source": "vector"}
 
-        query_vector = embed_texts_sync([query], embedder=self.embedder)[0]
-        candidates = _filter_allowed_rows(self._candidate_chunks(query, candidate_limit), allowed_bases)
+        query_vector = embed_texts_sync([query], embedder=self.embedder, settings=settings)[0]
+        candidates = self._candidate_chunks(query, candidate_limit, allowed_bases=allowed_bases)
+        # Embedded and text-only hits share one relevance-ordered budget.
+        missing_embedding_candidates = [
+            row
+            for row in candidates
+            if (stored_vector := vector_from_storage(row.get("embedding"))) is None or stored_vector.size == 0
+        ]
         source = "fts_vector_rerank"
+        if candidates and len(missing_embedding_candidates) == len(candidates):
+            fallback_results = _collapse_by_file(_lexical_fallback_rows(candidates, query), limit)
+            return {
+                "query": query,
+                "results": fallback_results,
+                "count": len(fallback_results),
+                "candidate_count": len(candidates),
+                "source": "fts_lexical_fallback",
+            }
         if not candidates:
-            lexical_candidates = _filter_allowed_rows(self._lexical_chunks(query, candidate_limit), allowed_bases)
-            if lexical_candidates:
-                fallback_results = _collapse_by_file(
-                    _lexical_fallback_rows(lexical_candidates, query),
-                    limit,
-                )
-                return {
-                    "query": query,
-                    "results": fallback_results,
-                    "count": len(fallback_results),
-                    "candidate_count": len(lexical_candidates),
-                    "source": "fts_lexical_fallback",
-                }
-            candidates = _filter_allowed_rows(self._recent_chunks(scan_limit), allowed_bases)
+            candidates = self._recent_chunks(scan_limit, allowed_bases=allowed_bases)
             source = "vector_scan"
 
         ranked = _rank_vector_candidates(candidates, query_vector, query)
 
-        lexical_candidates = _filter_allowed_rows(self._lexical_chunks(query, candidate_limit), allowed_bases)
-        embedded_chunk_ids = {row["chunk_id"] for row in candidates}
-        missing_embedding_candidates = [
-            row
-            for row in lexical_candidates
-            if row["chunk_id"] not in embedded_chunk_ids and vector_from_storage(row.get("embedding")) is None
-        ]
         if missing_embedding_candidates:
             ranked.extend(_lexical_fallback_rows(missing_embedding_candidates, query))
             source = "fts_mixed_fallback"
@@ -84,92 +81,66 @@ class VectorIndex:
             "source": source,
         }
 
-    def _candidate_chunks(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def _candidate_chunks(
+        self, query: str, limit: int, *, allowed_bases: list[Path] | None = None
+    ) -> list[dict[str, Any]]:
+        return self._matching_chunks(query, limit, allowed_bases=allowed_bases)
+
+    def _lexical_chunks(
+        self, query: str, limit: int, *, allowed_bases: list[Path] | None = None
+    ) -> list[dict[str, Any]]:
+        return self._matching_chunks(query, limit, allowed_bases=allowed_bases)
+
+    def _matching_chunks(self, query: str, limit: int, *, allowed_bases: list[Path] | None) -> list[dict[str, Any]]:
+        columns = (
+            "dc.file_id, dc.id AS chunk_id, dc.chunk_index, dc.text, f.name, f.normalized_path AS path, e.embedding"
+        )
+        joins = """
+            JOIN indexed_files f ON f.id = dc.file_id
+            LEFT JOIN document_chunk_embeddings e ON e.chunk_id = dc.id
+        """
         with db.connect() as conn:
+            _register_path_filter(conn, allowed_bases)
             try:
-                fts_rows = conn.execute(
-                    """
-                    SELECT file_id, bm25(document_chunks_fts) AS rank
+                rows = conn.execute(
+                    f"""
+                    SELECT {columns}, bm25(document_chunks_fts) AS lexical_rank
                     FROM document_chunks_fts
-                    WHERE document_chunks_fts MATCH ?
-                    ORDER BY rank
+                    JOIN document_chunks dc ON dc.id = document_chunks_fts.chunk_id
+                    {joins}
+                    WHERE document_chunks_fts MATCH ? AND vector_path_allowed(f.normalized_path)
+                    ORDER BY lexical_rank, f.normalized_path, dc.chunk_index, dc.id
                     LIMIT ?
-                    """,
-                    (fts_match_query(query), limit),
+                    """,  # noqa: S608 - column and join fragments are internal constants.
+                    (fts_match_query(query), max(1, limit)),
                 ).fetchall()
             except sqlite3.Error as exc:
-                logger.debug("FTS candidate lookup failed, using LIKE fallback: %s", exc)
-                fts_rows = []
-
-            if fts_rows:
-                file_scores: dict[str, float] = {}
-                for row in fts_rows:
-                    score = 1.0 / (1.0 + abs(float(row["rank"] or 0.0)))
-                    file_scores[row["file_id"]] = max(file_scores.get(row["file_id"], 0.0), score)
-                return self._chunks_for_files(conn, file_scores, limit)
-
-            logger.info("FTS unavailable for candidate lookup; falling back to LIKE for query=%r", query)
-            like_rows = conn.execute(
-                """
-                SELECT dc.file_id
+                logger.debug("FTS chunk lookup failed, using LIKE fallback: %s", exc)
+                rows = []
+            if rows:
+                candidates = []
+                for row in rows:
+                    item = dict(row)
+                    magnitude = abs(float(item["lexical_rank"] or 0.0))
+                    item["lexical_score"] = magnitude / (1.0 + magnitude)
+                    candidates.append(item)
+                return candidates
+            rows = conn.execute(
+                f"""
+                SELECT {columns}, 1.0 AS lexical_score
                 FROM document_chunks dc
-                WHERE dc.text LIKE ?
+                {joins}
+                WHERE dc.text LIKE ? AND vector_path_allowed(f.normalized_path)
+                ORDER BY f.normalized_path, dc.chunk_index, dc.id
                 LIMIT ?
-                """,
-                (f"%{query}%", limit),
+                """,  # noqa: S608 - column and join fragments are internal constants.
+                (f"%{query}%", max(1, limit)),
             ).fetchall()
-            file_scores = {row["file_id"]: 1.0 for row in like_rows}
-            return self._chunks_for_files(conn, file_scores, limit)
+        return [dict(row) for row in rows]
 
-    def _lexical_chunks(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def _recent_chunks(self, limit: int, *, allowed_bases: list[Path] | None = None) -> list[dict[str, Any]]:
         with db.connect() as conn:
-            try:
-                fts_rows = conn.execute(
-                    """
-                    SELECT file_id, bm25(document_chunks_fts) AS rank
-                    FROM document_chunks_fts
-                    WHERE document_chunks_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    (fts_match_query(query), limit),
-                ).fetchall()
-            except sqlite3.Error as exc:
-                logger.debug("FTS lexical lookup failed, using LIKE fallback: %s", exc)
-                fts_rows = []
-
-            if fts_rows:
-                file_scores: dict[str, float] = {}
-                for row in fts_rows:
-                    score = 1.0 / (1.0 + abs(float(row["rank"] or 0.0)))
-                    file_scores[row["file_id"]] = max(file_scores.get(row["file_id"], 0.0), score)
-                return self._chunks_for_files(
-                    conn,
-                    file_scores,
-                    limit,
-                    require_embeddings=False,
-                )
-
-            logger.info("FTS unavailable for lexical lookup; falling back to LIKE for query=%r", query)
-            like_rows = conn.execute(
-                """
-                SELECT dc.file_id
-                FROM document_chunks dc
-                WHERE dc.text LIKE ?
-                LIMIT ?
-                """,
-                (f"%{query}%", limit),
-            ).fetchall()
-            file_scores = {row["file_id"]: 1.0 for row in like_rows}
-            return self._chunks_for_files(
-                conn,
-                file_scores,
-                limit,
-                require_embeddings=False,
-            )
-
-    def _recent_chunks(self, limit: int) -> list[dict[str, Any]]:
-        with db.connect() as conn:
+            _register_path_filter(conn, allowed_bases)
             rows = conn.execute(
                 """
                 SELECT
@@ -184,53 +155,13 @@ class VectorIndex:
                 FROM document_chunks dc
                 JOIN indexed_files f ON f.id = dc.file_id
                 JOIN document_chunk_embeddings e ON e.chunk_id = dc.id
+                WHERE vector_path_allowed(f.normalized_path)
                 ORDER BY f.indexed_at DESC, dc.chunk_index ASC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
-
-    def _chunks_for_files(
-        self,
-        conn,
-        file_scores: dict[str, float],
-        limit: int,
-        *,
-        require_embeddings: bool = True,
-    ) -> list[dict[str, Any]]:
-        if not file_scores:
-            return []
-        placeholders = ",".join("?" for _ in file_scores)
-        embedding_join = "JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
-        if not require_embeddings:
-            embedding_join = "LEFT JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
-        query_sql = f"""
-            SELECT
-                dc.file_id,
-                dc.id AS chunk_id,
-                dc.chunk_index,
-                dc.text,
-                f.name,
-                f.normalized_path AS path,
-                e.embedding
-            FROM document_chunks dc
-            JOIN indexed_files f ON f.id = dc.file_id
-            {embedding_join}
-            WHERE dc.file_id IN ({placeholders})
-            ORDER BY dc.chunk_index ASC
-            LIMIT ?
-            """  # noqa: S608 - placeholders and join fragment are generated from internal values.
-        rows = conn.execute(
-            query_sql,
-            (*file_scores.keys(), limit),
-        ).fetchall()
-        candidates = []
-        for row in rows:
-            item = dict(row)
-            item["lexical_score"] = file_scores.get(item["file_id"], 0.0)
-            candidates.append(item)
-        return candidates
 
 
 def _allowed_bases(allowed_directories: list[str] | None) -> list[Path]:
@@ -245,8 +176,12 @@ def _allowed_bases(allowed_directories: list[str] | None) -> list[Path]:
     return bases
 
 
-def _filter_allowed_rows(rows: list[dict[str, Any]], allowed_bases: list[Path]) -> list[dict[str, Any]]:
-    return [row for row in rows if _within_allowed_bases(str(row.get("path") or ""), allowed_bases)]
+def _register_path_filter(conn: sqlite3.Connection, allowed_bases: list[Path] | None) -> None:
+    conn.create_function(
+        "vector_path_allowed",
+        1,
+        lambda path: allowed_bases is None or _within_allowed_bases(str(path or ""), allowed_bases),
+    )
 
 
 def _within_allowed_bases(path: str, allowed_bases: list[Path]) -> bool:

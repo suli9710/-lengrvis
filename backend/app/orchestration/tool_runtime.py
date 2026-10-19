@@ -66,6 +66,7 @@ from app.orchestration.tool_runtime_support import (
 from app.policy.effective_risk_binding import build_effective_risk_binding
 from app.policy.model_boundary import model_control_arg_error
 from app.policy.risk import SafetyVerdict
+from app.services.browser_continuity import bind_owned_readback, requested_page_read
 from app.tools.schemas import ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,31 @@ class ToolRuntime(
             )
             return RuntimeExecutionResult("step_denied", result)
         validation_error = self._validate_input(tool, step.args, runtime)
+        if task.metadata.get("butler_matter_id"):
+            from app.orchestration.butler_runtime import (
+                ButlerExecutionDeferred,
+                defer_task_for_desktop,
+                validate_task_action,
+            )
+
+            try:
+                validate_task_action(task, tool, step.args, live=True)
+            except ButlerExecutionDeferred as exc:
+                if "桌面空闲" in str(exc):
+                    defer_task_for_desktop(task, str(exc))
+                    orchestrator._set_status(task, TaskStatus.PAUSED)
+                    return RuntimeExecutionResult(
+                        "revision_requested",
+                        ToolResult(
+                            tool_call_id=f"{step.id}_deferred",
+                            ok=False,
+                            error=str(exc),
+                            output={"error_code": "butler_desktop_busy", "no_side_effect": True},
+                        ),
+                    )
+                validation_error = str(exc)
+            except (ValueError, RuntimeError) as exc:
+                validation_error = str(exc)
         if validation_error:
             set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
             result = ToolResult(
@@ -312,7 +338,13 @@ class ToolRuntime(
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         args = approved_args if approved_args is not None else step.args
-        if _tool_requires_content_revalidation(tool, args):
+        from app.services.office_artifacts import verified_office_preview
+
+        if _tool_requires_content_revalidation(tool, args) and not (
+            bind_owned_readback(task, tool, args)
+            or requested_page_read(task, tool, args)
+            or verified_office_preview(task, tool, args)
+        ):
             try:
                 envelopes = collect_content_envelopes(args, runtime.extra_context, step.model_action)
                 if envelopes:

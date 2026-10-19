@@ -37,8 +37,16 @@ TOOL_CATALOG: dict[str, tuple[str, str]] = {
         "hash checksum sha256 integrity verify 哈希 校验 完整性",
     ),
     "file.read_text": (
-        "Read text content from a file with an optional character limit",
-        "read text content open view 读取 文本 内容 查看",
+        "Read file text with an optional preview limit; expected_value verifies the complete saved UTF-8 text exactly",
+        "read text content saved verify postcondition open view 读取 文本 内容 保存 校验 查看",
+    ),
+    "file.read_json": (
+        "Read a bounded UTF-8 JSON file; parsed values are returned in data for literal input_bindings",
+        "json structured data read 读取 结构化 资料",
+    ),
+    "file.write_json": (
+        "Save structured data as UTF-8 JSON through the reversible file-write approval and backup contract",
+        "json structured receipt save 保存 回执 结果",
     ),
     "file.find_duplicates": (
         "Find duplicate files by hashing contents and grouping identical files",
@@ -172,15 +180,15 @@ TOOL_CATALOG: dict[str, tuple[str, str]] = {
     ),
     # --- app tools ---
     "app.list_installed": (
-        "List installed applications from the registry, shortcuts, and the allowlist",
+        "List installed applications and their launchers; optionally filter by name, publisher, path or application ID",
         "list installed apps applications software programs 列出 已安装 应用 软件 程序",
     ),
     "app.launch_allowlisted": (
-        "Launch an application by name from the built-in allowlist",
+        "Launch a built-in Windows application from its system path; inspect its window before UI input",
         "launch run start open app allowlisted 启动 运行 打开 应用",
     ),
     "app.launch_installed": (
-        "Launch an installed application by name when it matches the allowlist policy",
+        "Launch an allowlisted app by exact name, launcher path or registered ID; inspect its window before UI input",
         "launch run start open installed app 启动 运行 打开 已安装 应用",
     ),
     "app.find_uninstall_entries": (

@@ -14,6 +14,7 @@ from app.policy.redaction import redact_public_text, redact_text
 from app.policy.risk import RiskLevel
 from app.policy.sensitive_values import looks_sensitive_value
 from app.services.browser_activity_runtime import BrowserActivityAdapter, BrowserActivityRuntime
+from app.tools.browser_tool_schemas import input_schema as _input_schema
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
@@ -32,97 +33,6 @@ EXTRA_SENSITIVE_SELECTOR_TOKENS = {
     "auth",
     "credential",
 }
-
-
-def _input_schema(name: str) -> dict[str, Any]:
-    url = {
-        "type": "string",
-        "description": "HTTP(S) URL of the page to access.",
-    }
-    session_id = {
-        "type": "string",
-        "description": "Optional managed browser session identifier.",
-    }
-    dry_run = {
-        "type": "boolean",
-        "description": "Preview the browser write without executing it (default true).",
-    }
-    session_scope = {
-        "type": "object",
-        "description": "Task/account-bound browser session scope; values cannot be broadened after start.",
-        "properties": {
-            "task_id": {"type": "string"},
-            "account_id": {"type": "string"},
-            "allowed_origins": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Exact HTTP(S) origins permitted for this session.",
-            },
-            "allowed_actions": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Browser action kinds permitted for this session.",
-            },
-        },
-    }
-    schemas: dict[str, dict[str, Any]] = {
-        "browser.session_start": {
-            "type": "object",
-            "properties": {
-                "url": url,
-                "mode": {"type": "string"},
-                **session_scope["properties"],
-            },
-            "required": [],
-        },
-        "browser.read_page": {
-            "type": "object",
-            "properties": {
-                "url": url,
-                "session_id": session_id,
-                "max_chars": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Optional maximum number of page-text characters to return.",
-                },
-            },
-            "required": ["url"],
-        },
-        "browser.fill_form": {
-            "type": "object",
-            "properties": {
-                "url": url,
-                "session_id": session_id,
-                "fields": {
-                    "type": "object",
-                    "description": "Mapping of non-sensitive field selectors or names to values.",
-                    "additionalProperties": True,
-                },
-                "dry_run": dry_run,
-            },
-            "required": ["url", "fields"],
-        },
-        "browser.submit_form": {
-            "type": "object",
-            "properties": {
-                "url": url,
-                "session_id": session_id,
-                "task_id": {"type": "string"},
-                "account_id": {
-                    "type": "string",
-                    "description": "Explicit website/account identity bound to the approved submission.",
-                },
-                **session_scope["properties"],
-                "selector": {
-                    "type": "string",
-                    "description": "Optional CSS selector for the form (default: form).",
-                },
-                "dry_run": dry_run,
-            },
-            "required": ["url"],
-        },
-    }
-    return schemas.get(name, {})
 
 
 _CUA_BROWSER_ENVIRONMENT = "browser"
@@ -276,6 +186,10 @@ def open_url(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def read_page(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    from app.services.browser_activity_safety import sensitive_read_selector
+
+    if sensitive_read_selector(str(args.get("selector") or "")):
+        return {"ok": False, "error": "Sensitive fields require protected user interaction."}
     allowed, reason = _network_allowed(context)
     if not allowed:
         return {"ok": False, "error": reason}
@@ -288,8 +202,9 @@ def read_page(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "step_id": args.get("step_id") or context.get("step_id"),
             "url": url,
             "max_chars": args.get("max_chars"),
+            "selector": args.get("selector"),
         },
-        context,
+        {**context, "browser_exact_read_url": url},
     )
     if not data.get("ok"):
         return _redact_browser_tool_result(data)
@@ -381,8 +296,12 @@ def _check_write_permission(context: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _sensitive_selector(selector: str) -> bool:
+    from app.services.browser_activity_safety import sensitive_read_selector
+
     lowered = (selector or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS)
+    return sensitive_read_selector(selector) or any(
+        token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS
+    )
 
 
 def _sensitive_value(value: Any) -> bool:
@@ -464,6 +383,27 @@ def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 def act(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return get_browser_activity_runtime().act(args, context)
+
+
+def _butler_browser_action(args: dict[str, Any], context: dict[str, Any], kind: str) -> dict[str, Any]:
+    action = {
+        key: value
+        for key, value in args.items()
+        if key in {"url", "selector", "fields", "text", "timeout_ms", "delta_y"}
+    }
+    if kind == "submit":
+        action.setdefault("selector", "form")
+    return get_browser_activity_runtime().act(
+        {
+            "session_id": args.get("session_id"),
+            "account_id": args.get("account_id"),
+            "action": {"kind": kind, **action},
+            "dry_run": args.get("dry_run", True),
+            "approved": args.get("approved", False),
+            "approval_id": args.get("approval_id", ""),
+        },
+        context,
+    )
 
 
 async def cua_run_async(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -556,6 +496,8 @@ def replay_export(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 
 
 def navigate(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("butler_matter_id"):
+        return _butler_browser_action(args, context, "navigate")
     allowed, reason = _network_allowed(context)
     if not allowed:
         return {"ok": False, "error": reason}
@@ -582,6 +524,8 @@ def navigate(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def click_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("butler_matter_id"):
+        return _butler_browser_action(args, context, "click")
     allowed, reason = _check_write_permission(context)
     if not allowed:
         return {"ok": False, "error": reason}
@@ -627,6 +571,8 @@ def click_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 
 
 def fill_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("butler_matter_id"):
+        return _butler_browser_action(args, context, "fill")
     allowed, reason = _check_write_permission(context)
     if not allowed:
         return {"ok": False, "error": reason}
@@ -672,6 +618,8 @@ def fill_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("butler_matter_id"):
+        return _butler_browser_action(args, context, "submit")
     allowed, reason = _check_write_permission(context)
     if not allowed:
         return {"ok": False, "error": reason}
@@ -796,12 +744,13 @@ def register(registry) -> None:
             effects = ["navigate"]
         if name == "browser.open_url":
             effects = ["open"]
+        schema = _input_schema(name)
         registry.register(
             ToolDefinition(
                 name=name,
                 description=tool_description(name),
                 search_hint=tool_search_hint(name),
-                input_schema=_input_schema(name),
+                input_schema=schema,
                 output_schema={},
                 risk_level=risk,
                 agent_owner="BrowserAgent",
@@ -809,9 +758,10 @@ def register(registry) -> None:
                 requires_authorized_path=False,
                 execute=fn,
                 capabilities=["browser"],
+                concurrency_key="browser_managed_session",
                 effects=effects if not read_like else effects,
                 resource_kinds=["url", "web_page"],
-                fast_path_eligible=False,
+                fast_path_eligible=read_like and schema.get("type") == "object" and "properties" in schema,
                 trust_tier="builtin",
                 external_network=True,
                 sensitive_arg_keys=["selector", "fields", "value"],

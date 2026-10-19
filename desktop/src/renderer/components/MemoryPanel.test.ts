@@ -7,6 +7,20 @@ import type { LengrvisApiClient } from "../lib/apiClient";
 import { MemoryPanel } from "./MemoryPanel";
 
 describe("MemoryPanel", () => {
+  it("shows automatically saved statements and submits corrections as a replacement", async () => {
+    const saved = { ...memory("mem-auto", "报告使用英文"), tags: ["自动保存", "用户陈述"], source: "user", user_confirmed: true };
+    const saveMemory = vi.fn().mockResolvedValue(success(memory("mem-corrected", "报告使用中文")));
+    const api = memoryApi({ listMemories: vi.fn().mockResolvedValue(success([saved])), saveMemory });
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(MemoryPanel, { api })); });
+    expect(textContent(renderer)).toContain("来自你的陈述");
+    act(() => renderer.root.findByProps({ "aria-label": "更正记忆：报告使用英文" }).props.onClick());
+    act(() => renderer.root.findByProps({ "aria-label": "记忆内容" }).props.onChange({ currentTarget: { value: "报告使用中文" } }));
+    await act(async () => renderer.root.findByProps({ "aria-label": "保存记忆更正" }).props.onClick());
+    expect(saveMemory).toHaveBeenCalledWith("报告使用中文", { tags: [], kind: "fact", supersedes: "mem-auto" });
+    act(() => renderer.unmount());
+  });
+
   it("shows loading and load failure without presenting the result as an empty library", async () => {
     const pending = deferred<ApiResponse<unknown[]>>();
     const api = memoryApi({ listMemories: vi.fn(() => pending.promise) });

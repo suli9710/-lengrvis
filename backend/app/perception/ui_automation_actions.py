@@ -4,6 +4,7 @@ import ctypes
 import logging
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 from app.perception.app_context import get_current_app_context
@@ -66,16 +67,29 @@ def send_mouse_drag(
     pyautogui.dragTo(end_x, end_y, duration=duration, button=button)
 
 
-def send_text(text: str) -> None:
+def send_text(text: str, *, before_input: Callable[[], None] | None = None) -> None:
     if sys.platform == "win32":
-        for character in text:
-            _send_unicode_character(character)
+        # Validate the complete string before any key is sent. An isolated
+        # surrogate must not leave a partially typed prefix in another app.
+        text.encode("utf-16-le")
+        for character in text.replace("\r\n", "\n").replace("\r", "\n"):
+            if before_input is not None:
+                before_input()
+            if character == "\n":
+                # VK_PACKET CR/LF can be ignored by editors; use one Enter
+                # for each logical newline, never two for Windows CRLF.
+                _ctypes_press_key("enter")
+            else:
+                _send_unicode_character(character)
         return
     try:
         import pyautogui  # type: ignore[import-not-found]
     except (ImportError, OSError) as exc:
         raise UIAutomationUnavailable("pyautogui is required for text input fallback.") from exc
-    pyautogui.write(text)
+    for character in text:
+        if before_input is not None:
+            before_input()
+        pyautogui.write(character)
 
 
 def press_key(key: str) -> None:
@@ -99,7 +113,7 @@ def send_hotkey(keys: list[str]) -> None:
             raise UIAutomationUnavailable("pyautogui is required for hotkey fallback outside Windows.") from exc
         _ctypes_hotkey(normalized)
         return
-    pyautogui.hotkey(*normalized)
+    pyautogui.hotkey(*["ctrl" if key == "control" else key for key in normalized])
 
 
 def capture_screenshot(max_width: int, max_height: int, quality: int) -> dict[str, Any]:
@@ -332,22 +346,38 @@ class _KeyboardInput(ctypes.Structure):
     _fields_ = [
         ("wVk", ctypes.c_ushort),
         ("wScan", ctypes.c_ushort),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwFlags", ctypes.c_uint32),
+        ("time", ctypes.c_uint32),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
+class _MouseInput(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_int32),
+        ("dy", ctypes.c_int32),
+        ("mouseData", ctypes.c_uint32),
+        ("dwFlags", ctypes.c_uint32),
+        ("time", ctypes.c_uint32),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class _HardwareInput(ctypes.Structure):
+    _fields_ = [("uMsg", ctypes.c_uint32), ("wParamL", ctypes.c_uint16), ("wParamH", ctypes.c_uint16)]
+
+
 class _InputUnion(ctypes.Union):
-    _fields_ = [("ki", _KeyboardInput)]
+    # MOUSEINPUT is the largest member. Omitting it gives an invalid cbSize
+    # even when the actual event uses only the keyboard member.
+    _fields_ = [("ki", _KeyboardInput), ("mi", _MouseInput), ("hi", _HardwareInput)]
 
 
 class _Input(ctypes.Structure):
-    _fields_ = [("type", ctypes.c_ulong), ("union", _InputUnion)]
+    _fields_ = [("type", ctypes.c_uint32), ("union", _InputUnion)]
 
 
 def _send_keyboard_input(vk_code: int, scan_code: int, flags: int) -> None:
-    extra = ctypes.c_ulong(0)
     event = _Input(
         type=_INPUT_KEYBOARD,
         union=_InputUnion(
@@ -356,19 +386,24 @@ def _send_keyboard_input(vk_code: int, scan_code: int, flags: int) -> None:
                 wScan=scan_code,
                 dwFlags=flags,
                 time=0,
-                dwExtraInfo=ctypes.pointer(extra),
+                dwExtraInfo=0,
             )
         ),
     )
-    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
+    send_input = ctypes.windll.user32.SendInput
+    send_input.argtypes = [ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int]
+    send_input.restype = ctypes.c_uint
+    sent = send_input(1, ctypes.byref(event), ctypes.sizeof(event))
     if sent != 1:
         raise UIAutomationUnavailable("Windows SendInput failed.")
 
 
 def _send_unicode_character(character: str) -> None:
-    codepoint = ord(character)
-    _send_keyboard_input(0, codepoint, _KEYEVENTF_UNICODE)
-    _send_keyboard_input(0, codepoint, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)
+    encoded = character.encode("utf-16-le")
+    for index in range(0, len(encoded), 2):
+        unit = int.from_bytes(encoded[index : index + 2], "little")
+        _send_keyboard_input(0, unit, _KEYEVENTF_UNICODE)
+        _send_keyboard_input(0, unit, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)
 
 
 def _send_virtual_key(vk_code: int, *, key_up: bool = False) -> None:
@@ -391,12 +426,21 @@ def _ctypes_hotkey(keys: list[str]) -> None:
     if any(code is None for code in vk_codes):
         missing = [key for key, code in zip(keys, vk_codes, strict=False) if code is None]
         raise UIAutomationUnavailable(f"Unsupported hotkey without pyautogui: {', '.join(missing)}")
-    for vk_code in vk_codes[:-1]:
-        _send_virtual_key(int(vk_code))
-    _send_virtual_key(int(vk_codes[-1]))
-    _send_virtual_key(int(vk_codes[-1]), key_up=True)
-    for vk_code in reversed(vk_codes[:-1]):
-        _send_virtual_key(int(vk_code), key_up=True)
+    pressed = []
+    try:
+        for vk_code in vk_codes:
+            _send_virtual_key(int(vk_code))
+            pressed.append(int(vk_code))
+    finally:
+        failing_input = sys.exc_info()[0] is not None
+        release_error = None
+        for vk_code in reversed(pressed):
+            try:
+                _send_virtual_key(vk_code, key_up=True)
+            except (UIAutomationUnavailable, OSError, ctypes.ArgumentError) as exc:
+                release_error = release_error or exc
+        if release_error is not None and not failing_input:
+            raise release_error
 
 
 def _ctypes_mouse_flags(button: str) -> tuple[int, int]:

@@ -1,4 +1,14 @@
 export const IPC_CHANNELS = {
+  butlerOverview: "lengrvis:butler:overview",
+  butlerOpenArtifact: "lengrvis:butler:open-artifact",
+  butlerMessage: "lengrvis:butler:message",
+  butlerRespond: "lengrvis:butler:respond",
+  butlerArrangement: "lengrvis:butler:arrangement",
+  butlerMatterControl: "lengrvis:butler:matter-control",
+  butlerControl: "lengrvis:butler:control",
+  butlerScopeCreate: "lengrvis:butler:scope-create",
+  butlerScopeRevoke: "lengrvis:butler:scope-revoke",
+  butlerUndo: "lengrvis:butler:undo",
   apiRequest: "lengrvis:api:request",
   apiAbortInflight: "lengrvis:api:abort-inflight",
   backendStatus: "lengrvis:backend:status",
@@ -108,6 +118,16 @@ export type IpcChannelSecurityPolicy = {
 };
 
 export const IPC_CHANNEL_SECURITY_POLICIES = {
+  butlerOverview: { schema: "none", capability: "trusted-renderer", risk: "read" },
+  butlerOpenArtifact: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  butlerMessage: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  butlerRespond: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  butlerArrangement: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  butlerMatterControl: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
+  butlerControl: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
+  butlerScopeCreate: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
+  butlerScopeRevoke: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
+  butlerUndo: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   apiRequest: { schema: "apiRequest", capability: "backend-token", risk: "write" },
   apiAbortInflight: { schema: "string", capability: "trusted-renderer", risk: "write" },
   backendStatus: { schema: "none", capability: "trusted-renderer", risk: "read" },

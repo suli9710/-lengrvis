@@ -45,6 +45,40 @@ def safe_write_text(path: Path, text: str, allowed: list[str], context: dict[str
     path.write_text(text, encoding="utf-8")
 
 
+def safe_create_bytes(path: Path, data: bytes, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    """Exclusively create an owned artifact; never truncate an existing file."""
+    prepare_parent_for_mutation(path, allowed, context)
+    ensure_mutation_path_safe(path, allowed, include_self=path_exists_or_reparse_point(path), context=context)
+    raise_if_tool_aborted(context)
+    if sys.platform == "win32":
+        import msvcrt
+
+        handle = _open_windows_authorized_file_handle(
+            path,
+            allowed,
+            context,
+            access=_win_generic_write() | _win_file_read_attributes(),
+            creation=1,  # CREATE_NEW
+        )
+        try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        except BaseException:
+            _close_windows_handle(handle)
+            raise
+    else:
+        parent = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            descriptor = os.open(
+                path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent
+            )
+        finally:
+            os.close(parent)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+
+
 def safe_copy_file(src: Path, dst: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
     safe_copy_file_between_scopes(src, dst, allowed, allowed, context)
 
@@ -316,7 +350,7 @@ def _open_windows_file_relative(parent_handle: int, name: str, *, access: int, c
     )
     io_status = IoStatusBlock()
     handle = wintypes.HANDLE()
-    disposition = _win_file_open() if creation == _win_open_existing() else _win_file_open_if()
+    disposition = 2 if creation == 1 else _win_file_open() if creation == _win_open_existing() else _win_file_open_if()
     ntdll = _ntdll()
     ntdll.NtCreateFile.argtypes = [
         ctypes.POINTER(wintypes.HANDLE),

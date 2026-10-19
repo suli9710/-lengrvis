@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import get_base_settings
 from app.core.errors import SecurityError
+from app.core.local_data_lifecycle import tracks_local_data
 from app.tools.filesystem_safety import ensure_mutation_path_safe
 
 MANAGED_BACKUP_SCHEMA_VERSION = 1
@@ -30,6 +31,7 @@ def managed_backup_root() -> Path:
     raise SecurityError("Managed backup directory escapes the app data directory.")
 
 
+@tracks_local_data
 def create_managed_backup(src: Path) -> dict[str, str | int | bool]:
     root = managed_backup_root()
     backup = root / _backup_filename(src)

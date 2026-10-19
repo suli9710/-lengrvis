@@ -10,9 +10,9 @@ monorepo with three parts:
 Authoritative dev commands live in `README.md` ("源码开发 setup" / "运行"), `package.json`, `desktop/package.json`,
 and the PowerShell helpers in `scripts/`. The PowerShell scripts only run on Windows.
 
-## Cursor Cloud specific instructions
+## Cursor Cloud / Linux development notes
 
-This environment is Linux; the repo's `.ps1`/`.cmd` launchers do not run here. Drive the underlying
+When working on Linux, the repo's `.ps1`/`.cmd` launchers do not run. Drive the underlying
 commands directly. The startup update script already creates a Python venv at `.venv` (from
 `requirements-dev.txt` + `ruff`), installs the Playwright Chromium browser for both Python and desktop,
 and runs `npm --prefix desktop ci` + `npm --prefix mobile ci`. Run
@@ -37,27 +37,26 @@ clean local Linux run will show a small set of Windows-only failures (see backen
 - IMPORTANT: put the venv on `PATH` (e.g. `export PATH="$PWD/.venv/bin:$PATH"` or activate it) before running
   pytest. Some code/tests spawn a bare `python` subprocess (golden tasks, developer/code engine); this VM only
   has `python3`, so without `.venv/bin` on PATH those tests fail with `FileNotFoundError: 'python'`.
-- Expected Linux failures (~14): Windows-only features that cannot run here — remote-desktop screen capture
+- Linux limitations: Windows-only features cannot run there — remote-desktop screen capture
   (`backend/app/services/remote_desktop_service.py` is guarded by `sys.platform == "win32"`), recycle-bin/trash
-  delete flows, and `C:\Windows`-style system-path classification. ~1800 tests pass.
-- Lint: `.venv/bin/python -m ruff check backend` (config in `backend/pyproject.toml`). CI does NOT gate ruff; it
-  is a pre-commit hook (`.pre-commit-config.yaml`) that only lints changed `backend/` files, so the full tree has
-  pre-existing findings. Format/fix: `ruff format` / `ruff check --fix`.
+  delete flows, and `C:\Windows`-style system-path classification. Use the current test results for counts.
+- Lint: `.venv/bin/python -m ruff check backend` (config in `backend/pyproject.toml`).
+  `.github/workflows/lint.yml` gates full-tree Ruff debt and strictly checks lint and formatting on changed
+  backend Python files. Pre-commit checks changed files too. Format/fix: `ruff format` / `ruff check --fix`.
+  On Windows, use `.venv/Scripts/python.exe` and put `.venv/Scripts` on PATH for subprocess tests.
 
 ### Desktop (UI)
 - Typecheck/tests/build all work: `npm --prefix desktop run typecheck`, `npm --prefix desktop test` (Vitest),
   `npm --prefix desktop run build:renderer`.
-- `npm --prefix desktop run smoke` runs 13 behavior smokes; on Linux 12 pass but `smoke:ipc` FAILS at the
+- `npm --prefix desktop run smoke` runs the smoke groups listed in `desktop/package.json` (18 at the
+  October 2026 audit). On Linux, `smoke:ipc` has a known failure at the
   `isTrustedRendererUrl(file://…)` assertion in `scripts/ipc-security-smoke.cjs`. This is a test-only Windows
   path assumption (`file:///` + an absolute path yields `file:////…` on Linux, only `file:///C:/…` on Windows);
   the product code uses `pathToFileURL` and is correct. CI runs on `windows-latest`, so this smoke is green there.
   Run individual smokes to validate the rest, e.g. `npm --prefix desktop run smoke:desktop-token`.
-- The Vite dev server (`npm run dev` / `npm --prefix desktop run dev:web`) currently CRASHES during esbuild
-  dependency pre-bundling: the pinned `esbuild` 0.28.x has an object-rest destructuring lowering regression, and
-  only `build.target` (es2022) was patched in `vite.config.ts` — the dev dep optimizer still uses Vite's default
-  browser target. To run the renderer live in a browser, start Vite with the dep optimizer target raised, e.g. a
-  throwaway config that sets `optimizeDeps.esbuildOptions.target: "es2022"` (do not commit it). The production
-  build path is unaffected.
+- `vite.config.ts` sets both `build.target` and `optimizeDeps.esbuildOptions.target` to `es2022`, including
+  the dev dependency optimizer. This avoids esbuild's object-rest lowering issue with broad browser targets.
+  Run the checked-in `dev:web` configuration directly.
 - Electron full app needs a display; for UI work use the browser dev server above (or the `computerUse` desktop).
 
 ### Running the UI against the backend in a browser (dev:web)

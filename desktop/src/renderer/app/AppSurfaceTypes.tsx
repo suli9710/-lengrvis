@@ -33,6 +33,8 @@ export type DocumentIntent = {
 } | null;
 
 export interface AppSurfaceProps {
+  butler?: import("../features/butler/useButler").ButlerController;
+  onOpenButlerApproval?: (matter: import("../../shared/butlerTypes").ButlerMatter) => void;
   api: LengrvisApiClient;
   activeView: ViewKey;
   connectionState: ConnectionState;

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { validateMemoryReviewRequest } from "./memorySchedule";
+import { validateMemoryReviewRequest, validateScheduleCreateRequest } from "./memorySchedule";
+
+describe("schedule timezone", () => {
+  it("preserves the selected IANA zone and rejects invalid zones", () => {
+    const request = { cron: "0 9 * * *", goal: "morning", mode: "privacy", timezone: "Asia/Taipei" };
+    expect(validateScheduleCreateRequest(request)).toEqual(request);
+    expect(() => validateScheduleCreateRequest({ ...request, timezone: "Invalid/Zone" })).toThrow();
+  });
+});
 
 describe("validateMemoryReviewRequest", () => {
   it("normalizes camelCase review input", () => {

@@ -10,10 +10,11 @@ from app.agents.planner_deterministic_intents import PlannerDeterministicIntentM
 from app.agents.planner_deterministic_plans import PlannerDeterministicPlanMixin
 from app.agents.worker_agents import normalize_supervisor_agent_hint
 from app.core.schemas import MessageType, Plan, PlanStep
+from app.core.step_inputs import StepInputBinding
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
 from app.llm.prompts import load_prompt, render_prompt
-from app.llm.registry import get_effective_settings, get_provider
+from app.llm.registry import get_effective_settings, get_provider, get_settings_for_mode
 from app.orchestration.deterministic_contracts import seal_deterministic_plan
 from app.perception.storage import is_sensitive_context
 from app.policy.risk import RiskLevel, max_risk
@@ -26,6 +27,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "steps": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "required": ["id", "agent_name", "tool_name", "description", "args", "depends_on"],
@@ -39,6 +41,11 @@ PLAN_SCHEMA: dict[str, Any] = {
                     "risk_level": {"type": "string"},
                     "requires_approval": {"type": "boolean"},
                     "depends_on": {"type": "array", "items": {"type": "string"}},
+                    "input_bindings": {
+                        "type": "object",
+                        "maxProperties": 32,
+                        "additionalProperties": StepInputBinding.model_json_schema(),
+                    },
                     "rollback_strategy": {"type": "string"},
                 },
             },
@@ -146,7 +153,14 @@ class PlannerAgent(
                 memory_block = "Past relevant memories:\n" + "\n".join(memory_lines) + "\n\n"
         goal_block = self._format_goal_context(goal_context)
         perception_block = self._format_perception_context(perception_context)
-        session_block = self._format_session_context(session_context)
+        from app.core.context_egress import filter_session_context
+
+        safe_session = (
+            filter_session_context(session_context, mode)
+            if isinstance(session_context, dict)
+            else (session_context if mode == "privacy" else None)
+        )
+        session_block = self._format_session_context(safe_session)
         context_blocks = memory_block + goal_block + perception_block + session_block
         if context_blocks:
             context_blocks += (
@@ -252,7 +266,7 @@ class PlannerAgent(
         return plan
 
     def _settings_for_mode(self, mode: str):
-        return get_effective_settings().model_copy(update={"mode": mode or "efficiency"})
+        return get_settings_for_mode(mode or "efficiency", settings=get_effective_settings())
 
     def _provider_for_settings(self, settings):
         try:
@@ -383,6 +397,12 @@ class PlannerAgent(
             if risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}:
                 args["dry_run"] = True
             depends_on = self._normalize_depends_on(raw.get("depends_on"), id_aliases)
+            input_bindings = {}
+            for name, value in (raw.get("input_bindings") or {}).items():
+                binding = StepInputBinding.model_validate(value)
+                input_bindings[name] = binding.model_copy(
+                    update={"step_id": id_aliases.get(binding.step_id, binding.step_id)}
+                )
             step = PlanStep(
                 id=step_ids[idx - 1],
                 task_id=task_id,
@@ -395,6 +415,7 @@ class PlannerAgent(
                 risk_level=risk,
                 requires_approval=bool(raw.get("requires_approval", risk.value.startswith(("R2", "R3")))),
                 depends_on=depends_on,
+                input_bindings=input_bindings,
                 rollback_strategy=str(raw.get("rollback_strategy", "")),
             )
             steps.append(step)
@@ -448,6 +469,8 @@ class PlannerAgent(
                 raise ValueError(f"Step {step.id} depends on unknown step id(s): {', '.join(missing)}")
             if step.id in step.depends_on:
                 raise ValueError(f"Step {step.id} cannot depend on itself.")
+            if any(binding.step_id not in step.depends_on for binding in step.input_bindings.values()):
+                raise ValueError(f"Step {step.id} input source must be an explicit dependency.")
 
 
 def _context_value(value: Any, key: str, default: Any = "") -> Any:

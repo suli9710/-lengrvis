@@ -28,19 +28,19 @@ assert.equal(lifecycle.mobileSessionTransition(null, "active"), "unlock");
 assert.equal(lifecycle.mobileSessionTransition("active", "active"), "none");
 
 const layoutSource = fs.readFileSync(mobilePath("app/_layout.tsx"), "utf8");
-const loadEffect = layoutSource.match(/useEffect\(\(\) => \{[\s\S]*?void loadSession\(\)[\s\S]*?\n  \}, \[([^\]]*)\]\);/);
+const loadEffect = layoutSource.match(/useEffect\(\(\) => \{[\s\S]*?void loadAndRefreshSession\(\)[\s\S]*?\n  \}, \[([^\]]*)\]\);/);
 assert.ok(loadEffect, "root layout must keep an explicit session-load effect");
 assert.doesNotMatch(loadEffect[1], /pathname/, "route navigation must not reload the stored session");
 assert.match(
   loadEffect[0],
-  /if \(stored\) \{\s*const refreshed = await refreshMobileSession\(stored\)/,
+  /void loadAndRefreshSession\(\)/,
   "startup and foreground unlock must rotate every persisted session after authenticated storage access",
 );
-assert.match(layoutSource, /refreshMobileSession\(baseSession\)/, "root layout must refresh a paired token before expiry");
-assert.match(layoutSource, /replaceSessionIfTokenMatches/, "late refreshes must use compare-and-swap persistence");
+assert.match(layoutSource, /refreshAndStoreSession\(baseSession\)/, "root layout must refresh a paired token before expiry through the shared manager");
+assert.doesNotMatch(layoutSource, /refreshMobileSession|replaceSessionIfTokenMatches/, "effects must not split network rotation from persistence");
 assert.match(
   loadEffect[0],
-  /if \(!replaced\) \{\s*setSessionLoadAttempt\(\(attempt\) => attempt \+ 1\);\s*return;\s*\}/,
+  /if \(error instanceof SessionChangedError\) \{\s*setSessionLoadAttempt\(\(attempt\) => attempt \+ 1\);\s*return;\s*\}/,
   "an initial compare-and-swap conflict must reload the newer stored session instead of staying in loading",
 );
 assert.match(
@@ -55,7 +55,7 @@ assert.match(
 );
 assert.match(
   layoutSource,
-  /if \(!replaced\) \{\s*setSession\(null\);\s*setSessionLoadState\("loading"\);\s*setSessionLoadAttempt\(\(attempt\) => attempt \+ 1\);/,
+  /if \(!nextSession\) \{\s*setSession\(null\);\s*setSessionLoadState\("loading"\);\s*setSessionLoadAttempt\(\(attempt\) => attempt \+ 1\);/,
   "a scheduled-refresh CAS conflict must fail closed and reload authenticated storage",
 );
 assert.match(layoutSource, /sessionLockEpochRef\.current === lockEpoch/, "late async work must not cross a background lock boundary");
@@ -67,4 +67,12 @@ assert.match(
 assert.match(layoutSource, /if \(sessionLocked\) \{[\s\S]*?locked[\s\S]*?\n  \}/, "the locked gate must win over late async state updates");
 assert.match(layoutSource, /setSessionRefreshAttempt\(0\)/, "a successful refresh must reset retry backoff for the next token lifetime");
 
-console.log("Mobile session lifecycle smoke passed");
+Promise.all([
+  require("./session-manager-smoke.cjs").runSessionManagerSmoke(),
+  require("./session-unlock-smoke.cjs").runSessionUnlockSmoke()
+])
+  .then(() => console.log("Mobile session lifecycle smoke passed"))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

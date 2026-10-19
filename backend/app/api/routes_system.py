@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -19,6 +18,7 @@ from app.security.native_confirmation import (
     require_native_confirmation,
 )
 from app.services import (
+    privacy_erase_service,
     support_package_service,
     system_service,
 )
@@ -54,6 +54,7 @@ def export_diagnostics(request: Request):
 ERASE_LOCAL_DATA_CONFIRM = "erase-local-data"
 ERASE_LOCAL_DATA_NATIVE_ACTION = "erase_local_data"
 ERASE_LOCAL_DATA_ENDPOINT = "/api/system/privacy/erase-local-data"
+ERASE_RESERVATION_TOKEN_HEADER = "x-lengrvis-erase-reservation-token"  # noqa: S105 - HTTP header name, not a token.
 
 
 @router.post("/system/privacy/erase-local-data")
@@ -62,6 +63,7 @@ def erase_local_data(
     confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
     timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
     signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+    reservation_token: str = Header("", alias=ERASE_RESERVATION_TOKEN_HEADER),
 ):
     """One-click local personal data deletion (PIPL/GDPR deletion-right entry).
 
@@ -77,6 +79,12 @@ def erase_local_data(
             detail=f'Confirmation required: pass {{"confirm": "{ERASE_LOCAL_DATA_CONFIRM}"}}.',
         )
     include_settings = _erase_include_settings(payload)
+    if payload.get("operation_id"):
+        settings = get_effective_settings()
+        state = privacy_erase_service.erase_reserved_content(
+            settings.data_dir, operation_id=str(payload["operation_id"]), token=reservation_token
+        )
+        return state
     native_confirmation = require_native_confirmation(
         action=ERASE_LOCAL_DATA_NATIVE_ACTION,
         endpoint=ERASE_LOCAL_DATA_ENDPOINT,
@@ -89,17 +97,8 @@ def erase_local_data(
     db.require_sensitive_integrity_ok()
     settings = get_effective_settings()
 
-    deleted_packages = 0
-    export_dir = Path(settings.data_dir) / "diagnostic-packages"
-    if export_dir.is_dir():
-        for package in export_dir.glob("*.json"):
-            try:
-                package.unlink()
-                deleted_packages += 1
-            except OSError:
-                continue
-
-    counts = db.erase_local_user_data(include_settings=include_settings)
+    counts, files = privacy_erase_service.erase_local_content(settings.data_dir, include_settings=include_settings)
+    deleted_packages = files["diagnostic_packages"]
     total_rows = sum(counts.values())
     preserved = ["audit_events"]
     if not include_settings:
@@ -123,12 +122,69 @@ def erase_local_data(
             "rows_by_table": counts,
             "rows_total": total_rows,
             "diagnostic_packages": deleted_packages,
+            "managed_files": files,
         },
         "preserved": preserved,
         "manual_cleanup": {
             "log_dirs": "not_deleted_at_runtime_see_settings_system_info",
         },
         "audit": "erase_event_appended_to_local_audit_chain",
+    }
+
+
+@router.post("/system/privacy/erase-local-data/prepare")
+def prepare_local_data_erase(
+    payload: dict,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+):
+    if str(payload.get("confirm") or "") != ERASE_LOCAL_DATA_CONFIRM:
+        raise HTTPException(status_code=400, detail="Confirmation required: erase-local-data.")
+    include_settings = _erase_include_settings(payload)
+    confirmation = require_native_confirmation(
+        action=ERASE_LOCAL_DATA_NATIVE_ACTION,
+        endpoint=ERASE_LOCAL_DATA_ENDPOINT,
+        approval_id="local-data",
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+        preview_hmac=_erase_local_data_hmac(payload),
+    )
+    db.require_sensitive_integrity_ok()
+    return privacy_erase_service.prepare_local_erase(
+        include_settings=include_settings, confirmation_id=confirmation["confirmation_id"]
+    )
+
+
+@router.post("/system/privacy/erase-local-data/complete")
+def complete_local_data_erase(
+    payload: dict,
+    reservation_token: str = Header("", alias=ERASE_RESERVATION_TOKEN_HEADER),
+):
+    desktop_complete = payload.get("desktop_complete")
+    if not isinstance(desktop_complete, bool):
+        raise HTTPException(status_code=422, detail="desktop_complete must be a boolean.")
+    state = privacy_erase_service.finish_local_erase(
+        operation_id=str(payload.get("operation_id") or ""),
+        token=reservation_token,
+        desktop_complete=desktop_complete,
+    )
+    if state["status"] == "complete":
+        audit_core.record("privacy.local_data_erased", "user", {"operation_id": state["operation_id"]})
+    else:
+        audit_core.record("privacy.local_data_erase_incomplete", "user", {"operation_id": state["operation_id"]})
+    preserved = ["audit_events"]
+    if not state["include_settings"]:
+        preserved.extend(["app_settings", "permission_policies"])
+    return {
+        "ok": state["status"] == "complete",
+        "scope": "local_only",
+        "deleted": state.get("deleted", {}),
+        "preserved": preserved,
+        "manual_cleanup": {"log_dirs": "not_deleted_at_runtime_see_settings_system_info"},
+        "audit": "erase_event_appended_to_local_audit_chain",
+        "progress": {key: state[key] for key in ("operation_id", "status", "backend", "desktop")},
     }
 
 

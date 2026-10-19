@@ -6,6 +6,7 @@ import type {
   DesktopScheduleEnableRequest
 } from "../../../shared/types";
 import {
+  ApiRequestValidationError,
   rejectUnexpectedBridgeKeys,
   validateBridgeBoolean,
   validateBridgeEnum,
@@ -22,10 +23,11 @@ const MEMORY_CONFLICT_STATUSES = new Set(["none", "conflicting", "resolved", "su
 
 export function validateMemorySaveRequest(value: unknown): DesktopMemorySaveRequest {
   const request = validatePlainBridgeBody(value, "memory save request");
-  rejectUnexpectedBridgeKeys(request, new Set(["content", "tags", "taskId", "task_id", "kind"]), "memory save request");
+  rejectUnexpectedBridgeKeys(request, new Set(["content", "tags", "taskId", "task_id", "kind", "supersedes"]), "memory save request");
   const content = validateBridgeStringValue(request.content, "memory content", 8_000, { allowEmpty: false, trim: true });
   return {
     content,
+    ...(request.supersedes === undefined || request.supersedes === "" ? {} : { supersedes: validateBridgeIdentifier(request.supersedes, "superseded memory id") }),
     tags: validateOptionalStringList(request.tags, "memory tags", 20, 64),
     taskId: request.taskId === undefined && request.task_id === undefined
       ? undefined
@@ -76,7 +78,7 @@ export function validateMemoryReviewRequest(value: unknown): DesktopMemoryReview
 
 export function validateScheduleCreateRequest(value: unknown): DesktopScheduleCreateRequest {
   const request = validatePlainBridgeBody(value, "schedule create request");
-  rejectUnexpectedBridgeKeys(request, new Set(["cron", "goal", "mode", "note"]), "schedule create request");
+  rejectUnexpectedBridgeKeys(request, new Set(["cron", "goal", "mode", "note", "timezone"]), "schedule create request");
   const cron = validateBridgeStringValue(request.cron, "schedule cron", 256, { allowEmpty: false, trim: true });
   const goal = validateBridgeStringValue(request.goal, "schedule goal", 20_000, { allowEmpty: false, trim: true });
   const mode = validateBridgeEnum<DesktopScheduleCreateRequest["mode"] & string>(
@@ -89,7 +91,17 @@ export function validateScheduleCreateRequest(value: unknown): DesktopScheduleCr
     request.note === undefined || request.note === null
       ? undefined
       : validateBridgeStringValue(request.note, "schedule note", 2_000, { allowEmpty: true, trim: true });
-  return note === undefined ? { cron, goal, mode } : { cron, goal, mode, note };
+  const body: DesktopScheduleCreateRequest = note === undefined ? { cron, goal, mode } : { cron, goal, mode, note };
+  if (request.timezone !== undefined) {
+    const timezone = validateBridgeStringValue(request.timezone, "schedule timezone", 128, { allowEmpty: false, trim: true });
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timezone });
+    } catch {
+      throw new ApiRequestValidationError("schedule timezone is invalid");
+    }
+    body.timezone = timezone;
+  }
+  return body;
 }
 
 export function validateScheduleEnableRequest(scheduleId: unknown, enabled: unknown): DesktopScheduleEnableRequest {

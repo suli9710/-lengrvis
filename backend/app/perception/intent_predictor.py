@@ -4,9 +4,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from app.core.session_context import SessionContext
+from app.perception.generation import capture_generation
 from app.perception.schemas import AppContext, ScreenState, UIElement
 
 CONFIDENCE_THRESHOLD = 0.8
@@ -16,6 +17,7 @@ MODEL_SOURCE = "model"
 
 
 class IntentSuggestion(BaseModel):
+    _data_generation: tuple[str, int] = PrivateAttr(default_factory=capture_generation)
     id: str
     title: str
     prompt: str
