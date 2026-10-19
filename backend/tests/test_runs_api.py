@@ -145,6 +145,7 @@ def _fake_send2trash(path: str) -> None:
 def test_run_api_routes_developer_engine_and_replays_events(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_BASE_URL", "http://127.0.0.1:11434/v1")
     fake_cli = tmp_path / "fake_lengrvis_success.py"
     fake_cli.write_text(
         """
@@ -598,6 +599,7 @@ def test_auto_routing_uses_developer_when_writes_enabled_for_pytest_fix_goal(mon
 def test_developer_writes_enabled_run_requires_backend_approval_before_launch(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_BASE_URL", "http://127.0.0.1:11434/v1")
     monkeypatch.setenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", "true")
     record_path = tmp_path / "lengrvis_argv.json"
     fake_cli = tmp_path / "fake_lengrvis_writes.py"

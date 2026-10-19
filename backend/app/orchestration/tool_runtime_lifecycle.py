@@ -66,7 +66,10 @@ class ToolRuntimeLifecycleMixin:
         *,
         approval_id: str | None,
     ) -> tuple[ToolCall, bool]:
+        from app.services.butler_effects import submission_binding_hmac, submission_identity
+
         orchestrator = self.orchestrator
+        submission_digest = submission_identity(step.tool_name, args) or ""
         safe_args = self._redact_tool_args(args, tool)
         risk_binding = runtime.extra_context.get("effective_risk_binding")
         if not isinstance(risk_binding, dict):
@@ -94,6 +97,7 @@ class ToolRuntimeLifecycleMixin:
             risk_review_id=normalized_risk_binding["review_id"],
             risk_binding_version=normalized_risk_binding["version"],
             execution_intent_key=execution_intent_key,
+            submission_digest=submission_digest,
             execution_key=build_tool_execution_key(
                 task=task,
                 step_id=step.id,
@@ -109,6 +113,8 @@ class ToolRuntimeLifecycleMixin:
             status="prepared",
             dry_run=False,
         )
+        if submission_digest:
+            call.submission_binding_hmac = submission_binding_hmac(call)
         call, created = reserve_prepared_tool_call(call)
         runtime.extra_context["effective_risk_binding"] = tool_call_risk_binding(call)
         if not created:
@@ -152,7 +158,7 @@ class ToolRuntimeLifecycleMixin:
         after_phase = "after_approved" if approval_id else "after"
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
         tool_context = runtime.tool_context()
-        tool_context.update({"task_id": task.id, "step_id": step.id})
+        tool_context.update({"task_id": task.id, "step_id": step.id, "_executing_tool_call_id": call.id})
         clear_tool_output_provenance(tool_context)
         tool_context["_expected_resource_state"] = self._approved_resource_state(approval_id)
         # This path runs only after PolicyEngine review (auto-clear) or an atomic

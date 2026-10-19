@@ -1,0 +1,41 @@
+[
+  {
+    "tool": "browser.submit_form",
+    "previous_calls": 0,
+    "stored_args": {
+      "url": "https://example.com/test-form",
+      "selector": "***",
+      "fields": "***",
+      "dry_run": false
+    },
+    "guard_before_claim": false,
+    "guard_after_own_claim": false,
+    "actual_executor_calls": 1,
+    "ok": true,
+    "error": "",
+    "guard_with_committed_prior": false,
+    "continuation_guard_allows_same_submission": true
+  },
+  {
+    "tool": "browser.act",
+    "previous_calls": 0,
+    "stored_args": {
+      "action": {
+        "kind": "submit",
+        "url": "https://example.com/test-form",
+        "selector": "***",
+        "fields": {
+          "reference": "***"
+        }
+      },
+      "dry_run": false
+    },
+    "guard_before_claim": false,
+    "guard_after_own_claim": false,
+    "actual_executor_calls": 1,
+    "ok": true,
+    "error": "",
+    "guard_with_committed_prior": false,
+    "continuation_guard_allows_same_submission": true
+  }
+]

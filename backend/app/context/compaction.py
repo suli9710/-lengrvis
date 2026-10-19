@@ -157,7 +157,9 @@ def compact_session_context(
     store = session_store or get_session_context_store()
     store.load(session_id or store.current.id)
     expected_updated_at = store.current.updated_at
-    session_context = store.planning_context()
+    from app.core.context_egress import filter_session_context
+
+    session_context = filter_session_context(store.planning_context(), (settings or get_effective_settings()).mode)
     result = manual_compact_messages(
         messages,
         settings,

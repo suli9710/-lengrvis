@@ -772,9 +772,7 @@ def _decide_approval(
             "Approval authorization expired.",
         )
         if expired:
-            from app.services.approval_event_service import publish_approval_decided
-
-            publish_approval_decided(Approval.model_validate(expired))
+            _publish_expired_approval(Approval.model_validate(expired))
         raise HTTPException(status_code=409, detail="Approval authorization expired.")
     if existing_approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
@@ -786,9 +784,7 @@ def _decide_approval(
         if state_error:
             expired = db.expire_approval_if_pending(approval_id, now_iso(), state_error)
             if expired:
-                from app.services.approval_event_service import publish_approval_decided
-
-                publish_approval_decided(Approval.model_validate(expired))
+                _publish_expired_approval(Approval.model_validate(expired))
             raise HTTPException(status_code=409, detail="Approval is no longer executable.")
     decided_at = now_iso()
     if claims is not None and authorized_at is None and auth_context is None:
@@ -810,9 +806,7 @@ def _decide_approval(
         raise HTTPException(status_code=409, detail=f"Approval is already {existing_approval.status}.")
     if data.get("status") == ApprovalStatus.EXPIRED.value:
         expired_approval = Approval.model_validate(data)
-        from app.services.approval_event_service import publish_approval_decided
-
-        publish_approval_decided(expired_approval)
+        _publish_expired_approval(expired_approval)
         raise HTTPException(status_code=409, detail="Approval authorization expired.")
 
     from app.services.approval_event_service import publish_approval_decided
@@ -820,6 +814,14 @@ def _decide_approval(
     approval = Approval.model_validate(data)
     publish_approval_decided(approval)
     return approval
+
+
+def _publish_expired_approval(approval: Approval) -> None:
+    from app.services.approval_event_service import publish_approval_decided
+    from app.services.run_service import reconcile_expired_approvals
+
+    publish_approval_decided(approval)
+    reconcile_expired_approvals([approval])
 
 
 def _expire_stale_approval_records() -> None:
@@ -830,6 +832,9 @@ def _expire_stale_approval_records() -> None:
 
     for item in expired:
         publish_approval_decided(Approval.model_validate(item))
+    from app.services.run_service import reconcile_expired_approvals
+
+    reconcile_expired_approvals([Approval.model_validate(item) for item in expired])
 
 
 def _approval_state_error(approval_id: str) -> str:

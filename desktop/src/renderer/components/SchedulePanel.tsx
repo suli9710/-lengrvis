@@ -8,6 +8,7 @@ import { CollectionPanelStatus, useCollectionPanelState } from "./useCollectionP
 interface ScheduledTask {
   id: string;
   cron: string;
+  timezone?: string;
   goal: string;
   mode: string;
   enabled: boolean;
@@ -21,6 +22,7 @@ interface SchedulePanelProps {
 }
 
 export function SchedulePanel({ api }: SchedulePanelProps) {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const [draftCron, setDraftCron] = useState("*/30 * * * *");
   const [draftGoal, setDraftGoal] = useState("");
   const [draftMode, setDraftMode] = useState<"privacy" | "efficiency" | "hybrid">("privacy");
@@ -43,7 +45,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
       setMutationError("请填写目标描述");
       return;
     }
-    await mutate("create", () => api.createSchedule({ cron: draftCron, goal, mode: draftMode }), "创建定时任务失败", async () => {
+    await mutate("create", () => api.createSchedule({ cron: draftCron, timezone, goal, mode: draftMode }), "创建定时任务失败", async () => {
       setDraftGoal("");
       await refresh();
     });
@@ -73,7 +75,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
               onChange={(event) => setDraftCron(event.currentTarget.value)}
               placeholder="*/30 * * * *"
             />
-            <em className="field-hint">用 Cron 表达式，例如 */30 * * * * 表示每 30 分钟运行一次。</em>
+            <em className="field-hint">按 {timezone} 时区运行。Cron 表达式 */30 * * * * 表示每 30 分钟运行一次。</em>
           </label>
           <label className="field schedule-form__goal">
             <span>任务目标</span>
@@ -134,6 +136,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
                   <div className="schedule-meta muted">
                     <CalendarClock size={16} aria-hidden="true" />
                     <code>{item.cron}</code>
+                    <span>{item.timezone || "UTC"}</span>
                     <span className="schedule-mode">{zhMode(item.mode)}</span>
                     <span className={`schedule-enabled schedule-enabled--${item.enabled ? "on" : "off"}`}>
                       {item.enabled ? "运行中" : "已暂停"}
@@ -141,8 +144,8 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
                   </div>
                   <p className="schedule-goal">{item.goal}</p>
                   <p className="schedule-status muted">
-                    下次：{item.next_run_at ? new Date(item.next_run_at).toLocaleString() : "—"}
-                    {item.last_status ? ` · 上次：${item.last_status}` : ""}
+                    下次：{item.next_run_at ? new Date(item.next_run_at).toLocaleString(undefined, { timeZone: item.timezone || "UTC" }) : "—"}
+                    {item.last_status ? ` · 上次：${zhStatus(item.last_status)}` : ""}
                   </p>
                   <div className="schedule-actions">
                     <button
@@ -191,4 +194,13 @@ function zhMode(mode: string): string {
   if (mode === "efficiency") return "效率";
   if (mode === "hybrid") return "混合";
   return "隐私";
+}
+
+function zhStatus(status: string): string {
+  const labels: Record<string, string> = {
+    completed: "已完成", failed: "失败", denied: "已拒绝", cancelled: "已取消",
+    rolled_back: "已回滚", repair_required: "需要修复", awaiting_approval: "等待审批",
+    paused: "已暂停", running: "执行中"
+  };
+  return labels[status] || status.replace(/^failed:/, "失败：");
 }

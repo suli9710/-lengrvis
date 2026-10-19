@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -91,6 +92,7 @@ def _settings(**overrides) -> AppSettings:
         provider_name="openai",
         api_key="sk-test",
         mode="efficiency",
+        allow_file_content_upload=overrides.pop("allow_file_content_upload", True),
         llm_api_max_retries=overrides.pop("llm_api_max_retries", 1),
         llm_api_retry_backoff_seconds=overrides.pop("llm_api_retry_backoff_seconds", 0),
         llm_api_circuit_failure_threshold=overrides.pop("llm_api_circuit_failure_threshold", 2),
@@ -324,6 +326,16 @@ def test_responses_vision_payload_honors_storage_default(monkeypatch, tmp_path):
 
     assert FakeAsyncClient.requests[0]["json"]["store"] is False
     assert FakeAsyncClient.requests[1]["json"]["store"] is True
+
+
+def test_cloud_vision_requires_file_consent_before_posting(monkeypatch, tmp_path):
+    image = tmp_path / "private.png"
+    image.write_bytes(b"private image")
+    _patch_shared_client(monkeypatch)
+    provider = OpenAICompatibleProvider(_settings(allow_file_content_upload=False))
+    with pytest.raises(ValueError, match="upload permission"):
+        asyncio.run(provider.vision(str(image), "describe"))
+    assert FakeAsyncClient.requests == []
 
 
 def test_chat_posts_to_pinned_ip_with_host_and_sni_preserved(monkeypatch):
@@ -723,6 +735,56 @@ def test_structured_chat_native_mode_fail_closes_when_json_schema_is_unsupported
         asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
 
     assert exc_info.value.failure_kind == "native_unsupported"
+
+
+@pytest.mark.parametrize("wrapped_error", [False, True])
+@pytest.mark.parametrize("mode", ["auto", "native"])
+@pytest.mark.parametrize("valid_output", [True, False])
+def test_planner_schema_dialect_rejection_keeps_local_validation(monkeypatch, wrapped_error, mode, valid_output):
+    from app.agents.planner_agent import PLAN_SCHEMA
+
+    _patch_shared_client(monkeypatch)
+    error = {
+        "error": {
+            "message": "Invalid schema for response_format: additionalProperties is required to be false.",
+            "param": "text.format.schema",
+            "code": "invalid_json_schema",
+        }
+    }
+    if wrapped_error:
+        error = {"error": {"code": "upstream_error", "message": json.dumps(error)}}
+    plan = {
+        "goal": "Read fixture",
+        "steps": [
+            {
+                "id": "read",
+                "agent_name": "ComputerAgent",
+                "tool_name": "ui_automation.get_property",
+                "description": "Read source",
+                "args": {"process_id": 123, "name": "Fixture editor", "prop": "text"},
+                "depends_on": [],
+            }
+        ],
+    }
+    if not valid_output:
+        plan["steps"][0]["args"] = "not an argument object"
+    FakeAsyncClient.responses = [
+        _response(400, error),
+        _response(200, {"choices": [{"message": {"content": json.dumps(plan)}, "finish_reason": "stop"}]}),
+    ]
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode=mode, structured_output_repair_retries=0))
+    request = provider.structured_chat([{"role": "user", "content": "Read the fixture"}], PLAN_SCHEMA)
+    if mode == "native" or not valid_output:
+        with pytest.raises(LLMStructuredOutputError) as caught:
+            asyncio.run(request)
+        assert caught.value.failure_kind == ("native_unsupported" if mode == "native" else "schema_mismatch")
+    else:
+        assert asyncio.run(request) == plan
+    assert FakeAsyncClient.calls == (1 if mode == "native" else 2)
+    if mode == "auto":
+        fallback = FakeAsyncClient.requests[1]["json"]
+        assert "response_format" not in fallback
+        assert '"input_bindings"' in fallback["messages"][0]["content"]
 
 
 def test_structured_chat_prompt_repairs_invalid_json_once(monkeypatch):

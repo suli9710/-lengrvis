@@ -90,13 +90,27 @@ class ToolRuntimeApprovalFlowMixin:
             preview=preview,
             risk_binding=risk_binding,
         )
+        autonomy_scope_id = None
+        if task.metadata.get("butler_matter_id") and approval.risk_level.startswith("R2"):
+            from app.orchestration.butler_runtime import reversible_scope
+
+            autonomy_scope_id = reversible_scope(task, tool, step.args, preview)
+            if autonomy_scope_id:
+                approval.source = "autonomy_scope"
+                approval.source_grant_id = autonomy_scope_id
         db.upsert_model("approvals", approval)
-        publish_approval_created(approval)
+        # The coordinator decides only after the waiting step and plan have
+        # been persisted; deciding here would correctly expire an approval
+        # whose step still appears PENDING in the stored plan.
+        if not autonomy_scope_id:
+            publish_approval_created(approval)
         set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor="ToolRuntime")
         orchestrator.bus.publish_text(
             task.id,
             "HumanGateAgent",
-            "Waiting for user approval before executing modifying operation.",
+            "Autonomy scope authorized this reversible operation."
+            if autonomy_scope_id
+            else "Waiting for user approval before executing modifying operation.",
             message_type=MessageType.REVIEW,
             step_id=step.id,
         )

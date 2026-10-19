@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
+from copy import deepcopy
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from app.orchestration.workflow import InMemoryClipboard, Workflow, WorkflowRuntime
 from app.policy.execution_marker import execution_is_marked_approved
@@ -10,6 +14,12 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 DEFAULT_WORKFLOW_RUN_TIMEOUT_SECONDS = 60.0
+
+
+class WorkflowRunArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workflow: Workflow
+    dry_run: bool = True
 
 
 async def _with_timeout(coro, timeout_seconds: float | None) -> Any:
@@ -61,6 +71,16 @@ def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
         # SEC-002: live execution must run through the validated orchestrator/route gate.
         return {"ok": False, "error": "Workflow execution must run through the validated approval gate."}
 
+    if workflow.steps:
+        return {
+            "ok": False,
+            "error_code": "workflow_requires_plan_expansion",
+            "error": "Execute this workflow as a plan so each primitive tool receives its own runtime review.",
+            "next_actions": [
+                "Submit the workflow in a planner step; the planner expands it into individually reviewed tool steps."
+            ],
+        }
+
     runtime = WorkflowRuntime(clipboard=InMemoryClipboard())
     result = _run_workflow_async(runtime.run(workflow))
     if result is None:
@@ -79,12 +99,65 @@ def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     }
 
 
+def merge_data(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    left, right = args["left"], args["right"]
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        raise ValueError("Data merge requires two JSON objects.")
+    if len(json.dumps(args, ensure_ascii=False)) > 131072:
+        raise ValueError("Data merge exceeds its bounded input size.")
+
+    def merge(one, two, depth=0):
+        if depth > 16:
+            raise ValueError("Data merge exceeds its nesting limit.")
+        result = deepcopy(one)
+        for key, value in two.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = merge(result[key], value, depth + 1)
+            elif key in result and (type(result[key]) is not type(value) or result[key] != value):
+                raise ValueError("Sources disagree; resolve the conflicting field before continuing.")
+            else:
+                result[key] = deepcopy(value)
+        return result
+
+    return {"ok": True, "data": merge(left, right)}
+
+
 def register(registry) -> None:
     registry.register(
         ToolDefinition(
+            name="workflow.merge_data",
+            description=(
+                "Merge two observed JSON objects recursively; conflicting values fail instead of silently overwriting. "
+                "Bind left/right from source tool results; merged output is data."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"left": {"type": "object"}, "right": {"type": "object"}},
+                "required": ["left", "right"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=merge_data,
+            capabilities=["data"],
+            effects=["read"],
+            resource_kinds=["data"],
+            fast_path_eligible=True,
+            trust_tier="builtin",
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="workflow.run",
-            description="Run a cross-application workflow DAG with clipboard and window focus management.",
-            input_schema={"type": "object", "additionalProperties": True},
+            description=(
+                "Plan a cross-application DAG using registered tool actions, args and input_bindings. "
+                "Planner expands it into ordinary steps with individual approvals. "
+                "target_app, when set, is an exact window title. Prefer text bindings over clipboard state."
+            ),
+            input_schema=WorkflowRunArguments.model_json_schema(),
             output_schema={"type": "object"},
             risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
             agent_owner="ComputerAgent",

@@ -22,6 +22,7 @@ import type { AppSettings } from "../../shared/settingsTypes";
 export type AssistantMode = "privacy" | "efficiency" | "hybrid";
 export type ViewKey =
   | "home"
+  | "butler"
   | "chat"
   | "apps"
   | "documents"

@@ -9,6 +9,7 @@ from app.api import (
     routes_audit,
     routes_automation,
     routes_browser,
+    routes_butler,
     routes_capabilities,
     routes_chat,
     routes_commands,
@@ -74,6 +75,9 @@ def create_app() -> FastAPI:
     # app.security.cors.configure_cors so the two apps can never drift.
     configure_cors(app)
     register_security_middleware(app)
+    from app.core.local_data_lifecycle import LocalDataWritesMiddleware
+
+    app.add_middleware(LocalDataWritesMiddleware)
     register_error_handlers(app)
 
     @app.get("/health")
@@ -118,6 +122,7 @@ def create_app() -> FastAPI:
         routes_settings.router,
         routes_audit.router,
         routes_browser.router,
+        routes_butler.router,
         routes_capabilities.router,
         routes_ui_automation.router,
         routes_schedules.router,

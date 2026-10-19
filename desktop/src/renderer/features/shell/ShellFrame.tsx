@@ -61,6 +61,7 @@ export const primaryNavGroups: NavGroup[] = [
   {
     items: [
       { icon: Home, label: "首页", view: "home" },
+      { icon: Sparkles, label: "管家", view: "butler" },
       { icon: MessageSquarePlus, label: "对话", view: "chat" },
       { icon: TerminalSquare, label: "进度", view: "agents" },
       { icon: Settings, label: "设置", view: "settings" }
@@ -93,6 +94,7 @@ export const primaryNavGroups: NavGroup[] = [
 export const primaryNavItems: NavItem[] = primaryNavGroups.flatMap((group) => group.items);
 
 export const viewTitles: Record<ViewKey, ViewTitle> = {
+  butler: { title: "AI 管家", subtitle: "正在处理、等待跟进、需要你决定的日常事务" },
   browser: { title: "浏览器监看", subtitle: "查看浏览器活动，并在需要时接管控制" },
   home: { title: "首页", subtitle: "让 Lengrvis 帮你处理电脑上的事务" },
   chat: { title: "对话", subtitle: "自然对话，全程 Agent 协作" },

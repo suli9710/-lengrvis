@@ -131,9 +131,18 @@ def _focused_control() -> UIElement | None:
 
 def _focused_control_from_comtypes() -> UIElement | None:
     try:
-        import comtypes.client
+        from app.perception import ui_automation_com
 
-        automation = comtypes.client.CreateObject("UIAutomationClient.CUIAutomation")
+        return ui_automation_com.run_sync(_read_focused_control)
+    except _comtypes_error_types():
+        return None
+
+
+def _read_focused_control() -> UIElement | None:
+    from app.perception.ui_automation_com import create_automation
+
+    try:
+        automation = create_automation()
         element = automation.GetFocusedElement()
         if element is None:
             return None

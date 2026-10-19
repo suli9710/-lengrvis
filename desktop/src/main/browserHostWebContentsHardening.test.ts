@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +9,21 @@ import {
 } from "./browserHostWebContentsHardening";
 
 describe("browserHostWebContentsHardening", () => {
+  it("removes the shared download listener after the last tab closes", () => {
+    const session = Object.assign(new EventEmitter(), {
+      webRequest: { onBeforeRequest: vi.fn() },
+      setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn()
+    });
+    const first = Object.assign(new EventEmitter(), { id: 1, session, setWindowOpenHandler: vi.fn(), setAudioMuted: vi.fn() });
+    const second = Object.assign(new EventEmitter(), { id: 2, session, setWindowOpenHandler: vi.fn(), setAudioMuted: vi.fn() });
+    hardenEmbeddedWebContents(first as unknown as WebContents);
+    hardenEmbeddedWebContents(second as unknown as WebContents);
+    expect(session.listenerCount("will-download")).toBe(1);
+    first.emit("destroyed");
+    expect(session.listenerCount("will-download")).toBe(1);
+    second.emit("destroyed");
+    expect(session.listenerCount("will-download")).toBe(0);
+  });
   it("hardens embedded contents with denied popups, navigation, permissions, and audio", () => {
     const captured: {
       willNavigate?: (event: { preventDefault: () => void }, url: string) => void;
@@ -150,5 +166,40 @@ describe("browserHostWebContentsHardening", () => {
     await handleBrowserHostBeforeRequest({ url: "about:blank" }, callback);
 
     expect(callback).toHaveBeenCalledWith({ cancel: false });
+  });
+
+  it("routes shared profile requests to the owning tab without replacing earlier guards", async () => {
+    const onBeforeRequest = vi.fn();
+    const session = {
+      webRequest: { onBeforeRequest }, on: vi.fn(),
+      setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn()
+    };
+    const destroyedHandlers = new Map<number, () => void>();
+    const tab = (id: number) => ({ id, session,
+      on: vi.fn((event: string, handler: () => void) => { if (event === "destroyed") destroyedHandlers.set(id, handler); }),
+      setWindowOpenHandler: vi.fn(), setAudioMuted: vi.fn()
+    }) as unknown as WebContents;
+    const first = tab(1), second = tab(2);
+    const deny = vi.fn(() => false), allow = vi.fn(() => true);
+    hardenEmbeddedWebContents(first, { onBeforeRequest: deny });
+    hardenEmbeddedWebContents(second, { onBeforeRequest: allow });
+    expect(onBeforeRequest).toHaveBeenCalledTimes(1);
+    const listener = onBeforeRequest.mock.calls[0][0];
+    const intercepted = (id: number) => new Promise(resolve => listener({ url: "about:blank", webContentsId: id }, resolve));
+    expect(await intercepted(1)).toEqual({ cancel: true });
+    expect(await intercepted(2)).toEqual({ cancel: false });
+    expect(deny).toHaveBeenCalledTimes(1);
+    expect(allow).toHaveBeenCalledTimes(1);
+    destroyedHandlers.get(1)!();
+    expect(await intercepted(1)).toEqual({ cancel: false });
+    expect(deny).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an approval filter override the network boundary", async () => {
+    const callback = vi.fn();
+    const filter = vi.fn(() => true);
+    await handleBrowserHostBeforeRequest({ url: "file:///C:/private.txt" }, callback, filter);
+    expect(filter).toHaveBeenCalledWith({ url: "file:///C:/private.txt" }, false);
+    expect(callback).toHaveBeenCalledWith({ cancel: true });
   });
 });

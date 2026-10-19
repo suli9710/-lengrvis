@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 
 import { ChatPanel } from "../../components/ChatPanel";
+import { ButlerChatContext } from "../../features/butler/ButlerChatContext";
 import { PlanViewer } from "../../components/PlanViewer";
 import { RouteLoading } from "../../appViewModel";
 import type { AppSurfaceProps } from "../AppSurfaceTypes";
@@ -19,6 +20,9 @@ type ChatRouteProps = Pick<
   | "tasks"
   | "onExecuteSuggestion"
   | "onSendMessage"
+  | "butler"
+  | "onOpenButlerApproval"
+  | "onViewChange"
 >;
 
 export function ChatRoute({
@@ -31,11 +35,15 @@ export function ChatRoute({
   plan,
   tasks,
   onExecuteSuggestion,
-  onSendMessage
+  onSendMessage,
+  butler,
+  onOpenButlerApproval,
+  onViewChange
 }: ChatRouteProps) {
   return (
     <section className="conversation-view">
       <ChatPanel
+        context={butler ? <ButlerChatContext butler={butler} onOpenApproval={(matter) => onOpenButlerApproval?.(matter)} onOpenBrowser={() => onViewChange("browser")} onOpenOverview={() => onViewChange("butler")} /> : undefined}
         messages={messages}
         connectionState={connectionState}
         onSend={onSendMessage}

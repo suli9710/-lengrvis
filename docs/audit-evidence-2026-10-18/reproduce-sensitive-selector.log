@@ -1,0 +1,12 @@
+ssn false
+social_security false
+pin false
+atm_pin false
+totp false
+mfa_code false
+oauth_code false
+authCode false
+securityCode false
+cc-number false
+pan false
+credit_card true

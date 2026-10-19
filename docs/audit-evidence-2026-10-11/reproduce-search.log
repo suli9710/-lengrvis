@@ -1,0 +1,29 @@
+{
+  "matching_chunks_in_index": [
+    {
+      "chunk_index": 99
+    }
+  ],
+  "candidate_count": 80,
+  "matching_chunks_in_candidates": [],
+  "semantic_result": {
+    "query": "azimuthreceipt",
+    "results": [
+      {
+        "file_id": "file_3178f36f3ac74730b8d835ef49c4f873",
+        "chunk_id": "chunk_1bed1d1792b641eb82617f9e7d193c43",
+        "chunk_index": 0,
+        "path": "C:\\Users\\Suli\\AppData\\Local\\Temp\\mavris-review-search-rmbieejy\\workspace\\handbook.txt",
+        "name": "handbook.txt",
+        "snippet": "Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine introduction Routine i",
+        "score": 0.0019513704080406644,
+        "vector_score": 0.0,
+        "lexical_score": 0.19513704080406644
+      }
+    ],
+    "count": 1,
+    "candidate_count": 80,
+    "source": "fts_vector_rerank"
+  },
+  "fts_result_count": 1
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -222,7 +223,9 @@ def semantic_search(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
     query = str(args.get("query", ""))
     limit = int(args.get("limit") or 10)
     vector_module = importlib.import_module("app.indexer.vector_index")
-    return vector_module.VectorIndex().search(query, limit=limit, allowed_directories=_allowed(context))
+    return vector_module.VectorIndex().search(
+        query, limit=limit, allowed_directories=_allowed(context), settings=context.get("settings")
+    )
 
 
 def list_directory(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -234,6 +237,35 @@ def list_directory(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         stat = child.stat()
         entries.append({"path": str(child), "name": child.name, "is_dir": child.is_dir(), "size": stat.st_size})
     return {"entries": entries}
+
+
+def read_json(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    with path.open("rb") as source:
+        raw = source.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError("Structured input exceeds the 4 MiB read limit.")
+
+    def unique(pairs):
+        output = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("Structured input contains duplicate keys.")
+            output[key] = value
+        return output
+
+    def invalid_constant(_):
+        raise ValueError("Structured input contains a non-JSON number.")
+
+    data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique, parse_constant=invalid_constant)
+    return {"ok": True, "path": str(path), "data": data, "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def write_json(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    text = json.dumps(args["data"], ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    if len(text.encode("utf-8")) > 4 * 1024 * 1024:
+        raise ValueError("Structured output exceeds the 4 MiB write limit.")
+    return write_text({**args, "text": text}, context)
 
 
 def get_metadata(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -260,17 +292,44 @@ def read_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not path.is_file():
         return {"ok": False, "path": str(path), "error": "Path is not a file."}
     max_chars = max(1, min(int(args.get("max_chars") or READ_TEXT_MAX_CHARS), READ_TEXT_MAX_CHARS))
-    text = path.read_text(encoding="utf-8", errors="replace")
+    verifying = "expected_value" in args
+    if verifying and not isinstance(args["expected_value"], str):
+        raise ValueError("expected_value must be a string.")
+    content = path.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    try:
+        text = content.decode("utf-8-sig", errors="strict") if verifying else content.decode("utf-8", errors="replace")
+    except UnicodeDecodeError:
+        return {
+            "ok": False,
+            "verified": False,
+            "path": str(path),
+            "sha256": digest,
+            "error": "The saved file is not valid UTF-8 text.",
+            "error_code": "file_postcondition_failed",
+        }
+    if not verifying:
+        # Preserve the existing universal-newline behavior of ordinary reads.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
     truncated = len(text) > max_chars
-    return {
+    result = {
         "ok": True,
         "path": str(path),
         "text": text[:max_chars],
         "truncated": truncated,
         "chars": len(text),
-        "sha256": sha256_file(path),
+        "sha256": digest,
         "_resource_state": _resource_states(path),
     }
+    if verifying:
+        verified = text == args["expected_value"]
+        result.update(ok=verified, verified=verified)
+        if not verified:
+            result.update(
+                error="The saved file does not match the expected complete text.",
+                error_code="file_postcondition_failed",
+            )
+    return result
 
 
 def find_duplicates(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -665,6 +724,8 @@ def register(registry) -> None:
         ("file.get_metadata", get_metadata, RiskLevel.R0_READ_ONLY, False, True),
         ("file.hash_file", hash_file, RiskLevel.R0_READ_ONLY, False, True),
         ("file.read_text", read_text, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.read_json", read_json, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.write_json", write_json, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
         ("file.find_duplicates", find_duplicates, RiskLevel.R0_READ_ONLY, False, True),
         ("file.cleanup_scan", cleanup_scan, RiskLevel.R0_READ_ONLY, False, True),
         ("file.cleanup_plan", cleanup_plan, RiskLevel.R0_READ_ONLY, False, True),
@@ -701,11 +762,27 @@ def register(registry) -> None:
                 fast_path_eligible=read_only,
                 trust_tier="builtin",
                 sensitive_arg_keys=_sensitive_arg_keys(name),
+                tool_version="2" if name == "file.read_text" else "1",
+                compensation_strength="reversible"
+                if name
+                in {
+                    "file.copy",
+                    "file.move",
+                    "file.rename",
+                    "file.create_folder",
+                    "file.write_text",
+                    "file.write_json",
+                    "file.edit_text",
+                    "file.generate_markdown_report",
+                }
+                else "none",
             )
         )
 
 
 def _sensitive_arg_keys(name: str) -> list[str]:
+    if name == "file.read_text":
+        return ["expected_value"]
     if name == "file.write_text":
         return ["text"]
     if name == "file.edit_text":

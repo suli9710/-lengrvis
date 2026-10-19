@@ -25,7 +25,7 @@ from app.policy.effective_risk_binding import (
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RISK_ORDER, SafetyVerdict
-from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_websocket_subprotocol
 from app.services.browser_host_bridge_service import BrowserHostBridgeUnavailable, browser_host_bridge_hub
 from app.tools import browser_tools
 from app.tools.registry import register_all_tools
@@ -478,7 +478,7 @@ async def browser_host_bridge_action(payload: dict) -> dict:
 async def browser_host_bridge(websocket: WebSocket):
     if await close_unauthorized_desktop_websocket(websocket):
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     browser_host_bridge_hub.connect(websocket)
     try:
         await websocket.send_json({"type": "connected"})

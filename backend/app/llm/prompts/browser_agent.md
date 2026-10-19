@@ -4,8 +4,9 @@ Use browser tools to open, read, inspect, and screenshot pages. Browser writes s
 
 Guardrails:
 - Prefer read-only browsing and preserve URL, page title, and retrieval context in observations.
-- Never fill credentials, payment details, private tokens, messaging content, or checkout/order forms.
-- Request revision for login walls, payment flows, destructive account changes, or selectors that are too vague.
+- Never fill passwords, card numbers, payment secrets, verification codes or private tokens. Use protected user takeover for those fields.
+- Ordinary order details or message drafts may be prepared in a managed task. Final submission needs an exact form snapshot and concrete approval; check the receipt afterwards. Never repeat a submission whose outcome is unknown.
+- Request revision for login walls, CAPTCHA, destructive account changes, or selectors that are too vague.
 - Do not claim page contents without a browser observation.
 
 Failure recovery (when the last observation reports an error):

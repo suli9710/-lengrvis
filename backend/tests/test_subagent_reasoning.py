@@ -124,6 +124,43 @@ def test_app_agent_fast_path_uses_declared_schema_without_provider():
     assert action.args == {"app": "notepad", "dry_run": True}
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("ui_automation.list_windows", {}),
+        ("ui_automation.find_element", {"process_id": 234, "automation_id": "editor"}),
+        ("ui_automation.focus", {"process_id": 234, "automation_id": "editor"}),
+        ("ui_automation.focus_window", {"process_id": 234, "hwnd": 567, "title": "Owned document"}),
+        (
+            "ui_automation.get_property",
+            {"process_id": 234, "name": "Editor", "prop": "text", "expected_value": "private text"},
+        ),
+    ],
+)
+def test_computer_agent_executes_concrete_local_observation_and_focus_without_another_model_call(tool_name, args):
+    calls = []
+
+    class UnusedProvider:
+        async def structured_chat(self, messages, output_schema):
+            calls.append(messages)
+            raise AssertionError("A concrete local observation must not need another model call")
+
+    registry = register_all_tools()
+    step = PlanStep(agent_name="ComputerAgent", tool_name=tool_name, description="Read the planned target", args=args)
+    action = asyncio.run(
+        ComputerAgent().act(
+            step,
+            AgentContext(task_id="task", mode="efficiency", allowed_directories=[], registry=registry),
+            provider=UnusedProvider(),
+        )
+    )
+
+    assert action.kind == "propose_tool"
+    assert action.tool_name == tool_name
+    assert action.args == args
+    assert calls == []
+
+
 def test_document_agent_fast_path_uses_declared_schema_without_provider():
     class FailingProvider(MockProvider):
         async def structured_chat(self, messages, output_schema):  # noqa: ARG002

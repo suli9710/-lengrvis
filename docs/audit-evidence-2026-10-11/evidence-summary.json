@@ -1,0 +1,92 @@
+{
+  "verification": {
+    "head": "00500c4094608ac636ce9e55edae74ae9d7606bc",
+    "baseline_files": 1743,
+    "same_hash_count": 1743,
+    "changed_or_missing": []
+  },
+  "areas": {
+    "root": 29,
+    ".github": 13,
+    ".well-known": 1,
+    "backend": 806,
+    "ci": 1,
+    "desktop": 548,
+    "docs": 69,
+    "mobile": 128,
+    "scripts": 124,
+    "test_data": 24
+  },
+  "categories": {
+    "configuration_and_other": 66,
+    "documentation": 119,
+    "project_code_and_scripts": 1046,
+    "dependency_metadata": 8,
+    "tests_and_fixtures": 429,
+    "static_assets": 72,
+    "embedded_build_bootstrap": 3
+  },
+  "backend_suite": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "22",
+    "tests": "4797",
+    "time": "883.928",
+    "timestamp": "2026-10-10T17:56:29.533575+08:00",
+    "hostname": "DESKTOP-IU8C7V4"
+  },
+  "backend_skip_reasons": {
+    "Set MAVRIS_NATIVE_APP_ACCEPTANCE=1 to test an installed Windows application": 5,
+    "symlink_permission": 10,
+    "dir_fd no-follow is unavailable": 1,
+    "Unix permission model": 1,
+    "DPAPI is the secure backend on Windows": 3,
+    "DPAPI migration is covered on Windows": 1,
+    "POSIX object IDs are rejected earlier on Windows.": 1
+  },
+  "checks": {
+    "desktop": {
+      "typecheck": 0,
+      "test": 0,
+      "build:renderer": 0,
+      "smoke": 0
+    },
+    "mobile": {
+      "typecheck": 0,
+      "smoke:token": 0,
+      "smoke:consent": 0,
+      "smoke:session-lifecycle": 0,
+      "smoke:push-notifications": 0,
+      "smoke:push-subscription-lifecycle": 0,
+      "smoke:approval-status-label": 0,
+      "smoke:task-companion": 0,
+      "smoke:remote-input-grant": 0,
+      "smoke:wakeup-contract": 0,
+      "smoke:android-back": 0,
+      "smoke:android-hardening-plugin": 0,
+      "smoke:android-prebuild-network-security": 0,
+      "smoke:android-manifest-resources": 0,
+      "smoke:android-lan-tls": 0,
+      "smoke:eas-cli-compat": 0
+    },
+    "gates": {
+      "ruff": 0,
+      "hygiene": 0,
+      "dependency-locks": 0,
+      "threat-model": 0,
+      "maintainability": 0,
+      "release-readiness": 1,
+      "pip-check": 0
+    },
+    "dependencies": {
+      "npm-.": 1,
+      "npm-desktop": 1,
+      "npm-mobile": 1,
+      "pip-runtime": 0,
+      "pip-dev": 0,
+      "pip-build": 0,
+      "pip-acceleration": 0
+    }
+  }
+}

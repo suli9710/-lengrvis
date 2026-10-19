@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app.agents.parallel_review_agent import ParallelReviewAgent
+from app.config import AppSettings
 from app.core import db
 from app.core.schemas import Plan, PlanStep, SafetyReview, StepStatus, Task, TaskStatus
 from app.orchestration.handlers.context import StepExecutionOutcome
@@ -219,7 +220,7 @@ async def test_parallel_batch_denied_steps_do_not_enter_concurrent_execution(mon
             self.persisted: list[tuple[Plan, str]] = []
 
         def _tool_context(self) -> dict[str, Any]:
-            return {"registry": self.registry}
+            return {"registry": self.registry, "settings": AppSettings()}
 
         async def _execute_step(
             self,

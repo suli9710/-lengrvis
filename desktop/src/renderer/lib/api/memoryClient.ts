@@ -6,6 +6,7 @@ export interface SaveMemoryOptions {
   tags?: string[];
   taskId?: string;
   kind?: string;
+  supersedes?: string;
 }
 
 export interface RecallMemoryOptions {
@@ -37,21 +38,23 @@ export function saveMemoryEndpoint(
     content,
     tags: options.tags ?? [],
     taskId: options.taskId ?? "",
-    kind: options.kind ?? "fact"
+    kind: options.kind ?? "fact",
+    ...(options.supersedes ? { supersedes: options.supersedes } : {})
   };
   if (window.lengrvis?.memories) {
     return safeIpcApiRequest(() =>
       window.lengrvis.memories.save(input) as Promise<ApiResponse<BackendMemory>>
     );
   }
-  return request<BackendMemory, { content: string; tags: string[]; task_id: string; kind: string }>({
+  return request<BackendMemory, { content: string; tags: string[]; task_id: string; kind: string; supersedes?: string }>({
     endpoint: "/api/memories",
     method: "POST",
     body: {
       content: input.content,
       tags: input.tags,
       task_id: input.taskId,
-      kind: input.kind
+      kind: input.kind,
+      ...(input.supersedes ? { supersedes: input.supersedes } : {})
     }
   });
 }

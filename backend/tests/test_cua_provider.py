@@ -92,6 +92,48 @@ def test_resolve_cua_provider_auto_probes_openai_compatible_first():
     assert FakeAsyncClient.requests[0]["json"]["tools"][0]["type"] == "computer_use_preview"
 
 
+@pytest.mark.parametrize("provider_mode", ["auto", "openai", "openai_compatible"])
+def test_privacy_cua_resolution_does_not_probe_models(monkeypatch, provider_mode):
+    probe_calls = []
+
+    async def unexpected_probe(provider):
+        probe_calls.append(provider.source)
+        return {"available": True}
+
+    monkeypatch.setattr(cua_provider, "probe_cua_provider", unexpected_probe)
+    settings = _settings(mode="privacy", base_url="https://api.openai.com/v1")
+
+    result = asyncio.run(resolve_cua_provider(settings, mode=provider_mode, client_factory=FakeAsyncClient))
+
+    assert isinstance(result, dict)
+    assert result["status"] == "denied"
+    assert "Privacy mode" in result["reason"]
+    assert probe_calls == []
+    assert FakeAsyncClient.requests == []
+
+
+def test_privacy_cua_transport_rejects_instruction_and_screenshot_without_request():
+    settings = _settings(mode="privacy", allow_cloud_context=True, allow_browser_network=True)
+    provider = CUAProvider(settings, client_factory=FakeAsyncClient)
+    screenshot = "data:image/png;base64," + base64.b64encode(b"privacy-screenshot").decode("ascii")
+
+    result = asyncio.run(provider.run_step(instruction="privacy-instruction", screenshot=screenshot))
+
+    assert result["status"] == "denied"
+    assert "Privacy mode" in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
+def test_privacy_cua_direct_probe_does_not_request_model():
+    provider = CUAProvider(_settings(mode="privacy"), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(probe_cua_provider(provider))
+
+    assert result["available"] is False
+    assert "Privacy mode" in result["reason"]
+    assert FakeAsyncClient.requests == []
+
+
 def test_resolve_cua_provider_returns_degraded_when_unsupported():
     FakeAsyncClient.responses = [_response(404, {"error": {"message": "not found"}})]
 

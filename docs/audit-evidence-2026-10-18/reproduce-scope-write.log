@@ -1,0 +1,3 @@
+validate_task_action=PASS
+trusted_reversible_edit_allowed= True
+requires_runtime_approval= False

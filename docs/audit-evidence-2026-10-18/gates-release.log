@@ -1,0 +1,163 @@
+=== release readiness strict ===
+
+> lengrvis@0.1.2 release:readiness:strict
+> python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict
+
+{
+  "ok": false,
+  "strict": true,
+  "rc_release": false,
+  "dashboard": "docs\\release\\release-readiness-dashboard.md",
+  "rows": 11,
+  "p0_total": 7,
+  "p0_passed": 0,
+  "p0_waived": 0,
+  "p0_blocked": 0,
+  "p0_in_progress": 7,
+  "warnings": [
+    "RR-P0-001: stop-ship row is in_progress.",
+    "RR-P0-002: stop-ship row is in_progress.",
+    "RR-P0-003: stop-ship row is in_progress.",
+    "RR-P0-004: stop-ship row is in_progress.",
+    "RR-P0-005: stop-ship row is in_progress.",
+    "RR-P0-006: stop-ship row is in_progress.",
+    "RR-P0-007: stop-ship row is in_progress."
+  ],
+  "errors": [
+    "RR-P0-001: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-002: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-003: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-004: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-005: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-006: strict release readiness requires passed or waived, got in_progress.",
+    "RR-P0-007: strict release readiness requires passed or waived, got in_progress.",
+    "Current candidate commit 307c968e421131fa7ce62afdadef404ff02e94a6 does not match checked-out HEAD 00500c40.",
+    "Current release evidence commit 307c968e421131fa7ce62afdadef404ff02e94a6 does not match checked-out HEAD 00500c40.",
+    "Current release evidence CI status must be machine_gates_passed for strict readiness; got ci_results_unavailable.",
+    "Current release evidence worktree status must be clean for strict readiness; got dirty.",
+    "Current release evidence manual sign-off status must record RC/release owner approval; got manual_signoff_pending.",
+    "Current release evidence owner signature is pending or missing.",
+    "Current release evidence owner signature must be cryptographically verified; got missing.",
+    "Current release evidence owner signature payload SHA-256 is missing or invalid.",
+    "Current release evidence owner signature key fingerprint is missing or invalid."
+  ]
+}
+EXIT=1
+=== review scorecard ===
+
+> lengrvis@0.1.2 review:scorecard
+> python scripts/check_full_review_scorecard.py
+
+{
+  "ok": false,
+  "scorecard": "D:\\Desktop\\mavris\\docs\\qa\\full-review-scorecard.md",
+  "readiness": "D:\\Desktop\\mavris\\docs\\release\\release-readiness-dashboard.md",
+  "score": {
+    "total": 94,
+    "max": 100,
+    "rows": [
+      {
+        "area": "Backend correctness and safety",
+        "score": 25,
+        "max": 25
+      },
+      {
+        "area": "Desktop quality gates",
+        "score": 15,
+        "max": 15
+      },
+      {
+        "area": "Mobile companion gates",
+        "score": 15,
+        "max": 15
+      },
+      {
+        "area": "Supply-chain and security gates",
+        "score": 15,
+        "max": 15
+      },
+      {
+        "area": "Maintainability",
+        "score": 14,
+        "max": 15
+      },
+      {
+        "area": "Release readiness evidence",
+        "score": 10,
+        "max": 15
+      }
+    ]
+  },
+  "release_readiness": {
+    "p0_total": 7,
+    "p0_passed": 0,
+    "p0_waived": 0,
+    "p0_blocked": 0,
+    "p0_in_progress": 7,
+    "p0_rows": [
+      {
+        "id": "RR-P0-001",
+        "area": "Clean-machine Windows install",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-002",
+        "area": "Local model clean-machine path",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-003",
+        "area": "Android real-device / emulator LAN-WSS",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-004",
+        "area": "Result quality review",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-005",
+        "area": "Diagnostics external-share review",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-006",
+        "area": "Public Beta/RC handoff and release-owner sign-off",
+        "status": "in_progress",
+        "artifact": "docs/release/current-release-evidence.md",
+        "owner": "suli9710"
+      },
+      {
+        "id": "RR-P0-007",
+        "area": "Agentic threat model and OWASP control map",
+        "status": "in_progress",
+        "artifact": "docs/compliance/agentic-threat-model.md",
+        "owner": "suli9710"
+      }
+    ]
+  },
+  "errors": [
+    "full-review scorecard requires a clean worktree; found 327 change(s):  M .gitleaks-ci.toml;  M AGENTS.md;  M README.md;  M backend/app/agents/base.py;  M backend/app/agents/document_agent.py; ..."
+  ]
+}
+EXIT=1
+=== threat model ===
+
+> lengrvis@0.1.2 security:threat-model
+> python scripts/check_agentic_threat_model.py
+
+{
+  "ok": true,
+  "errors": []
+}
+EXIT=0

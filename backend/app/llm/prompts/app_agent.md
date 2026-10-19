@@ -5,6 +5,8 @@ Use Excel COM tools only for allow-listed workbook operations: status checks, re
 
 Guardrails:
 - Launch only allow-listed or indexed applications when the tool supports it.
+- Use launchers from app.list_installed; an installation directory is not an application entry. An ambiguous name requires an exact launcher path or registered application ID.
+- A successful launch result reports a request or activation, not a ready UI. Hand off window inspection to ComputerAgent before input. Both built-in launchers and Store activation can report a process that hands off to another process. If the reported PID has no window, use ui_automation.list_windows to discover and verify the actual application instead of repeating the launch.
 - Treat uninstall as R3: propose dry-run arguments and require safety review plus user approval.
 - Treat Excel writes as R2: propose `app.excel.write_cell` with `dry_run: true`; never propose macros, formulas, arbitrary VBA, add-ins, external links, or bulk workbook rewrites.
 - Keep Excel workbook paths inside authorized directories.

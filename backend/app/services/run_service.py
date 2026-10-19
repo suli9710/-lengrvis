@@ -14,6 +14,7 @@ from app.agents.delegation_metadata import merge_run_task_metadata
 from app.config import AppSettings
 from app.core import db
 from app.core.audit import record
+from app.core.local_data_lifecycle import tracks_local_data
 from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, StepStatus, now_iso
 from app.llm.registry import get_effective_settings
 from app.observability import context as observability_context
@@ -142,6 +143,7 @@ _register_resident_task = _bg_register_resident_task
 _unregister_resident_task = _bg_unregister_resident_task
 
 
+@tracks_local_data
 async def create_run(
     message: str,
     mode: str,
@@ -214,6 +216,15 @@ async def create_run(
     ):
         pass
     db.upsert_model("runs", run)
+    if delegation_metadata.get("butler_matter_id"):
+        from app.services.butler_service import attach_run
+
+        attach_run(
+            str(delegation_metadata["butler_matter_id"]),
+            str(delegation_metadata.get("butler_execution_ticket") or ""),
+            run.id,
+            run.task_id or "",
+        )
     run_event_bus.publish(
         run.id,
         "run.started",
@@ -224,6 +235,11 @@ async def create_run(
             "requested_engine": requested_engine.value,
             "transition_reason": state.transition_reason,
             "engine_route_rule": state.route_rule,
+            **(
+                {"matter_id": delegation_metadata["butler_matter_id"]}
+                if delegation_metadata.get("butler_matter_id")
+                else {}
+            ),
         },
     )
     _publish_plan_events(run.id, state)
@@ -276,6 +292,7 @@ async def _start_engine_loop(
     )
 
 
+@tracks_local_data
 def get_run(run_id: str) -> Run:
     data = db.fetch_one("runs", run_id)
     if not data:
@@ -283,6 +300,7 @@ def get_run(run_id: str) -> Run:
     return _sync_run_phase_from_task(Run.model_validate(data))
 
 
+@tracks_local_data
 def list_runs(limit: int = 100) -> list[Run]:
     return [_sync_run_phase_from_task(Run.model_validate(item)) for item in db.fetch_many("runs", limit=limit)]
 
@@ -461,6 +479,7 @@ def pause_runs_for_task(task_id: str) -> list[Run]:
     return runs
 
 
+@tracks_local_data
 def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
@@ -702,6 +721,27 @@ def _deny_waiting_steps_for_expired_approvals(task_id: str, approvals: list[Appr
         db.upsert_model("plans", plan)
 
 
+def reconcile_expired_approvals(approvals: list[Approval]) -> None:
+    """Finish expired authorization waits without replaying their actions."""
+    for task_id in {approval.task_id for approval in approvals}:
+        _deny_waiting_steps_for_expired_approvals(
+            task_id, [approval for approval in approvals if approval.task_id == task_id]
+        )
+        for row in db.fetch_many("runs", "task_id = ?", (task_id,), limit=100):
+            run = Run.model_validate(row)
+            if run.phase == RunPhase.AWAITING_APPROVAL:
+                reason = "Approval authorization expired. Start a new task to request fresh approval."
+                _sync_persisted_state_phase(run, RunPhase.DENIED, reason)
+                _update_run(run, phase=RunPhase.DENIED, error=reason)
+                run_event_bus.publish(run.id, "run.denied", {"reason": reason})
+        try:
+            task = get_task(task_id)
+        except KeyError:
+            continue
+        if task.status not in TERMINAL_TASK_PHASES and str(task.execution_stage) == "awaiting_approval":
+            set_task_status(task_id, "denied", strict=True)
+
+
 def reconcile_task_runs(task_id: str) -> list[Run]:
     runs = [Run.model_validate(item) for item in db.fetch_many("runs", "task_id = ?", (task_id,), limit=100)]
     if not runs:
@@ -824,14 +864,22 @@ async def _run_engine_loop_body(
         if run.phase in {RunPhase.CANCELLED, RunPhase.PAUSED}:
             return
         _update_run(run, phase=RunPhase.FAILED, error=f"max turns reached ({max_turns})")
+        _fail_run_task(run)
         run_event_bus.publish(run_id, "run.failed", {"reason": run.error, "max_turns": max_turns})
     except Exception as exc:  # noqa: BLE001 - broad-exception-boundary: resident engine loop boundary: persist a failed run instead of leaking RUNNING.
         run = get_run(run_id)
-        if run.phase == RunPhase.CANCELLED:
+        if run.phase in {RunPhase.CANCELLED, RunPhase.PAUSED}:
             return
         error = _redacted_error(exc)
+        import httpx
+
+        retryable = isinstance(exc, httpx.TransportError | TimeoutError | ConnectionError) or (
+            isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {408, 429, 500, 502, 503, 504}
+        )
+        run.state["failure"] = {"error_type": type(exc).__name__, "retryable_dependency": retryable}
         _update_run(run, phase=RunPhase.FAILED, error=error)
-        run_event_bus.publish(run_id, "run.failed", {"error": error})
+        _fail_run_task(run)
+        run_event_bus.publish(run_id, "run.failed", {"error": error, **run.state["failure"]})
     finally:
         if resident_registered:
             _unregister_resident_task(run_id, current_task)
@@ -1063,7 +1111,7 @@ def _engine_selection(engine: RunEngine) -> str:
 
 
 def _redacted_error(error: BaseException | str) -> str:
-    return str(redact_value(str(error)))
+    return str(redact_value(str(error) or type(error).__name__))
 
 
 def _run_from_state(state: RunState, *, requested_engine: RunEngine) -> Run:
@@ -1257,6 +1305,14 @@ def _run_state_payload(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _state_payload_for_run(run: Run, state: RunState) -> dict[str, Any]:
     return state_payload_with_runtime(run.state, state)
+
+
+def _fail_run_task(run: Run) -> None:
+    if not run.task_id:
+        return
+    task = get_task(run.task_id)
+    if task.status not in TERMINAL_TASK_PHASES:
+        set_task_status(task.id, "failed", strict=True)
 
 
 def _update_run(run: Run, *, phase: RunPhase, task_id: str | None = None, error: str | None = None) -> Run:

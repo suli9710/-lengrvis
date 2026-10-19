@@ -1,10 +1,14 @@
-import { mkdir, rm, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { mkdir, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { clearLegacyBrowserScreenshots, ownedScreenshotFiles, rejectScreenshotLinks, SCREENSHOT_ARTIFACT_NAME } from "./browserScreenshotCleanup";
 
 const SCREENSHOT_DIRECTORY_PREFIX = "lengrvis-browser-screenshots-";
+const OWNER_MARKER = ".lengrvis-screenshot-owner";
+const OWNER_ID = createHash("sha256").update(homedir()).digest("hex");
+const OWNER_CONTENT = JSON.stringify({ schema: 1, owner: OWNER_ID });
 
 export interface BrowserScreenshotBudgets {
   maxArtifactBytes: number;
@@ -30,11 +34,19 @@ interface ScreenshotArtifact {
 export class BrowserScreenshotStore {
   private artifacts: ScreenshotArtifact[] = [];
   private queue: Promise<void> = Promise.resolve();
+  private initialized = false;
 
   constructor(
     private readonly rootDir = createBrowserScreenshotRoot(),
-    private readonly budgets: BrowserScreenshotBudgets = DEFAULT_BROWSER_SCREENSHOT_BUDGETS
+    private readonly budgets: BrowserScreenshotBudgets = DEFAULT_BROWSER_SCREENSHOT_BUDGETS,
+    private readonly legacyTempRoot: string | undefined = rootDir === createBrowserScreenshotRoot() ? tmpdir() : undefined
   ) {}
+
+  initialize(): Promise<void> {
+    const pending = this.queue.then(() => this.initializeOperation());
+    this.queue = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
 
   save(sessionId: string, png: Buffer): Promise<string> {
     const pending = this.queue.then(() => this.saveOperation(sessionId, png));
@@ -50,8 +62,11 @@ export class BrowserScreenshotStore {
 
   clear(): Promise<void> {
     const pending = this.queue.then(async () => {
+      await this.ensureOwnedRoot();
+      await this.clearOwnedRoot();
+      if (this.legacyTempRoot) await clearLegacyBrowserScreenshots(this.legacyTempRoot);
       this.artifacts = [];
-      await rm(this.rootDir, { recursive: true, force: true });
+      this.initialized = false;
     });
     this.queue = pending.then(() => undefined, () => undefined);
     return pending;
@@ -67,7 +82,8 @@ export class BrowserScreenshotStore {
       throw new Error(`Browser screenshot exceeds the ${maximumSingleArtifact}-byte artifact budget`);
     }
 
-    await mkdir(this.rootDir, { recursive: true });
+    await this.initializeOperation();
+    await this.ensureOwnedRoot();
     const artifactPath = join(this.rootDir, `${randomUUID()}.png`);
     await writeFile(artifactPath, png, { flag: "wx", mode: 0o600 });
     const artifact: ScreenshotArtifact = {
@@ -101,8 +117,9 @@ export class BrowserScreenshotStore {
 
   private async evict(artifact: ScreenshotArtifact | undefined): Promise<void> {
     if (!artifact) return;
+    await ownedScreenshotFiles(this.rootDir, OWNER_MARKER);
+    await unlink(artifact.path).catch(error => { if (error.code !== "ENOENT") throw error; });
     this.artifacts = this.artifacts.filter((candidate) => candidate !== artifact);
-    await unlink(artifact.path).catch(() => undefined);
   }
 
   private sessionArtifacts(sessionId: string): ScreenshotArtifact[] {
@@ -116,10 +133,42 @@ export class BrowserScreenshotStore {
   private totalBytes(): number {
     return this.artifacts.reduce((total, artifact) => total + artifact.size, 0);
   }
+
+  private async initializeOperation(): Promise<void> {
+    if (this.initialized) return;
+    await this.ensureOwnedRoot();
+    await this.clearOwnedRoot();
+    if (this.legacyTempRoot) await clearLegacyBrowserScreenshots(this.legacyTempRoot);
+    await this.ensureOwnedRoot();
+    this.initialized = true;
+  }
+
+  private async ensureOwnedRoot(): Promise<void> {
+    if (!resolve(this.rootDir) || resolve(this.rootDir) === dirname(resolve(this.rootDir))) {
+      throw new Error("Invalid screenshot root");
+    }
+    await rejectScreenshotLinks(this.rootDir);
+    await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
+    const files = await ownedScreenshotFiles(this.rootDir, OWNER_MARKER);
+    const marker = join(this.rootDir, OWNER_MARKER);
+    if (files.includes(marker)) {
+      if (await readFile(marker, "utf8") !== OWNER_CONTENT) throw new Error("Screenshot directory ownership changed");
+    } else {
+      if (files.length) throw new Error("Screenshot directory has no ownership marker");
+      await writeFile(marker, OWNER_CONTENT, { flag: "wx", mode: 0o600 });
+    }
+  }
+
+  private async clearOwnedRoot(): Promise<void> {
+    const files = await ownedScreenshotFiles(this.rootDir, OWNER_MARKER);
+    for (const file of files.filter(path => basename(path) !== OWNER_MARKER)) await unlink(file);
+    await unlink(join(this.rootDir, OWNER_MARKER));
+    await rmdir(this.rootDir);
+  }
 }
 
 export function createBrowserScreenshotRoot(): string {
-  return join(tmpdir(), `${SCREENSHOT_DIRECTORY_PREFIX}${process.pid}-${randomUUID()}`);
+  return join(tmpdir(), `${SCREENSHOT_DIRECTORY_PREFIX}${OWNER_ID.slice(0, 16)}`);
 }
 
 export function isBrowserScreenshotArtifactUrl(value: string | undefined): value is string {
@@ -127,7 +176,7 @@ export function isBrowserScreenshotArtifactUrl(value: string | undefined): value
   try {
     const path = fileURLToPath(value);
     return basename(dirname(path)).startsWith(SCREENSHOT_DIRECTORY_PREFIX)
-      && /^[0-9a-f-]{36}\.png$/i.test(basename(path));
+      && SCREENSHOT_ARTIFACT_NAME.test(basename(path));
   } catch {
     return false;
   }

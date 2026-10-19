@@ -239,6 +239,9 @@ def project_messages_for_llm(
     source: str = "llm",
     record_projection_event: bool = True,
 ) -> ContextProjection:
+    from app.core.context_egress import filter_session_context
+
+    session_context = filter_session_context(session_context, settings.mode)
     original = compact_boundary_view(_normalize_messages(messages))
     boundary = _latest_compact_boundary(original)
     original_tokens = count_messages_tokens(original)
@@ -378,6 +381,9 @@ def inject_session_summary(
     session_context: dict[str, Any],
     settings: AppSettings,
 ) -> tuple[list[dict[str, Any]], bool]:
+    from app.core.context_egress import filter_session_context
+
+    session_context = filter_session_context(session_context, settings.mode) or {}
     summary = _session_summary_text(session_context, limit=max(500, int(settings.context_session_summary_limit)))
     if not summary:
         return messages, False

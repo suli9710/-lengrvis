@@ -8,6 +8,7 @@ import type {
 import { sanitizeActionResultForRenderer, sanitizeSnapshotForRenderer } from "../shared/browserHostRedaction";
 import { isBrowserScreenshotArtifactUrl } from "./browserScreenshotStore";
 import { buildBackendWebSocketUrl, createDesktopWebSocket } from "./desktopWebSocket";
+import { BrowserExecutionGrantVerifier, type BrowserExecutionClaim } from "./browserExecutionGrant";
 
 type BrowserHostBridgeTarget = {
   getSnapshot: () => BrowserHostSnapshot;
@@ -21,6 +22,8 @@ type BrowserHostBridgeTarget = {
   setBounds: (bounds: BrowserHostBounds) => BrowserHostActionResult;
   show: (sessionId: string) => BrowserHostActionResult;
   stop: (sessionId: string) => Promise<BrowserHostActionResult>;
+  performAuthorized?: (claim: BrowserExecutionClaim) => Promise<BrowserHostActionResult>;
+  cancelScope?: (scopeId: string, version: number) => Promise<BrowserHostActionResult>;
 };
 
 export class BrowserHostWebSocketBridge {
@@ -28,6 +31,7 @@ export class BrowserHostWebSocketBridge {
   private retryTimer: NodeJS.Timeout | null = null;
   private stopped = true;
   private unsubscribeSnapshots: (() => void) | null = null;
+  private readonly executionGrants = new BrowserExecutionGrantVerifier(() => this.getDesktopApiToken());
 
   constructor(
     private readonly browserHost: BrowserHostBridgeTarget,
@@ -97,6 +101,16 @@ export class BrowserHostWebSocketBridge {
 
     let result: BrowserHostActionResult;
     switch (message.type) {
+      case "authorized_action":
+        try {
+          const claim = this.executionGrants.consume(message.authorization);
+          result = this.browserHost.performAuthorized
+            ? await this.browserHost.performAuthorized(claim)
+            : this.deniedRemoteWriteAction("Managed browser execution is unavailable.");
+        } catch {
+          result = this.deniedRemoteWriteAction("Browser execution authorization or target validation failed.");
+        }
+        break;
       case "open":
         result = this.deniedRemoteWriteAction("BrowserHost remote open requires a desktop approval grant.");
         break;
@@ -137,6 +151,12 @@ export class BrowserHostWebSocketBridge {
         };
         break;
       }
+      case "cancel_scope": {
+        result = this.browserHost.cancelScope
+          ? await this.browserHost.cancelScope(message.scope_id, message.version)
+          : { ok: false, error: "Scoped browser revocation is unavailable in this host" };
+        break;
+      }
       case "action":
         result = isReadOnlyBrowserHostAction(message.action)
           ? await this.browserHost.performAction(message.session_id, message.action)
@@ -154,6 +174,9 @@ export class BrowserHostWebSocketBridge {
       ok: result.ok,
       session: result.session,
       event: result.event,
+      inspection: result.inspection,
+      observation: result.observation,
+      commit_state: result.commit_state,
       error: result.error
     });
   }
@@ -221,6 +244,7 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 export type BrowserHostBridgeMessage =
+  | { type: "authorized_action"; request_id?: string; authorization: unknown }
   | {
       type: "open";
       request_id?: string;
@@ -235,6 +259,7 @@ export type BrowserHostBridgeMessage =
   | { type: "set_bounds"; request_id?: string; bounds: BrowserHostBounds }
   | { type: "action"; request_id?: string; session_id: string; action: BrowserAction }
   | { type: "cancel_task"; request_id?: string; task_id: string }
+  | { type: "cancel_scope"; request_id?: string; scope_id: string; version: number }
   | { type: "ping"; request_id?: string };
 
 export function parseBrowserHostBridgeMessage(rawData: unknown): BrowserHostBridgeMessage | null {
@@ -243,6 +268,7 @@ export function parseBrowserHostBridgeMessage(rawData: unknown): BrowserHostBrid
     const data = JSON.parse(rawText) as Record<string, unknown>;
     const type = typeof data.type === "string" ? data.type : "";
     const request_id = typeof data.request_id === "string" ? data.request_id : undefined;
+    if (type === "authorized_action") return { type, request_id, authorization: data.authorization };
 
     if (type === "open") {
       return {
@@ -277,6 +303,10 @@ export function parseBrowserHostBridgeMessage(rawData: unknown): BrowserHostBrid
     if (type === "cancel_task") {
       const task_id = optionalMessageString(data.task_id);
       return task_id ? { type, request_id, task_id } : null;
+    }
+    if (type === "cancel_scope") {
+      const scope_id = optionalMessageString(data.scope_id);
+      return scope_id && Number.isSafeInteger(data.version) && Number(data.version) > 0 ? { type, request_id, scope_id, version: Number(data.version) } : null;
     }
 
     return null;

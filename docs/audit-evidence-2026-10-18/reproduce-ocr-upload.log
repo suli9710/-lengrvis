@@ -1,0 +1,4 @@
+allow_file_content_upload= False
+provider_calls= [('ocr', 'C:\\Users\\Suli\\AppData\\Local\\Temp\\lengrvis-ocr-image-hne5lq6i\\scan.png')]
+ok= True source= vision_provider
+CLOUD_OCR_UPLOAD_CONFIRMED

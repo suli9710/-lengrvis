@@ -50,13 +50,15 @@ def _settings_context():
 
 def test_app_list_and_allowlisted_launch_dry_run(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path, LENGRVIS_APP_ALLOWLIST="notepad;calc")
+    executable = str(tmp_path / "notepad.exe")
+    monkeypatch.setattr(app_tools, "_system_executable", lambda _: executable)
     context = _settings_context()
 
     apps = app_tools.list_installed({}, context)
     launch = app_tools.launch_installed({"app": "notepad", "dry_run": True}, context)
 
     assert any(app["id"] == "notepad" for app in apps["apps"])
-    assert launch == {"ok": True, "dry_run": True, "command": "notepad.exe"}
+    assert launch == {"ok": True, "dry_run": True, "command": executable}
 
 
 def test_app_launch_unknown_application_is_blocked(monkeypatch, tmp_path):
@@ -81,6 +83,7 @@ def test_uninstall_app_rejects_direct_uninstall_command(monkeypatch, tmp_path):
 
 def test_appx_scan_decodes_utf16_json_without_bom(monkeypatch):
     monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(app_tools, "_system_executable", lambda _: "powershell.exe")
 
     class Completed:
         returncode = 0
@@ -99,6 +102,8 @@ def test_appx_scan_decodes_utf16_json_without_bom(monkeypatch):
 
 
 def test_winget_scan_decodes_utf16_json_without_bom(monkeypatch):
+    monkeypatch.setattr(app_tools, "_winget_executable", lambda: "winget.exe")
+
     class Completed:
         returncode = 0
         stdout = (
@@ -144,6 +149,7 @@ def test_registry_scan_does_not_swallow_unexpected_winreg_bugs(monkeypatch):
 
 
 def test_appx_scan_degrades_for_expected_process_and_json_failures(monkeypatch):
+    monkeypatch.setattr(app_tools, "_system_executable", lambda _: "powershell.exe")
     monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
 
     class InvalidJsonCompleted:
@@ -167,6 +173,7 @@ def test_appx_scan_degrades_for_expected_process_and_json_failures(monkeypatch):
 
 
 def test_appx_scan_does_not_swallow_unexpected_process_bugs(monkeypatch):
+    monkeypatch.setattr(app_tools, "_system_executable", lambda _: "powershell.exe")
     monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
 
     def raise_bug(*_args, **_kwargs):
@@ -179,6 +186,8 @@ def test_appx_scan_does_not_swallow_unexpected_process_bugs(monkeypatch):
 
 
 def test_winget_scan_degrades_for_expected_process_and_json_failures(monkeypatch):
+    monkeypatch.setattr(app_tools, "_winget_executable", lambda: "winget.exe")
+
     class InvalidJsonCompleted:
         returncode = 0
         stdout = b"{"
@@ -200,6 +209,8 @@ def test_winget_scan_degrades_for_expected_process_and_json_failures(monkeypatch
 
 
 def test_winget_scan_does_not_swallow_unexpected_process_bugs(monkeypatch):
+    monkeypatch.setattr(app_tools, "_winget_executable", lambda: "winget.exe")
+
     def raise_bug(*_args, **_kwargs):
         raise RuntimeError("winget bug")
 
@@ -587,12 +598,14 @@ def test_uninstall_app_blocks_scanned_shell_host(monkeypatch, tmp_path):
 
 def test_app_allowlist_supports_wildcards_and_categories(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path, LENGRVIS_APP_ALLOWLIST="visual*;category:browser")
+    chrome_executable = tmp_path / "chrome.exe"
+    chrome_executable.touch()
     monkeypatch.setattr(
         app_tools,
         "_scan_shortcuts",
         lambda: [
             {"id": "visual studio code", "name": "Visual Studio Code", "path": "Code.exe", "source": "start_menu"},
-            {"id": "google chrome", "name": "Google Chrome", "path": "chrome.exe", "source": "start_menu"},
+            {"id": "google chrome", "name": "Google Chrome", "path": str(chrome_executable), "source": "start_menu"},
             {"id": "paint", "name": "Paint", "path": "mspaint.exe", "source": "start_menu"},
         ],
     )

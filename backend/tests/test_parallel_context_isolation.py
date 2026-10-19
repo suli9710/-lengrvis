@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from app.config import AppSettings
 from app.core import db
 from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration import resource_state as rs
@@ -360,7 +361,7 @@ async def test_parallel_scheduler_steps_execute_on_isolated_step_snapshots_and_w
     plan = Plan(task_id=task.id, goal="snapshot isolation", steps=steps)
     orchestrator = SimpleNamespace(
         _execute_step=fake_execute,
-        _tool_context=lambda: {"task_id": task.id},
+        _tool_context=lambda: {"task_id": task.id, "settings": AppSettings()},
         _set_status=lambda *args, **kwargs: None,
         _persist_plan_update=lambda *args, **kwargs: None,
         name="TestOrchestrator",
@@ -423,7 +424,7 @@ async def test_parallel_scheduler_preserves_waiting_approval_before_recovery_rev
     plan = Plan(task_id=task.id, goal=task.user_goal, steps=steps)
     orchestrator = SimpleNamespace(
         _execute_step=fake_execute,
-        _tool_context=lambda: {"task_id": task.id},
+        _tool_context=lambda: {"task_id": task.id, "settings": AppSettings()},
         _set_status=set_status,
         _persist_plan_update=lambda *args, **kwargs: None,
         _friendly_tool_error=str,
@@ -526,7 +527,7 @@ async def test_scheduler_fatal_outcome_cancels_parallel_siblings() -> None:
     plan = Plan(task_id=task.id, goal="fatal cancel", steps=steps)
     orchestrator = SimpleNamespace(
         _execute_step=fake_execute,
-        _tool_context=lambda: {"task_id": task.id},
+        _tool_context=lambda: {"task_id": task.id, "settings": AppSettings()},
         _set_status=lambda *args, **kwargs: None,
         _persist_plan_update=lambda *args, **kwargs: None,
         name="TestOrchestrator",

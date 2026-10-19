@@ -14,6 +14,12 @@ from app.policy.redaction import REDACTED, contains_sensitive_key, redact_public
 from app.policy.sensitive_values import looks_sensitive_value
 
 SENSITIVE_SELECTOR_TOKENS = {
+    "totp",
+    "mfa",
+    "cc-number",
+    "securitycode",
+    "security_code",
+    "authcode",
     "password",
     "pwd",
     "passwd",
@@ -34,6 +40,19 @@ SENSITIVE_SELECTOR_TOKENS = {
     "auth",
     "credential",
 }
+
+
+def sensitive_read_selector(value: str) -> bool:
+    return bool(
+        re.search(
+            r"password|passwd|\bpwd\b|token|secret|cookie|credential|credit|card.?number|cc-|"
+            r"\bcvv\b|\bcvc\b|\botp\b|totp|ssn|(?:^|[^a-z])(?:pin|pan)(?:$|[^a-z])|mfa|2fa|passcode|"
+            r"one.time|verification.?code|security.?code|auth.?code|验证码|密码|密钥",
+            str(value or ""),
+            re.IGNORECASE,
+        )
+    )
+
 
 # WHATWG autocomplete hints for credential, payment, and OTP fields.
 SENSITIVE_AUTOCOMPLETE_TOKENS = {
@@ -61,7 +80,7 @@ def field_attributes_are_sensitive(attrs: dict[str, Any]) -> bool:
 
 def sensitive_selector(selector: str) -> bool:
     lowered = selector.lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS)
+    return sensitive_read_selector(selector) or any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS)
 
 
 def sensitive_value(value: Any) -> bool:
@@ -137,6 +156,10 @@ def safe_result(value: Any, *, key: str = "") -> Any:
     if isinstance(value, tuple):
         return [safe_result(item, key=key) for item in value]
     if isinstance(value, str):
+        if key in {"id", "session_id", "task_id", "step_id"} and re.fullmatch(
+            r"(?:browser_session|browser_event|task|step)_[a-f0-9]{32}", value
+        ):
+            return value
         return value if key == "text" else safe_text(value)
     return value
 

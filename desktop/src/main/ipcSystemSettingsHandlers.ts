@@ -1,7 +1,6 @@
 import { ipcMain } from "electron";
 
 import { IPC_CHANNELS } from "../shared/ipc";
-import type { DesktopPrivacyEraseResponse } from "../shared/types";
 import type { IpcHandlerContext } from "./ipcHandlerContext";
 import { proxyExplicitDesktopBridgeRequest } from "./ipcBackendProxy";
 import { confirmNativeDesktopAction, nativeActionConfirmationHeaders } from "./ipcNativeConfirmation";
@@ -25,6 +24,7 @@ import {
   validateSettingsPatchRequest
 } from "./ipcValidation";
 import { assertTrustedRenderer } from "./rendererTrust";
+import { performCoordinatedPrivacyErase } from "./ipcPrivacyErase";
 
 const BACKEND_PRIVACY_ERASE_CONFIRMATION = "erase-local-data";
 
@@ -68,12 +68,6 @@ export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): v
       confirm: BACKEND_PRIVACY_ERASE_CONFIRMATION,
       include_settings: body.includeSettings
     };
-    const confirmationHeaders = await nativeActionConfirmationHeaders(
-      (bridgeRequest) => proxyExplicitDesktopBridgeRequest(backend, bridgeRequest),
-      backend,
-      "/api/system/privacy/erase-local-data/native-confirmation-challenge",
-      backendBody
-    );
     await confirmNativeDesktopAction(event, {
       type: "warning",
       confirmLabel: "删除本机数据",
@@ -85,12 +79,18 @@ export function registerSystemSettingsIpcHandlers(context: IpcHandlerContext): v
     if (!localPrivacyEraser) {
       throw new Error("Electron private data eraser is unavailable");
     }
-    await localPrivacyEraser.eraseLocalPrivateData();
-    return proxyExplicitDesktopBridgeRequest<DesktopPrivacyEraseResponse>(backend, {
-      endpoint: "/api/system/privacy/erase-local-data",
-      method: "POST",
+    return performCoordinatedPrivacyErase({
       body: backendBody,
-      headers: confirmationHeaders
+      eraser: localPrivacyEraser,
+      request: (bridgeRequest) => proxyExplicitDesktopBridgeRequest(backend, bridgeRequest),
+      // Acquire a fresh challenge after the native dialog returns. Preparation
+      // verifies/consumes it and reserves both phases before any deletion.
+      confirmationHeaders: () => nativeActionConfirmationHeaders(
+        (bridgeRequest) => proxyExplicitDesktopBridgeRequest(backend, bridgeRequest),
+        backend,
+        "/api/system/privacy/erase-local-data/native-confirmation-challenge",
+        backendBody
+      )
     });
   });
 

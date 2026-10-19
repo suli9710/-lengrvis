@@ -16,6 +16,7 @@ from threading import RLock
 from typing import Any
 
 from app.config import PROJECT_ROOT, AppSettings, get_env
+from app.core.outbound_url import is_local_base_url, validate_outbound_http_url_preview
 from app.integrations.lengrvis_code_constants import (  # noqa: F401
     ERROR_BAD_NDJSON,
     ERROR_CANCELLED,
@@ -584,6 +585,18 @@ def build_lengrvis_code_env(
 ) -> dict[str, str]:
     """Map Lengrvis OpenAI-compatible settings into Lengrvis Code's OpenAI provider env."""
 
+    if (settings.mode or "efficiency").lower() == "privacy":
+        # This CLI talks to its own OpenAI-compatible endpoint instead of the
+        # provider registry. Bind its transport boundary before exporting any
+        # configuration; an absent local endpoint must never default to cloud.
+        error = "Privacy mode requires an explicitly configured local OpenAI-compatible endpoint for Lengrvis Code."
+        if not is_local_base_url(settings.base_url):
+            raise ValueError(error)
+        try:
+            validate_outbound_http_url_preview(settings.base_url, allow_private=True)
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
     # P1-11 fix: Start from a sanitized env instead of blindly passing all parent env vars.
     env = _sanitize_subprocess_env(base_env)
     # P1-11 follow-up fix: Caller-provided config env (LengrvisCodeConfig.env) is
@@ -795,7 +808,13 @@ async def run_lengrvis_code(
     # P1-11 fix: build_lengrvis_code_env starts from a sanitized parent-env
     # whitelist; caller-provided config env is passed through separately so it is
     # not dropped by the prefix allowlist (P1-11 follow-up fix).
-    env = build_lengrvis_code_env(settings, base_env=os.environ, passthrough_env=active.env)
+    try:
+        env = build_lengrvis_code_env(settings, base_env=os.environ, passthrough_env=active.env)
+    except ValueError as exc:
+        return LengrvisCodeStreamSummary(
+            launch_error=str(exc),
+            runtime_health={"ok": False, "available": False, "reason": "provider configuration rejected"},
+        )
     launch_config = LengrvisCodeConfig(
         command=active.command,
         executable=active.executable,

@@ -467,6 +467,10 @@ def _delete_sensitive_integrity_rows(conn: Any, table: str, record_ids: list[str
             WHERE table_name = ? AND record_id IN ({placeholders})""",  # noqa: S608
             (table, *batch),
         )
+        conn.execute(
+            f"DELETE FROM sensitive_record_presence WHERE table_name = ? AND record_id IN ({placeholders})",  # noqa: S608
+            (table, *batch),
+        )
 
 
 def _delete_expired_diagnostic_packages(cutoff: datetime) -> int:

@@ -4,8 +4,12 @@ from typing import Any
 
 from app.core import db
 from app.core.db_diagnostics import build_local_product_diagnostics
+from app.core.local_data_lifecycle import local_data_lock
 
 PERSONAL_DATA_TABLES: tuple[str, ...] = (
+    "butler_events",
+    "butler_matters",
+    "autonomy_scopes",
     # Child/auth tables come first so row counts remain accurate even when
     # SQLite foreign-key cascades are enabled.
     "mobile_refresh_tokens",
@@ -36,6 +40,7 @@ PERSONAL_DATA_TABLES: tuple[str, ...] = (
     "mobile_devices",
     "llm_usage_events",
     "document_chunk_embeddings",
+    "document_chunks_fts",
     "document_chunks",
     "indexed_files",
     "scheduled_tasks",
@@ -52,6 +57,11 @@ SETTINGS_TABLES: tuple[str, ...] = ("app_settings", "permission_policies")
 
 
 def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
+    with local_data_lock:
+        return _erase_local_user_data(include_settings=include_settings)
+
+
+def _erase_local_user_data(*, include_settings: bool) -> dict[str, int]:
     """Delete locally stored user content (PIPL/GDPR local deletion entry).
 
     Audit events are preserved by default so the tamper-evident chain can show
@@ -64,12 +74,14 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
     with db.connect() as conn:
         conn.execute("PRAGMA secure_delete = ON")
         conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'document_chunks_fts'").fetchone():
+            tables = tuple(table for table in tables if table != "document_chunks_fts")
         for table in tables:
             row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
             counts[table] = int(row[0] or 0)
             conn.execute(f"DELETE FROM {table}")  # noqa: S608
 
-        integrity_kinds = ["approvals"]
+        integrity_kinds = ["approvals", "butler_matters", "autonomy_scopes"]
         if include_settings:
             integrity_kinds.extend(SETTINGS_TABLES)
         placeholders = ",".join("?" for _ in integrity_kinds)
@@ -102,6 +114,19 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
         residual = {table: count for table, count in remaining.items() if count}
         if residual:
             raise RuntimeError(f"Local data erase verification failed: {sorted(residual)}")
+        if include_settings:
+            # Only this authenticated erase may replace a missing policy. Startup
+            # must continue to reject arbitrary deletion of an anchored record.
+            from app.core.db_sensitive_integrity import _ensure_default_permission_policy_record
+
+            _ensure_default_permission_policy_record(conn)
+            row = conn.execute("SELECT data FROM permission_policies WHERE id = 'default'").fetchone()
+            db._store_sensitive_record_integrity(conn, "permission_policies", "default", row["data"])
+    # Invalidate live objects as soon as DELETE commits, even if the later
+    # disk compaction fails. A shutdown callback must never restore them.
+    from app.core.session_context import clear_live_session_contexts
+
+    clear_live_session_contexts()
     with db.connect() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")

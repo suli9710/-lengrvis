@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -12,8 +13,10 @@ from typing import Any
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from app.core import db
 from app.core.audit import record
 from app.core.errors import SecurityError
+from app.core.local_data_lifecycle import tracks_local_data
 from app.core.paths import resolve_authorized
 
 _DEBOUNCE_SECONDS = 2.0
@@ -143,6 +146,9 @@ class FileWatcher:
         self._allowed_directories: list[str] = []
         self._debounce_seconds = debounce_seconds
         self._change_callbacks: list[AsyncFileChangeCallback] = []
+        self._scope_lock = threading.RLock()
+        self._watches: dict[str, Any] = {}
+        self._handler: _FileChangeHandler | None = None
 
     def subscribe_changes(self, callback: AsyncFileChangeCallback) -> None:
         if callback not in self._change_callbacks:
@@ -167,13 +173,15 @@ class FileWatcher:
             enqueue,
             allowed_directories=self._allowed_directories,
         )
+        self._handler = handler
 
         for raw_dir in self._allowed_directories:
             dir_path = Path(raw_dir).expanduser().resolve(strict=False)
             if dir_path.is_dir():
-                self._observer.schedule(handler, str(dir_path), recursive=True)
+                self._watches[str(dir_path)] = self._observer.schedule(handler, str(dir_path), recursive=True)
 
         self._observer.start()
+        db.register_settings_invalidation_hook(self._settings_changed)
         self._consumer_task = asyncio.create_task(self._consume(), name="lengrvis-file-watcher")
         record(
             "file_watcher.started",
@@ -183,10 +191,13 @@ class FileWatcher:
 
     async def stop(self) -> None:
         """Stop the observer and consumer task."""
+        db.unregister_settings_invalidation_hook(self._settings_changed)
         if self._observer is not None:
             self._observer.stop()
             self._observer.join(timeout=5)
             self._observer = None
+        self._watches.clear()
+        self._handler = None
 
         if self._consumer_task is not None:
             self._consumer_task.cancel()
@@ -195,6 +206,32 @@ class FileWatcher:
             self._consumer_task = None
 
         record("file_watcher.stopped", "FileWatcher", {})
+
+    def _settings_changed(self) -> None:
+        from app.llm.registry import get_effective_settings
+
+        directories = list(get_effective_settings().allowed_directories)
+        with self._scope_lock:
+            # Keep the handler's list reference live and wait for any read
+            # already in progress before the settings update returns.
+            self._allowed_directories[:] = directories
+            if self._observer is None or self._handler is None:
+                return
+            roots = {str(Path(directory).expanduser().resolve(strict=False)) for directory in directories}
+            for root in set(self._watches) - roots:
+                self._observer.unschedule(self._watches.pop(root))
+            for root in roots - set(self._watches):
+                if Path(root).is_dir():
+                    self._watches[root] = self._observer.schedule(self._handler, root, recursive=True)
+
+    @tracks_local_data
+    def _apply_index_event(self, path: str, action: str) -> None:
+        with self._scope_lock:
+            normalized = str(resolve_authorized(path, self._allowed_directories))
+            if action == "upsert":
+                self._fts_index.index_file(normalized, list(self._allowed_directories))
+            elif action == "delete":
+                self._fts_index.remove_file(normalized)
 
     async def _consume(self) -> None:
         """Consumer loop: read events, debounce, and index/remove files."""
@@ -219,20 +256,14 @@ class FileWatcher:
 
             for path in ready:
                 action, _ = pending.pop(path)
-                await self._notify_change(path, action)
                 try:
-                    normalized = str(Path(path).expanduser().resolve(strict=False))
-                    if action == "upsert":
-                        await asyncio.to_thread(
-                            self._fts_index.index_file,
-                            normalized,
-                            self._allowed_directories,
-                        )
-                    elif action == "delete":
-                        await asyncio.to_thread(
-                            self._fts_index.remove_file,
-                            normalized,
-                        )
+                    resolve_authorized(path, self._allowed_directories)
+                    await self._notify_change(path, action)
+                    # Authorize again in the worker: revocation may happen
+                    # while callbacks run or while the thread is queued.
+                    await asyncio.to_thread(self._apply_index_event, path, action)
+                except SecurityError:
+                    continue
                 except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
                     record(
                         "file_watcher.error",

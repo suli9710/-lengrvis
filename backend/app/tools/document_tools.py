@@ -6,11 +6,12 @@ from typing import Any
 
 from app.commerce.entitlements import Feature, active_plan, has_feature, require_feature
 from app.commerce.licensing import commercial_release_enabled
-from app.config import get_env
+from app.config import AppSettings, get_env
 from app.core.content_provenance import record_tool_output_provenance
 from app.core.paths import resolve_authorized
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
-from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
+from app.llm.profiles import profile_for_provider
+from app.llm.registry import get_effective_settings
 from app.policy.privacy import can_upload_file_content
 from app.policy.risk import RiskLevel
 from app.services import document_intelligence_service, document_service
@@ -60,39 +61,25 @@ def _max_csv_analysis_rows() -> int:
         return DEFAULT_MAX_CSV_ANALYSIS_ROWS
 
 
-def _provider(task: str = "subagent"):
-    return document_service._provider(task)
+def _provider(task: str = "subagent", *, settings=None):
+    return document_service._provider(task, settings=settings)
 
 
 def _document_provider(context: dict[str, Any]):
-    settings = context.get("settings")
-    if settings is None:
-        return _provider
-
-    decision = can_upload_file_content(settings)
-    if decision.allowed or _document_provider_is_local(settings):
-        return _provider
+    settings = context.get("settings") or get_effective_settings()
 
     def resolver(task: str = "subagent"):
-        provider = _provider(task)
-        if _provider_is_cloud(provider):
+        provider = _provider(task, settings=settings)
+        if provider is None:
+            return None
+        if (
+            not can_upload_file_content(settings).allowed
+            and profile_for_provider(provider, settings).capabilities.cloud
+        ):
             return None
         return provider
 
     return resolver
-
-
-def _document_provider_is_local(settings: Any) -> bool:
-    mode = str(getattr(settings, "mode", "efficiency") or "efficiency").lower()
-    provider_name = str(getattr(settings, "provider_name", "") or "").lower()
-    return mode in {"privacy"} or provider_name in LOCAL_PROVIDERS
-
-
-def _provider_is_cloud(provider: Any) -> bool:
-    name = str(getattr(provider, "name", "") or provider.__class__.__name__).casefold()
-    module = str(getattr(provider.__class__, "__module__", "") or "").casefold()
-    markers = ("openai", "azure", "deepseek", "hunyuan", "custom_http")
-    return any(marker in name or marker in module for marker in markers)
 
 
 def _chunk_text(text: str, chunk_chars: int = _CHUNK_CHARS) -> list[str]:
@@ -109,13 +96,13 @@ def _rank_chunks(query: str, chunks: list[str]) -> list[str]:
     return [chunk.text for chunk in document_service.rank_chunks(query, chunks, top_k=len(chunks) or 1)]
 
 
-def extract_text_from_path(path: Path) -> str:
+def extract_text_from_path(path: Path, *, settings: AppSettings | None = None) -> str:
     document_intelligence_service._ensure_parseable_file_size(path)
     ext = path.suffix.lower()
     if ext in {".txt", ".md", ".json", ".csv", ".py", ".ts", ".tsx", ".js", ".yaml", ".yml"}:
         return path.read_text(encoding="utf-8", errors="ignore")
     if ext == ".pdf":
-        return extract_pdf_text_with_ocr_fallback(path)
+        return extract_pdf_text_with_ocr_fallback(path, settings=settings)
     if ext == ".docx":
         try:
             from docx import Document
@@ -182,7 +169,7 @@ def _record_document_output(
 @_require_document_ai_tool
 def extract_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    text = extract_text_from_path(path)
+    text = extract_text_from_path(path, settings=context.get("settings"))
     extracted = text[:_EXTRACT_TEXT_LIMIT]
     output = {
         "path": str(path),
@@ -203,7 +190,7 @@ def extract_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 @_require_document_ai_tool
 def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    text = extract_text_from_path(path)
+    text = extract_text_from_path(path, settings=context.get("settings"))
     result = document_service.summarize_text(
         text,
         path_label=path.name,
@@ -226,7 +213,7 @@ def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     question = str(args.get("question") or "").strip()
-    text = extract_text_from_path(path)
+    text = extract_text_from_path(path, settings=context.get("settings"))
     result = document_service.answer_question(
         text,
         question,
@@ -249,7 +236,7 @@ def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 @_require_document_ai_tool
 def convert_to_markdown(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    text = extract_text_from_path(path)
+    text = extract_text_from_path(path, settings=context.get("settings"))
     output = {"markdown": f"# {path.name}\n\n{text}"[:_EXTRACT_TEXT_LIMIT]}
     return _record_document_output(
         context,
@@ -285,7 +272,7 @@ def analyze_csv(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 @_require_document_ai_tool
 def analyze_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
-    text = extract_text_from_path(path)
+    text = extract_text_from_path(path, settings=context.get("settings"))
     preview = text[:2000]
     output = {"path": str(path), "preview": preview}
     return _record_document_output(

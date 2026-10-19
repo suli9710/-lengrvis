@@ -10,6 +10,7 @@ BLOCKED_REDACTION_PATTERNS = [
     ),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.=:/+]{8,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"\bagt_codex_[A-Za-z0-9_\-]{8,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
 ]
 GENERIC_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-])")

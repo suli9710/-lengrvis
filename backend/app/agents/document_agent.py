@@ -7,7 +7,7 @@ from app.core.schemas import MessageType, Plan
 class DocumentAgent(BaseAgent):
     name = "DocumentAgent"
     tool_prefix = "document."
-    domain_summary = "Reads and analyzes PDF / DOCX / XLSX / PPTX / image documents; runs OCR via vision tools."
+    domain_summary = "Reads documents and creates sourced Excel/Word outputs in authorized butler matters."
     prompt_file = "document_agent.md"
 
     def consult(self, plan: Plan) -> None:
@@ -15,6 +15,7 @@ class DocumentAgent(BaseAgent):
             self.bus.publish_text(
                 plan.task_id,
                 self.name,
-                "Document extraction is read-only in MVP; semantic summaries can use AI only after privacy review.",
+                "Read source contents before analysis. New Office outputs require scoped previews, "
+                "saved-file readback and verification; preserve existing documents and source citations.",
                 message_type=MessageType.CRITIQUE,
             )

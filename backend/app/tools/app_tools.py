@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import shlex
 import subprocess
 import time
 from fnmatch import fnmatchcase
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from app.core.audit import record
@@ -170,7 +171,7 @@ def _configured_allowlist_entries(context: dict[str, Any]) -> list[str]:
 
 def _app_fields(app: dict[str, Any]) -> list[str]:
     fields: list[str] = []
-    for key in ("id", "name", "command", "path", "publisher", "source"):
+    for key in ("id", "name", "command", "path", "publisher", "source", "app_user_model_id"):
         value = str(app.get(key) or "").strip().lower()
         if value:
             fields.append(value)
@@ -215,12 +216,42 @@ def _allowlist_match(app: dict[str, Any], context: dict[str, Any]) -> str:
     return ""
 
 
-def _find_installed_app(app_name: str, context: dict[str, Any]) -> dict[str, Any] | None:
+def _launch_identity_fields(app: dict[str, Any]) -> set[str]:
+    fields = set()
+    for key in ("id", "name", "command", "path", "app_user_model_id"):
+        value = str(app.get(key) or "").strip().casefold()
+        if value:
+            fields.add(value)
+            if key in {"command", "path"}:
+                fields.add(PureWindowsPath(value).name)
+                fields.add(PureWindowsPath(value).stem)
+    return fields
+
+
+def _find_installed_apps(app_name: str, context: dict[str, Any]) -> list[dict[str, Any]]:
     normalized = app_name.lower().strip()
-    for app in installed_apps(context):
-        if normalized in _app_fields(app):
-            return app
-    return None
+    return [
+        app
+        for app in installed_apps(context)
+        if normalized in _launch_identity_fields(app)
+        or any(normalized in _launch_identity_fields(launcher) for launcher in app.get("launchers", []))
+    ]
+
+
+def _system_executable(relative_path: str) -> str:
+    if os.name != "nt":
+        raise OSError("Application launching requires Windows.")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetSystemDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+    kernel32.GetSystemDirectoryW.restype = ctypes.c_uint
+    directory = ctypes.create_unicode_buffer(32768)
+    length = kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not length or length >= len(directory):
+        raise OSError("Could not resolve the Windows system directory.")
+    executable = Path(directory.value).joinpath(*PureWindowsPath(relative_path).parts)
+    if not executable.is_file():
+        raise OSError("The Windows system application is unavailable.")
+    return str(executable)
 
 
 def _shortcut_dirs() -> list[str]:
@@ -304,14 +335,16 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
     if platform.system().lower() != "windows":
         return []
     try:
-        command = [  # noqa: S607 - Windows executable resolved by PATH.
-            "powershell.exe",
+        command = [
+            _system_executable(r"WindowsPowerShell\v1.0\powershell.exe"),
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             (
-                "Get-AppxPackage | Select-Object "
-                "Name,PackageFullName,Publisher,Version,InstallLocation | ConvertTo-Json -Compress"
+                "$packages = @(Get-AppxPackage | Select-Object "
+                "Name,PackageFullName,PackageFamilyName,Publisher,Version,InstallLocation); "
+                "$startApps = @(Get-StartApps | Select-Object Name,AppID); "
+                "@{Packages=$packages;StartApps=$startApps} | ConvertTo-Json -Depth 4 -Compress"
             ),
         ]
         completed = subprocess.run(  # noqa: S603 - fixed PowerShell command for local package inventory.
@@ -319,12 +352,16 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
             capture_output=True,
             timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         stdout = decode_process_output(completed.stdout)
         if completed.returncode != 0 or not stdout.strip():
             return []
         payload = json.loads(stdout)
-        rows = payload if isinstance(payload, list) else [payload]
+        rows = payload.get("Packages", []) if isinstance(payload, dict) and "Packages" in payload else payload
+        rows = rows if isinstance(rows, list) else [rows]
+        start_apps = payload.get("StartApps", []) if isinstance(payload, dict) else []
+        start_apps = start_apps if isinstance(start_apps, list) else []
         apps: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -333,6 +370,26 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
             package_full_name = str(row.get("PackageFullName") or "").strip()
             if not name or not package_full_name:
                 continue
+            family = str(row.get("PackageFamilyName") or "").strip()
+            launchers = []
+            for start_app in start_apps:
+                if not isinstance(start_app, dict):
+                    continue
+                app_id = str(start_app.get("AppID") or "").strip()
+                if (
+                    family
+                    and app_id.casefold().startswith(family.casefold() + "!")
+                    and APPX_PACKAGE_PATTERN.fullmatch(app_id)
+                ):
+                    launchers.append(
+                        {
+                            "id": name.lower(),
+                            "name": str(start_app.get("Name") or name),
+                            "source": "appx",
+                            "publisher": str(row.get("Publisher") or "").strip(),
+                            "app_user_model_id": app_id,
+                        }
+                    )
             apps.append(
                 {
                     "id": name.lower(),
@@ -341,6 +398,7 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
                     "publisher": str(row.get("Publisher") or "").strip(),
                     "version": str(row.get("Version") or "").strip(),
                     "package_full_name": package_full_name,
+                    "launchers": launchers,
                     "uninstall_string": "",
                     "quiet_uninstall_string": "",
                     "source": "appx",
@@ -352,10 +410,35 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
         return []
 
 
+def _winget_executable() -> str:
+    # Resolve an explicit executable outside folders the agent can populate.
+    # Do not let CreateProcess or Windows' implicit cwd search choose it.
+    settings = get_effective_settings()
+    blocked = [Path.cwd().resolve()]
+    for value in getattr(settings, "allowed_directories", []) or []:
+        root = Path(value).expanduser().resolve()
+        if root.parent != root:
+            blocked.append(root)
+    for entry in os.get_exec_path():
+        directory = Path(os.path.expandvars(entry)).expanduser()
+        if not directory.is_absolute():
+            continue
+        candidate = directory / "winget.exe"
+        try:
+            resolved = candidate.resolve()
+            if any(candidate.is_relative_to(root) or resolved.is_relative_to(root) for root in blocked):
+                continue
+            if resolved.is_file():
+                return str(resolved)
+        except OSError:
+            continue
+    raise OSError("A trusted winget executable was not found outside authorized workspaces.")
+
+
 def _scan_winget_packages() -> list[dict[str, Any]]:
     try:
-        command = [  # noqa: S607 - Windows executable resolved by PATH.
-            "winget",
+        command = [
+            _winget_executable(),
             "list",
             "--output",
             "json",
@@ -442,19 +525,28 @@ def installed_apps(context: dict[str, Any]) -> list[dict[str, Any]]:
     apps.extend(_scan_appx_packages())
     apps.extend(_scan_winget_packages())
     merged: dict[str, dict[str, Any]] = {}
+    launchers_by_key: dict[str, list[dict[str, Any]]] = {}
     for app in apps:
         key = _app_merge_key(app)
         if not key:
             continue
+        launchers = list(app.get("launchers", []))
+        if app.get("source") in {"builtin", "start_menu"}:
+            launchers.append({key: value for key, value in app.items() if key != "launchers"})
+        launchers_by_key.setdefault(key, []).extend(launchers)
         existing = merged.get(key)
         if existing is None or _app_record_richness(app) > _app_record_richness(existing):
-            merged[key] = app
+            merged[key] = dict(app)
     unique = []
-    for app in merged.values():
+    for key, app in merged.items():
+        app["launchers"] = launchers_by_key[key]
+        app["launchable"] = bool(app["launchers"])
         categories = _app_categories(app)
         if categories:
             app["categories"] = categories
         match = _allowlist_match(app, context)
+        if not match:
+            match = next(filter(None, (_allowlist_match(launcher, context) for launcher in app["launchers"])), "")
         app["allowlisted"] = bool(match)
         if match:
             app["allowlist_match"] = match
@@ -464,7 +556,16 @@ def installed_apps(context: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def list_installed(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    return {"apps": installed_apps(context)}
+    apps = installed_apps(context)
+    query = str(args.get("query") or "").strip().casefold()
+    if query:
+        apps = [
+            app
+            for app in apps
+            if any(query in field for field in _app_fields(app))
+            or any(query in field for launcher in app.get("launchers", []) for field in _app_fields(launcher))
+        ]
+    return {"apps": apps}
 
 
 def find_uninstall_entries(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -835,15 +936,35 @@ def _normalize_msiexec_args(parts: list[str]) -> list[str]:
 
 
 def launch_allowlisted(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    app = str(args.get("app", "")).lower()
+    app = str(args.get("app", "")).lower().strip()
     if app not in ALLOWLIST:
         return {"ok": False, "error": "Application is not allowlisted and requires manual confirmation."}
+    if not args.get("dry_run", False):
+        raise_if_tool_aborted(context)
+    try:
+        executable = _system_executable(ALLOWLIST[app])
+    except OSError as exc:
+        return {"ok": False, "error": str(exc), "error_code": "app_launch_unavailable"}
     if args.get("dry_run", False):
-        return {"ok": True, "dry_run": True, "command": ALLOWLIST[app]}
-    raise_if_tool_aborted(context)
-    subprocess.Popen([ALLOWLIST[app]], shell=False)  # noqa: S603 - allowlisted app launch command.
-    record("app.launch_allowlisted", "AppAgent", {"app": app, "command": ALLOWLIST[app]})
-    return {"ok": True, "app": app, "command": ALLOWLIST[app], "launched": True}
+        return {"ok": True, "dry_run": True, "command": executable}
+    process = subprocess.Popen([executable], shell=False)  # noqa: S603 - fixed Windows system executable.
+    record("app.launch_allowlisted", "AppAgent", {"app": app, "command": executable, "process_id": process.pid})
+    return {
+        "ok": True,
+        "app": app,
+        "command": executable,
+        "process_id": process.pid,
+        "launched": True,
+        "launch_state": "process_started",
+        "window_verified": False,
+    }
+
+
+def _activate_packaged_app(app_user_model_id: str) -> int:
+    from app.perception.ui_automation_com import run_sync
+    from app.services.windows_app_activation import activate_application
+
+    return run_sync(activate_application, app_user_model_id)
 
 
 def launch_installed(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -852,33 +973,81 @@ def launch_installed(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
         return {"ok": False, "error": "Missing app name."}
     if app_name in ALLOWLIST:
         return launch_allowlisted({"app": app_name, "dry_run": args.get("dry_run", False)}, context)
-    match = _find_installed_app(app_name, context)
-    if not match:
+    matches = _find_installed_apps(app_name, context)
+    if not matches:
         if _allowlist_match({"id": app_name, "name": app_name, "path": app_name}, context):
             return {"ok": False, "error": "Allowlisted application was not found."}
         return {"ok": False, "error": "Application is not allowlisted."}
-    if not match.get("allowlisted"):
+    launchers = []
+    for match in matches:
+        candidates = match.get("launchers", [])
+        exact = [candidate for candidate in candidates if app_name in _launch_identity_fields(candidate)]
+        launchers.extend(exact or candidates)
+    # A registry publisher/source rule must not authorize a same-name shortcut.
+    authorized = [launcher for launcher in launchers if _allowlist_match(launcher, context)]
+    if not authorized and not any(match.get("allowlisted") for match in matches):
         return {"ok": False, "error": "Application is not allowlisted."}
-    path = str(match.get("path") or "")
-    if not path:
-        return {"ok": False, "error": "Application has no launchable path."}
+    unique = {
+        str(
+            launcher.get("app_user_model_id") or launcher.get("path") or launcher.get("command") or ""
+        ).casefold(): launcher
+        for launcher in authorized
+    }
+    if not unique:
+        return {
+            "ok": False,
+            "error": "Application has no authorized launch target.",
+            "error_code": "app_not_launchable",
+        }
+    if len(unique) > 1:
+        return {
+            "ok": False,
+            "error": "Multiple application launch targets matched; use an exact path or application ID.",
+            "error_code": "app_launch_ambiguous",
+            "matches": list(unique.values())[:10],
+        }
+    launcher = next(iter(unique.values()))
+    if launcher.get("source") == "builtin":
+        return launch_allowlisted({"app": launcher["id"], "dry_run": args.get("dry_run", False)}, context)
+    app_id = str(launcher.get("app_user_model_id") or "")
+    path = str(launcher.get("path") or "")
+    if app_id:
+        if not APPX_PACKAGE_PATTERN.fullmatch(app_id) or "!" not in app_id:
+            return {"ok": False, "error": "Invalid installed application ID.", "error_code": "app_not_launchable"}
+        target = "shell:AppsFolder\\" + app_id
+    elif Path(path).is_absolute() and Path(path).is_file() and Path(path).suffix.lower() in {".exe", ".lnk"}:
+        target = path
+    else:
+        return {"ok": False, "error": "Application launch target is unavailable.", "error_code": "app_not_launchable"}
     if args.get("dry_run", False):
         return {
             "ok": True,
             "dry_run": True,
             "app": app_name,
-            "path": path,
-            "allowlist_match": match.get("allowlist_match", ""),
+            "path": target,
+            "allowlist_match": _allowlist_match(launcher, context),
         }
     raise_if_tool_aborted(context)
-    os.startfile(path)  # noqa: S606  # type: ignore[attr-defined]
-    record("app.launch_installed", "AppAgent", {"app": app_name, "path": path})
-    return {"ok": True, "app": app_name, "path": path, "launched": True}
+    process_id = _activate_packaged_app(app_id) if app_id else None
+    if not app_id:
+        os.startfile(target)  # noqa: S606 - scanned, allowlisted application entry.  # type: ignore[attr-defined]
+    record("app.launch_installed", "AppAgent", {"app": app_name, "path": target, "process_id": process_id})
+    return {
+        "ok": True,
+        "app": app_name,
+        "path": target,
+        "launched": True,
+        "process_id": process_id,
+        "launch_state": "activated" if app_id else "requested",
+        "window_verified": False,
+    }
 
 
 def open_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     settings = _settings(context)
-    path = resolve_authorized(str(args.get("path", "")), settings.allowed_directories)
+    path = resolve_authorized(
+        str(args.get("path", "")), context.get("allowed_directories") or settings.allowed_directories
+    )
     if not path.is_file():
         return {"ok": False, "error": "Path is not a file."}
     extension = PureWindowsPath(path.name.rstrip(". ")).suffix.lower()
@@ -891,6 +1060,12 @@ def open_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "path": str(path)}
     raise_if_tool_aborted(context)
+    if args.get("application"):
+        from app.services.office_application import open_office_document
+        from app.services.office_artifacts import open_bound_artifact
+
+        owned = open_bound_artifact(path, str(args["application"]), context)
+        return owned if owned is not None else open_office_document(path, str(args["application"]), context)
     os.startfile(str(path))  # noqa: S606  # type: ignore[attr-defined]
     record("app.open_file", "AppAgent", {"path": str(path)})
     return {"ok": True, "path": str(path), "opened": True}
@@ -928,7 +1103,17 @@ def reveal_in_explorer(args: dict[str, Any], context: dict[str, Any]) -> dict[st
 
 def _input_schema(name: str) -> dict[str, Any]:
     schemas: dict[str, dict[str, Any]] = {
-        "app.list_installed": {"type": "object", "properties": {}, "additionalProperties": False},
+        "app.list_installed": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "Optional name, publisher, path or application ID filter to keep inventory focused.",
+                }
+            },
+            "additionalProperties": False,
+        },
         "app.find_uninstall_entries": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -950,13 +1135,25 @@ def _input_schema(name: str) -> dict[str, Any]:
         },
         "app.launch_installed": {
             "type": "object",
-            "properties": {"app": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "properties": {
+                "app": {
+                    "type": "string",
+                    "description": (
+                        "Exact installed name, launcher path, or registered application ID from app.list_installed."
+                    ),
+                },
+                "dry_run": {"type": "boolean"},
+            },
             "required": ["app"],
             "additionalProperties": False,
         },
         "app.open_file": {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "properties": {
+                "path": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+                "application": {"type": "string", "enum": ["excel", "word"]},
+            },
             "required": ["path"],
             "additionalProperties": False,
         },
@@ -974,6 +1171,30 @@ def _input_schema(name: str) -> dict[str, Any]:
         },
     }
     return schemas.get(name, {"type": "object", "properties": {}, "additionalProperties": False})
+
+
+def _launch_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+            "ok": {"type": "boolean"},
+            "dry_run": {"type": "boolean"},
+            "launch_state": {"type": "string", "enum": ["requested", "process_started", "activated"]},
+            "process_id": {
+                "type": ["integer", "null"],
+                "description": (
+                    "Process reported by launch or activation. "
+                    "It may exit or hand off; verify the actual UI separately."
+                ),
+            },
+            "window_verified": {
+                "type": "boolean",
+                "description": "False until a separate UIA observation verifies the target window before input.",
+            },
+        },
+        "additionalProperties": True,
+    }
 
 
 def register(registry) -> None:
@@ -999,7 +1220,9 @@ def register(registry) -> None:
                 description=tool_description(name),
                 search_hint=tool_search_hint(name),
                 input_schema=_input_schema(name),
-                output_schema={},
+                output_schema=_launch_output_schema()
+                if name in {"app.launch_allowlisted", "app.launch_installed"}
+                else {},
                 risk_level=risk,
                 agent_owner="AppAgent",
                 supports_dry_run=True,
@@ -1010,5 +1233,8 @@ def register(registry) -> None:
                 resource_kinds=["application", "file"],
                 fast_path_eligible=risk in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY},
                 trust_tier="builtin",
+                tool_version="2"
+                if name in {"app.list_installed", "app.launch_allowlisted", "app.launch_installed"}
+                else "1",
             )
         )

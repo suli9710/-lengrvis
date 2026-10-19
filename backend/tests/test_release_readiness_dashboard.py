@@ -6,7 +6,9 @@ by file path with importlib.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +18,51 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_release_readiness_dashboard.py"
 READINESS_PATH = REPO_ROOT / "docs" / "release" / "release-readiness-dashboard.md"
 RELEASE_READINESS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-readiness.yml"
+
+
+def _write_signed_evidence(root, monkeypatch, commit):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    spec = importlib.util.spec_from_file_location(
+        "signature_test_helper", REPO_ROOT / "scripts" / "release_owner_signature.py"
+    )
+    signature_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signature_module)
+    key = Ed25519PrivateKey.generate()
+    public_key = "ed25519:" + base64.urlsafe_b64encode(
+        key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode().rstrip("=")
+    payload = signature_module.create_signoff_payload(
+        repository="example/repo",
+        release_tag="v0.1.2",
+        candidate_commit=commit,
+        candidate_run_id="123",
+        candidate_run_attempt="2",
+        reviewed_evidence_run_id="100",
+        reviewed_evidence_run_attempt="1",
+        build_identifier=f"rc-123-2-{commit}",
+        release_owner="alice",
+        manual_signoff_status="release_signoff_recorded",
+    )
+    signature = "ed25519:" + base64.urlsafe_b64encode(
+        key.sign(signature_module.canonical_payload_bytes(payload))
+    ).decode().rstrip("=")
+    evidence = signature_module.verify_release_owner_signature(
+        public_key_text=public_key, signature_text=signature, payload=payload
+    )
+    artifact = root / "build" / "signature.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(evidence), encoding="utf-8")
+    path = root / "docs" / "release" / "current-release-evidence.md"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("release-owner-accepted", signature)
+    text = text.replace("sha256:" + "1" * 64, evidence["payload_sha256"])
+    text = text.replace("sha256:" + "2" * 64, evidence["public_key_fingerprint"])
+    text += f"\n- Owner signature evidence: build/signature.json\n- Release owner: alice\n- Release version: 0.1.2\n- Build identifier: rc-123-2-{commit}\n"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("LENGRVIS_RELEASE_OWNER_PUBLIC_KEY", public_key)
+    return path, artifact
 
 
 def _load_module():
@@ -153,6 +200,7 @@ def test_strict_publish_prefers_verified_candidate_over_dispatch_sha(
         "| RR-P0-006 | X | ev | passed | docs/release/current-release-evidence.md | alice | 2026-01-01 | n |\n"
     )
     dashboard = f"| Field | Value |\n| --- | --- |\n| Candidate commit | `{candidate_sha}` |\n"
+    _write_signed_evidence(tmp_path, monkeypatch, candidate_sha)
 
     errors, _warnings = mod.validate(
         mod.parse_rows(markdown),
@@ -415,7 +463,7 @@ def test_strict_rejects_pending_rr_p0_006_current_evidence(tmp_path):
     assert any("owner signature is pending" in e for e in errors)
 
 
-def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
+def test_strict_rejects_forged_verified_text_without_signature_evidence(tmp_path):
     commit = "abcdef1234567890abcdef1234567890abcdef12"
     evidence_dir = tmp_path / "docs" / "release"
     evidence_dir.mkdir(parents=True)
@@ -461,7 +509,40 @@ def test_strict_accepts_signed_rr_p0_006_current_evidence(tmp_path):
         expected_run_attempt="2",
     )
 
-    assert errors == []
+    assert any("independent owner signature verification failed" in error for error in errors)
+
+
+@pytest.mark.parametrize("change", ["payload", "trusted_key", "candidate"])
+def test_independent_signature_verification_rejects_tampering_and_replay(tmp_path, monkeypatch, change):
+    commit = "a" * 40
+    directory = tmp_path / "docs" / "release"
+    directory.mkdir(parents=True)
+    (directory / "current-release-evidence.md").write_text(
+        "- Owner signature: release-owner-accepted\n- Manual sign-off status: release_signoff_recorded\n"
+        f"- Owner signature payload SHA-256: sha256:{'1' * 64}\n"
+        f"- Owner signature key fingerprint: sha256:{'2' * 64}\n",
+        encoding="utf-8",
+    )
+    summary, artifact = _write_signed_evidence(tmp_path, monkeypatch, commit)
+    if change == "payload":
+        data = json.loads(artifact.read_text(encoding="utf-8"))
+        data["payload"]["candidate_commit"] = "b" * 40
+        artifact.write_text(json.dumps(data), encoding="utf-8")
+    elif change == "trusted_key":
+        monkeypatch.setenv(
+            "LENGRVIS_RELEASE_OWNER_PUBLIC_KEY", "ed25519:" + base64.urlsafe_b64encode(bytes(32)).decode().rstrip("=")
+        )
+    else:
+        commit = "b" * 40
+    with pytest.raises(ValueError):
+        mod._verify_owner_signature_evidence(
+            tmp_path,
+            summary.read_text(encoding="utf-8"),
+            repository="example/repo",
+            commit=commit,
+            run_id="123",
+            run_attempt="2",
+        )
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-import { Ban, Brain, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { Ban, Brain, Pencil, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import { LengrvisApiClient } from "../lib/apiClient";
@@ -16,6 +16,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
   const [query, setQuery] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [draftTags, setDraftTags] = useState("");
+  const [editingMemory, setEditingMemory] = useState<MemoryItem | null>(null);
   const [searchResultQuery, setSearchResultQuery] = useState<string | null>(null);
   const loader = useCallback(() => api.listMemories(), [api]);
   const {
@@ -61,9 +62,12 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
       .split(/[,，;；\s]+/)
       .map((tag) => tag.trim())
       .filter(Boolean);
-    await mutate("save", () => api.saveMemory(content, { tags }), "保存记忆失败", async () => {
+    await mutate("save", () => api.saveMemory(content, {
+      tags, ...(editingMemory ? { kind: editingMemory.kind, supersedes: editingMemory.id } : {})
+    }), "保存记忆失败", async () => {
       setDraftContent("");
       setDraftTags("");
+      setEditingMemory(null);
       await refreshMemories();
     });
   };
@@ -122,7 +126,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
 
         <div className="memory-form">
           <label className="field">
-            <span>新增记忆</span>
+            <span>{editingMemory ? "更正记忆（保存后替代旧版本）" : "新增记忆"}</span>
             <textarea
               aria-label="记忆内容"
               value={draftContent}
@@ -145,14 +149,17 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
           <button
             className="button button--primary"
             type="button"
-            aria-label="保存记忆"
+            aria-label={editingMemory ? "保存记忆更正" : "保存记忆"}
             aria-busy={pendingAction === "save"}
             disabled={isMutating}
             onClick={() => void save()}
           >
             <Plus size={16} aria-hidden="true" />
-            <span>{pendingAction === "save" ? "正在保存" : "记住这条"}</span>
+            <span>{pendingAction === "save" ? "正在保存" : editingMemory ? "保存更正" : "记住这条"}</span>
           </button>
+          {editingMemory ? <button className="button button--ghost" type="button" disabled={isMutating} onClick={() => {
+            setEditingMemory(null); setDraftContent(""); setDraftTags("");
+          }}>取消更正</button> : null}
           {mutationError ? <p className="field-error panel-inline-error" role="alert">{mutationError}</p> : null}
         </div>
 
@@ -177,12 +184,13 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
                   <div className="memory-meta muted">
                     <Brain size={14} aria-hidden="true" />
                     <span className="memory-kind">{item.kind}</span>
-                    <span className={`memory-state memory-state--${state}`}>{memoryStateLabel(state)}</span>
+                    <span className={`memory-state memory-state--${state}`}>{conflict === "superseded" ? "历史版本" : memoryStateLabel(state)}</span>
                     <span>{`v${item.version ?? 1}`}</span>
                     {conflict !== "none" ? (
                       <span className={`memory-conflict memory-conflict--${conflict}`}>{memoryConflictLabel(conflict)}</span>
                     ) : null}
                     {item.user_confirmed === false ? <span>未人工确认</span> : null}
+                    {item.tags?.includes("自动保存") ? <span>{item.source === "user" ? "来自你的陈述" : "推断信息，待核对"}</span> : null}
                     {item.tags?.length ? <span className="memory-tags">{item.tags.join(" · ")}</span> : null}
                   </div>
                   <p className="memory-content">{item.content}</p>
@@ -191,7 +199,12 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
                       {item.created_at ? new Date(item.created_at).toLocaleString() : ""}
                       {item.use_count ? ` · 被引用 ${item.use_count} 次` : ""}
                       {item.reviewed_by ? ` · 最近由 ${item.reviewed_by} 审阅` : ""}
+                      {item.expires_at ? ` · 有效期至 ${new Date(item.expires_at).toLocaleDateString()}` : ""}
                     </span>
+                    {state !== "revoked" && conflict !== "superseded" ? <button className="button button--ghost" type="button" disabled={isMutating} aria-label={`更正记忆：${item.content.slice(0, 32)}`} onClick={() => {
+                      setEditingMemory(item); setDraftContent(item.content);
+                      setDraftTags(item.tags.filter((tag) => !["自动保存", "用户陈述", "待核对"].includes(tag)).join(", "));
+                    }}><Pencil size={14} aria-hidden="true" /><span>更正</span></button> : null}
                     {needsPromotion ? (
                       <button
                         className="button button--ghost"
@@ -238,7 +251,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
 
         {!isLoading && !loadError && items.length === 0 ? (
           <p className="empty-state memory-empty">
-            {searchResultQuery ? "没有找到匹配的记忆。换个关键词再试试。" : "还没有记忆。在上方输入一条试试。"}
+            {searchResultQuery ? "没有找到匹配的记忆。换个关键词再试试。" : "还没有记忆。管家会主动保存对话中的重要信息，你也可以在上方添加。"}
           </p>
         ) : null}
       </div>

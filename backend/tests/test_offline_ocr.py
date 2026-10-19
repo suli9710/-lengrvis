@@ -181,7 +181,7 @@ def test_provider_ocr_times_out_to_failed_result(
     monkeypatch.setattr(ocr_service, "get_provider", lambda settings=None, task="ocr": SlowOCRProvider())
 
     started = time.monotonic()
-    result = ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01)
+    result = ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01, settings=AppSettings(mode="privacy"))
 
     assert result.ok is False
     assert result.source == "vision_provider"
@@ -206,7 +206,7 @@ def test_provider_ocr_timeout_returns_from_running_event_loop(
     monkeypatch.setattr(ocr_service, "get_provider", lambda settings=None, task="ocr": SlowOCRProvider())
 
     async def invoke() -> ocr_service.OCRResult:
-        return ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01)
+        return ocr_service.provider_ocr_image(image_path, timeout_seconds=0.01, settings=AppSettings(mode="privacy"))
 
     started = time.monotonic()
     result = asyncio.run(invoke())

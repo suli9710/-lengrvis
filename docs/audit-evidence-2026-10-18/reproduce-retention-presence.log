@@ -1,0 +1,5 @@
+integrity_before True
+cleanup_approvals_deleted None
+integrity_after_ok False
+failure {'table': 'approvals', 'id': 'approval_73651ee9547142838342c759613b96ef', 'reason': 'Sensitive local record is missing for a presence ledger entry'}
+require_ok SensitiveRecordIntegrityError Sensitive local record integrity check failed for approvals:approval_73651ee9547142838342c759613b96ef

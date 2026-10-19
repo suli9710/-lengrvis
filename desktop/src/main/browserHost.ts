@@ -4,7 +4,7 @@ import {
   type Rectangle,
   type WebContents
 } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { IPC_CHANNELS } from "../shared/ipc";
 import type {
@@ -26,17 +26,11 @@ import type {
 } from "../shared/credentialTypes";
 import {
   sanitizeEventForRenderer,
-  sanitizeSessionForRenderer
+  sanitizeSessionForRenderer,
+  redactSensitiveText,
+  redactUrl
 } from "../shared/browserHostRedaction";
 import { domClickScript, domFillScript, domScrollScript, domSubmitScript, observeScript } from "./browserHostDomActions";
-import {
-  capturePageCredentialScript,
-  credentialPageFingerprintScript,
-  fillPageCredentialScript,
-  parseCapturedPageCredential,
-  parseFilledPageCredentialResult,
-  parsePageCredentialFingerprint
-} from "./browserCredentialDom";
 import {
   registerBrowserCredentialIpcHandlers,
   type BrowserCredentialPreview
@@ -47,7 +41,6 @@ import {
   delay,
   destroyWebContents,
   runDomAction,
-  safeCredentialErrorMessage,
   type BrowserContainer
 } from "./browserHostRuntime";
 import {
@@ -62,12 +55,16 @@ import {
 import { hardenEmbeddedWebContents } from "./browserHostWebContentsHardening";
 import { BrowserHostPinnedProxy } from "./browserHostPinnedProxy";
 import { BrowserScreenshotStore } from "./browserScreenshotStore";
-import {
-  CredentialVault,
-  credentialDomainFromUrl,
-  normalizeCredentialIdentifier
-} from "./credentialVault";
+import { CredentialVault } from "./credentialVault";
+import { BrowserHostCredentialBroker } from "./browserHostCredentials";
+import { BrowserPrivacyBoundary } from "./browserPrivacyBoundary";
+import { eraseBrowserPrivateData } from "./browserPrivacyErase";
 import { CredentialUseTicketBroker } from "./credentialUseTicketBroker";
+import type { BrowserExecutionClaim } from "./browserExecutionGrant";
+import { browserTargetSnapshotScript, guardedBrowserActionScript } from "./browserTargetSnapshot";
+import { BrowserProfileRegistry } from "./browserProfileRegistry";
+import { browserObservationScript } from "./browserObservation";
+import { BrowserSubmissionGuard, type NativeFormSubmission } from "./browserSubmissionGuard";
 
 export { BrowserHostWebSocketBridge, buildBrowserHostWebSocketUrl, isLoopbackBackendUrl } from "./browserHostBridge";
 export { registerBrowserHostIpcHandlers } from "./browserHostIpcHandlers";
@@ -79,7 +76,15 @@ interface HostedBrowserSession {
   session: BrowserSession;
   events: BrowserActivityEvent[];
   proxyReady: Promise<void>;
+  submissionGuard: BrowserSubmissionGuard;
   cssKey?: string;
+}
+
+interface ManagedSessionOptions {
+  background?: boolean;
+  profileKey?: string;
+  accountId?: string;
+  allowedOrigins?: string[];
 }
 
 const DEFAULT_HOME_URL = "about:blank";
@@ -92,13 +97,24 @@ export class BrowserHost {
   private visible = false;
   private snapshotListeners = new Set<(snapshot: BrowserHostSnapshot) => void>();
   private pinnedProxyPromise: Promise<BrowserHostPinnedProxy> | null = null;
-  private readonly screenshotStore = new BrowserScreenshotStore();
+  private readonly credentialBroker: BrowserHostCredentialBroker;
+  private readonly targetPreviews = new Map<string, { sessionId: string; state: unknown; expires: number }>();
+  private readonly revokedScopeVersions = new Map<string, number>();
 
   constructor(
     private readonly getMainWindow: () => BrowserWindow | null,
     private readonly credentialVault = new CredentialVault(),
-    private readonly credentialTickets = new CredentialUseTicketBroker()
-  ) {}
+    private readonly credentialTickets = new CredentialUseTicketBroker(),
+    private readonly browserProfiles = new BrowserProfileRegistry(),
+    private readonly screenshotStore = new BrowserScreenshotStore(),
+    private readonly privacyBoundary = new BrowserPrivacyBoundary()
+  ) {
+    this.credentialBroker = new BrowserHostCredentialBroker({
+      getSession: id => this.sessions.get(id),
+      addEvent: (entry, input) => this.addEvent(entry as HostedBrowserSession, input),
+      emitSnapshot: () => this.emitSnapshot()
+    }, credentialVault, credentialTickets, privacyBoundary);
+  }
 
   registerIpcHandlers(): void {
     registerBrowserHostIpcHandlers({
@@ -123,28 +139,17 @@ export class BrowserHost {
     this.credentialTickets.clear();
   }
 
+  beginLocalPrivateDataErase(): boolean { return this.privacyBoundary.reserve(); }
+  finishLocalPrivateDataErase(): void { this.privacyBoundary.release(); }
+  initializeScreenshotStore(): Promise<void> { return this.screenshotStore.initialize(); }
+
   async eraseLocalPrivateData(): Promise<void> {
-    const failures: unknown[] = [];
-    for (const entry of [...this.sessions.values()]) {
-      try {
-        await entry.container.view.webContents.session.clearStorageData();
-        await this.stop(entry.session.id);
-      } catch (error) { // broad-exception-boundary: collect every local erasure failure before reporting an incomplete wipe.
-        failures.push(error);
-      }
-    }
-    try {
-      await this.screenshotStore.clear();
-    } catch (error) { // broad-exception-boundary: screenshot cleanup failure must fail the coordinated privacy erase.
-      failures.push(error);
-    }
-    try {
-      this.credentialTickets.clear();
-      this.credentialVault.clear();
-    } catch (error) { // broad-exception-boundary: credential cleanup failure must fail the coordinated privacy erase.
-      failures.push(error);
-    }
-    if (failures.length) throw new Error("Electron private browser data could not be fully erased");
+    await eraseBrowserPrivateData({
+      sessions: [...this.sessions.values()], stop: id => this.stop(id),
+      screenshotStore: this.screenshotStore, browserProfiles: this.browserProfiles,
+      credentialTickets: this.credentialTickets, credentialVault: this.credentialVault
+    });
+    this.targetPreviews.clear();
   }
 
   onSnapshot(listener: (snapshot: BrowserHostSnapshot) => void): () => void {
@@ -167,21 +172,25 @@ export class BrowserHost {
     };
   }
 
-  async open(request: BrowserHostOpenRequest = {}): Promise<BrowserHostActionResult> {
+  async open(request: BrowserHostOpenRequest = {}, managed: ManagedSessionOptions = {}): Promise<BrowserHostActionResult> {
+    const release = this.privacyBoundary.enter();
+    try {
     const sessionId = normalizeBrowserHostId(request.sessionId) ?? randomUUID();
 
     try {
       const current = this.sessions.get(sessionId);
       const targetUrl = normalizeBrowserHostUrl(request.url) ?? current?.session.current_url ?? DEFAULT_HOME_URL;
-      const entry = current ?? this.createHostedSession(sessionId, request);
+      const entry = current ?? this.createHostedSession(sessionId, request, managed);
       this.sessions.set(sessionId, entry);
-      this.activeSessionId = sessionId;
+      if (!managed.background) this.activeSessionId = sessionId;
       entry.session.status = "loading";
       entry.session.mode = request.mode ?? entry.session.mode;
       entry.session.updated_at = browserHostTimestamp();
-      this.attachActiveView();
-      this.applyBounds();
-      this.setViewVisible(true);
+      if (!managed.background) {
+        this.attachActiveView();
+        this.applyBounds();
+        this.setViewVisible(true);
+      }
       await entry.proxyReady;
 
       if (targetUrl && targetUrl !== "about:blank") {
@@ -217,6 +226,7 @@ export class BrowserHost {
       }
       return this.fail(message);
     }
+    } finally { release(); }
   }
 
   show(sessionId: string): BrowserHostActionResult {
@@ -256,6 +266,7 @@ export class BrowserHost {
   }
 
   resume(sessionId: string): BrowserHostActionResult {
+    this.privacyBoundary.assertAvailable();
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
     if (entry.session.takeover) return this.fail("Return manual control before resuming the agent", entry);
@@ -271,8 +282,10 @@ export class BrowserHost {
   }
 
   takeover(sessionId: string): BrowserHostActionResult {
+    this.privacyBoundary.assertAvailable();
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
+    entry.submissionGuard.release();
     entry.session.paused = true;
     entry.session.takeover = true;
     entry.session.mode = "takeover";
@@ -286,6 +299,7 @@ export class BrowserHost {
   }
 
   release(sessionId: string): BrowserHostActionResult {
+    this.privacyBoundary.assertAvailable();
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
     entry.session.takeover = false;
@@ -302,15 +316,18 @@ export class BrowserHost {
   async stop(sessionId: string): Promise<BrowserHostActionResult> {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
+    entry.submissionGuard.close();
     const event = this.addEvent(entry, { type: "session.stopped", ok: true });
     this.detachView(entry);
+    // Close the page before any fallible asynchronous cleanup. A locked
+    // screenshot must never leave a live, untracked page recreating storage.
+    destroyWebContents(entry.container.view.webContents);
     this.sessions.delete(sessionId);
     await this.screenshotStore.removeSession(sessionId);
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = this.sessions.keys().next().value ?? null;
       this.attachActiveView();
     }
-    destroyWebContents(entry.container.view.webContents);
     this.emitSnapshot();
     return {
       ok: true,
@@ -321,6 +338,8 @@ export class BrowserHost {
   }
 
   async performAction(sessionId: string, action: BrowserAction): Promise<BrowserHostActionResult> {
+    const release = this.privacyBoundary.enter();
+    try {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.fail("Browser session is no longer available");
     if (entry.session.paused && action.kind !== "observe" && action.kind !== "screenshot") {
@@ -355,227 +374,181 @@ export class BrowserHost {
       this.emitSnapshot();
       return this.fail(browserHostErrorMessage(error), entry, event);
     }
+    } finally { release(); }
   }
 
-  listCredentialRefs(request: CredentialSessionRequest): CredentialRef[] {
-    const context = this.credentialContext(request.session_id, false);
-    return this.credentialVault.list(context.domain);
+  async cancelScope(scopeId: string, version: number): Promise<BrowserHostActionResult> {
+    this.revokedScopeVersions.set(scopeId, Math.max(version, this.revokedScopeVersions.get(scopeId) ?? 0));
+    const owned = this.getSnapshot().sessions.filter(session => session.scope_id === scopeId);
+    for (const session of owned) await this.stop(session.id);
+    await this.browserProfiles.clearScope(scopeId);
+    return { ok: true, snapshot: this.getSnapshot() };
   }
 
-  async previewCredentialCapture(request: CredentialSessionRequest): Promise<BrowserCredentialPreview> {
-    const context = this.credentialContext(request.session_id, true);
-    const page = await this.credentialPageContext(context);
-    return {
-      domain: context.domain,
-      session_id: request.session_id,
-      page_fingerprint: page.page_fingerprint,
-      task_id: context.taskId
-    };
-  }
-
-  async captureCredential(
-    request: CredentialSessionRequest,
-    preview: BrowserCredentialPreview
-  ): Promise<CredentialBrokerResult> {
+  async performAuthorized(claim: BrowserExecutionClaim): Promise<BrowserHostActionResult> {
+    const release = this.privacyBoundary.enter();
     try {
-      const context = this.credentialContext(request.session_id, true);
-      const captured = parseCapturedPageCredential(
-        await context.entry.container.view.webContents.executeJavaScript(
-          capturePageCredentialScript(preview.domain, preview.page_fingerprint),
-          true
-        )
-      );
-      this.assertCredentialPreview(preview, request.session_id, context, captured);
-      const credentialRef = this.credentialVault.store(context.domain, {
-        username: captured.username,
-        password: captured.password
-      });
-      this.addEvent(context.entry, {
-        type: "credential.saved",
-        ok: true,
-        url: context.entry.container.view.webContents.getURL()
-      });
+    for (const [id, version] of Object.entries(claim.scope_versions)) {
+      if (version < (this.revokedScopeVersions.get(id) ?? 0)) return this.fail("Browser scope grant is obsolete");
+    }
+    let entry = this.sessions.get(claim.session_id);
+    if (claim.operation === "adopt") {
+      if (!entry || entry.session.task_id !== claim.previous_task_id || (entry.session.account_id ?? "") !== claim.account_id ||
+          entry.session.takeover || entry.session.paused || !claim.allowed_origins.includes(new URL(entry.container.view.webContents.getURL()).origin) ||
+          claim.allowed_origins.some(origin => !entry!.session.allowed_origins?.includes(origin))) return this.fail("Original browser ownership or scope changed");
+      for (const [key, preview] of this.targetPreviews) if (preview.sessionId === claim.session_id) this.targetPreviews.delete(key);
+      entry.session.task_id = claim.task_id;
+      entry.session.updated_at = browserHostTimestamp();
       this.emitSnapshot();
-      return { ok: true, credential_ref: credentialRef };
-    } catch (error) { // broad-exception-boundary
-      return { ok: false, error: safeCredentialErrorMessage(error) };
+      return this.ok(entry);
     }
-  }
-
-  async previewCredentialUse(request: CredentialUseTicketRequest): Promise<BrowserCredentialPreview> {
-    const context = this.credentialContext(request.session_id, true);
-    if (request.task_id !== context.taskId) {
-      throw new Error("Credential task binding does not match the browser session");
-    }
-    const credentialRef = this.credentialVault.getRef(request.credential_ref_id);
-    if (!credentialRef || credentialRef.domain !== context.domain) {
-      throw new Error("Saved credential is unavailable for this domain");
-    }
-    const page = await this.credentialPageContext(context);
-    return {
-      domain: context.domain,
-      session_id: request.session_id,
-      page_fingerprint: page.page_fingerprint,
-      task_id: context.taskId,
-      credential_ref_id: credentialRef.id,
-      run_id: request.run_id,
-      purpose: request.purpose,
-      ttl_seconds: request.ttl_seconds ?? 60
-    };
-  }
-
-  async issueCredentialUseTicket(
-    request: CredentialUseTicketRequest,
-    preview: BrowserCredentialPreview
-  ): Promise<CredentialBrokerResult> {
-    try {
-      const current = await this.previewCredentialUse(request);
-      this.assertCredentialPreview(
-        preview,
-        request.session_id,
-        this.credentialContext(request.session_id, true),
-        { origin: current.domain, page_fingerprint: current.page_fingerprint ?? "" }
-      );
-      const ticket = this.credentialTickets.issue({
-        credential_ref_id: preview.credential_ref_id ?? request.credential_ref_id,
-        domain: preview.domain,
-        session_id: preview.session_id ?? request.session_id,
-        page_fingerprint: preview.page_fingerprint ?? "",
-        run_id: request.run_id,
-        task_id: preview.task_id,
-        purpose: request.purpose
-      }, request.ttl_seconds);
-      return { ok: true, ticket };
-    } catch (error) { // broad-exception-boundary
-      return { ok: false, error: safeCredentialErrorMessage(error) };
-    }
-  }
-
-  async fillCredential(request: CredentialFillRequest): Promise<CredentialBrokerResult> {
-    try {
-      const context = this.credentialContext(request.session_id, true);
-      const page = await this.credentialPageContext(context);
-      const ticket = this.credentialTickets.consume(request.ticket, {
-        credential_ref_id: request.ticket.credential_ref_id,
-        domain: context.domain,
-        session_id: request.session_id,
-        page_fingerprint: page.page_fingerprint,
-        run_id: request.ticket.run_id,
-        task_id: context.taskId,
-        purpose: request.ticket.purpose
+    if (claim.operation === "open") {
+      if (entry && entry.session.task_id !== claim.task_id) return this.fail("Browser session belongs to another task");
+      if (entry) return this.ok(entry);
+      const opened = await this.open({ sessionId: claim.session_id, taskId: claim.task_id, url: claim.action.url, mode: "agent" }, {
+        background: true, profileKey: claim.profile_key, accountId: claim.account_id, allowedOrigins: claim.allowed_origins
       });
-      const credential = this.credentialVault.resolve(ticket.credential_ref_id);
-      if (credential.ref.domain !== context.domain) {
-        throw new Error("Saved credential is unavailable for this domain");
+      return opened;
+    }
+    if (!entry || entry.session.task_id !== claim.task_id || (entry.session.account_id ?? "") !== claim.account_id) {
+      return this.fail("Browser command belongs to another task or account");
+    }
+    const contents = entry.container.view.webContents;
+    const origin = new URL(contents.getURL()).origin;
+    if (!claim.allowed_origins.includes(origin) || !entry.session.allowed_origins?.includes(origin)) return this.fail("Browser origin changed");
+    if (entry.session.takeover || (entry.session.paused && claim.action.kind !== "observe")) return this.fail("Return user control before continuing the task");
+    if (claim.operation === "inspect") {
+      const state = await this.runManagedScript(contents, browserTargetSnapshotScript(claim.action));
+      const fingerprint = createHash("sha256").update(JSON.stringify(state)).digest("hex");
+      for (const [key, preview] of this.targetPreviews) if (preview.expires < Date.now()) this.targetPreviews.delete(key);
+      if (this.targetPreviews.size >= 256) this.targetPreviews.delete(this.targetPreviews.keys().next().value!);
+      this.targetPreviews.set(fingerprint, { sessionId: claim.session_id, state, expires: Date.now() + 10 * 60_000 });
+      const preview = (state as { targets?: Array<{ preview?: unknown }> }).targets?.map(target => target.preview) ?? [];
+      return { ...this.ok(entry), inspection: { fingerprint, origin, preview } };
+    }
+    if (["click", "fill", "submit", "scroll"].includes(claim.action.kind)) {
+      const preview = this.targetPreviews.get(claim.expected_fingerprint);
+      if (!preview || preview.sessionId !== claim.session_id || preview.expires < Date.now()) return this.fail("Approved browser target snapshot expired");
+      this.targetPreviews.delete(claim.expected_fingerprint);
+      const submission = (preview.state as { submission?: NativeFormSubmission }).submission;
+      const attempt = submission ? entry.submissionGuard.arm(submission) : undefined;
+      let performed: boolean | { ok: boolean; commit_state?: "not_submitted" | "submitted"; error?: string };
+      try {
+        performed = await this.runManagedScript(contents, guardedBrowserActionScript(claim.action, preview.state)) as typeof performed;
+      } catch (error) { // broad-exception-boundary: close the pending permit and propagate the original DOM failure.
+        attempt?.cancel();
+        throw error;
       }
-      const filled = parseFilledPageCredentialResult(
-        await context.entry.container.view.webContents.executeJavaScript(
-          fillPageCredentialScript(
-            context.domain,
-            ticket.page_fingerprint,
-            credential.secret.username,
-            credential.secret.password
-          ),
-          true
-        )
-      );
-      this.addEvent(context.entry, {
-        type: "credential.filled",
-        ok: true,
-        url: context.entry.container.view.webContents.getURL()
-      });
+      if (typeof performed === "object" && !performed.ok) {
+        attempt?.notSubmitted();
+        return { ...this.fail(performed.error ?? "Form was not submitted", entry), commit_state: performed.commit_state };
+      }
+      if (attempt) {
+        const decision = await attempt.wait();
+        if (decision !== "submitted") {
+          // A cancelled navigation emits did-fail-load asynchronously. Let it
+          // settle before a recovery loadURL, or Electron can reject that new
+          // navigation with the old request's error.
+          if (decision === "not_submitted" && contents.isLoading()) {
+            await new Promise<void>(resolve => {
+              const done = () => { clearTimeout(timer); contents.removeListener("did-stop-loading", done); resolve(); };
+              const timer = setTimeout(done, 2000);
+              contents.once("did-stop-loading", done);
+              if (!contents.isLoading()) done();
+            });
+          }
+          return {
+            ...this.fail(decision === "not_submitted" ? "Actual form request did not match the approved submission" : "Form request outcome is unknown; inspect the original page before continuing", entry),
+            ...(decision === "not_submitted" ? { commit_state: "not_submitted" as const } : {})
+          };
+        }
+      }
+      const event = this.addEvent(entry, { type: `action.${claim.action.kind}`, action: claim.action, ok: true });
+      this.updateSessionFromWebContents(entry);
       this.emitSnapshot();
-      return {
-        ok: true,
-        credential_ref: credential.ref,
-        filled_username: filled.filled_username,
-        filled_password: filled.filled_password
+      return { ...this.ok(entry, event), ...(typeof performed === "object" ? { commit_state: performed.commit_state } : {}) };
+    }
+    if (claim.action.kind === "cua") return this.fail("Visual input requires a separately bound target");
+    if (claim.action.kind === "observe" || claim.action.kind === "wait") {
+      if (claim.action.kind === "wait") {
+        const selector = requireBrowserActionSelector(claim.action);
+        const timeout = Math.min(30_000, Math.max(0, Number(claim.action.timeout_ms ?? 10_000)));
+        if (!Number.isFinite(timeout)) return this.fail("Invalid selector wait timeout");
+        const deadline = Date.now() + timeout;
+        let found = false;
+        do {
+          if (entry.session.paused || entry.session.takeover || contents.isDestroyed()) return this.fail("Browser wait interrupted");
+          if (!claim.allowed_origins.includes(new URL(contents.getURL()).origin)) return this.fail("Browser origin changed while waiting");
+          // Electron may defer script evaluation until an in-flight navigation
+          // finishes. Bound that read too, so a slow receipt respects the wait.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            found = await Promise.race([
+              this.runManagedScript(contents, `document.querySelectorAll(${JSON.stringify(selector)}).length === 1`),
+              new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())); })
+            ]) === true;
+          } finally { if (timer) clearTimeout(timer); }
+          if (found) break;
+          await delay(100);
+        } while (Date.now() < deadline);
+        if (!found) return this.fail("The requested browser element did not appear");
+      }
+      const value = await this.runManagedScript(contents, browserObservationScript(claim.action)) as Record<string, unknown>;
+      const observation = {
+        url: redactUrl(String(value.url ?? contents.getURL())),
+        title: redactSensitiveText(String(value.title ?? contents.getTitle())),
+        text: redactSensitiveText(String(value.text ?? "")),
+        links: Array.isArray(value.links) ? value.links.slice(0, 40).map((link: { text?: string; url?: string }) => ({ title: redactSensitiveText(String(link.text ?? "")), url: redactUrl(String(link.url ?? "")) })) : [],
+        observed_at: browserHostTimestamp(), truncated: Boolean(value.truncated),
+        extracted: Object.fromEntries(Object.entries((value.extracted ?? {}) as Record<string, { text: string; matched: boolean; truncated: boolean }>).map(([key, field]) => [key, { ...field, text: redactSensitiveText(field.text) }])),
+        elements: Array.isArray(value.elements) ? value.elements.map(element => ({ ...element, text: redactSensitiveText(String(element.text ?? "")) })) : [],
+        controls: Array.isArray(value.controls) ? value.controls.map((control: Record<string, unknown>) => ({
+          ...control, value: redactSensitiveText(String(control.value ?? "")), name: redactSensitiveText(String(control.name ?? ""))
+        })) : [],
+        ...(claim.action.kind === "wait" ? { present: true } : {})
       };
-    } catch (error) { // broad-exception-boundary
-      return { ok: false, error: safeCredentialErrorMessage(error) };
+      entry.session.last_observation = observation;
+      this.updateSessionFromWebContents(entry);
+      const event = this.addEvent(entry, { type: "observe", action: claim.action, ok: true });
+      this.emitSnapshot();
+      return { ...this.ok(entry, event), observation };
     }
+    return this.performAction(claim.session_id, claim.action);
+    } finally { release(); }
   }
 
-  previewCredentialDelete(request: CredentialRefRequest): BrowserCredentialPreview {
-    const context = this.credentialContext(request.session_id, false);
-    const credentialRef = this.credentialVault.getRef(request.credential_ref_id);
-    if (!credentialRef || credentialRef.domain !== context.domain) {
-      throw new Error("Saved credential is unavailable for this domain");
-    }
-    return {
-      domain: context.domain,
-      task_id: context.taskId,
-      credential_ref_id: credentialRef.id
-    };
+  private async runManagedScript(contents: WebContents, code: string): Promise<unknown> {
+    const results = await contents.executeJavaScriptInIsolatedWorld(1009, [{ code }], true);
+    return results;
   }
 
-  deleteCredential(request: CredentialRefRequest): CredentialBrokerResult {
-    try {
-      this.previewCredentialDelete(request);
-      if (!this.credentialVault.delete(request.credential_ref_id)) {
-        return { ok: false, error: "Saved credential is unavailable" };
-      }
-      this.credentialTickets.revokeCredential(request.credential_ref_id);
-      return { ok: true };
-    } catch (error) { // broad-exception-boundary
-      return { ok: false, error: safeCredentialErrorMessage(error) };
-    }
-  }
+  listCredentialRefs(request: CredentialSessionRequest): CredentialRef[] { return this.credentialBroker.listCredentialRefs(request); }
+  previewCredentialCapture(request: CredentialSessionRequest): Promise<BrowserCredentialPreview> { return this.credentialBroker.previewCredentialCapture(request); }
+  captureCredential(request: CredentialSessionRequest, preview: BrowserCredentialPreview): Promise<CredentialBrokerResult> { return this.credentialBroker.captureCredential(request, preview); }
+  previewCredentialUse(request: CredentialUseTicketRequest): Promise<BrowserCredentialPreview> { return this.credentialBroker.previewCredentialUse(request); }
+  issueCredentialUseTicket(request: CredentialUseTicketRequest, preview: BrowserCredentialPreview): Promise<CredentialBrokerResult> { return this.credentialBroker.issueCredentialUseTicket(request, preview); }
+  fillCredential(request: CredentialFillRequest): Promise<CredentialBrokerResult> { return this.credentialBroker.fillCredential(request); }
+  previewCredentialDelete(request: CredentialRefRequest): BrowserCredentialPreview { return this.credentialBroker.previewCredentialDelete(request); }
+  deleteCredential(request: CredentialRefRequest): CredentialBrokerResult { return this.credentialBroker.deleteCredential(request); }
 
-  private credentialContext(sessionId: string, requireTask: boolean): {
-    entry: HostedBrowserSession;
-    domain: string;
-    taskId: string;
-  } {
-    const normalizedSessionId = normalizeCredentialIdentifier(sessionId, "session id");
-    const entry = this.sessions.get(normalizedSessionId);
-    if (!entry) throw new Error("Browser session is no longer available");
-    const currentUrl = entry.container.view.webContents.getURL() || entry.session.current_url;
-    const domain = credentialDomainFromUrl(currentUrl);
-    const rawTaskId = entry.session.task_id?.trim() ?? "";
-    if (requireTask && !rawTaskId) throw new Error("Credential use requires a task-bound browser session");
-    const taskId = rawTaskId ? normalizeCredentialIdentifier(rawTaskId, "task id") : "manual";
-    return { entry, domain, taskId };
-  }
-
-  private async credentialPageContext(
-    context: ReturnType<BrowserHost["credentialContext"]>
-  ): Promise<{ origin: string; page_fingerprint: string }> {
-    const page = parsePageCredentialFingerprint(
-      await context.entry.container.view.webContents.executeJavaScript(credentialPageFingerprintScript(), true)
-    );
-    if (page.origin !== context.domain) throw new Error("Browser page origin changed before credential review");
-    return page;
-  }
-
-  private assertCredentialPreview(
-    preview: BrowserCredentialPreview,
-    sessionId: string,
-    context: ReturnType<BrowserHost["credentialContext"]>,
-    current: { origin: string; page_fingerprint: string }
-  ): void {
-    if (
-      preview.session_id !== sessionId
-      || preview.domain !== context.domain
-      || preview.task_id !== context.taskId
-      || preview.page_fingerprint !== current.page_fingerprint
-      || current.origin !== context.domain
-    ) {
-      throw new Error("Browser page or credential fields changed after confirmation");
-    }
-  }
-
-  private createHostedSession(sessionId: string, request: BrowserHostOpenRequest): HostedBrowserSession {
-    const partition = `lengrvis-watch-${sessionId}-${Date.now()}`;
+  private createHostedSession(sessionId: string, request: BrowserHostOpenRequest, managed: ManagedSessionOptions = {}): HostedBrowserSession {
+    const partition = managed.profileKey
+      ? `persist:lengrvis-butler-${createHash("sha256").update(`${managed.profileKey}:${managed.accountId ?? ""}`).digest("hex").slice(0, 32)}`
+      : `lengrvis-watch-${sessionId}-${Date.now()}`;
+    if (managed.profileKey) this.browserProfiles.remember(partition, managed.profileKey);
     const container = createBrowserContainer(partition);
     const webContents = container.view.webContents;
     const now = browserHostTimestamp();
     const entry: HostedBrowserSession = {
       container,
+      submissionGuard: new BrowserSubmissionGuard(),
       proxyReady: this.configurePinnedProxy(webContents),
       session: {
         id: sessionId,
         task_id: request.taskId,
+        account_id: managed.accountId,
+        scope_id: managed.profileKey,
+        allowed_origins: managed.allowedOrigins,
         current_url: normalizeBrowserHostUrl(request.url) ?? DEFAULT_HOME_URL,
         title: request.title ?? "Browser Watch",
         status: "idle",
@@ -590,6 +563,7 @@ export class BrowserHost {
     };
 
     hardenEmbeddedWebContents(webContents, {
+      onBeforeRequest: (request, allowed) => entry.submissionGuard.allowRequest(request, allowed, entry.session.takeover),
       onDownloadBlocked: ({ url }) => {
         this.addEvent(entry, {
           type: "download.blocked",
@@ -620,6 +594,14 @@ export class BrowserHost {
 
   private bindWebContentsEvents(entry: HostedBrowserSession): void {
     const { webContents } = entry.container.view;
+    const guardOrigin = (event: { preventDefault: () => void }, url: string) => {
+      if (!entry.session.allowed_origins?.length) return;
+      try {
+        if (!entry.session.allowed_origins.includes(new URL(url).origin)) event.preventDefault();
+      } catch { event.preventDefault(); }
+    };
+    webContents.on("will-navigate", guardOrigin);
+    webContents.on("will-redirect", guardOrigin);
 
     webContents.on("did-start-loading", () => {
       this.updateSessionFromWebContents(entry, "loading");

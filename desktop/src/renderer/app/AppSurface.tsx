@@ -16,6 +16,7 @@ import { HomeRoute } from "./routes/HomeRoute";
 const AgentsRoute = lazy(() => import("./routes/AgentsRoute").then((module) => ({ default: module.AgentsRoute })));
 const AppSurfaceApprovalDialog = lazy(() => import("./AppSurfaceApprovalDialog").then((module) => ({ default: module.AppSurfaceApprovalDialog })));
 const BrowserRoute = lazy(() => import("./routes/BrowserRoute").then((module) => ({ default: module.BrowserRoute })));
+const ButlerRoute = lazy(() => import("./routes/ButlerRoute").then((module) => ({ default: module.ButlerRoute })));
 const ChatRoute = lazy(() => import("./routes/ChatRoute").then((module) => ({ default: module.ChatRoute })));
 const ComputerRoute = lazy(() => import("./routes/ComputerRoute").then((module) => ({ default: module.ComputerRoute })));
 const FilesRoute = lazy(() => import("./routes/FilesRoute").then((module) => ({ default: module.FilesRoute })));
@@ -67,6 +68,7 @@ export function AppSurface(props: AppSurfaceProps) {
               <HomeRoute {...props} activeOfficeAgentId={activeOfficeAgentId} safetyAlert={safetyAlert} />
             ) : null}
             {activeView === "chat" ? <ChatRoute {...props} /> : null}
+            {activeView === "butler" ? <ButlerRoute {...props} /> : null}
             {activeView === "files" ? <FilesRoute {...props} /> : null}
             {activeView === "computer" ? <ComputerRoute {...props} /> : null}
             {activeView === "agents" ? <AgentsRoute {...props} /> : null}

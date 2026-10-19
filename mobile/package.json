@@ -63,7 +63,7 @@
       "minimatch@5.1.2": "5.1.9",
       "ts-deepmerge@6.2.0": "8.0.0"
     },
-    "joi": "17.13.4",
+    "joi": "17.13.8",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",

@@ -145,6 +145,12 @@ export function approvalConfirmationDialogOptions(
     "Dry-run preview:",
     truncateForDialog(dryRunSummary || "No dry-run summary was provided.")
   ];
+  const preview = isPlainRecord(approval.diff_preview) ? approval.diff_preview : {};
+  if (Array.isArray(preview.confirmation_details)) {
+    const businessContent = JSON.stringify(preview.confirmation_details, null, 2);
+    lines.push("", "请核对实际提交目标与内容：", businessContent.length <= 12000 ? businessContent
+      : `${businessContent.slice(0, 12000)}\n内容较长，完整预览请在审批卡中核对；本次确认绑定完整内容。`);
+  }
   return {
     type: action === "approve" ? "warning" : "question",
     confirmLabel: action === "approve" ? "Approve once" : "Reject",

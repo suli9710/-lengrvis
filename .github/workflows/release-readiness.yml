@@ -15,6 +15,8 @@ permissions:
 jobs:
   release-readiness:
     runs-on: ubuntu-latest
+    env:
+      LENGRVIS_RELEASE_OWNER_PUBLIC_KEY: ${{ vars.LENGRVIS_RELEASE_OWNER_PUBLIC_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -30,6 +32,18 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
+
+      - name: Install signature verifier from existing dependency pins
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+          lines = Path("backend/requirements-lock.txt").read_text().splitlines()
+          pins = [next(line.split()[0] for line in lines if line.startswith(name + "=="))
+                  for name in ("cryptography", "cffi", "pycparser")]
+          subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *pins], check=True)
+          PY
 
       - name: Validate release readiness dashboard (non-strict)
         run: |

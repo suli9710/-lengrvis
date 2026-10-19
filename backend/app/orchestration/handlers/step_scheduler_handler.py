@@ -56,6 +56,12 @@ def context_with_dependency_provenance(
     )
     if envelopes:
         step_context["upstream_content_envelopes"] = envelopes
+    if step.input_bindings:
+        step_context["dependency_tool_results"] = {
+            dependency: observations[dependency].model_copy(deep=True)
+            for dependency in step.depends_on
+            if dependency in observations
+        }
     return step_context
 
 
@@ -75,6 +81,7 @@ class StepSchedulerHandler:
             return
 
         context = self.orchestrator._tool_context()
+        context["settings"] = context["settings"].model_copy(update={"mode": task.mode})
         finished_step_ids = {step.id for step in plan.steps if self._dependency_finished(step)}
         state = _ScheduleState(
             pending=self._initial_pending_step_ids(plan),
@@ -394,6 +401,8 @@ class StepSchedulerHandler:
                     normalized.append(dependency_id)
                 dependents.setdefault(dependency_id, set()).add(step.id)
             step.depends_on = normalized
+            if any(binding.step_id not in normalized for binding in step.input_bindings.values()):
+                raise ValueError(f"Plan step {step.id} input source must be an explicit dependency.")
 
         if self._has_step_cycle(by_id):
             raise ValueError("Plan step dependency graph contains a cycle.")

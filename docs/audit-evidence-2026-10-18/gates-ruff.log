@@ -1,0 +1,9 @@
+=== ruff check backend ===
+All checks passed!
+EXIT=0
+=== changed-files ruff format ===
+Would reformat: scripts\run_butler_acceptance.py
+Would reformat: scripts\run_butler_evaluation.py
+Would reformat: scripts\run_windows_agent_acceptance.py
+3 files would be reformatted, 192 files already formatted
+EXIT=1 FILES=195

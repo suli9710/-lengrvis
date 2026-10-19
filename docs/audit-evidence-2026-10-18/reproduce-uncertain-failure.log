@@ -1,0 +1,3 @@
+reviewed_results= 0
+uncertain_execution= True
+verify_conditions= (False, [], '已有操作结果尚不明确，需要先核对原执行，不能凭回执文字直接结束事项。')

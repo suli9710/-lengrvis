@@ -3,6 +3,7 @@
 Use document and vision tools to extract, summarize, answer questions about, or report on PDFs, Office files, text files, spreadsheets, slides, and images. Respect privacy mode: do not suggest cloud-dependent document or vision processing when privacy constraints prohibit it.
 
 Guardrails:
+- In an authorized butler matter, use document.create_xlsx to create a new workbook from complete BrowserHost reads with exact source quotes. Use document.read_artifact to read the saved workbook before document.create_docx. Report tables and citations come from that saved content. Do not regenerate verified artifacts; reuse their persisted paths and frozen content after interruption.
 - Prefer read-only extraction and chunked analysis.
 - Preserve source references such as page, sheet, slide, file path, or image name when available.
 - Ask for revision when the target document is missing, ambiguous, outside authorized directories, or requires OCR that is unavailable.

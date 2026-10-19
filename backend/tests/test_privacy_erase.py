@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -32,11 +33,213 @@ from app.security.native_confirmation import NATIVE_CONFIRMATION_PUBLIC_KEY_ENV
 ERASE_ENDPOINT = "/api/system/privacy/erase-local-data"
 
 
+def test_erase_clears_live_sessions_and_rejects_old_snapshots(monkeypatch, tmp_path):
+    from app.core.session_context import SessionContextStore, SessionSummaryConflictError
+
+    _setup_env(monkeypatch, tmp_path)
+    stores = [SessionContextStore(session_id="global"), SessionContextStore(session_id="worker")]
+    snapshots = []
+    for store in stores:
+        store.current.notes = ["ERASED_PRIVATE_NOTE"]
+        store.save()
+        snapshots.append(store.current.model_copy(deep=True))
+    response = TestClient(create_app()).post(
+        ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()
+    )
+    assert response.status_code == 200
+    for store, snapshot in zip(stores, snapshots, strict=True):
+        assert store.planning_context()["notes"] == []
+        store.save()  # The callback already held by the lifespan must be safe.
+        with pytest.raises(SessionSummaryConflictError, match="erased"):
+            store.save(snapshot)
+    assert "ERASED_PRIVATE_NOTE" not in str(db.fetch_many("session_contexts"))
+    stores[0].learn_preference("theme", "dark")
+    assert stores[0].planning_context()["learned_preferences"]["theme"] == "dark"
+
+
+def test_erase_removes_managed_content_without_deleting_originals(monkeypatch, tmp_path):
+    from app.llm.registry import get_effective_settings
+    from app.orchestration.result_budget import persist_large_result
+    from app.tools.managed_backups import create_managed_backup
+
+    _setup_env(monkeypatch, tmp_path)
+    original = tmp_path / "user-file.txt"
+    original.write_text("ORIGINAL_PRIVATE_FILE", encoding="utf-8")
+    backup = Path(create_managed_backup(original)["path"])
+    result = persist_large_result(get_effective_settings(), "task-erase", "result-erase", "file.read", "PRIVATE_RESULT")
+    response = TestClient(create_app()).post(
+        ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()
+    )
+    assert response.status_code == 200
+    assert not Path(result.path).exists()
+    assert not backup.exists()
+    assert original.read_text(encoding="utf-8") == "ORIGINAL_PRIVATE_FILE"
+
+
+def test_erase_reports_managed_file_cleanup_failure(monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+    target = tmp_path / "file-tool-backups" / "locked.bak"
+    target.parent.mkdir()
+    target.write_text("LOCKED_PRIVATE_COPY", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("synthetic locked file")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    response = TestClient(create_app()).post(
+        ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()
+    )
+    assert response.status_code == 500
+    assert target.exists()
+    assert str(tmp_path) not in response.text
+
+
+@pytest.mark.parametrize("managed_path", ["file-tool-backups", "tasks/task-link/tool-results"])
+def test_erase_never_follows_managed_directory_links(monkeypatch, tmp_path, managed_path):
+    from test_file_tools_path_sandbox import _create_directory_escape_link, _remove_escape_link
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _setup_env(monkeypatch, data)
+    original_dir = tmp_path / "originals"
+    original_dir.mkdir()
+    original = original_dir / "original.txt"
+    original.write_text("MUST_PRESERVE_ORIGINAL", encoding="utf-8")
+    link = data / managed_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    _create_directory_escape_link(link, original_dir)
+    try:
+        response = TestClient(create_app()).post(
+            ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()
+        )
+        assert response.status_code == 500
+        assert original.read_text(encoding="utf-8") == "MUST_PRESERVE_ORIGINAL"
+        assert str(original_dir) not in response.text
+    finally:
+        _remove_escape_link(link)
+
+
 def _setup_env(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.setenv("LENGRVIS_NATIVE_CONFIRMATION_SECRET", TEST_NATIVE_CONFIRMATION_SECRET)
     db.init_db()
+
+
+def test_erase_refuses_in_flight_backup_and_succeeds_after_it_finishes(monkeypatch, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.tools import managed_backups
+
+    _setup_env(monkeypatch, tmp_path)
+    original = tmp_path / "original.txt"
+    original.write_text("PRIVATE_ORIGINAL", encoding="utf-8")
+    entered, release = threading.Event(), threading.Event()
+    copy = managed_backups.shutil.copy2
+
+    def blocked_copy(src, dst):
+        entered.set()
+        assert release.wait(10)
+        return copy(src, dst)
+
+    monkeypatch.setattr(managed_backups.shutil, "copy2", blocked_copy)
+    client = TestClient(create_app())
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        backup = executor.submit(managed_backups.create_managed_backup, original)
+        try:
+            assert entered.wait(10)
+            response = client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers())
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "local_data_busy"
+        finally:
+            release.set()
+        backup_path = Path(backup.result()["path"])
+    response = client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers())
+    assert response.status_code == 200
+    assert not backup_path.exists()
+    assert original.read_text(encoding="utf-8") == "PRIVATE_ORIGINAL"
+
+
+def test_erase_excludes_an_in_flight_mutation_request(monkeypatch, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    _setup_env(monkeypatch, tmp_path)
+    app = create_app()
+    entered, release = threading.Event(), threading.Event()
+
+    @app.post("/api/erase-regression-work")
+    def write_after_wait():
+        entered.set()
+        assert release.wait(10)
+        db.upsert_model("tasks", Task(user_goal="work started before erase"))
+        return {"ok": True}
+
+    client = TestClient(app)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        work = executor.submit(client.post, "/api/erase-regression-work")
+        try:
+            assert entered.wait(10)
+            response = client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers())
+            assert response.status_code == 409
+        finally:
+            release.set()
+        assert work.result().status_code == 200
+    assert (
+        client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()).status_code == 200
+    )
+    assert db.fetch_many("tasks") == []
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["/api/runs", "/api/runs/{id}", "/api/runs/{id}/timeline", "/api/runs/{id}/progress"]
+)
+def test_erase_excludes_run_queries_that_reconcile_task_state(monkeypatch, tmp_path, endpoint):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.core.schemas import Run, RunPhase
+    from app.security.desktop_api import desktop_api_token_headers
+    from app.services import run_service
+
+    _setup_env(monkeypatch, tmp_path)
+    task = Task(user_goal="PRIVATE_OLD_REQUEST", status=TaskPhase.COMPLETED, final_summary="PRIVATE_OLD_SUMMARY")
+    run = Run(message=task.user_goal, task_id=task.id, phase=RunPhase.RUNNING)
+    db.upsert_model("tasks", task)
+    db.upsert_model("runs", run)
+    entered, release = threading.Event(), threading.Event()
+    update_run = run_service._update_run
+
+    def blocked_update(current, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return update_run(current, **kwargs)
+
+    monkeypatch.setattr(run_service, "_update_run", blocked_update)
+    client = TestClient(create_app())
+    headers = desktop_api_token_headers()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        query = executor.submit(client.get, endpoint.format(id=run.id), headers=headers)
+        try:
+            assert entered.wait(10)
+            response = client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers())
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "local_data_busy"
+        finally:
+            release.set()
+        assert query.result().status_code == 200
+    assert (
+        client.post(ERASE_ENDPOINT, json={"confirm": "erase-local-data"}, headers=_erase_headers()).status_code == 200
+    )
+    assert db.fetch_many("runs") == []
+    assert db.fetch_many("run_events") == []
+    assert client.get(endpoint.format(id=run.id), headers=headers).status_code == (
+        200 if endpoint == "/api/runs" else 404
+    )
 
 
 def _seed_user_data(tmp_path) -> None:

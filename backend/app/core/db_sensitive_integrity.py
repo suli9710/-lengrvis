@@ -78,6 +78,8 @@ def sensitive_integrity_check() -> dict[str, Any]:
                 )
         checks = (
             ("approvals", "SELECT id, data FROM approvals"),
+            ("autonomy_scopes", "SELECT id, data FROM autonomy_scopes"),
+            ("butler_matters", "SELECT id, data FROM butler_matters"),
             ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
             ("permission_policies", "SELECT id, data FROM permission_policies"),
             (
@@ -370,6 +372,8 @@ def require_audit_fail_closed_ok() -> None:
 def iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str, sqlite3.Row, str]]:
     checks = (
         ("approvals", "SELECT id, data FROM approvals"),
+        ("autonomy_scopes", "SELECT id, data FROM autonomy_scopes"),
+        ("butler_matters", "SELECT id, data FROM butler_matters"),
         ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
         ("permission_policies", "SELECT id, data FROM permission_policies"),
         (

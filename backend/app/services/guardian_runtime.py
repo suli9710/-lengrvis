@@ -61,6 +61,8 @@ class GuardianRuntime:
         self._idle_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        if self._butler_resident():
+            await self._ensure_butler_runtime()
         self._idle_task = asyncio.create_task(self._idle_loop(), name="lengrvis-guardian-idle")
 
     async def stop(self) -> None:
@@ -93,7 +95,8 @@ class GuardianRuntime:
         self.last_wake_reason = reason
         self._foreground_kind = ForegroundKind.TRANSIENT
         await self._notify_full_background()
-        await self.stop_full_backend(reason=reason)
+        if not self._butler_resident():
+            await self.stop_full_backend(reason=reason)
         return await self.status()
 
     async def ensure_full_backend(self, *, reason: str = "") -> None:
@@ -151,7 +154,7 @@ class GuardianRuntime:
         headers: dict[str, str] | None = None,
         body: bytes = b"",
     ) -> httpx.Response:
-        if self.shell_mode != "foreground":
+        if self.shell_mode != "foreground" and not self._butler_resident():
             return httpx.Response(
                 409,
                 json={
@@ -271,7 +274,12 @@ class GuardianRuntime:
     async def _idle_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
+            if self._butler_resident():
+                await self._ensure_butler_runtime()
+                continue
             if self.shell_mode != "foreground":
+                if self._full_backend is not None and not await self._full_backend_has_active_runs():
+                    await self.stop_full_backend(reason="background_idle")
                 continue
             if self._foreground_kind == ForegroundKind.WINDOW:
                 continue
@@ -284,6 +292,20 @@ class GuardianRuntime:
             self._foreground_kind = ForegroundKind.TRANSIENT
             self.last_wake_reason = "idle_timeout"
             await self.stop_full_backend(reason="idle_timeout")
+
+    @staticmethod
+    def _butler_resident() -> bool:
+        from app.services.butler_residency import residency_required
+
+        return residency_required()
+
+    async def _ensure_butler_runtime(self) -> None:
+        try:
+            await self.ensure_full_backend(reason="butler_resident")
+        except (OSError, RuntimeError, TimeoutError):
+            # Keep the guardian responsive so configuration can be repaired;
+            # the next bounded idle tick retries the retained work.
+            self.last_wake_reason = "butler_runtime_unavailable"
 
     async def _full_backend_has_active_runs(self) -> bool:
         try:

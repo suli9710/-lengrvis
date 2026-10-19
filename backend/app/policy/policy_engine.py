@@ -163,7 +163,9 @@ class PolicyEngine:
                 reasons=["A revoked mobile device cannot continue accessing tasks or approvals."],
                 safe_alternative="Denied: pair and authorize a trusted device before accessing the task.",
             )
-        hits = self._forbidden_hits(inspected_text)
+        from app.policy.butler_context import restricted_hits
+
+        hits = restricted_hits(self._forbidden_hits(inspected_text), task_id)
         if hits:
             return SafetyReview(
                 task_id=task_id,
@@ -446,9 +448,11 @@ class PolicyEngine:
         return None
 
     def review_agent_message(self, message: AgentMessage, stage: str) -> SafetyReview:
+        from app.policy.butler_context import restricted_hits
+
         inspected_text = self._inspectable_text(message.content, message.structured_payload, message.metadata)
         all_hits = self._forbidden_hits(inspected_text)
-        hits = self._unprotected_forbidden_hits(inspected_text) if all_hits else []
+        hits = restricted_hits(self._unprotected_forbidden_hits(inspected_text), message.task_id) if all_hits else []
         if hits:
             return SafetyReview(
                 task_id=message.task_id,
@@ -512,7 +516,9 @@ class PolicyEngine:
                     "page instructions."
                 ),
             )
-        hits = self._unprotected_forbidden_hits(inspected_text)
+        from app.policy.butler_context import restricted_hits
+
+        hits = restricted_hits(self._unprotected_forbidden_hits(inspected_text), task_id)
         if risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF or hits:
             return SafetyReview(
                 task_id=task_id,
@@ -540,8 +546,10 @@ class PolicyEngine:
         )
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:
+        from app.policy.butler_context import restricted_hits
+
         inspected_text = self._inspectable_text(plan.model_dump(), task_status, final_summary)
-        hits = self._unprotected_forbidden_hits(inspected_text)
+        hits = restricted_hits(self._unprotected_forbidden_hits(inspected_text), plan.task_id)
         if hits:
             return SafetyReview(
                 task_id=plan.task_id,
@@ -634,6 +642,8 @@ class PolicyEngine:
             "file.move",
             "file.rename",
             "file.write_text",
+            "document.create_xlsx",
+            "document.create_docx",
             "file.edit_text",
             "file.create_folder",
             "browser.click_element",
@@ -665,6 +675,11 @@ class PolicyEngine:
         """Extra gate for browser write actions. Returns DENY when forbidden; None when not applicable."""
         if tool_name not in BROWSER_WRITE_TOOLS:
             return None
+        from app.policy.butler_context import TRANSACTION_TERMS, managed_butler_task, restricted_hits
+
+        sensitive_fields = (
+            SENSITIVE_FIELD_NAMES - TRANSACTION_TERMS if managed_butler_task(task_id) else SENSITIVE_FIELD_NAMES
+        )
         if self.settings is not None:
             decision = can_use_browser_writes(self.settings)
             if not decision.allowed:
@@ -679,7 +694,7 @@ class PolicyEngine:
                 )
         for field_name, value_text in self._iter_browser_write_field_values(args):
             lowered_name = field_name.lower()
-            if any(term in lowered_name for term in SENSITIVE_FIELD_NAMES):
+            if any(term in lowered_name for term in sensitive_fields):
                 return SafetyReview(
                     task_id=task_id,
                     step_id=step_id,
@@ -690,7 +705,7 @@ class PolicyEngine:
                     safe_alternative="The user must enter credentials or payment data themselves.",
                 )
             lowered_value = value_text.lower()
-            forbidden_in_value = self._forbidden_hits(lowered_value) if lowered_value else []
+            forbidden_in_value = restricted_hits(self._forbidden_hits(lowered_value), task_id) if lowered_value else []
             if value_text and (forbidden_in_value or looks_sensitive_value(value_text)):
                 if forbidden_in_value:
                     reason = f"Restricted material in form value: {', '.join(sorted(forbidden_in_value))}"

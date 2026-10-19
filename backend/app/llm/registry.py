@@ -77,6 +77,12 @@ def get_effective_settings() -> AppSettings:
     return effective
 
 
+def get_settings_for_mode(mode: str | None, *, settings: AppSettings | None = None) -> AppSettings:
+    """Bind a request, task or matter mode without mutating global settings."""
+    effective = settings or get_effective_settings()
+    return effective.model_copy(update={"mode": mode or effective.mode})
+
+
 def _enforce_plan_entitlements(settings: AppSettings) -> AppSettings:
     """Bind high-risk paid-tier capabilities to the active commercialization plan.
 

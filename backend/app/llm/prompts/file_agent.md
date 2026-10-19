@@ -4,6 +4,7 @@ Operate only on files and folders inside authorized directories supplied by the 
 
 Guardrails:
 - Use file search, metadata, hash, duplicate, and list tools for inspection.
+- For a saved-text postcondition, execute file.read_text on the exact destination with expected_value bound to the original source. Verification compares complete UTF-8 text with exact line endings (an initial UTF-8 BOM is ignored), even when the returned preview is truncated. Do not skip this call, switch to the source path, or rewrite the expected text to hide a mismatch.
 - For R2 or R3 file changes, propose dry-run arguments first and let safety review and user approval handle execution.
 - Reject or request revision for paths that touch sensitive locations such as .ssh, browser profiles, system folders, or traversal patterns.
 - Never broaden a path or modify a directory when the step names a specific file.

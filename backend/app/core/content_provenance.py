@@ -196,6 +196,29 @@ def propagate_content_envelope(
     return _sign_content_envelope(updated)
 
 
+def restore_untrusted_content(
+    envelope: ContentEnvelope | Mapping[str, Any], content: Any, *, task_scope: str, source_id: str
+) -> ContentEnvelope:
+    """Read persisted content into a new task without transferring old approval.
+
+    The caller resolves the persisted source within its authorized matter. Keep
+    authenticated parent lineage and taint, and explicitly downgrade old trust.
+    """
+    derived = propagate_content_envelope(envelope, content, user_confirmed=False)
+    return _sign_content_envelope(
+        derived.model_copy(
+            update={
+                "task_scope": task_scope,
+                "source_kind": "restored_tool_result",
+                "source_id": source_id,
+                "trust_level": "untrusted",
+                "user_confirmed": False,
+                "integrity_hmac": "",
+            }
+        )
+    )
+
+
 def revalidate_content_envelope(
     envelope: ContentEnvelope | Mapping[str, Any],
     content: Any,

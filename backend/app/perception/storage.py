@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.config import AppSettings, get_base_settings
 from app.core import db
 from app.core.schemas import new_id, now_iso
+from app.perception.generation import source_generation
 from app.perception.schemas import AppContext, ScreenState
 
 DEFAULT_SENSITIVE_WINDOW_PATTERNS = [
@@ -95,8 +96,9 @@ def store_observation(event: Any, settings: AppSettings | None = None) -> dict[s
         "payload": _minimal_suppressed_payload(event) if suppressed else _sanitize(payload, effective),
         "created_at": str(getattr(event, "timestamp", "") or now_iso()),
     }
-    db.insert_perception_observation(body)
-    return body
+    if db.insert_perception_observation(body, expected_generation=source_generation(event)):
+        return body
+    return None
 
 
 def store_suggestion(
@@ -130,8 +132,10 @@ def store_suggestion(
         "payload": _minimal_suppressed_payload(suggestion) if suppressed else _sanitize(payload, effective),
         "created_at": str(getattr(suggestion, "timestamp", "") or now_iso()),
     }
-    db.insert_perception_suggestion(body)
-    return body
+    generation = source_generation(source_event if source_event is not None else suggestion)
+    if db.insert_perception_suggestion(body, expected_generation=generation):
+        return body
+    return None
 
 
 def sanitize_for_storage(value: Any, settings: AppSettings | None = None) -> Any:

@@ -58,6 +58,18 @@ function envValue(name: string, fallback = ""): string {
 }
 
 const bridge: LengrvisDesktopBridge = {
+  butler: {
+    openArtifact: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerOpenArtifact, request),
+    overview: () => ipcRenderer.invoke(IPC_CHANNELS.butlerOverview),
+    message: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerMessage, request),
+    respond: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerRespond, request),
+    arrangement: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerArrangement, request),
+    matterControl: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerMatterControl, request),
+    control: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerControl, request),
+    createScope: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerScopeCreate, request),
+    revokeScope: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerScopeRevoke, request),
+    undo: (request) => ipcRenderer.invoke(IPC_CHANNELS.butlerUndo, request)
+  },
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>

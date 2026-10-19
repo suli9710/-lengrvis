@@ -19,6 +19,7 @@ CUA_BROWSER_ENVIRONMENT = "browser"
 MAX_CUA_SCREENSHOT_BYTES = 8 * 1024 * 1024
 MAX_CUA_SCREENSHOT_BASE64_CHARS = ((MAX_CUA_SCREENSHOT_BYTES + 2) // 3) * 4
 _ALLOWED_CUA_SCREENSHOT_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+_PRIVACY_CUA_REASON = "Privacy mode forbids browser CUA model requests."
 
 
 class CUAUnavailable(RuntimeError):
@@ -52,17 +53,15 @@ class CUAProvider:
         acknowledged_safety_checks: list[dict[str, Any]] | None = None,
         environment: str = "browser",
     ) -> dict[str, Any]:
+        if (self.settings.mode or "efficiency").lower() == "privacy":
+            return _denied_result(_PRIVACY_CUA_REASON, self.source, self.model)
         if previous_response_id:
             return _denied_result("CUA previous_response_id cannot be supplied to run_step.", self.source, self.model)
         if acknowledged_safety_checks:
-            return _denied_result(
-                "CUA safety checks cannot be acknowledged through run_step.", self.source, self.model
-            )
+            return _denied_result("CUA safety checks cannot be acknowledged through run_step.", self.source, self.model)
         environment_name = _normalize_cua_environment(environment)
         if environment_name != CUA_BROWSER_ENVIRONMENT:
-            return _unavailable_result(
-                "Browser CUA only supports the browser environment.", self.source, self.model
-            )
+            return _unavailable_result("Browser CUA only supports the browser environment.", self.source, self.model)
         if not self.settings.api_key:
             return _unavailable_result(
                 "CUA provider is unavailable because no API key is configured.", self.source, self.model
@@ -185,6 +184,8 @@ async def resolve_cua_provider(
 ) -> CUAProvider | dict[str, Any]:
     normalized_mode = str(mode or "auto").casefold()
     model = _configured_cua_model(settings)
+    if (settings.mode or "efficiency").lower() == "privacy":
+        return _denied_result(_PRIVACY_CUA_REASON, "none", model)
     candidates = _candidate_settings(settings, normalized_mode)
     if not candidates:
         return _unavailable_result("CUA provider is not configured for the requested mode.", "none", model)
@@ -203,6 +204,8 @@ async def resolve_cua_provider(
 
 
 async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
+    if (provider.settings.mode or "efficiency").lower() == "privacy":
+        return {"available": False, "reason": _PRIVACY_CUA_REASON}
     payload = {
         "model": provider.model,
         "tools": [{"type": "computer_use_preview", "environment": CUA_BROWSER_ENVIRONMENT}],

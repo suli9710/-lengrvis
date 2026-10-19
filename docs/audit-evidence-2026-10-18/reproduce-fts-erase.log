@@ -1,0 +1,4 @@
+fts_rows_after_erase=1
+fts_text_after_erase='ERASED_DOCUMENT_MARKER_7731 body text'
+marker_bytes_in_db_file=True
+FTS_RESIDUE_CONFIRMED

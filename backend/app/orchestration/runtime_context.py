@@ -41,6 +41,7 @@ class TaskRuntimeContext:
 
     @classmethod
     def from_task(cls, task: Task, settings: AppSettings, bus: AgentBus) -> TaskRuntimeContext:
+        settings = settings.model_copy(update={"mode": task.mode})
         return cls(
             task=task,
             settings=settings,

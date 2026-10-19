@@ -5,6 +5,18 @@ from typing import Any
 
 def input_schema(name: str) -> dict[str, Any]:
     schemas: dict[str, dict[str, Any]] = {
+        "file.read_json": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.write_json": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "data": {}, "dry_run": {"type": "boolean"}},
+            "required": ["path", "data"],
+            "additionalProperties": False,
+        },
         "file.search_by_name": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -48,7 +60,18 @@ def input_schema(name: str) -> dict[str, Any]:
         },
         "file.read_text": {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
+            "properties": {
+                "path": {"type": "string"},
+                "max_chars": {"type": "integer"},
+                "expected_value": {
+                    "type": "string",
+                    "description": (
+                        "Optional exact complete UTF-8 text to verify after saving. Preserves line endings, "
+                        "ignores an initial UTF-8 BOM, rejects invalid UTF-8, and compares the full file "
+                        "even when max_chars truncates the returned preview. A mismatch fails the step."
+                    ),
+                },
+            },
             "required": ["path"],
             "additionalProperties": False,
         },

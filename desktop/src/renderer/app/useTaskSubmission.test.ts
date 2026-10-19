@@ -56,6 +56,44 @@ describe("task submission view model", () => {
 });
 
 describe("useTaskSubmission", () => {
+  it.each([false, true])("uses persisted Butler IDs when workspace history arrives first: %s", async (historyFirst) => {
+    Object.assign(window, { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
+    const connected = backendStatus({ state: "running", health: { ok: true } });
+    const user = createLocalUserMessage("你好", "chat-user", "2026-10-09T01:00:00Z");
+    const assistant: ChatMessage = {
+      id: "chat-assistant", role: "assistant", author: "Lengrvis", content: "我在。",
+      createdAt: "2026-10-09T01:00:01Z", status: "sent"
+    };
+    let messages: ChatMessage[] = [];
+    let actions!: TaskSubmissionActions;
+    const sendChat = vi.fn();
+    const api = { getBackendStatus: vi.fn().mockResolvedValue(connected), sendChat } as unknown as LengrvisApiClient;
+    function Harness() {
+      actions = useTaskSubmission({
+        api, mode: "efficiency", backendStatusRef: { current: connected },
+        chatStartedTaskIds: { current: new Set<string>() },
+        setMessages: (update) => { messages = typeof update === "function" ? update(messages) : update; },
+        setTasks: () => undefined, setFocusedTaskId: () => undefined, setBackendStatus: () => undefined,
+        refreshTaskSnapshot: async () => undefined,
+        submitButlerMessage: async () => {
+          if (historyFirst) messages = [user, assistant];
+          return {
+            ok: true, status: 200, receivedAt: assistant.createdAt,
+            data: { reply: "我在。", user_message: user, assistant_message: assistant }
+          };
+        }
+      });
+      return null;
+    }
+    await act(async () => { create(createElement(Harness)); });
+    await act(async () => { expect(await actions.sendMessage("你好")).toEqual({ ok: true }); });
+    expect(messages).toEqual([user, assistant]);
+    expect(sendChat).not.toHaveBeenCalled();
+    // Backend history restores the same rows, without local-only identities.
+    messages = [user, assistant];
+    expect(messages.map((message) => message.id)).toEqual(["chat-user", "chat-assistant"]);
+  });
+
   it("exposes a clean initial submission surface", () => {
     function Harness() {
       const submission = useTaskSubmission({

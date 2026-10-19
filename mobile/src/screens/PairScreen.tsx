@@ -26,7 +26,7 @@ import {
   type PairingPayload,
   type PairingPayloadSecurityState,
 } from "../api/pairingPayload";
-import { saveSession } from "../store/auth";
+import { saveSession } from "../sessionManager";
 import { MAX_BASE_URL_LENGTH, MAX_PAIRING_CODE_LENGTH, MAX_PAIRING_CODE_RAW_INPUT_LENGTH, MAX_PAIRING_PAYLOAD_LENGTH } from "./pairScreenConstants";
 import { isPairingBaseUrlInputReady, normalizePairingCodeInput, protectBaseUrlInput, protectPairingPayloadInput, safeDeviceName } from "./pairScreenInput";
 import {

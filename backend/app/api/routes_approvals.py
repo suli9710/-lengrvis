@@ -95,7 +95,7 @@ RejectionNativeConfirmation = Annotated[dict[str, Any], Depends(_rejection_nativ
 
 @router.get("/approvals/pending")
 def pending():
-    return list_pending_approvals()
+    return [item for item in list_pending_approvals() if item.get("source") != "autonomy_scope"]
 
 
 @router.get("/approvals/{approval_id}")

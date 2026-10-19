@@ -9,7 +9,7 @@ from app.core import db
 from app.core.schemas import Run, RunCreateRequest, RunCreateResponse, RunStateResponse
 from app.orchestration.run_event_bus import run_event_bus, run_event_to_wire
 from app.policy.redaction import redact_run_payload
-from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_websocket_subprotocol
 from app.services import run_service
 from app.services.task_explain_service import build_task_completion_evidence, build_task_result_quality
 from app.services.task_service import get_task
@@ -91,7 +91,7 @@ async def run_events(websocket: WebSocket, run_id: str):
         await websocket.close(code=1008)
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=desktop_websocket_subprotocol(websocket))
     queue = run_event_bus.subscribe(run_id)
     try:
         await websocket.send_json(

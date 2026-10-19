@@ -1,4 +1,5 @@
 export interface BackendScheduledTask {
+  timezone?: string;
   id: string;
   cron: string;
   goal: string;

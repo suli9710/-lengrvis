@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 
-import type { BackendStatus } from "../../shared/desktopBridgeTypes";
+import type { ApiResponse, BackendStatus } from "../../shared/desktopBridgeTypes";
+import type { ButlerMessageResult } from "../../shared/butlerTypes";
 import type { ChatMessage, IntentSuggestion } from "../../shared/catalogTypes";
 import type { TaskEvent } from "../../shared/executionTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
@@ -22,6 +23,7 @@ interface MutableRefValue<T> {
 }
 
 interface UseTaskSubmissionOptions {
+  submitButlerMessage?: (content: string) => Promise<ApiResponse<ButlerMessageResult> | null>;
   api: LengrvisApiClient;
   mode: AssistantMode;
   backendStatusRef: MutableRefValue<BackendStatus>;
@@ -82,7 +84,8 @@ export function useTaskSubmission({
   setTasks,
   setFocusedTaskId,
   setBackendStatus,
-  refreshTaskSnapshot
+  refreshTaskSnapshot,
+  submitButlerMessage
 }: UseTaskSubmissionOptions): TaskSubmissionActions {
   const [draft, setDraft] = useState("");
   const [heroSubmitting, setHeroSubmitting] = useState(false);
@@ -155,6 +158,44 @@ export function useTaskSubmission({
     const userMessage = createLocalUserMessage(content, `local-${crypto.randomUUID()}`, new Date().toISOString());
     setMessages((current) => [...current, userMessage]);
     try {
+      const butlerResult = await submitButlerMessage?.(content);
+      if (butlerResult) {
+        if (!butlerResult.ok || !butlerResult.data) {
+          const message = butlerResult.error?.message ?? "管家暂时无法接收这条消息，请刷新查看事项状态。";
+          appendFailedAssistantMessage(message);
+          return { ok: false, error: message };
+        }
+        markBackendResponsive();
+        const response = butlerResult.data;
+        const assistantMessage = response.assistant_message ?? {
+          id: `local-${crypto.randomUUID()}`, role: "assistant" as const, author: "Lengrvis",
+          content: response.reply, createdAt: new Date().toISOString(), status: "sent" as const
+        };
+        setMessages((current) => {
+          // A workspace refresh may already contain the committed turn. Replace
+          // its optimistic row and deduplicate using the backend's stable IDs.
+          const persistedUser = response.user_message ?? userMessage;
+          const seen = new Set<string>();
+          const messages = current.map((message) =>
+            message.id === userMessage.id || message.id === persistedUser.id ? persistedUser :
+              message.id === assistantMessage.id ? assistantMessage : message
+          ).filter((message) => {
+            if (seen.has(message.id)) return false;
+            seen.add(message.id);
+            return true;
+          });
+          if (!seen.has(persistedUser.id)) messages.push(persistedUser);
+          if (!seen.has(assistantMessage.id)) messages.push(assistantMessage);
+          return messages;
+        });
+        const matter = butlerResult.data.matter;
+        if (matter?.active_task_id) {
+          chatStartedTaskIds.current.add(matter.active_task_id);
+          setFocusedTaskId(matter.active_task_id);
+        }
+        void refreshTaskSnapshot().catch(() => undefined);
+        return { ok: true };
+      }
       const preferRun = isReadOnlySystemDiagnosticsPrompt(content);
       let result = preferRun
         ? await api.startRun({ content, mode })
@@ -194,7 +235,8 @@ export function useTaskSubmission({
     refreshTaskSnapshot,
     setFocusedTaskId,
     setMessages,
-    setTasks
+    setTasks,
+    submitButlerMessage
   ]);
 
   const executeSuggestion = useCallback(async (suggestion: IntentSuggestion) => {

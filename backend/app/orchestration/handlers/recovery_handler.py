@@ -242,6 +242,15 @@ class RecoveryHandler:
             TaskStatus.FAILED,
             final_summary=orchestrator._friendly_tool_error(result.error if result else "Tool failed."),
         )
+        from app.services.butler_effects import receipt_wait_timed_out
+
+        if receipt_wait_timed_out(task, step, result):
+            task.metadata["butler_receipt_wait_step"] = step.id
+            db.upsert_model("tasks", task)
+            orchestrator._persist_plan_update(
+                plan, "Submission retained; continue observing its receipt without replay."
+            )
+            return StepExecutionOutcome("fatal_failed", result)
         orchestrator._persist_plan_update(plan, "Plan failed after recovery was exhausted; rollback attempted.")
         try:
             run = await execute_task_rollback(

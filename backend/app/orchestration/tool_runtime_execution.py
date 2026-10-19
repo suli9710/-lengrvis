@@ -5,12 +5,14 @@ import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import copy_context
 from typing import Any
 from weakref import WeakKeyDictionary
 
 from app.core.audit import record
 from app.core.schemas import PlanStep
 from app.llm.registry import get_effective_settings
+from app.orchestration.resource_leases import hold_async_resource_lease, hold_resource_lease
 from app.orchestration.resource_state import (
     attach_dry_run_resource_state,
     capture_tool_resource_state,
@@ -96,7 +98,8 @@ async def hold_shared_path_locks(lock_keys: Iterable[str]) -> AsyncIterator[None
         for key in keys:
             await stack.enter_async_context(shared.setdefault(key, asyncio.Lock()))
         await _await_shared_pending_completions(keys)
-        yield
+        async with hold_async_resource_lease(keys):
+            yield
 
 
 class ToolRuntimeExecutionMixin:
@@ -204,6 +207,17 @@ class ToolRuntimeExecutionMixin:
         lock_keys: list[str] | tuple[str, ...] = (),
         post_execute: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        runtime_context = context.get("runtime")
+        if runtime_context is not None and getattr(runtime_context, "task", None) is not None:
+            from app.orchestration.butler_runtime import validate_task_action
+
+            validate_task_action(
+                runtime_context.task,
+                tool,
+                args,
+                live=args.get("dry_run") is not True,
+                current_tool_call_id=str(context.get("_executing_tool_call_id") or ""),
+            )
         current_state = capture_tool_resource_state(tool, args, context)
         if current_state:
             context["_resource_state_before"] = current_state
@@ -218,21 +232,22 @@ class ToolRuntimeExecutionMixin:
         # subprocess, HTTP). Always run them off the event loop thread so a
         # slow tool cannot freeze every concurrent request and WebSocket.
         timeout = self._tool_execution_timeout(context)
+        context["_process_lock_keys"] = tuple(lock_keys)
+        context["_process_post_execute"] = post_execute
         try:
             worker = self._start_daemon_tool_worker(tool, args, context)
         except RuntimeError as exc:
             return {"error": str(exc), "resource_exhausted": True, "retry_after_pending_completion": True}
         try:
             output = await asyncio.wait_for(asyncio.shield(worker.future), timeout=timeout)
-            if post_execute is not None:
-                post_execute()
             if is_write_tool(tool) and args.get("dry_run") is not True:
                 trusted_paths = [
                     state["path"]
                     for state in current_state
                     if isinstance(state, dict) and isinstance(state.get("path"), str) and state["path"]
                 ]
-                context["_resource_state_after"] = resource_states(trusted_paths) if trusted_paths else []
+                if "_resource_state_after" not in context:
+                    context["_resource_state_after"] = resource_states(trusted_paths) if trusted_paths else []
             return output
         except TimeoutError:
             self._remember_pending_tool_completion(lock_keys, worker.future, tool=tool, reason="timeout")
@@ -368,7 +383,34 @@ class ToolRuntimeExecutionMixin:
             try:
                 if handle.abandoned or abort_event.is_set():
                     return
-                result = tool.execute(args, context)
+                with hold_resource_lease(context.get("_process_lock_keys", ()), context):
+                    runtime_context = context.get("runtime")
+                    if runtime_context is not None and getattr(runtime_context, "task", None) is not None:
+                        from app.orchestration.butler_runtime import validate_task_action
+
+                        validate_task_action(
+                            runtime_context.task,
+                            tool,
+                            args,
+                            live=args.get("dry_run") is not True,
+                            current_tool_call_id=str(context.get("_executing_tool_call_id") or ""),
+                        )
+                    current_state = capture_tool_resource_state(tool, args, context)
+                    context["_resource_state_before"] = current_state
+                    validate_write_preconditions(
+                        tool=tool,
+                        args=args,
+                        context=context,
+                        current_state=current_state,
+                        expected_approval_state=context.get("_expected_resource_state"),
+                    )
+                    result = tool.execute(args, context)
+                    post = context.get("_process_post_execute")
+                    if post is not None and not handle.abandoned and not abort_event.is_set():
+                        post()
+                    if is_write_tool(tool) and args.get("dry_run") is not True:
+                        paths = [state["path"] for state in current_state if state.get("path")]
+                        context["_resource_state_after"] = resource_states(paths) if paths else []
                 if handle.abandoned or abort_event.is_set():
                     record(
                         "tool.worker_result_discarded",
@@ -384,7 +426,8 @@ class ToolRuntimeExecutionMixin:
             finally:
                 _TOOL_THREAD_SLOTS.release()
 
-        thread = threading.Thread(target=run_tool, name=f"tool-{tool.name}", daemon=True)
+        worker_context = copy_context()
+        thread = threading.Thread(target=lambda: worker_context.run(run_tool), name=f"tool-{tool.name}", daemon=True)
         thread.start()
         return handle
 

@@ -53,27 +53,46 @@ from app.services.browser_activity_safety import (
 from app.services.browser_activity_safety import (
     sanitize_action as _sanitize_action,
 )
-from app.services.browser_activity_safety import (
-    sensitive_selector as _sensitive_selector,
+from app.services.browser_session_scope import (
+    BROWSER_ACTION_KINDS as BROWSER_ACTION_KINDS,
 )
-from app.services.browser_activity_safety import (
-    sensitive_value as _sensitive_value,
+from app.services.browser_session_scope import (
+    WRITE_ACTION_KINDS as WRITE_ACTION_KINDS,
+)
+from app.services.browser_session_scope import (
+    _canonical_action_kind as _canonical_action_kind,
+)
+from app.services.browser_session_scope import (
+    _coherent_identity as _coherent_identity,
+)
+from app.services.browser_session_scope import (
+    _mapping_values as _mapping_values,
+)
+from app.services.browser_session_scope import (
+    _normalise_action_scope as _normalise_action_scope,
+)
+from app.services.browser_session_scope import (
+    _normalise_origin_scope as _normalise_origin_scope,
+)
+from app.services.browser_session_scope import (
+    _optional_identity as _optional_identity,
+)
+from app.services.browser_session_scope import (
+    _requested_session_identity as _requested_session_identity,
+)
+from app.services.browser_session_scope import (
+    _scope_from_mapping as _scope_from_mapping,
+)
+from app.services.browser_session_scope import (
+    _scope_values as _scope_values,
+)
+from app.services.browser_session_scope import (
+    _session_scope as _session_scope,
+)
+from app.services.browser_session_scope import (
+    _url_origin as _url_origin,
 )
 from app.tools.tool_abort import raise_if_tool_aborted
-
-BROWSER_ACTION_KINDS = {
-    "open",
-    "navigate",
-    "click",
-    "fill",
-    "submit",
-    "scroll",
-    "wait",
-    "screenshot",
-    "observe",
-    "cua",
-}
-WRITE_ACTION_KINDS = {"click", "fill", "submit", "scroll", "cua"}
 
 
 def _playwright_error_types() -> tuple[type[BaseException], ...]:
@@ -138,6 +157,10 @@ class LocalBrowserActivityAdapter:
     """Small local browser adapter used when no external browser host is present."""
 
     def perform(self, session: BrowserSession, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        if context.get("butler_matter_id"):
+            from app.services.desktop_browser_adapter import DesktopBrowserActivityAdapter
+
+            return DesktopBrowserActivityAdapter().perform(session, action, context)
         kind = str(action.get("kind") or "").lower()
         if kind in {"open", "navigate", "observe"}:
             return self._observe(action, context)
@@ -608,7 +631,7 @@ class BrowserActivityRuntime:
 
     def observe(self, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         action = {"kind": "observe"}
-        for key in ("url", "max_chars"):
+        for key in ("url", "max_chars", "selector", "selectors"):
             if key in args:
                 action[key] = args[key]
         return self.act({**args, "action": action, "dry_run": False}, context)
@@ -640,6 +663,15 @@ class BrowserActivityRuntime:
 
         if dry_run:
             preview = self._dry_run_preview(action, review["risk_level"], review["verdict"])
+            if context.get("butler_matter_id"):
+                from app.services.desktop_browser_adapter import DesktopBrowserActivityAdapter
+
+                try:
+                    inspected = DesktopBrowserActivityAdapter().inspect(session, action, context)
+                    preview["_resource_state"] = [inspected]
+                    preview["confirmation_details"] = inspected.get("preview", {})
+                except (ValueError, RuntimeError) as exc:
+                    return {"ok": False, "error": str(exc)}
             event = self._append_event(
                 session,
                 type=f"preview.{kind}",
@@ -689,8 +721,11 @@ class BrowserActivityRuntime:
             adapter_context["_browser_allowed_origins"] = tuple(session.allowed_origins)
             adapter_context["task_id"] = session.task_id or context.get("task_id")
             adapter_context["step_id"] = step_id or context.get("step_id")
+            adapter_context["approval_id"] = args.get("approval_id") or action.get("approval_id") or ""
             result = self.adapter.perform(session, action, adapter_context)
             self._validate_result_scope(session, action, result)
+        except TimeoutError:
+            raise
         except Exception as exc:  # noqa: BLE001 - broad-exception-boundary
             result = {"ok": False, "error": _safe_browser_error(exc)}
         ok = bool(result.get("ok"))
@@ -742,12 +777,42 @@ class BrowserActivityRuntime:
         }
 
     def ensure_session(self, args: dict[str, Any], context: dict[str, Any]) -> BrowserSession:
+        if context.get("butler_matter_id") and context.get("runtime"):
+            from app.services.browser_continuity import restore_managed_session
+
+            restored = restore_managed_session(args, context)
+            if restored is not None:
+                with self._lock:
+                    self._sessions[restored.id] = restored
+                return restored
         session_id = str(args.get("session_id") or "").strip()
         if session_id:
             session = self._require_session(session_id)
             self._bind_or_validate_session_identity(session, args, {}, context, bind_missing=True)
+            if context.get("browser_exact_read_url") and session.current_url != context["browser_exact_read_url"]:
+                raise ValueError("The selected tab is not on the requested page; specify the exact target page.")
             return session
         url = str(args.get("url") or "").strip()
+        if context.get("butler_matter_id"):
+            task_id, account_id = _requested_session_identity(args, {}, context)
+            origin = _url_origin(url) if url else ""
+            with self._lock:
+                matches = [
+                    item
+                    for item in self._sessions.values()
+                    if item.task_id == task_id
+                    and item.account_id == account_id
+                    and item.status != "closed"
+                    and origin in item.allowed_origins
+                    and (
+                        not context.get("browser_exact_read_url")
+                        or item.current_url == context["browser_exact_read_url"]
+                    )
+                ]
+            if len(matches) > 1:
+                raise ValueError("Multiple browser sessions match; specify session_id.")
+            if matches:
+                return matches[0]
         start_args = dict(args)
         start_args["url"] = url
         start_args.setdefault("mode", "headless")
@@ -775,7 +840,25 @@ class BrowserActivityRuntime:
         return session
 
     def _review_action(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        from app.services.browser_activity_safety import sensitive_read_selector
+
         kind = str(action.get("kind") or "").lower()
+        requested = action.get("selectors") or {}
+        if kind == "observe" and not isinstance(requested, dict):
+            return {
+                "ok": False,
+                "error": "Observation selectors must be an object.",
+                "risk_level": RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                "verdict": SafetyVerdict.DENY,
+            }
+        selectors = [action.get("selector"), *(requested.values() if isinstance(requested, dict) else [])]
+        if kind == "observe" and any(sensitive_read_selector(str(value or "")) for value in selectors):
+            return {
+                "ok": False,
+                "error": "Sensitive fields require protected user interaction.",
+                "risk_level": RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                "verdict": SafetyVerdict.DENY,
+            }
         if kind not in BROWSER_ACTION_KINDS:
             return {
                 "ok": False,
@@ -800,7 +883,9 @@ class BrowserActivityRuntime:
                     "risk_level": RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
                     "verdict": SafetyVerdict.DENY,
                 }
-            sensitive = _sensitive_action_error(action)
+            from app.policy.butler_context import managed_butler_task
+
+            sensitive = _sensitive_action_error(action, managed=managed_butler_task(context.get("task_id")))
             if sensitive:
                 return {
                     "ok": False,
@@ -984,162 +1069,6 @@ def _settings(context: dict[str, Any]):
     return context["settings"]
 
 
-_TASK_ID_KEYS = ("task_id", "taskId", "browser_task_id")
-_ACCOUNT_ID_KEYS = (
-    "account_id",
-    "accountId",
-    "browser_account_id",
-    "account",
-    "principal_id",
-    "principalId",
-    "user_id",
-    "userId",
-    "tenant_id",
-    "tenantId",
-)
-_ORIGIN_SCOPE_KEYS = ("allowed_origins", "browser_allowed_origins")
-_ACTION_SCOPE_KEYS = ("allowed_actions", "browser_allowed_actions")
-
-
-def _optional_identity(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text or None
-
-
-def _mapping_values(mapping: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
-    values: list[str] = []
-    for key in keys:
-        if key in mapping:
-            value = _optional_identity(mapping.get(key))
-            if value:
-                values.append(value)
-    return values
-
-
-def _coherent_identity(*mappings: dict[str, Any], keys: tuple[str, ...], label: str) -> str | None:
-    values = _mapping_values(mappings[0], keys) if mappings else []
-    for mapping in mappings[1:]:
-        values.extend(_mapping_values(mapping, keys))
-    unique = {value for value in values}
-    if len(unique) > 1:
-        raise ValueError(f"Conflicting {label} values cannot be used for one browser session.")
-    return next(iter(unique), None)
-
-
-def _requested_session_identity(
-    args: dict[str, Any],
-    action: dict[str, Any],
-    context: dict[str, Any],
-) -> tuple[str | None, str | None]:
-    return (
-        _coherent_identity(args, action, context, keys=_TASK_ID_KEYS, label="task_id"),
-        _coherent_identity(args, action, context, keys=_ACCOUNT_ID_KEYS, label="account_id"),
-    )
-
-
-def _scope_values(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        raw = [part.strip() for part in value.split(",")]
-    elif isinstance(value, list | tuple | set | frozenset):
-        raw = [str(part).strip() for part in value]
-    else:
-        raise ValueError("Browser session scope values must be strings or lists of strings.")
-    return [part for part in raw if part]
-
-
-def _scope_from_mapping(mapping: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, list[str]]:
-    for key in keys:
-        if key in mapping:
-            return True, _scope_values(mapping.get(key))
-    return False, []
-
-
-def _normalise_origin_scope(values: list[str]) -> list[str]:
-    normalized: list[str] = []
-    for value in values:
-        origin = _url_origin(value)
-        if origin not in normalized:
-            normalized.append(origin)
-    return normalized
-
-
-def _normalise_action_scope(values: list[str]) -> list[str]:
-    normalized = []
-    for value in values:
-        action = _canonical_action_kind(value)
-        if action not in BROWSER_ACTION_KINDS:
-            raise ValueError(f"Unsupported browser action in allowed_actions: {value}")
-        if action not in normalized:
-            normalized.append(action)
-    return normalized
-
-
-def _session_scope(
-    args: dict[str, Any],
-    context: dict[str, Any],
-    *,
-    initial_url: str = "",
-) -> tuple[list[str], list[str]]:
-    context_has_origins, context_origins_raw = _scope_from_mapping(context, _ORIGIN_SCOPE_KEYS)
-    args_has_origins, args_origins_raw = _scope_from_mapping(args, _ORIGIN_SCOPE_KEYS)
-    context_origins = _normalise_origin_scope(context_origins_raw)
-    args_origins = _normalise_origin_scope(args_origins_raw)
-    if context_has_origins and args_has_origins and not set(args_origins).issubset(context_origins):
-        raise ValueError("Browser session allowed_origins cannot exceed the task scope.")
-    allowed_origins = args_origins if args_has_origins else context_origins
-
-    if initial_url:
-        initial_origin = _url_origin(initial_url)
-        if allowed_origins and initial_origin not in allowed_origins:
-            raise ValueError("Initial browser URL is outside allowed_origins.")
-        if not allowed_origins:
-            allowed_origins = [initial_origin]
-
-    context_has_actions, context_actions_raw = _scope_from_mapping(context, _ACTION_SCOPE_KEYS)
-    args_has_actions, args_actions_raw = _scope_from_mapping(args, _ACTION_SCOPE_KEYS)
-    context_actions = _normalise_action_scope(context_actions_raw)
-    args_actions = _normalise_action_scope(args_actions_raw)
-    if context_has_actions and args_has_actions and not set(args_actions).issubset(context_actions):
-        raise ValueError("Browser session allowed_actions cannot exceed the task scope.")
-    allowed_actions = args_actions if args_has_actions else context_actions
-    if not allowed_actions and not (context_has_actions or args_has_actions):
-        allowed_actions = sorted(BROWSER_ACTION_KINDS)
-    return allowed_origins, allowed_actions
-
-
-def _canonical_action_kind(value: Any) -> str:
-    action = str(value or "").casefold().replace("_", "-").strip()
-    if action.startswith("browser."):
-        action = action.removeprefix("browser.")
-    return {
-        "read-page": "observe",
-        "open-url": "open",
-        "wait-for-selector": "wait",
-        "click-element": "click",
-        "fill-form": "fill",
-        "submit-form": "submit",
-        "cua-run": "cua",
-    }.get(action, action)
-
-
-def _url_origin(url: str) -> str:
-    parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("Browser origin must be an absolute http(s) URL without credentials.")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("Browser origin contains an invalid port.") from exc
-    if port is None:
-        port = 443 if parsed.scheme.casefold() == "https" else 80
-    hostname = parsed.hostname.casefold().rstrip(".")
-    if ":" in hostname and not hostname.startswith("["):
-        hostname = f"[{hostname}]"
-    return f"{parsed.scheme.casefold()}://{hostname}:{port}"
-
-
 def _browser_allowed_origins(context: dict[str, Any]) -> tuple[str, ...]:
     raw = context.get("_browser_allowed_origins")
     if raw is None:
@@ -1314,6 +1243,7 @@ def _normalize_action(args: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "url",
         "selector",
+        "selectors",
         "text",
         "fields",
         "dry_run",
@@ -1350,18 +1280,29 @@ def _has_approval(args: dict[str, Any], action: dict[str, Any]) -> bool:
     )
 
 
-def _sensitive_action_error(action: dict[str, Any]) -> str:
+def _sensitive_action_error(action: dict[str, Any], *, managed: bool = False) -> str:
+    from app.policy.butler_context import TRANSACTION_TERMS
+    from app.policy.sensitive_values import looks_sensitive_value
+    from app.services.browser_activity_safety import SENSITIVE_SELECTOR_TOKENS, sensitive_read_selector
+
+    def sensitive_selector(value: str) -> bool:
+        tokens = SENSITIVE_SELECTOR_TOKENS - TRANSACTION_TERMS if managed else SENSITIVE_SELECTOR_TOKENS
+        return sensitive_read_selector(value) or any(term in value.lower() for term in tokens)
+
+    def sensitive_value(value) -> bool:
+        return sensitive_selector(str(value or "")) or looks_sensitive_value(value)
+
     selector = str(action.get("selector") or "")
-    if selector and _sensitive_selector(selector):
+    if selector and sensitive_selector(selector):
         return "selector looks sensitive; user must complete this browser action manually."
     fields = action.get("fields") or {}
     if isinstance(fields, dict):
         for key, value in fields.items():
-            if _sensitive_selector(str(key)):
+            if sensitive_selector(str(key)):
                 return "field selector looks sensitive; user must fill it manually."
-            if _sensitive_value(value):
+            if sensitive_value(value):
                 return "field value looks sensitive; user must fill it manually."
-    if action.get("text") and _sensitive_value(action.get("text")):
+    if action.get("text") and sensitive_value(action.get("text")):
         return "text looks sensitive; user must enter it manually."
     return ""
 

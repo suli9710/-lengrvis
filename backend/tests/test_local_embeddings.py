@@ -70,6 +70,8 @@ def test_embed_texts_falls_back_when_local_provider_times_out(monkeypatch: pytes
             return [[99.0] for _ in texts]
 
     class RegistryProvider:
+        name = "local"
+
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
             return [[float(len(text)), 7.0] for text in texts]
 
@@ -89,6 +91,8 @@ def test_embed_texts_hashes_when_registry_provider_times_out(monkeypatch: pytest
     registry_cancelled = False
 
     class SlowRegistryProvider:
+        name = "local"
+
         async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:  # noqa: ARG002
             nonlocal registry_cancelled, registry_completed
             try:

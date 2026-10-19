@@ -14,6 +14,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.db_schema import document_chunks_fts_mode
 from app.core.errors import SecurityError
+from app.core.local_data_lifecycle import tracks_local_data
 from app.core.paths import resolve_authorized
 from app.core.schemas import DocumentChunk, IndexedFile, now_iso
 from app.indexer.chunker import chunk_text
@@ -138,6 +139,7 @@ class FTSIndex:
             "fts_fallback": fts_capability["fallback"],
         }
 
+    @tracks_local_data
     def rebuild(self, allowed_directories: list[str]) -> dict[str, Any]:
         started = time.perf_counter()
         db.init_db()
@@ -326,6 +328,7 @@ class FTSIndex:
 
         return result_payload()
 
+    @tracks_local_data
     def index_file(self, file_path: str | Path, allowed_directories: list[str]) -> bool:
         """Index a single file incrementally. Returns True if the file was indexed."""
         db.init_db()
@@ -475,12 +478,10 @@ class FTSIndex:
         allowed_roots = _normalized_allowed_roots(allowed_directories)
         if not allowed_roots:
             return []
-        # Rows outside allowed_roots are filtered in Python after the query, so
-        # cap the scan generously above `limit` rather than at exactly `limit`
-        # (which could drop all in-root matches). The cap still prevents a broad
-        # / short query from loading the entire index into memory.
-        scan_cap = max(int(limit) * 50, 1000)
         with db.connect() as conn:
+            conn.create_function(
+                "lengrvis_path_allowed", 1, lambda path: int(_path_within_roots(str(path or ""), allowed_roots))
+            )
             try:
                 rows = conn.execute(
                     """
@@ -488,9 +489,11 @@ class FTSIndex:
                            snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
                     FROM document_chunks_fts
                     WHERE document_chunks_fts MATCH ?
+                      AND lengrvis_path_allowed(path) = 1
+                    ORDER BY bm25(document_chunks_fts), file_id, chunk_id
                     LIMIT ?
                     """,
-                    (fts_match_query(cleaned), scan_cap),
+                    (fts_match_query(cleaned), limit),
                 ).fetchall()
                 rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)][:limit]
                 if rows:
@@ -515,7 +518,6 @@ class FTSIndex:
         limit: int,
         allowed_roots: list[Path],
     ) -> list[dict[str, Any]]:
-        scan_cap = max(int(limit) * 50, 1000)
         # Match each whitespace-separated token independently (AND) so a
         # multi-token query like "汽车 保养" matches a document containing both
         # words non-contiguously; a single-token query degrades to one LIKE.
@@ -524,13 +526,15 @@ class FTSIndex:
             return []
         where_clause = " AND ".join(r"dc.text LIKE ? ESCAPE '\'" for _ in tokens)
         params: list[Any] = [f"%{_escape_like_term(token)}%" for token in tokens]
-        params.append(scan_cap)
+        params.append(limit)
         rows = conn.execute(
             f"""
             SELECT dc.file_id, dc.text, f.data, f.normalized_path
             FROM document_chunks dc
             JOIN indexed_files f ON f.id = dc.file_id
             WHERE {where_clause}
+              AND lengrvis_path_allowed(f.normalized_path) = 1
+            ORDER BY dc.file_id, dc.chunk_index
             LIMIT ?
             """,  # noqa: S608 - where_clause is a fixed count of parameterized LIKE terms, no interpolation of user data.
             params,
@@ -675,8 +679,8 @@ def _insert_document_chunk_rows(conn: sqlite3.Connection, chunks: list[_PendingC
         )
         try:
             conn.execute(
-                "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
-                (doc_chunk.file_id, item.path, item.text),
+                "INSERT INTO document_chunks_fts (file_id, path, text, chunk_id) VALUES (?, ?, ?, ?)",
+                (doc_chunk.file_id, item.path, item.text, doc_chunk.id),
             )
         except sqlite3.Error as exc:
             logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)

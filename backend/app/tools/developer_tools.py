@@ -205,7 +205,7 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
     command, error = _trusted_guarded_git_command(
-        ["status", "--short", "--branch"],
+        ["status", "--short", "--branch", "--no-renames", "--", "."],
         root=root,
         allowed_directories=_allowed(context),
     )
@@ -220,7 +220,7 @@ def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def diff_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
     pathspec = str(args.get("pathspec") or ".")
-    pathspec_error = _path_candidate_error(pathspec, _allowed(context), root=root)
+    pathspec_error = _git_pathspec_error(pathspec) or _path_candidate_error(pathspec, _allowed(context), root=root)
     if pathspec_error:
         return {"ok": False, "cwd": str(root), "error": pathspec_error}
     command, error = _trusted_guarded_git_command(
@@ -426,7 +426,31 @@ def _parse_readonly_shell(
         git_flag_error = _git_readonly_flag_error(lowered[2:])
         if git_flag_error:
             return None, git_flag_error
-        tokens = _guarded_git_command(tokens[1:])
+        for token in tokens[2:]:
+            pathspec_error = _git_pathspec_error(token)
+            if pathspec_error:
+                return None, pathspec_error
+        git_args = tokens[1:]
+        boundary = git_args.index("--") if "--" in git_args else len(git_args)
+        has_revision_args = any(not token.startswith("-") for token in git_args[1:boundary])
+        if root is not None and (lowered[1] in {"log", "show"} or (lowered[1] == "diff" and has_revision_args)):
+            scope_error = _git_repository_scope_error(root, allowed_directories or [])
+            if scope_error:
+                return None, scope_error
+        if lowered[1] == "status":
+            boundary = git_args.index("--") if "--" in git_args else len(git_args)
+            git_args.insert(boundary, "--no-renames")
+            if "--" in git_args:
+                if git_args[-1] == "--":
+                    git_args.append(".")
+            elif not any(not token.startswith("-") for token in git_args[1:]):
+                git_args.extend(["--", "."])
+        elif lowered[1] == "diff":
+            if git_args[-1] == "--":
+                git_args.append(".")
+            elif "--" not in git_args and not has_revision_args:
+                git_args.extend(["--", "."])
+        tokens = _guarded_git_command(git_args)
     return tokens, ""
 
 
@@ -691,15 +715,43 @@ def _git_readonly_flag_error(args: list[str]) -> str:
     return ""
 
 
+def _git_pathspec_error(value: str) -> str:
+    # Git magic is not a filesystem path: top, exclude-only and ':' can select
+    # files outside cwd even after an ordinary Path containment check succeeds.
+    if _strip_matching_quotes(value.strip()).startswith(":"):
+        return "Git magic pathspec is not supported; use an ordinary workspace path."
+    return ""
+
+
+def _git_repository_scope_error(root: Path, allowed_directories: list[str]) -> str:
+    # Object IDs and object:path selectors can read blobs irrespective of a
+    # trailing pathspec. History/object queries therefore need the entire repo
+    # authorized; worktree status and 'diff -- path' retain subdirectory access.
+    command, error = _trusted_guarded_git_command(
+        ["rev-parse", "--show-toplevel"], root=root, allowed_directories=allowed_directories
+    )
+    if command is None:
+        return error
+    result = _run_command(command, cwd=root)
+    repository = result.get("stdout", "").strip()
+    if result["returncode"] != 0 or not repository:
+        return "Cannot verify the repository scope for this Git query."
+    try:
+        resolve_authorized(repository, allowed_directories)
+    except SecurityError:
+        return "Git object/history queries require authorization for the repository root."
+    return ""
+
+
 def _guarded_git_command(args: list[str], *, git_executable: str = "git") -> list[str]:
     if not args:
         return [git_executable, *GIT_CONFIG_GUARDS]
     subcommand = args[0].casefold()
-    guarded = [git_executable, *GIT_CONFIG_GUARDS, args[0], *args[1:]]
+    guarded_args = list(args)
     if subcommand in {"diff", "log", "show"}:
-        insert_at = len([git_executable, *GIT_CONFIG_GUARDS, args[0]])
-        guarded[insert_at:insert_at] = GIT_DIFF_GUARD_FLAGS
-    return guarded
+        boundary = guarded_args.index("--") if "--" in guarded_args else len(guarded_args)
+        guarded_args[boundary:boundary] = [*GIT_DIFF_GUARD_FLAGS, "--no-renames"]
+    return [git_executable, *GIT_CONFIG_GUARDS, *guarded_args]
 
 
 def _trusted_guarded_git_command(

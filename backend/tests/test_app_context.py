@@ -113,6 +113,8 @@ def test_process_name_suppresses_psutil_errors_but_not_unexpected_bugs(monkeypat
 
 
 def test_app_context_optional_focus_providers_are_narrow(monkeypatch):
+    from app.perception import ui_automation_com
+
     class FakeComtypesError(Exception):
         pass
 
@@ -120,16 +122,23 @@ def test_app_context_optional_focus_providers_are_narrow(monkeypatch):
     fake_comtypes.COMError = FakeComtypesError
     fake_comtypes.__path__ = []
     fake_client = types.ModuleType("comtypes.client")
-    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(FakeComtypesError("uia down"))
+    monkeypatch.setattr(ui_automation_com, "run_sync", lambda fn: fn())
+    monkeypatch.setattr(
+        ui_automation_com, "create_automation", lambda: (_ for _ in ()).throw(FakeComtypesError("uia down"))
+    )
     fake_comtypes.client = fake_client
     monkeypatch.setitem(sys.modules, "comtypes", fake_comtypes)
     monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
     assert app_context._focused_control_from_comtypes() is None
 
-    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(RuntimeError("uia runtime down"))
+    monkeypatch.setattr(
+        ui_automation_com, "create_automation", lambda: (_ for _ in ()).throw(RuntimeError("uia runtime down"))
+    )
     assert app_context._focused_control_from_comtypes() is None
 
-    fake_client.CreateObject = lambda _name: (_ for _ in ()).throw(AssertionError("uia bug"))
+    monkeypatch.setattr(
+        ui_automation_com, "create_automation", lambda: (_ for _ in ()).throw(AssertionError("uia bug"))
+    )
     with pytest.raises(AssertionError, match="uia bug"):
         app_context._focused_control_from_comtypes()
 

@@ -17,6 +17,7 @@ def _require_scheduling() -> None:
 
 class CreateScheduleRequest(BaseModel):
     cron: str
+    timezone: str = "UTC"
     goal: str
     mode: str = "efficiency"
     note: str = ""
@@ -41,6 +42,7 @@ def create_schedule(payload: CreateScheduleRequest) -> ScheduledTask:
             payload.goal,
             payload.mode,
             note=payload.note,
+            timezone=payload.timezone,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -51,7 +53,7 @@ def create_schedule(payload: CreateScheduleRequest) -> ScheduledTask:
 @router.delete("/schedules/{schedule_id}")
 def delete_schedule(schedule_id: str) -> dict:
     _require_scheduling()
-    ok = scheduler_service.get_scheduler().cancel(schedule_id)
+    ok = scheduler_service.get_scheduler().delete(schedule_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"ok": True, "id": schedule_id}

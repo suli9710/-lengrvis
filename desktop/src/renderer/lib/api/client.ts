@@ -240,7 +240,23 @@ import {
   openWindowsSettingsEndpoint
 } from "./systemClient";
 
+import type { AutonomyScopeInput, ButlerArrangementInput, ButlerControlAction, ButlerMatterControlAction, ButlerMessageInput, ButlerResponseInput } from "../../../shared/butlerTypes";
+import { butlerBridgeAvailable, requestButler } from "./butlerClient";
+
 export class LengrvisApiClient {
+  supportsButler(): boolean { return butlerBridgeAvailable(); }
+  openButlerArtifact(matterId: string, artifactId: string, version: number) {
+    return requestButler((bridge) => bridge.openArtifact({ matter_id: matterId, artifact_id: artifactId, version }));
+  }
+  getButlerOverview() { return requestButler((bridge) => bridge.overview()); }
+  sendButlerMessage(input: ButlerMessageInput) { return requestButler((bridge) => bridge.message(input)); }
+  respondButlerMatter(matterId: string, input: ButlerResponseInput) { return requestButler((bridge) => bridge.respond({ ...input, matter_id: matterId })); }
+  controlButlerMatter(matterId: string, action: ButlerMatterControlAction) { return requestButler((bridge) => bridge.matterControl({ matter_id: matterId, action })); }
+  controlButler(action: ButlerControlAction) { return requestButler((bridge) => bridge.control({ action })); }
+  arrangeButlerMatter(request: ButlerArrangementInput) { return requestButler((bridge) => bridge.arrangement(request)); }
+  createButlerScope(input: AutonomyScopeInput) { return requestButler((bridge) => bridge.createScope(input)); }
+  revokeButlerScope(scopeId: string, version: number) { return requestButler((bridge) => bridge.revokeScope({ scope_id: scopeId, version })); }
+  undoButlerMatter(matterId: string, version: number) { return requestButler((bridge) => bridge.undo({ matter_id: matterId, version })); }
   private lastLoadedSettings: AppSettings | null = null;
   private readonly requestSession = new RendererApiRequestSession();
   private readonly requestEndpoint = <TResponse, TBody = unknown>(
