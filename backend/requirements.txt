@@ -18,7 +18,7 @@ pandas>=3.1.0,<4.0
 beautifulsoup4>=4.12,<5.0
 playwright>=1.64.1,<2.0
 croniter>=6.2.4,<7.0
-numpy>=1.26,<3.0
+numpy>=2.5.4,<3.0
 pywin32>=306,<400; platform_system=="Windows"
 comtypes>=1.4,<2.0; platform_system=="Windows"
 watchdog>=4.0,<7.0
