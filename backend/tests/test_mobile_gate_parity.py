@@ -183,7 +183,8 @@ def test_windows_android_native_gate_uses_verified_long_path_toolchain(project_r
     assert "& $ninja --version" in script
     assert '[version]$ninjaVersion -lt [version]"1.12.0"' in script
     assert "CMAKE_MAKE_PROGRAM:FILEPATH=" in script
-    assert "$selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)" in script
+    assert "& node mobile/scripts/verify-native-tool-identity.cjs $ninja $selectedNinja" in script
+    assert "$selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)" not in script
     assert "$nativeCaches.Count -eq 0" in script
     assert ":app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace" in script
     assert "-PreactNativeArchitectures" not in script

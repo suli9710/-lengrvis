@@ -126,3 +126,52 @@ verifyRegisteredGradleMod().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+const { verifyNativeToolIdentity } = require("./verify-native-tool-identity.cjs");
+const expectedTool = "C:\\Android\\android-sdk\\cmake\\3.31.6\\bin\\ninja.exe";
+const canonicalTool = "C:\\Program Files (x86)\\Android\\android-sdk\\cmake\\3.31.6\\bin\\ninja.exe";
+const identityIo = {
+  platform: "win32",
+  realpath: (file) => file === expectedTool ? canonicalTool : file,
+  stat: () => ({ isFile: () => true, dev: 1n, ino: 2n }),
+  readFile: () => Buffer.from("verified SDK Ninja"),
+};
+assert.equal(verifyNativeToolIdentity(expectedTool, canonicalTool, identityIo).canonicalPath, canonicalTool);
+assert.equal(verifyNativeToolIdentity(expectedTool, canonicalTool.toUpperCase(), identityIo).sha256.length, 64);
+assert.throws(() => verifyNativeToolIdentity(expectedTool, "C:\\other\\ninja.exe", identityIo), /Unexpected native generator/,
+  "An arbitrary executable with identical bytes must not qualify as the installed SDK tool");
+assert.throws(() => verifyNativeToolIdentity(expectedTool, canonicalTool, {
+  ...identityIo, realpath: () => { throw new Error("ENOENT"); },
+}), /ENOENT/);
+assert.throws(() => verifyNativeToolIdentity(expectedTool, canonicalTool, {
+  ...identityIo, stat: () => ({ isFile: () => false }),
+}), /regular file/);
+let toolReads = 0;
+assert.throws(() => verifyNativeToolIdentity(expectedTool, canonicalTool, {
+  ...identityIo, readFile: () => Buffer.from(`changed-${toolReads++}`),
+}), /content changed/);
+assert.throws(() => verifyNativeToolIdentity("/sdk/Ninja", "/sdk/ninja", {
+  ...identityIo, platform: "linux", realpath: (file) => file,
+}), /Unexpected native generator/, "POSIX case-distinct paths remain distinct");
+console.log("[pass] native tool identity accepts SDK aliases and rejects different/missing/changed executables");
+
+const identityFixture = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "lengrvis-native-tool-"));
+try {
+  const sdk = path.join(identityFixture, "sdk");
+  const alias = path.join(identityFixture, "sdk-alias");
+  fs.mkdirSync(sdk);
+  const tool = path.join(sdk, "ninja.exe");
+  fs.writeFileSync(tool, "fixture executable bytes");
+  fs.symlinkSync(sdk, alias, "junction");
+  assert.equal(verifyNativeToolIdentity(tool, path.join(alias, "ninja.exe")).canonicalPath, fs.realpathSync.native(tool));
+  const otherTool = path.join(identityFixture, "ninja.exe");
+  fs.copyFileSync(tool, otherTool);
+  assert.throws(() => verifyNativeToolIdentity(tool, otherTool), /Unexpected native generator/);
+} finally {
+  fs.rmSync(identityFixture, { recursive: true, force: true });
+}
+let identityStats = 0;
+assert.throws(() => verifyNativeToolIdentity(expectedTool, canonicalTool, {
+  ...identityIo, stat: () => ({ isFile: () => true, dev: 1n, ino: BigInt(identityStats++) }),
+}), /file identity differs/);
+console.log("[pass] actual filesystem junction aliases resolve to the same native tool");

@@ -309,10 +309,11 @@ jobs:
             if ($cacheText -notmatch '(?m)^CMAKE_MAKE_PROGRAM:FILEPATH=(.+)\r?$') {
               throw "Missing native generator in $($cache.FullName)"
             }
-            $selectedNinja = [System.IO.Path]::GetFullPath($Matches[1].Trim())
-            if ($selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)) {
-              throw "Unexpected native generator $selectedNinja in $($cache.FullName)"
-            }
+            $selectedNinja = $Matches[1].Trim()
+            # Windows runner SDK paths can be junction aliases of the same file.
+            # Require native realpath identity AND matching bytes, not path spelling.
+            & node mobile/scripts/verify-native-tool-identity.cjs $ninja $selectedNinja
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
   supply-chain:
