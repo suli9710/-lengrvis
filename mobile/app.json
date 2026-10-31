@@ -27,6 +27,7 @@
     },
     "plugins": [
       "./plugins/withAndroidRemoteControlHardening",
+      "./plugins/withAndroidBuildCompatibility",
       "expo-notifications",
       "expo-secure-store",
       [

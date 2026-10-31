@@ -239,6 +239,7 @@ def test_timeout_or_cancel_kills_children_after_leader_exits(tmp_path: Path, can
             try:
                 psutil.Process(int(child_pid_path.read_text(encoding="utf-8"))).kill()
             except psutil.NoSuchProcess:
+                # Normal after the assertion confirmed the descendant was terminated.
                 pass
 
 

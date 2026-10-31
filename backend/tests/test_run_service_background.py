@@ -32,6 +32,10 @@ def test_cancel_active_run_wakes_owning_loop(monkeypatch, mode):
         loop.run_forever()
         loop.close()
 
+    def wake_loop():
+        # A scheduled callback wakes the selector even when it has no other work.
+        started.set()
+
     thread = threading.Thread(target=drive)
     thread.start()
     try:
@@ -51,7 +55,7 @@ def test_cancel_active_run_wakes_owning_loop(monkeypatch, mode):
         assert finished.wait(1), "cancellation must wake the resident loop, not wait for unrelated activity"
     finally:
         # Wake an incorrectly cancelled baseline task as well, so failures do not leak a thread.
-        loop.call_soon_threadsafe(lambda: None)
+        loop.call_soon_threadsafe(wake_loop)
         finished.wait(5)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)

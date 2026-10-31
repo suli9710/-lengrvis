@@ -154,7 +154,7 @@ def test_mcp_stream_cancellation_closes_body():
         await asyncio.wait_for(started.wait(), timeout=1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await asyncio.wait_for(task, timeout=1)
         assert closed.is_set()
 
     asyncio.run(exercise())
