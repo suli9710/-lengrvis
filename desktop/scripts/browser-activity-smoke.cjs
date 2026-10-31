@@ -833,7 +833,7 @@ async function assertTaskPilotCard(page) {
 }
 
 async function assertTaskPilotApprovalAction(page) {
-  const trigger = page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first();
+  const trigger = page.getByRole("button", { name: /去确认|点此确认|查看审批|鍘荤‘璁?/ }).first();
   await trigger.click();
   const dialog = page.getByRole("dialog");
   await dialog.waitFor({ timeout: 10_000 });
@@ -982,7 +982,7 @@ async function assertRecentTaskRowAction(page) {
   if (await taskRow.count()) {
     await taskRow.click();
   } else {
-    await page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first().click();
+    await page.getByRole("button", { name: /去确认|点此确认|查看审批|鍘荤‘璁?/ }).first().click();
   }
   await page.getByRole("dialog").waitFor({ timeout: 10_000 });
   await page.getByText(/清理计划审批|审批|准备清理下载目录的大文件/).first().waitFor({ timeout: 10_000 });

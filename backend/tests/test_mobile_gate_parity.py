@@ -101,13 +101,13 @@ def test_gradle_wrapper_distribution_is_checksum_pinned_and_checked_by_lock_gate
 ) -> None:
     wrapper = _text(project_root, "mobile/android/gradle/wrapper/gradle-wrapper.properties")
     lock_gate = _text(project_root, "scripts/verify_dependency_locks.ps1")
-    expected_sha256 = "b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+    expected_sha256 = "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb"
 
-    assert "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" in wrapper
+    assert "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.4.1-bin.zip" in wrapper
     assert f"distributionSha256Sum={expected_sha256}" in wrapper
     assert "Test-GradleWrapperDistribution" in lock_gate
     assert "distributionSha256Sum" in lock_gate
-    assert "gradle-9.3.1-bin.zip" in lock_gate
+    assert "gradle-9.4.1-bin.zip" in lock_gate
 
 
 def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) -> None:

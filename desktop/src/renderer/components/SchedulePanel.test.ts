@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ApiResponse } from "../../shared/desktopBridgeTypes";
@@ -48,7 +48,7 @@ describe("SchedulePanel", () => {
     });
 
     expect(enableSchedule).toHaveBeenCalledTimes(1);
-    expect(renderer.root.findByProps({ "aria-label": "暂停定时任务：整理下载目录" }).props.disabled).toBe(true);
+    expect(renderer.root.findByProps({ "aria-label": "正在暂停定时任务：整理下载目录" }).props.disabled).toBe(true);
     expect(textContent(renderer)).toContain("正在暂停");
 
     await act(async () => {
@@ -147,7 +147,20 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function visibleButtonText(node: ReactTestInstance | string): string {
+  if (typeof node === "string") return node;
+  if (node.props["aria-hidden"] === true) return "";
+  return node.children.map(visibleButtonText).join("");
+}
+
 function textContent(renderer: ReactTestRenderer): string {
+  // Validate every button in the existing idle, conflict, busy and error snapshots.
+  for (const button of renderer.root.findAllByType("button")) {
+    const name = button.props["aria-label"];
+    if (typeof name === "string") {
+      expect(name.replace(/\s/g, "")).toContain(visibleButtonText(button).replace(/\s/g, ""));
+    }
+  }
   return renderer.root
     .findAll(() => true)
     .flatMap((node) => node.children)

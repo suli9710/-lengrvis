@@ -190,7 +190,6 @@ export function OfficeInspector({
                 type="button"
                 className="task-row"
                 onClick={() => onTaskPilotAction?.(task, task.state === "blocked" ? "approve" : "open")}
-                aria-label={`${taskDisplayTitle(task, "最近任务")}，${taskDisplayState(task)}，${task.state === "blocked" ? "去确认" : "查看进度"}`}
               >
                 <span className={"task-row__dot task-row__dot--" + task.state}>
                   {task.state === "completed" ? (

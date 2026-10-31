@@ -253,7 +253,6 @@ export function OfficeAgent({
       className={className}
       style={style}
       onClick={onSelect}
-      aria-label={`${helper.name}, ${helper.role}, ${activity}`}
       data-agent-id={agent.id}
       data-pose={displayPose}
       data-runtime-pose={runtime.pose}
