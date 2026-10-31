@@ -40,13 +40,15 @@ describe("path grants", () => {
     expect(mocks.showMessageBox).not.toHaveBeenCalled();
   });
 
-  it("does not treat a case-distinct or backslash-prefixed sibling as a reveal root child", () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+  it("uses native case and separator rules while rejecting reveal-root siblings", () => {
+    // Changing process.platform does not change node:path native semantics.
+    const windows = process.platform === "win32";
     vi.stubEnv("LENGRVIS_DATA_DIR", "/data/Private");
     const grants = { documentPathGrants: new Set<string>(), revealPathGrants: new Set<string>() };
-    expect(showItemInFolder("/data/private/secret.txt", grants).ok).toBe(false);
-    expect(showItemInFolder("/data/Private\\secret.txt", grants).ok).toBe(false);
+    expect(showItemInFolder("/data/private/secret.txt", grants).ok).toBe(windows);
+    expect(showItemInFolder("/data/Private\\secret.txt", grants).ok).toBe(windows);
+    expect(showItemInFolder("/data/PrivateSibling/secret.txt", grants).ok).toBe(false);
     expect(showItemInFolder("/data/Private/allowed.txt", grants).ok).toBe(true);
-    expect(mocks.showItemInFolder).toHaveBeenCalledOnce();
+    expect(mocks.showItemInFolder).toHaveBeenCalledTimes(windows ? 3 : 1);
   });
 });

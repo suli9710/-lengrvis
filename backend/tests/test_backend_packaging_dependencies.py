@@ -8,6 +8,13 @@ def _text(project_root: Path, relative_path: str) -> str:
     return (project_root / relative_path).read_text(encoding="utf-8")
 
 
+def test_backend_runtime_lock_retains_verifier_provenance_header(project_root: Path) -> None:
+    text = _text(project_root, "backend/requirements-lock.txt")
+    assert re.search(r"(?im)^#\s*Fully resolved dependency lock", text)
+    assert re.search(r"(?im)^#\s*.*--generate-hashes", text)
+    assert re.search(r"(?im)^\s+#\s+via", text)
+
+
 def test_backend_build_requirements_pin_packaging_tools(project_root: Path) -> None:
     text = _text(project_root, "backend/requirements-build.txt")
     requirement_lines = [
