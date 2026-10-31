@@ -4,13 +4,19 @@ const { withGradleProperties } = require("@expo/config-plugins");
 // AGP 9 supports these explicit opt-outs; AGP 10 requires a real migration.
 // https://docs.expo.dev/bare/upgrade/
 // https://developer.android.com/build/migrate-to-built-in-kotlin
-const COMPATIBILITY_PROPERTIES = ["android.builtInKotlin", "android.newDsl"];
+// Expo's documented Windows fix: SDK CMake 3.31.6 ships Ninja 1.12.1.
+// https://docs.expo.dev/troubleshooting/windows-long-paths/
+const COMPATIBILITY_PROPERTIES = {
+  "android.builtInKotlin": "false",
+  "android.newDsl": "false",
+  "android.cmakeVersion": "3.31.6",
+};
 
 function applyAndroidBuildCompatibility(properties) {
   // Remove duplicate/conflicting entries so prebuild is deterministic/idempotent.
   return [
-    ...properties.filter((item) => item.type !== "property" || !COMPATIBILITY_PROPERTIES.includes(item.key)),
-    ...COMPATIBILITY_PROPERTIES.map((key) => ({ type: "property", key, value: "false" })),
+    ...properties.filter((item) => item.type !== "property" || !Object.hasOwn(COMPATIBILITY_PROPERTIES, item.key)),
+    ...Object.entries(COMPATIBILITY_PROPERTIES).map(([key, value]) => ({ type: "property", key, value })),
   ];
 }
 

@@ -254,6 +254,28 @@ jobs:
           if (-not $env:ANDROID_HOME -or -not (Test-Path -LiteralPath $env:ANDROID_HOME)) {
             throw "ANDROID_HOME is required to compile the Android companion."
           }
+          # Only this ephemeral GitHub runner is configured; never alter a user's registry.
+          if ($env:GITHUB_ACTIONS -ne "true") { throw "Windows toolchain preparation is CI-only." }
+          $fileSystemKey = "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
+          New-ItemProperty -Path $fileSystemKey -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
+          if ((Get-ItemPropertyValue -Path $fileSystemKey -Name "LongPathsEnabled") -ne 1) {
+            throw "Windows long paths must be enabled for Ninja."
+          }
+          $cmakeVersion = "3.31.6"
+          $gradleProperties = Get-Content -LiteralPath "mobile/android/gradle.properties" -Raw
+          if ($gradleProperties -notmatch '(?m)^android\.cmakeVersion=3\.31\.6\r?$') {
+            throw "The Android project must select the verified CMake version."
+          }
+          $sdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager.bat"
+          & $sdkManager "cmake;$cmakeVersion"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ninja = Join-Path $env:ANDROID_HOME "cmake/$cmakeVersion/bin/ninja.exe"
+          $ninjaVersion = (& $ninja --version).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ([version]$ninjaVersion -lt [version]"1.12.0") {
+            throw "Ninja >= 1.12.0 is required for Windows long paths; found $ninjaVersion."
+          }
+          Write-Host "Verified CMake $cmakeVersion Ninja $ninjaVersion at $ninja"
           $debugKeystore = Join-Path $env:USERPROFILE ".android\\debug.keystore"
           if (-not (Test-Path -LiteralPath $debugKeystore)) {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $debugKeystore) | Out-Null
@@ -276,6 +298,21 @@ jobs:
           }
           finally {
             Pop-Location
+          }
+          # Verify CMake actually generated every native build with that Ninja,
+          # not another executable found on PATH or a stale cached generator.
+          $nativeCaches = @(Get-ChildItem -LiteralPath mobile -Filter CMakeCache.txt -Recurse -File |
+            Where-Object { $_.FullName -match '[\\/]\.cxx[\\/]' })
+          if ($nativeCaches.Count -eq 0) { throw "No native CMake cache was produced." }
+          foreach ($cache in $nativeCaches) {
+            $cacheText = Get-Content -LiteralPath $cache.FullName -Raw
+            if ($cacheText -notmatch '(?m)^CMAKE_MAKE_PROGRAM:FILEPATH=(.+)\r?$') {
+              throw "Missing native generator in $($cache.FullName)"
+            }
+            $selectedNinja = [System.IO.Path]::GetFullPath($Matches[1].Trim())
+            if ($selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)) {
+              throw "Unexpected native generator $selectedNinja in $($cache.FullName)"
+            }
           }
 
   supply-chain:

@@ -161,3 +161,30 @@ def test_companion_stream_lifecycle_smoke_is_gated(project_root: Path) -> None:
         "scripts/generate_current_release_evidence.ps1",
     ):
         assert command in _text(project_root, relative)
+
+
+def test_windows_android_native_gate_uses_verified_long_path_toolchain(project_root: Path) -> None:
+    properties = _text(project_root, "mobile/android/gradle.properties")
+    assert "android.cmakeVersion=3.31.6" in properties
+    assert "reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64" in properties
+    assert "newArchEnabled=true" in properties
+    ci = yaml.safe_load(_text(project_root, ".github/workflows/ci.yml"))
+    step = next(
+        step
+        for step in ci["jobs"]["mobile"]["steps"]
+        if step.get("name") == "Android native debug + androidTest compilation gate"
+    )
+    script = step["run"]
+    assert '$env:GITHUB_ACTIONS -ne "true"' in script
+    assert 'Get-ItemPropertyValue -Path $fileSystemKey -Name "LongPathsEnabled"' in script
+    assert '$cmakeVersion = "3.31.6"' in script
+    assert '& $sdkManager "cmake;$cmakeVersion"' in script
+    assert '"cmake/$cmakeVersion/bin/ninja.exe"' in script
+    assert "& $ninja --version" in script
+    assert '[version]$ninjaVersion -lt [version]"1.12.0"' in script
+    assert "CMAKE_MAKE_PROGRAM:FILEPATH=" in script
+    assert "$selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)" in script
+    assert "$nativeCaches.Count -eq 0" in script
+    assert ":app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace" in script
+    assert "-PreactNativeArchitectures" not in script
+    assert "-x " not in script

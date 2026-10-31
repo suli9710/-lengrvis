@@ -81,13 +81,15 @@ for (const input of [[], preserved, [
   { type: "property", key: "android.builtInKotlin", value: "true" },
   { type: "property", key: "android.builtInKotlin", value: "false" },
   { type: "property", key: "android.newDsl", value: "true" },
+  { type: "property", key: "android.cmakeVersion", value: "3.22.1" },
+  { type: "property", key: "android.cmakeVersion", value: "3.31.6" },
 ]]) {
   const snapshot = JSON.stringify(input);
   const output = applyAndroidBuildCompatibility(input);
   assert.equal(JSON.stringify(input), snapshot, "plugin must not mutate input");
-  for (const key of ["android.builtInKotlin", "android.newDsl"]) {
+  for (const [key, value] of [["android.builtInKotlin", "false"], ["android.newDsl", "false"], ["android.cmakeVersion", "3.31.6"]]) {
     assert.deepEqual(output.filter((item) => item.type === "property" && item.key === key), [
-      { type: "property", key, value: "false" },
+      { type: "property", key, value },
     ]);
   }
   for (const item of input.filter((entry) => preserved.includes(entry))) assert(output.includes(item));
@@ -97,9 +99,9 @@ const mobileRoot = path.join(__dirname, "..");
 const appConfig = JSON.parse(fs.readFileSync(path.join(mobileRoot, "app.json"), "utf8"));
 assert(appConfig.expo.plugins.includes("./plugins/withAndroidBuildCompatibility"));
 const properties = fs.readFileSync(path.join(mobileRoot, "android", "gradle.properties"), "utf8");
-for (const key of ["android.builtInKotlin", "android.newDsl"]) {
+for (const [key, value] of [["android.builtInKotlin", "false"], ["android.newDsl", "false"], ["android.cmakeVersion", "3.31.6"]]) {
   const values = properties.split(/\r?\n/).filter((line) => line.startsWith(`${key}=`));
-  assert.deepEqual(values, [`${key}=false`]);
+  assert.deepEqual(values, [`${key}=${value}`]);
 }
 const appGradle = fs.readFileSync(path.join(mobileRoot, "android", "app", "build.gradle"), "utf8");
 assert(appGradle.includes('apply plugin: "org.jetbrains.kotlin.android"'));
