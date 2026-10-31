@@ -158,7 +158,7 @@ export function ApprovalDetail({
       style={styles.keyboardAvoiding}
     >
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={colors.canvas} />
+      <StatusBar barStyle="dark-content" />
       <View style={styles.header}>
         <Pressable
           accessibilityLabel="返回审批列表"

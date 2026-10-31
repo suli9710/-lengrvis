@@ -179,3 +179,79 @@ async def test_automatic_revision_of_private_memory_prepares_embeddings_locally(
 def test_legacy_memory_policy_defaults_are_conservative():
     memory = Memory(content="legacy")
     assert memory.source_mode == "" and not memory.allow_cloud_context and not memory.context_policy_hmac
+
+
+@pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+def test_unattributed_session_fields_do_not_bypass_cloud_context_filter(mode):
+    from app.context.management import project_messages_for_llm
+    from app.core.context_egress import filter_session_context, summary_context_policy
+
+    settings = AppSettings(
+        mode=mode,
+        context_session_memory_enabled=True,
+        context_micro_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_auto_compact_enabled=False,
+        model_context_window=1000,
+        max_tokens=100,
+    )
+    summary = "Allowed summary"
+    context = {
+        "session_id": "private-session",
+        "current_workflow_state": {"latest_goal": "PRIVATE_WORKFLOW_MARKER"},
+        "learned_preferences": {"personal": "PRIVATE_PREFERENCE_MARKER"},
+        "notes": ["PRIVATE_NOTE_MARKER"],
+        "conversation_summary": summary,
+        "_conversation_summary_policy": summary_context_policy("private-session", summary, cloud_allowed=True),
+    }
+    projection = project_messages_for_llm([{"role": "user", "content": "continue"}], settings, session_context=context)
+    outgoing = json.dumps(projection.messages)
+    assert summary in outgoing
+    for marker in ("PRIVATE_WORKFLOW_MARKER", "PRIVATE_PREFERENCE_MARKER", "PRIVATE_NOTE_MARKER"):
+        assert marker not in outgoing
+    # Local planning retains the original contextual fields.
+    assert filter_session_context(context, "privacy") == context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["efficiency", "hybrid"])
+async def test_private_planning_workflow_does_not_leak_to_next_cloud_provider(mode):
+    from app.context.management import ContextAwareProvider
+    from app.llm.base import LLMProvider
+    from app.orchestration.handlers.planning_handler import PlanningHandler
+
+    db.init_db()
+    session = get_session_context_store()
+    private_task = Task(user_goal="PRIVATE_PRODUCTION_WORKFLOW", mode="privacy")
+    db.upsert_model("tasks", private_task)
+    handler = PlanningHandler(SimpleNamespace(session_context_store=session))
+    context = handler._session_context_for_planning(private_task)
+    assert context["current_workflow_state"]["latest_goal"] == private_task.user_goal
+    captured = []
+
+    class CaptureProvider(LLMProvider):
+        name = "openai_compatible"
+
+        async def chat(self, messages, **kwargs):
+            captured.extend(messages)
+            return "ok"
+
+        async def structured_chat(self, messages, output_schema):
+            captured.extend(messages)
+            return {"ok": True}
+
+    settings = AppSettings(
+        mode=mode,
+        context_session_memory_enabled=True,
+        context_micro_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_auto_compact_enabled=False,
+        model_context_window=200_000,
+        context_warning_buffer_tokens=200_000,
+    )
+    wrapped = ContextAwareProvider(CaptureProvider(), settings)
+    await wrapped.chat([{"role": "user", "content": "PUBLIC_CURRENT_REQUEST"}])
+    body = json.dumps(captured)
+    assert "PUBLIC_CURRENT_REQUEST" in body
+    assert "PRIVATE_PRODUCTION_WORKFLOW" not in body
+    assert session.current.current_workflow_state["latest_goal"] == private_task.user_goal

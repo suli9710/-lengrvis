@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from app.indexer.embedding_storage import (
     cosine_similarity_batch,
@@ -46,3 +47,22 @@ def test_fts_match_query_escapes_quotes() -> None:
 
 def test_fts_match_query_single_token() -> None:
     assert fts_match_query("汽车维修") == '"汽车维修"'
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"bad",
+        '["not a number"]',
+        "[[1, 2], [3, 4]]",
+        "[NaN, 1]",
+        "[Infinity, 1]",
+        [None, 1],
+        [[1, 2]],
+        [float("nan"), 1],
+        [float("inf"), 1],
+    ],
+)
+def test_invalid_stored_embedding_is_unavailable(raw) -> None:
+    assert vector_from_storage(raw) is None
+    assert vector_from_storage_list(raw) == []

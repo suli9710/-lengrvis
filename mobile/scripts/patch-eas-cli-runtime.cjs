@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire } = require("node:module");
 
-const EXPECTED_EAS_VERSION = "22.2.0";
+const EXPECTED_EAS_VERSION = "25.3.0";
 const ORIGINAL_IMPORT =
   'const ts_deepmerge_1 = tslib_1.__importDefault(require("ts-deepmerge"));';
 const PATCHED_IMPORT = 'const ts_deepmerge_1 = require("ts-deepmerge");';

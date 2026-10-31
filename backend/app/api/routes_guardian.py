@@ -563,7 +563,7 @@ async def proxy_websocket(websocket: WebSocket, path: str):
         # required, breaking LAN/mobile WS proxying.
         token_headers = desktop_api_token_headers()
         upstream_token = token_headers.get(DESKTOP_API_TOKEN_HEADER, "")
-        connect_kwargs: dict[str, Any] = {}
+        connect_kwargs: dict[str, Any] = {"proxy": None}
         if token_headers:
             connect_kwargs["additional_headers"] = token_headers
         if upstream_token:
@@ -610,7 +610,7 @@ async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None
             detail=_approval_continue_unavailable_detail(approval, exc),
         ) from exc
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
             response = await client.post(
                 f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue",
                 headers=desktop_api_token_headers(),
@@ -699,7 +699,7 @@ def _safe_backend_approval_payload(value: dict[str, Any]) -> dict[str, Any]:
 async def _execute_wakeup(wakeup: Wakeup) -> None:
     await runtime.wake_transient(reason=f"wakeup:{wakeup.id}")
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
             response = await client.post(
                 f"{full_backend_url()}/api/runs",
                 headers=desktop_api_token_headers(),

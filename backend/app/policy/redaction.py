@@ -76,29 +76,31 @@ PUBLIC_MACHINE_LABELS = {
     BROWSER_CONTENT_PROMPT_INJECTION_WARNING,
     BROWSER_CONTENT_TRUST,
 }
+# POSIX roots may be arbitrary mount points. Do not match inside URL/path
+# segments or the double slash of a URL authority.
 QUOTED_LOCAL_PATH_PATTERN = re.compile(
-    r"(?i)(?P<quote>['\"])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
-    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    r"(?i)(?P<quote>['\"])(?:file://|[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?<![\w/.\-])/(?!/)|~[\\/])"
     r"(?:(?!(?P=quote))[^\r\n])+(?P=quote)"
 )
 LOCAL_FILE_PATH_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
-    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    r"(?:file://|[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?<![\w/.\-])/(?!/)|~[\\/])"
     # Do not scan through another absolute-path prefix. Without this boundary,
     # repeated extensionless paths make every prefix rescan the remaining text.
     r"(?:(?!(?<![A-Za-z0-9])"
-    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
-    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/]))"
-    r"[^,;'‘’\"<>\r\n])*?\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}"
-    r"(?=$|[\s,;:'‘’\"<>\])}.。；：，、!?！？?=&/#])"
+    r"(?:file://|[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?<![\w/.\-])/(?!/)|~[\\/]))"
+    r"(?!\.(?=\s|$))[^,;'‘’\"<>\r\n])*?\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}"
+    r"(?![\\/])(?=$|[\s,;:'‘’\"<>\])}.。；：，、!?！？?=&/#])"
 )
 LOCAL_PATH_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
-    r"(?:/Users|/home|/tmp|/var|/private)/|~[\\/])"
+    r"(?:file://|[A-Za-z]:[\\/]|\\\\[^\\/\s,;'\"<>\r\n]+[\\/]|"
+    r"(?<![\w/.\-])/(?!/)|~[\\/])"
     r"(?:(?!\s+(?:with\s+)?(?:api[_-]?key|token|password|secret|authorization|cookie)\s*[:=])"
-    r"[^,;'\"<>\r\n])+"
+    r"(?!\.(?=\s|$))[^,;'\"<>\r\n])+"
 )
 PUBLIC_STACK_LOCATION_PATTERN = re.compile(r"(?is)file\s+\"[^\"\r\n]+\",\s+line\s+\d+,\s+in\s+[^\r\n]+")
 PUBLIC_FILE_NAME_PATTERN = re.compile(

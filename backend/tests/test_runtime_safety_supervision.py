@@ -239,6 +239,15 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
     orchestrator = OrchestratorAgent()
     orchestrator.subagents["AppAgent"] = DoneAppAgent(orchestrator.bus)
     monkeypatch.setattr(orchestrator.planner, "create_plan", app_plan)
+    # This tests supervision, not Windows application discovery or execution.
+    # Keep the real tool contract and policy checks, but stub its OS side effect.
+    launches = []
+
+    def fake_launch(args, context):
+        launches.append(dict(args))
+        return {"ok": True, "app": args["app"], "dry_run": True}
+
+    monkeypatch.setattr(orchestrator.registry.get("app.launch_installed"), "execute", fake_launch)
 
     task = await orchestrator.handle_user_goal("open notepad", "privacy")
     target_types = {
@@ -246,7 +255,10 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
     }
 
     assert task.status == "completed"
-    assert "agent_message:AppAgent_consultation" in target_types
+    assert launches == [{"app": "notepad", "dry_run": True}]
+    assert {"agent_message:AppAgent_consultation", "agent_message:tool_call_proposed", "tool_result"}.issubset(
+        target_types
+    )
 
 
 @pytest.mark.anyio

@@ -1220,42 +1220,51 @@ def edit_xlsx(
         raise ValueError("document.edit_xlsx requires non-empty 'sheet' and 'cell'.")
     _ensure_parseable_file_size(path_obj)
     workbook = load_workbook(path_obj, keep_vba=path_obj.suffix.lower() in {".xlsm", ".xltm"})
-    if sheet_name not in workbook.sheetnames:
-        raise ValueError(f"Sheet not found: {sheet_name}")
-    worksheet = workbook[sheet_name]
-    previous = worksheet[cell_ref].value
-    diff_preview = [
-        {
-            "action": "edit_xlsx",
-            "path": str(path_obj),
-            "sheet": sheet_name,
-            "cell": cell_ref,
-            "from": previous,
-            "to": value,
-        }
-    ]
-    if dry_run:
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise ValueError(f"Sheet not found: {sheet_name}")
+        worksheet = workbook[sheet_name]
+        previous = worksheet[cell_ref].value
+        diff_preview = [
+            {
+                "action": "edit_xlsx",
+                "path": str(path_obj),
+                "sheet": sheet_name,
+                "cell": cell_ref,
+                "from": previous,
+                "to": value,
+            }
+        ]
+        if dry_run:
+            return {
+                "dry_run": True,
+                "path": str(path_obj),
+                "sheet": sheet_name,
+                "cell": cell_ref,
+                "diff_preview": diff_preview,
+                "_resource_state": _document_resource_state(path_obj),
+            }
+        raise_if_tool_aborted(abort_context)
+        backup = _backup_document(path_obj, abort_context)
+        worksheet[cell_ref].value = value
+        _safe_save_office_document(path_obj, lambda: workbook.save(path_obj), abort_context)
         return {
-            "dry_run": True,
+            "ok": True,
             "path": str(path_obj),
             "sheet": sheet_name,
             "cell": cell_ref,
+            "changed_paths": [str(path_obj)],
             "diff_preview": diff_preview,
-            "_resource_state": _document_resource_state(path_obj),
+            "rollback_info": _document_rollback_info(backup, path_obj),
         }
-    raise_if_tool_aborted(abort_context)
-    backup = _backup_document(path_obj, abort_context)
-    worksheet[cell_ref].value = value
-    _safe_save_office_document(path_obj, lambda: workbook.save(path_obj), abort_context)
-    return {
-        "ok": True,
-        "path": str(path_obj),
-        "sheet": sheet_name,
-        "cell": cell_ref,
-        "changed_paths": [str(path_obj)],
-        "diff_preview": diff_preview,
-        "rollback_info": _document_rollback_info(backup, path_obj),
-    }
+    finally:
+        # openpyxl Workbook.close() does not close its in-memory VBA archive.
+        # Close it explicitly before BytesIO/ZipFile cyclic GC can run.
+        try:
+            if workbook.vba_archive is not None:
+                workbook.vba_archive.close()
+        finally:
+            workbook.close()
 
 
 def _apply_redaction_docx(

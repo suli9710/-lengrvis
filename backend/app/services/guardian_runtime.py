@@ -195,19 +195,19 @@ class GuardianRuntime:
             if key.lower() not in {"host", "content-length", "connection", DESKTOP_API_TOKEN_HEADER}
         }
         filtered_headers.update(desktop_api_token_headers())
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
             return await client.request(method, url, headers=filtered_headers, content=body)
 
     async def _notify_full_foreground(self) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground", headers=desktop_api_token_headers())
         except httpx.HTTPError:
             return
 
     async def _notify_full_background(self) -> None:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/background", headers=desktop_api_token_headers())
         except httpx.HTTPError:
             return
@@ -249,7 +249,7 @@ class GuardianRuntime:
 
     async def _is_full_backend_healthy(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=1.0) as client:
+            async with httpx.AsyncClient(timeout=1.0, trust_env=False) as client:
                 response = await client.get(
                     f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
                 )
@@ -309,7 +309,7 @@ class GuardianRuntime:
 
     async def _full_backend_has_active_runs(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
+            async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
                 response = await client.get(
                     f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
                 )

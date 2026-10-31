@@ -203,7 +203,7 @@ class LocalBrowserActivityAdapter:
             _raise_if_playwright_route_guard_blocked(route_guard)
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
-            with httpx.Client(timeout=30, follow_redirects=False) as client:
+            with httpx.Client(timeout=30, follow_redirects=False, trust_env=False) as client:
                 html, final_url, response_truncated = _read_limited_http_response(
                     client,
                     url,

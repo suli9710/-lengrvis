@@ -87,9 +87,21 @@ class PermissionTimeWindow(BaseModel):
         result: list[int | str] = []
         for day in value:
             normalized = _normalize_day(day)
-            if normalized is not None:
-                result.append(normalized)
+            if normalized is None:
+                raise ValueError(f"Invalid permission weekday: {day!r}")
+            result.append(normalized)
         return result
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            try:
+                ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError("Invalid permission timezone") from exc
+        return value
 
 
 class PermissionRule(BaseModel):
@@ -124,7 +136,7 @@ class PermissionRule(BaseModel):
         if time_window is None:
             time_window = normalized.pop("timeWindow", None)
         if time_window is not None and not normalized.get("time_windows"):
-            normalized["time_windows"] = [time_window] if isinstance(time_window, dict) else []
+            normalized["time_windows"] = [time_window]
         return normalized
 
     @field_validator("tools", "path_patterns")
@@ -538,10 +550,7 @@ def _window_matches(window: PermissionTimeWindow, now: datetime) -> bool:
 def _window_datetime(window: PermissionTimeWindow, now: datetime) -> datetime:
     if not window.timezone:
         return now
-    try:
-        zone = ZoneInfo(window.timezone)
-    except ZoneInfoNotFoundError:
-        return now
+    zone = ZoneInfo(window.timezone)
     return now.astimezone(zone) if now.tzinfo else now.replace(tzinfo=zone)
 
 
@@ -551,14 +560,15 @@ def _minutes(value: str) -> int:
 
 
 def _parse_clock(value: str) -> tuple[int, int]:
-    raw = str(value or "00:00").strip()
-    parts = raw.split(":", 1)
-    try:
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-    except ValueError:
-        hour, minute = 0, 0
-    return max(0, min(hour, 23)), max(0, min(minute, 59))
+    raw = str(value).strip()
+    parts = raw.split(":")
+    if len(parts) not in {1, 2} or any(not part.isascii() or not part.isdigit() for part in parts):
+        raise ValueError("Permission time must be an hour or HH:MM")
+    hour = int(parts[0])
+    minute = int(parts[1]) if len(parts) > 1 else 0
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError("Permission time is outside the valid clock range")
+    return hour, minute
 
 
 def _normalize_day(value: int | str) -> int | str | None:

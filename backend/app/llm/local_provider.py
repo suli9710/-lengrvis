@@ -60,7 +60,7 @@ def detect_local_backend(*, timeout: float = _DEFAULT_TIMEOUT, client_factory=No
 
     `client_factory` is injected by tests to mock httpx; defaults to httpx.Client.
     """
-    factory = client_factory or (lambda: httpx.Client(timeout=timeout))
+    factory = client_factory or (lambda: httpx.Client(timeout=timeout, trust_env=False))
     for kind, probe_url, base_url in _PROBES:
         try:
             with factory() as client:

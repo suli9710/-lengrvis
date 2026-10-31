@@ -123,6 +123,11 @@ describe("OfficeInspector", () => {
     expect(html).toContain("<strong>结果时间线</strong>");
     expect(html).toContain("已开始处理任务");
     expect(html).toContain("检查电脑状态");
+    const taskButton = html.match(/<button[^>]*class="task-row"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    expect(taskButton).toBeDefined();
+    // Let title, status, action hint and timestamp supply the full native name.
+    expect(taskButton).not.toContain("aria-label=");
+    expect(taskButton).toContain("点此查看");
     expect(html).toContain("1/1 已就绪");
   });
 });

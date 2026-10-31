@@ -22,8 +22,11 @@ export async function ownedScreenshotFiles(root: string, markerName?: string): P
   await rejectScreenshotLinks(root);
   const canonical = await realpath(root);
   const files: string[] = [];
-  for (const name of await readdir(root)) {
-    const path = join(root, name);
+  // Use one namespace throughout: realpath expands Windows 8.3 aliases
+  // (e.g. RUNNER~1). Comparing canonical roots with lexical children otherwise
+  // incorrectly marks owned files as outside the root. Link/UID/nlink checks remain.
+  for (const name of await readdir(canonical)) {
+    const path = join(canonical, name);
     const inside = relative(canonical, resolve(path));
     const info = await lstat(path);
     if (inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)

@@ -465,3 +465,18 @@ def test_android_real_device_sealer_rejects_invalid_private_keys(private_key: st
             payload,
             private_key_text=private_key,
         )
+
+
+@pytest.mark.parametrize("result", [None, "skipped", "missing"])
+def test_android_missing_or_skipped_real_device_result_is_not_reviewed_pass(monkeypatch, result):
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    payload = _reviewed_android_payload()
+    if result is None:
+        payload.pop("real_device_result", None)
+    else:
+        payload["real_device_result"] = result
+    errors, contract = android_reviewed.validate_payload_with_contract(
+        _signed(payload), expected_candidate_binding=_binding()
+    )
+    assert "real_device_result must be passed" in errors
+    assert contract["valid_signature"] is True  # Authentic review cannot override a missing device result.

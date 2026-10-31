@@ -6,6 +6,9 @@ export interface BackendLocalMetrics {
     terminal?: number;
     succeeded?: number;
     success_rate?: number | null;
+    rolled_back?: number;
+    rollback_attempts?: number;
+    rollback_recovery_rate?: number | null;
     by_status?: Record<string, number>;
   };
   runs?: {

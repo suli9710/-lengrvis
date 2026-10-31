@@ -28,13 +28,21 @@ def summary_context_allowed(context: dict[str, Any], destination_mode: str) -> b
 
 
 def filter_session_context(context: dict[str, Any] | None, destination_mode: str) -> dict[str, Any] | None:
-    if not context or summary_context_allowed(context, destination_mode):
+    if not context or destination_mode == "privacy":
         return context
-    return {
+    # These legacy session fields have no authenticated source/egress policy.
+    # In particular, remember_task() stores private task goals in workflow state.
+    # A signature over conversation_summary cannot authorize adjacent fields.
+    # Typed long-term memories use their separate authenticated retrieval path.
+    filtered = {
         **context,
-        "conversation_summary": "",
-        "_conversation_summary_envelope": None,
+        "current_workflow_state": {},
+        "learned_preferences": {},
+        "notes": [],
     }
+    if not summary_context_allowed(context, destination_mode):
+        filtered.update(conversation_summary="", _conversation_summary_envelope=None)
+    return filtered
 
 
 def planner_context_allowed(source_mode: str, destination_mode: str, *, cloud_allowed: bool) -> bool:

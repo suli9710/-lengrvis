@@ -65,7 +65,7 @@ def test_release_candidate_workflow_attests_provenance_and_sbom() -> None:
     assert "id-token: write" in text
     assert "attestations: write" in text
     assert "artifact-metadata: write" in text
-    assert text.count("actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1") == 2
+    assert text.count("actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2") == 2
     assert "subject-checksums: build/release-candidate-subjects.sha256" in text
     assert "sbom-path: .tmp/sbom/lengrvis-sbom.cdx.json" in text
     assert "$subjects = @(Get-Item -LiteralPath $sbomPath)" in text

@@ -72,7 +72,7 @@ def fetch_many_data(
     table_name: str, where_clause_value: str = "", args: tuple[Any, ...] = (), limit: int = 200
 ) -> list[dict[str, Any]]:
     apply_read_barrier(table_name)
-    query = f"SELECT data FROM {table_name}"  # noqa: S608
+    query = f"SELECT id, data FROM {table_name}"  # noqa: S608
     if where_clause_value:
         query += f" WHERE {where_clause_value}"
     query += " ORDER BY created_at DESC LIMIT ?"
@@ -80,10 +80,9 @@ def fetch_many_data(
         rows = conn.execute(query, (*args, query_limit(limit))).fetchall()
         if table_name in db.SENSITIVE_RECORD_INTEGRITY_KINDS:
             for row in rows:
-                data = json.loads(row["data"])
-                record_id = str(data.get("id") or "")
-                if record_id:
-                    db._require_sensitive_record_integrity(conn, table_name, record_id, row["data"])
+                # The JSON body is untrusted until verified. Its id must not
+                # choose (or disable) the integrity check for the physical row.
+                db._require_sensitive_record_integrity(conn, table_name, str(row["id"]), row["data"])
     return [json.loads(row["data"]) for row in rows]
 
 

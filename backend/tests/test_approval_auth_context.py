@@ -466,18 +466,17 @@ def test_mobile_approval_without_family_generation_fails_closed_outside_test_mod
 
 
 @pytest.mark.parametrize(
-    ("authorized_at", "auth_context", "reason"),
+    ("auth_context", "reason"),
     [
-        (now_iso(), {}, "context is incomplete"),
-        (now_iso(), {"channel": "unknown"}, "channel is invalid"),
+        ({}, "context is incomplete"),
+        ({"channel": "unknown"}, "channel is invalid"),
     ],
 )
 def test_malformed_auth_context_fails_closed(
-    authorized_at: str,
     auth_context: dict[str, object],
     reason: str,
 ) -> None:
-    approval = _approved(auth_context, authorized_at)
+    approval = _approved(auth_context, now_iso())
 
     assert db.claim_approval_for_execution(approval.id, now_iso()) is None
     stored = db.fetch_one("approvals", approval.id)

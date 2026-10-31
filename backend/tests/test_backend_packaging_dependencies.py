@@ -8,6 +8,13 @@ def _text(project_root: Path, relative_path: str) -> str:
     return (project_root / relative_path).read_text(encoding="utf-8")
 
 
+def test_backend_runtime_lock_retains_verifier_provenance_header(project_root: Path) -> None:
+    text = _text(project_root, "backend/requirements-lock.txt")
+    assert re.search(r"(?im)^#\s*Fully resolved dependency lock", text)
+    assert re.search(r"(?im)^#\s*.*--generate-hashes", text)
+    assert re.search(r"(?im)^\s+#\s+via", text)
+
+
 def test_backend_build_requirements_pin_packaging_tools(project_root: Path) -> None:
     text = _text(project_root, "backend/requirements-build.txt")
     requirement_lines = [
@@ -87,3 +94,13 @@ def test_portable_refresh_outputs_are_limited_to_release_directories(project_roo
         '$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"' in refresh
     )
     assert '$OutputPath = Resolve-ReleaseOutputPath -Path $OutputExe -Label "OutputExe"' in csharp_sfx
+
+
+def test_legacy_self_extractor_does_not_start_stale_binary_after_failed_extraction(project_root: Path) -> None:
+    source = _text(project_root, "scripts/create_self_extracting_exe.ps1")
+    extraction = source.index("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand")
+    launcher = source[extraction : source.index("endlocal", extraction)]
+    error_guard = launcher.index("if errorlevel 1 exit /b %errorlevel%")
+    missing_guard = launcher.index('if not exist "%TARGET%\\Lengrvis.exe" exit /b 1')
+    launch = launcher.index('start "" "%TARGET%\\Lengrvis.exe"')
+    assert error_guard < missing_guard < launch

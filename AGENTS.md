@@ -13,9 +13,12 @@ and the PowerShell helpers in `scripts/`. The PowerShell scripts only run on Win
 ## Cursor Cloud / Linux development notes
 
 When working on Linux, the repo's `.ps1`/`.cmd` launchers do not run. Drive the underlying
-commands directly. The startup update script already creates a Python venv at `.venv` (from
-`requirements-dev.txt` + `ruff`), installs the Playwright Chromium browser for both Python and desktop,
-and runs `npm --prefix desktop ci` + `npm --prefix mobile ci`. Run
+commands directly. If the startup update script has not provisioned `.venv`, create it and install
+`python -m pip install --require-hashes -r requirements-dev-lock.txt` (includes Ruff).
+Use the hashed development lock for installation: `requirements-dev.txt` is a resolver input
+and cannot be installed directly because it includes a hash-locked runtime file. Install
+the Playwright Chromium browser for both Python and desktop, and run
+`npm --prefix desktop ci` + `npm --prefix mobile ci`. Run
 `npm ci --ignore-scripts --engine-strict` at the repository root before MCP conformance or release commands.
 CI itself runs on `windows-latest`, so a
 clean local Linux run will show a small set of Windows-only failures (see backend/desktop notes below).

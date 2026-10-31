@@ -295,7 +295,7 @@ class NodeNotificationSocket implements NotificationSocket {
       socket.write(buildWebSocketHandshake(url, this.protocols));
     });
     socket.on("data", (chunk) => {
-      this.handleData(chunk);
+      this.handleData(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
     socket.on("error", (error) => {
       this.fail(error);

@@ -372,7 +372,7 @@ def bundled_runtime_available() -> bool:
 async def is_running() -> bool:
     """Check if Ollama server is responding."""
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
             resp = await client.get(f"{OLLAMA_API}/api/tags")
             return resp.status_code == 200
     except (httpx.HTTPError, OSError):
@@ -382,7 +382,7 @@ async def is_running() -> bool:
 async def list_models() -> list[str]:
     """List installed Ollama models."""
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False) as client:
             resp = await client.get(f"{OLLAMA_API}/api/tags")
             if resp.status_code != 200:
                 return []
@@ -1044,7 +1044,7 @@ async def pull_model(model: str | None = None) -> dict[str, Any]:
     record("ollama.pull_start", "OllamaService", {"model": target})
 
     try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=600.0, trust_env=False) as client:
             resp = await client.post(
                 f"{OLLAMA_API}/api/pull",
                 json={"name": target, "stream": False},
@@ -1068,7 +1068,7 @@ async def pull_model_streaming(model: str | None = None):
     record("ollama.pull_start", "OllamaService", {"model": target, "streaming": True})
 
     try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=600.0, trust_env=False) as client:
             async with client.stream(
                 "POST",
                 f"{OLLAMA_API}/api/pull",

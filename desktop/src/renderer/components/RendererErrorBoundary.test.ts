@@ -61,11 +61,14 @@ describe("RendererErrorBoundary", () => {
   });
 
   it("renders healthy children unchanged", () => {
-    const renderer = create(
-      createElement(RendererErrorBoundary, {
-        children: createElement("p", null, "正常界面")
-      })
-    );
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        createElement(RendererErrorBoundary, {
+          children: createElement("p", null, "正常界面")
+        })
+      );
+    });
 
     expect(textContent(renderer)).toContain("正常界面");
     expect(textContent(renderer)).not.toContain("界面资源加载失败");

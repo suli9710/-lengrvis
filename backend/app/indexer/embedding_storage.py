@@ -13,31 +13,31 @@ def vector_to_blob(vector: list[float] | np.ndarray) -> bytes:
 
 def vector_from_storage(raw: Any) -> np.ndarray | None:
     """Decode embedding from BLOB (preferred) or legacy JSON TEXT."""
-    if raw is None:
-        return None
-    if isinstance(raw, bytes | bytearray | memoryview):
-        array = np.frombuffer(raw, dtype=np.float32)
-        return array if array.size else None
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not text:
-            return None
-        if text.startswith("["):
-            try:
+    try:
+        if isinstance(raw, bytes | bytearray | memoryview):
+            array = np.frombuffer(raw, dtype=np.float32)
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            if text.startswith("["):
                 data = json.loads(text)
-            except ValueError:
-                return None
-            if not isinstance(data, list) or not data:
-                return None
-            return np.asarray(data, dtype=np.float32)
-        try:
-            array = np.frombuffer(raw.encode("latin-1"), dtype=np.float32)
-            return array if array.size else None
-        except ValueError:
+                if not isinstance(data, list):
+                    return None
+                array = np.asarray(data, dtype=np.float32)
+            else:
+                array = np.frombuffer(raw.encode("latin-1"), dtype=np.float32)
+        elif isinstance(raw, list):
+            array = np.asarray(raw, dtype=np.float32)
+        else:
             return None
-    if isinstance(raw, list):
-        return np.asarray(raw, dtype=np.float32) if raw else None
-    return None
+    except (TypeError, ValueError, OverflowError):
+        # A malformed cached vector must not make otherwise searchable text
+        # unavailable. Callers already use lexical fallback for missing vectors.
+        return None
+    if array.ndim != 1 or not array.size or not np.isfinite(array).all():
+        return None
+    return array
 
 
 def vector_from_storage_list(raw: Any) -> list[float]:

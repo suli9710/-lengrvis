@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ApiResponse } from "../../shared/desktopBridgeTypes";
@@ -16,7 +16,7 @@ describe("MemoryPanel", () => {
     expect(textContent(renderer)).toContain("来自你的陈述");
     act(() => renderer.root.findByProps({ "aria-label": "更正记忆：报告使用英文" }).props.onClick());
     act(() => renderer.root.findByProps({ "aria-label": "记忆内容" }).props.onChange({ currentTarget: { value: "报告使用中文" } }));
-    await act(async () => renderer.root.findByProps({ "aria-label": "保存记忆更正" }).props.onClick());
+    await act(async () => renderer.root.findByProps({ "aria-label": "保存更正，保存记忆更正" }).props.onClick());
     expect(saveMemory).toHaveBeenCalledWith("报告使用中文", { tags: [], kind: "fact", supersedes: "mem-auto" });
     act(() => renderer.unmount());
   });
@@ -59,15 +59,15 @@ describe("MemoryPanel", () => {
       contentInput.props.onChange({ currentTarget: { value: "保留这条草稿" }, target: { value: "保留这条草稿" } });
     });
 
-    const saveButton = renderer.root.findByProps({ "aria-label": "保存记忆" });
+    const saveButton = renderer.root.findByProps({ "aria-label": "记住这条，保存记忆" });
     act(() => {
       saveButton.props.onClick();
       saveButton.props.onClick();
     });
 
     expect(saveMemory).toHaveBeenCalledTimes(1);
-    expect(renderer.root.findByProps({ "aria-label": "保存记忆" }).props.disabled).toBe(true);
-    expect(renderer.root.findByProps({ "aria-label": "保存记忆" }).props["aria-busy"]).toBe(true);
+    expect(renderer.root.findByProps({ "aria-label": "正在保存，保存记忆" }).props.disabled).toBe(true);
+    expect(renderer.root.findByProps({ "aria-label": "正在保存，保存记忆" }).props["aria-busy"]).toBe(true);
     expect(textContent(renderer)).toContain("正在保存");
 
     await act(async () => {
@@ -100,7 +100,7 @@ describe("MemoryPanel", () => {
       });
     });
     await act(async () => {
-      renderer.root.findByProps({ "aria-label": "保存记忆" }).props.onClick();
+      renderer.root.findByProps({ "aria-label": "记住这条，保存记忆" }).props.onClick();
     });
 
     expect(saveMemory).toHaveBeenCalledTimes(1);
@@ -237,7 +237,7 @@ describe("MemoryPanel", () => {
     expect(textContent(renderer)).toContain("未人工确认");
 
     await act(async () => {
-      renderer.root.findByProps({ "aria-label": "审核并启用记忆：存在冲突的偏好" }).props.onClick();
+      renderer.root.findByProps({ "aria-label": "解决冲突并启用记忆：存在冲突的偏好" }).props.onClick();
     });
 
     expect(promoteMemory).toHaveBeenCalledWith("mem-conflict", {
@@ -299,7 +299,7 @@ describe("MemoryPanel", () => {
       renderer.root.findByProps({ "aria-label": "执行记忆搜索" }).props.onClick();
     });
     await act(async () => {
-      renderer.root.findByProps({ "aria-label": "保存记忆" }).props.onClick();
+      renderer.root.findByProps({ "aria-label": "记住这条，保存记忆" }).props.onClick();
     });
     await act(async () => {
       staleRecall.resolve(success([memory("mem-stale", "迟到的旧搜索结果")]));
@@ -357,7 +357,7 @@ describe("MemoryPanel", () => {
         currentTarget: { value: "卸载中的写入" },
         target: { value: "卸载中的写入" }
       });
-      renderer.root.findByProps({ "aria-label": "保存记忆" }).props.onClick();
+      renderer.root.findByProps({ "aria-label": "记住这条，保存记忆" }).props.onClick();
     });
     act(() => renderer.unmount());
     await act(async () => {
@@ -404,7 +404,20 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function visibleButtonText(node: ReactTestInstance | string): string {
+  if (typeof node === "string") return node;
+  if (node.props["aria-hidden"] === true) return "";
+  return node.children.map(visibleButtonText).join("");
+}
+
 function textContent(renderer: ReactTestRenderer): string {
+  // Validate every button in the existing idle, conflict, busy and error snapshots.
+  for (const button of renderer.root.findAllByType("button")) {
+    const name = button.props["aria-label"];
+    if (typeof name === "string") {
+      expect(name.replace(/\s/g, "")).toContain(visibleButtonText(button).replace(/\s/g, ""));
+    }
+  }
   return renderer.root
     .findAll(() => true)
     .flatMap((node) => node.children)

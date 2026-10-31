@@ -163,7 +163,7 @@ def test_release_workflows_isolate_quality_producers_and_clean_sealers():
     privileged = candidate["jobs"]["rc-gate"]
     assert privileged["needs"] == ["mcp-conformance-evidence", "real-llm-evidence"]
     privileged_text = json.dumps(privileged, sort_keys=True)
-    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in privileged_text
+    assert "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in privileged_text
     assert "mcp_conformance_evidence.py verify" in privileged_text
     assert "real_llm_evidence.py verify" in privileged_text
     assert "npm run mcp:conformance" not in privileged_text

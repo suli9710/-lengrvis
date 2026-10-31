@@ -697,5 +697,7 @@ function backendAutostartEnabled(): boolean {
 }
 
 function startHiddenRequested(): boolean {
-  return process.argv.includes("--hidden") || app.getLoginItemSettings().wasOpenedAsHidden;
+  const loginSettings = app.getLoginItemSettings();
+  return process.argv.includes("--hidden")
+    || ("wasOpenedAsHidden" in loginSettings && loginSettings.wasOpenedAsHidden === true);
 }

@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 
-import { officeAgents } from "../../features/office";
+import { officeAgents } from "../../features/office/model";
 import { quickSkills } from "../../features/office/quickSkills";
 import { RouteLoading } from "../../appViewModel";
 import type { AppSurfaceProps } from "../AppSurfaceTypes";
