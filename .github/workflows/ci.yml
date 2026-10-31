@@ -219,6 +219,8 @@ jobs:
         run: npm --prefix mobile run smoke:consent
       - name: Mobile session lifecycle smoke
         run: npm --prefix mobile run smoke:session-lifecycle
+      - name: Mobile companion stream lifecycle smoke
+        run: npm --prefix mobile run smoke:companion-stream-lifecycle
       - name: Mobile push notification smoke
         run: npm --prefix mobile run smoke:push-notifications
       - name: Mobile push subscription lifecycle smoke

@@ -87,3 +87,13 @@ def test_portable_refresh_outputs_are_limited_to_release_directories(project_roo
         '$SelfExtractingPath = Resolve-ReleaseOutputPath -Path $SelfExtractingExe -Label "SelfExtractingExe"' in refresh
     )
     assert '$OutputPath = Resolve-ReleaseOutputPath -Path $OutputExe -Label "OutputExe"' in csharp_sfx
+
+
+def test_legacy_self_extractor_does_not_start_stale_binary_after_failed_extraction(project_root: Path) -> None:
+    source = _text(project_root, "scripts/create_self_extracting_exe.ps1")
+    extraction = source.index("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand")
+    launcher = source[extraction : source.index("endlocal", extraction)]
+    error_guard = launcher.index("if errorlevel 1 exit /b %errorlevel%")
+    missing_guard = launcher.index('if not exist "%TARGET%\\Lengrvis.exe" exit /b 1')
+    launch = launcher.index('start "" "%TARGET%\\Lengrvis.exe"')
+    assert error_guard < missing_guard < launch

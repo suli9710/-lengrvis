@@ -1,5 +1,5 @@
 import { Activity, RefreshCw, ShieldQuestion } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LocalMetricsSummary } from "../../shared/systemTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
@@ -17,30 +17,39 @@ export function MetricsPanel({ api }: MetricsPanelProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optInRequired, setOptInRequired] = useState(false);
+  const requestGeneration = useRef(0);
 
   const loadMetrics = useCallback(
     async (days: number) => {
+      const generation = ++requestGeneration.current;
       setIsLoading(true);
       setError(null);
       setOptInRequired(false);
-      const response = await api.getLocalMetrics(days);
-      setIsLoading(false);
-      if (response.ok && response.data) {
-        setSummary(response.data);
-        return;
-      }
       setSummary(null);
-      if (response.status === 403) {
-        setOptInRequired(true);
-        return;
+      try {
+        const response = await api.getLocalMetrics(days);
+        if (generation !== requestGeneration.current) return;
+        if (response.ok && response.data) {
+          setSummary(response.data);
+          return;
+        }
+        if (response.status === 403) {
+          setOptInRequired(true);
+          return;
+        }
+        setError(response.error?.message ?? "无法读取本机指标");
+      } catch {
+        if (generation === requestGeneration.current) setError("无法读取本机指标，请重试。");
+      } finally {
+        if (generation === requestGeneration.current) setIsLoading(false);
       }
-      setError(response.error?.message ?? "无法读取本机指标");
     },
     [api]
   );
 
   useEffect(() => {
     void loadMetrics(windowDays);
+    return () => { requestGeneration.current += 1; };
   }, [loadMetrics, windowDays]);
 
   return (
@@ -72,7 +81,7 @@ export function MetricsPanel({ api }: MetricsPanelProps) {
 
       {optInRequired ? (
         <p className="empty-state">
-          <ShieldQuestion size={16} aria-hidden="true" /> 本机指标默认关闭。它只在这台电脑上统计计数（任务成功率、自动恢复占比等），
+          <ShieldQuestion size={16} aria-hidden="true" /> 本机指标默认关闭。它只在这台电脑上统计计数（任务目标完成率、回滚恢复率等），
           不会上传任何内容。在“本机指标”设置中开启后即可查看。
         </p>
       ) : null}
@@ -82,9 +91,14 @@ export function MetricsPanel({ api }: MetricsPanelProps) {
       {summary ? (
         <div className="metrics-grid">
           <MetricCard
-            label="任务成功率"
+            label="任务目标完成率"
             value={formatRate(summary.tasks.successRate)}
-            hint={`${summary.tasks.succeeded}/${summary.tasks.terminal} 个已结束任务成功`}
+            hint={`${summary.tasks.succeeded}/${summary.tasks.terminal} 个已结束任务完成目标；回滚不计为目标完成`}
+          />
+          <MetricCard
+            label="回滚恢复率"
+            value={formatRate(summary.tasks.rollbackRecoveryRate)}
+            hint={`${summary.tasks.rolledBack}/${summary.tasks.rollbackAttempts} 次回滚尝试成功恢复；不代表原任务目标完成`}
           />
           <MetricCard
             label="自动恢复触发率"
@@ -128,6 +142,6 @@ function MetricCard({ label, value, hint }: { label: string; value: string; hint
 }
 
 function formatRate(rate: number | null): string {
-  if (rate === null || !Number.isFinite(rate)) return "—";
+  if (rate === null || !Number.isFinite(rate)) return "无数据";
   return `${(rate * 100).toFixed(1)}%`;
 }

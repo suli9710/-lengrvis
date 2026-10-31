@@ -195,6 +195,10 @@ def validate(
             )
         if not current_sha:
             errors.append("Strict release readiness requires a current commit binding.")
+        if not expected_run_id:
+            errors.append(
+                "Strict release readiness requires an external CI run id binding."
+            )
         if expected_run_id and not expected_run_attempt:
             errors.append(
                 "Strict release readiness requires a CI run attempt binding "

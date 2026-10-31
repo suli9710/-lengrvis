@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import subprocess
@@ -203,7 +204,7 @@ class SkillSandbox:
 
         payload = self._payload(args, context)
         try:
-            with httpx.Client(timeout=execution.timeout_seconds, follow_redirects=False) as client:
+            with httpx.Client(timeout=execution.timeout_seconds, follow_redirects=False, trust_env=False) as client:
                 response = client.request(execution.method, url, json=payload, headers=execution.headers)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -340,9 +341,21 @@ def loopback_http_port(url: str) -> int | None:
 
 
 def is_loopback_http_url(url: str) -> bool:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    # Prefix matching also accepts attacker-controlled DNS names such as
+    # 127.0.0.1.example.com. Only literal loopback addresses are local.
+    if "%" in host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def is_allowed_loopback_http_url(url: str) -> bool:

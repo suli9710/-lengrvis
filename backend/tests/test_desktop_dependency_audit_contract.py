@@ -160,8 +160,8 @@ def test_dev_toolchains_use_patched_and_transitively_locked_releases(project_roo
     # Keep the advisory-fixed pytest release reproducible while the repository
     # validates its plugin suite against pytest 9.  A floating <10 constraint
     # can silently move release CI to a newer, unqualified minor release.
-    assert "pytest==9.0.3" in requirements
-    assert _python_direct_pins(lock)["pytest"] == "9.0.3"
+    assert "pytest==9.1.1" in requirements
+    assert _python_direct_pins(lock)["pytest"] == "9.1.1"
     assert package["devDependencies"]["@modelcontextprotocol/conformance"] == "0.1.16"
     assert npm_lock["packages"][""]["devDependencies"] == package["devDependencies"]
     conformance = npm_lock["packages"]["node_modules/@modelcontextprotocol/conformance"]

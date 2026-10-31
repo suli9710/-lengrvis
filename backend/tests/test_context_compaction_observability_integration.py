@@ -18,6 +18,7 @@ from app.context.management import (
     project_messages_for_llm,
     provider_safe_projection_fallback,
 )
+from app.core.context_egress import summary_context_policy
 from app.llm.base import LLMProvider
 from app.observability import metrics
 
@@ -191,6 +192,9 @@ def test_session_summary_only_projection_is_not_counted_as_compaction() -> None:
         session_context={
             "session_id": "private-session-id",
             "conversation_summary": "Earlier work remains in progress.",
+            "_conversation_summary_policy": summary_context_policy(
+                "private-session-id", "Earlier work remains in progress.", cloud_allowed=True
+            ),
             "last_summarized_message_id": "private-message-id",
         },
         source="private-session-source",
@@ -377,3 +381,18 @@ def test_structured_prompt_limit_reactive_and_fallback_decisions_have_fixed_labe
     assert secret not in prometheus_text
     assert "task-and-prompt-token-938421" not in snapshot_text
     assert "task-and-prompt-token-938421" not in prometheus_text
+
+
+def test_unsigned_session_summary_is_not_injected_into_cloud_projection() -> None:
+    projection = project_messages_for_llm(
+        [{"id": "message_1", "role": "user", "content": "continue"}],
+        _settings(context_session_memory_enabled=True),
+        session_context={
+            "session_id": "private-session-id",
+            "conversation_summary": "UNATTRIBUTED_PRIVATE_SUMMARY",
+            "last_summarized_message_id": "private-message-id",
+        },
+    )
+    assert not projection.session_summary_added
+    assert all("UNATTRIBUTED_PRIVATE_SUMMARY" not in str(message) for message in projection.messages)
+    assert _only_decision() == {"trigger": "projection", "strategy": "none", "outcome": "not_needed"}

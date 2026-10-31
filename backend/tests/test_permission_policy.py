@@ -15,7 +15,6 @@ from app.policy.permissions import (
     PermissionRule,
     PermissionStore,
     PermissionTimeWindow,
-    _window_datetime,
     evaluate_permission_policy,
 )
 from app.policy.policy_engine import PolicyEngine
@@ -378,11 +377,11 @@ def test_permission_store_corrupt_signed_policy_fails_closed(monkeypatch: pytest
         store.get_policy()
 
 
-def test_permission_window_datetime_invalid_timezone_falls_back() -> None:
-    now = datetime(2026, 1, 1, 12, 0)
-    window = PermissionTimeWindow(start="09:00", end="17:00", timezone="Not/A_Real_Zone")
+def test_permission_window_invalid_timezone_is_rejected() -> None:
+    from pydantic import ValidationError
 
-    assert _window_datetime(window, now) is now
+    with pytest.raises(ValidationError, match="Invalid permission timezone"):
+        PermissionTimeWindow(start="09:00", end="17:00", timezone="Not/A_Real_Zone")
 
 
 def test_settings_permission_policy_routes_round_trip_rule():
@@ -633,3 +632,45 @@ def test_evaluate_user_permission_for_tool_matches_policy_engine():
     assert via_engine.allowed == via_helper.allowed
     assert via_helper.allowed is False
     assert "Weekend" in via_helper.reason
+
+
+@pytest.mark.parametrize("days", [[7], [-1], ["mondya"], [""], [0, "invalid"]])
+def test_permission_window_invalid_days_cannot_expand_to_every_day(days) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Invalid permission weekday"):
+        PermissionTimeWindow(days=days)
+
+
+@pytest.mark.parametrize("clock", ["", "invalid", "24:00", "09:60", "-1:30", "12:30:00"])
+def test_permission_window_invalid_clock_is_rejected(clock) -> None:
+    from pydantic import ValidationError
+
+    for field in ("start", "end"):
+        with pytest.raises(ValidationError, match="Permission time"):
+            PermissionTimeWindow(**{field: clock})
+
+
+def test_permission_rule_invalid_time_window_alias_cannot_remove_restriction() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PermissionRule(effect="allow", tools=["file.read"], time_window="weekdays")
+
+
+def test_permission_window_valid_aliases_remain_supported() -> None:
+    window = PermissionTimeWindow(start="9", end="17:5", days=["MON", "weekday", 6], timezone=" UTC ")
+    assert window.start == "09:00"
+    assert window.end == "17:05"
+    assert window.days == [0, "weekday", 6]
+    assert window.timezone == "UTC"
+
+
+def test_permission_time_window_model_alias_preserves_day_constraint() -> None:
+    rule = PermissionRule(
+        effect="allow",
+        tools=["file.read"],
+        time_window=PermissionTimeWindow(days=["weekend"]),
+    )
+    assert len(rule.time_windows) == 1
+    assert rule.time_windows[0].days == ["weekend"]

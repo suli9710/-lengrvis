@@ -535,7 +535,9 @@ def _safe_mobile_task_text(value: object, *, limit: int, fallback: str) -> tuple
     raw = str(value or "").strip()
     if not raw:
         return fallback, False
-    redacted = redact_value(raw)
+    # Preserve the evidence marker contract before generic absolute-path scrubbing.
+    evidence_safe, evidence_redacted = _redact_mobile_task_evidence(raw, fallback=fallback)
+    redacted = redact_value(evidence_safe)
     safe = str(redacted if redacted is not None else "").strip()
     safe = redact_public_text(safe)
     safe = (
@@ -544,7 +546,6 @@ def _safe_mobile_task_text(value: object, *, limit: int, fallback: str) -> tuple
         .replace("[REDACTED_PROMPT]", "[已隐藏]")
     )
     safe = MOBILE_LOCAL_PATH_RE.sub("[本地路径]", safe)
-    safe, evidence_redacted = _redact_mobile_task_evidence(safe, fallback=fallback)
     safe = " ".join(safe.split())
     truncated = len(safe) > limit
     safe = safe[:limit].strip() or fallback

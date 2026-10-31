@@ -31,7 +31,7 @@ async function main() {
   const versionOutput = execFileSync(process.execPath, [easBin, "--version"], {
     encoding: "utf8",
   });
-  assert.match(versionOutput, /eas-cli\/22\.2\.0/);
+  assert.match(versionOutput, /eas-cli\/25\.3\.0/);
   const buildHelp = execFileSync(process.execPath, [easBin, "build", "--help"], {
     encoding: "utf8",
   });

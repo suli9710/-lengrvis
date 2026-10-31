@@ -194,3 +194,121 @@ def test_run_process_tree_cancel_kills_descendant_processes(tmp_path: Path):
     while time.monotonic() < deadline and psutil.pid_exists(child_pid):
         time.sleep(0.02)
     assert not psutil.pid_exists(child_pid)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group regression")
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_timeout_or_cancel_kills_children_after_leader_exits(tmp_path: Path, cancelled: bool):
+    child_pid_path = tmp_path / "orphan.pid"
+    script = (
+        "import pathlib, subprocess, sys; "
+        "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')"
+    )
+    cancel = threading.Event() if cancelled else None
+    timer = threading.Timer(0.5, cancel.set) if cancel is not None else None
+    if timer is not None:
+        timer.start()
+    started = time.monotonic()
+    try:
+        expected = process_tree.ProcessCancelledError if cancelled else subprocess.TimeoutExpired
+        with pytest.raises(expected):
+            process_tree.run_process_tree(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                timeout=10 if cancelled else 0.5,
+                cancel_event=cancel,
+            )
+        assert time.monotonic() - started < 3
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                child_status = psutil.Process(child_pid).status()
+            except psutil.NoSuchProcess:
+                break
+            if child_status in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                break
+            assert time.monotonic() < deadline, "Descendant is still running after termination"
+            time.sleep(0.01)
+    finally:
+        if timer is not None:
+            timer.cancel()
+            timer.join(timeout=1)
+        if child_pid_path.exists():
+            try:
+                psutil.Process(int(child_pid_path.read_text(encoding="utf-8"))).kill()
+            except psutil.NoSuchProcess:
+                pass
+
+
+def test_kill_process_tree_does_not_signal_an_already_reaped_pid(monkeypatch):
+    process = FakeProcess()
+    process.returncode = 0
+
+    def unexpected_kill(*_args):
+        raise AssertionError("An already reaped PID may have been reused")
+
+    monkeypatch.setattr(process_tree.os, "killpg", unexpected_kill, raising=False)
+    process_tree.kill_process_tree(process)
+
+
+def test_timeout_closes_windows_job_before_draining_output(monkeypatch):
+    from app.core import windows_job
+
+    events: list[str] = []
+
+    class TimedOutProcess:
+        pid = 4242
+        returncode = None
+
+        def communicate(self, input=None, timeout=None):  # noqa: ANN001, ANN201, A002
+            events.append("communicate" if len(events) == 0 else "drain")
+            if events == ["communicate"]:
+                raise subprocess.TimeoutExpired("test", timeout)
+            assert timeout == 5.0
+            return b"partial output", b""
+
+    process = TimedOutProcess()
+
+    def close_job(_handle):
+        events.append("close-job")
+        process.returncode = -9
+
+    monkeypatch.setattr(process_tree.os, "name", "nt")
+    monkeypatch.setattr(process_tree.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(windows_job, "attach_process_to_job", lambda *_args: 77)
+    monkeypatch.setattr(windows_job, "resume_suspended_process", lambda *_args: None)
+    monkeypatch.setattr(windows_job, "close_job_handle", close_job)
+
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        process_tree.run_process_tree(["test"], timeout=0.1, capture_output=True, require_windows_isolation=True)
+    assert events == ["communicate", "close-job", "drain"]
+    assert error.value.output == b"partial output"
+
+
+def test_timeout_output_drain_is_bounded(monkeypatch):
+    from io import BytesIO
+
+    timeouts: list[float] = []
+
+    class TimedOutProcess:
+        pid = 4242
+        returncode = None
+        stdout = BytesIO()
+        stderr = BytesIO()
+
+        def communicate(self, input=None, timeout=None):  # noqa: ANN001, ANN201, A002
+            timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("test", timeout, output=b"partial", stderr=b"error")
+
+    process = TimedOutProcess()
+    monkeypatch.setattr(process_tree.os, "name", "posix")
+    monkeypatch.setattr(process_tree.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(process_tree, "kill_process_tree", lambda *_args: None)
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        process_tree.run_process_tree(["test"], timeout=0.1, capture_output=True)
+    assert timeouts == [0.1, 5.0]
+    assert error.value.output == b"partial"
+    assert error.value.stderr == b"error"
+    assert process.stdout.closed and process.stderr.closed

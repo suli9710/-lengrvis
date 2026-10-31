@@ -11,104 +11,72 @@ export function settingsPatchFor(settings: AppSettings, baseline: AppSettings | 
     }
   };
 
-  add("provider_name", settings.providerName, settings.providerName !== previous.providerName);
-  add("base_url", settings.apiBaseUrl, settings.apiBaseUrl !== previous.apiBaseUrl);
-  add("model", settings.model, settings.model !== previous.model);
-  add("review_model", settings.reviewModel, settings.reviewModel !== previous.reviewModel);
-  add("wire_api", settings.wireApi, settings.wireApi !== previous.wireApi);
-  add("requires_openai_auth", settings.requiresOpenAiAuth, settings.requiresOpenAiAuth !== previous.requiresOpenAiAuth);
-  add("model_reasoning_effort", settings.modelReasoningEffort, settings.modelReasoningEffort !== previous.modelReasoningEffort);
-  add("disable_response_storage", settings.disableResponseStorage, settings.disableResponseStorage !== previous.disableResponseStorage);
-  add("temperature", settings.temperature, settings.temperature !== previous.temperature);
-  add("max_tokens", settings.maxTokens, settings.maxTokens !== previous.maxTokens);
-  add("timeout", settings.timeout, settings.timeout !== previous.timeout);
-  add("llm_api_max_retries", settings.llmApiMaxRetries, settings.llmApiMaxRetries !== previous.llmApiMaxRetries);
-  add(
-    "llm_api_retry_backoff_seconds",
-    settings.llmApiRetryBackoffSeconds,
-    settings.llmApiRetryBackoffSeconds !== previous.llmApiRetryBackoffSeconds
-  );
-  add(
-    "llm_api_circuit_failure_threshold",
-    settings.llmApiCircuitFailureThreshold,
-    settings.llmApiCircuitFailureThreshold !== previous.llmApiCircuitFailureThreshold
-  );
-  add(
-    "llm_api_circuit_cooldown_seconds",
-    settings.llmApiCircuitCooldownSeconds,
-    settings.llmApiCircuitCooldownSeconds !== previous.llmApiCircuitCooldownSeconds
-  );
-  add("model_context_window", settings.modelContextWindow, settings.modelContextWindow !== previous.modelContextWindow);
-  add(
-    "model_auto_compact_token_limit",
-    settings.modelAutoCompactTokenLimit,
-    settings.modelAutoCompactTokenLimit !== previous.modelAutoCompactTokenLimit
-  );
+  for (const [backendKey, settingsKey] of [
+    ["provider_name", "providerName"],
+    ["base_url", "apiBaseUrl"],
+    ["model", "model"],
+    ["review_model", "reviewModel"],
+    ["wire_api", "wireApi"],
+    ["requires_openai_auth", "requiresOpenAiAuth"],
+    ["model_reasoning_effort", "modelReasoningEffort"],
+    ["disable_response_storage", "disableResponseStorage"],
+    ["temperature", "temperature"],
+    ["max_tokens", "maxTokens"],
+    ["timeout", "timeout"],
+    ["llm_api_max_retries", "llmApiMaxRetries"],
+    ["llm_api_retry_backoff_seconds", "llmApiRetryBackoffSeconds"],
+    ["llm_api_circuit_failure_threshold", "llmApiCircuitFailureThreshold"],
+    ["llm_api_circuit_cooldown_seconds", "llmApiCircuitCooldownSeconds"],
+    ["model_context_window", "modelContextWindow"],
+    ["model_auto_compact_token_limit", "modelAutoCompactTokenLimit"]
+  ] as const) {
+    add(backendKey, settings[settingsKey], settings[settingsKey] !== previous[settingsKey]);
+  }
   const allowedDirectories = allowedDirectoriesForSettings(settings, previous);
   const previousAllowedDirectories = allowedDirectoriesForSettings(previous);
   add("allowed_directories", allowedDirectories, !sameStringArray(allowedDirectories, previousAllowedDirectories));
-  add("allow_browser_network", settings.allowBrowserNetwork, settings.allowBrowserNetwork !== previous.allowBrowserNetwork);
-  add("remote_desktop_enabled", settings.remoteDesktopEnabled, settings.remoteDesktopEnabled !== previous.remoteDesktopEnabled);
+  for (const [backendKey, settingsKey] of [
+    ["allow_browser_network", "allowBrowserNetwork"],
+    ["remote_desktop_enabled", "remoteDesktopEnabled"]
+  ] as const) {
+    add(backendKey, settings[settingsKey], settings[settingsKey] !== previous[settingsKey]);
+  }
   add("app_allowlist", settings.appAllowlist, !sameStringArray(settings.appAllowlist, previous.appAllowlist));
-  add("browser_max_page_bytes", settings.browserMaxPageBytes, settings.browserMaxPageBytes !== previous.browserMaxPageBytes);
-  add("browser_screenshot_dir", settings.browserScreenshotDir, settings.browserScreenshotDir !== previous.browserScreenshotDir);
-  add("onnx_model_path", settings.onnxModelPath, settings.onnxModelPath !== previous.onnxModelPath);
-  add("onnx_execution_provider", settings.onnxExecutionProvider, settings.onnxExecutionProvider !== previous.onnxExecutionProvider);
-  add("onnx_provider_preference", settings.onnxProviderPreference, settings.onnxProviderPreference !== previous.onnxProviderPreference);
-  add("onnx_directml_device_id", settings.onnxDirectmlDeviceId, settings.onnxDirectmlDeviceId !== previous.onnxDirectmlDeviceId);
-  add("onnx_openvino_device", settings.onnxOpenvinoDevice, settings.onnxOpenvinoDevice !== previous.onnxOpenvinoDevice);
-  add("onnx_openvino_cache_dir", settings.onnxOpenvinoCacheDir, settings.onnxOpenvinoCacheDir !== previous.onnxOpenvinoCacheDir);
-  add("onnx_warm_on_startup", settings.onnxWarmOnStartup, settings.onnxWarmOnStartup !== previous.onnxWarmOnStartup);
-  add("onnx_model_family", settings.onnxModelFamily, settings.onnxModelFamily !== previous.onnxModelFamily);
-  add("embedding_backend", settings.onnxEmbeddingBackend, settings.onnxEmbeddingBackend !== previous.onnxEmbeddingBackend);
-  add("onnx_embedding_model_path", settings.onnxEmbeddingModelPath, settings.onnxEmbeddingModelPath !== previous.onnxEmbeddingModelPath);
-  add(
-    "onnx_embedding_execution_provider",
-    settings.onnxEmbeddingExecutionProvider,
-    settings.onnxEmbeddingExecutionProvider !== previous.onnxEmbeddingExecutionProvider
-  );
-  add("onnx_embedding_model_id", settings.onnxEmbeddingModelId, settings.onnxEmbeddingModelId !== previous.onnxEmbeddingModelId);
-  add(
-    "onnx_embedding_max_batch_size",
-    settings.onnxEmbeddingMaxBatchSize,
-    settings.onnxEmbeddingMaxBatchSize !== previous.onnxEmbeddingMaxBatchSize
-  );
-  add("image_embedding_backend", settings.imageEmbeddingBackend, settings.imageEmbeddingBackend !== previous.imageEmbeddingBackend);
-  add(
-    "onnx_image_embedding_model_path",
-    settings.onnxImageEmbeddingModelPath,
-    settings.onnxImageEmbeddingModelPath !== previous.onnxImageEmbeddingModelPath
-  );
-  add(
-    "onnx_image_embedding_execution_provider",
-    settings.onnxImageEmbeddingExecutionProvider,
-    settings.onnxImageEmbeddingExecutionProvider !== previous.onnxImageEmbeddingExecutionProvider
-  );
-  add(
-    "onnx_image_embedding_model_id",
-    settings.onnxImageEmbeddingModelId,
-    settings.onnxImageEmbeddingModelId !== previous.onnxImageEmbeddingModelId
-  );
-  add(
-    "onnx_image_embedding_max_batch_size",
-    settings.onnxImageEmbeddingMaxBatchSize,
-    settings.onnxImageEmbeddingMaxBatchSize !== previous.onnxImageEmbeddingMaxBatchSize
-  );
-  add("ocr_backend", settings.ocrBackend, settings.ocrBackend !== previous.ocrBackend);
-  add("ocr_execution_provider", settings.ocrExecutionProvider, settings.ocrExecutionProvider !== previous.ocrExecutionProvider);
-  add("ocr_openvino_model_dir", settings.ocrOpenvinoModelDir, settings.ocrOpenvinoModelDir !== previous.ocrOpenvinoModelDir);
-  add("ocr_openvino_device", settings.ocrOpenvinoDevice, settings.ocrOpenvinoDevice !== previous.ocrOpenvinoDevice);
-  add("ocr_lang", settings.ocrLang, settings.ocrLang !== previous.ocrLang);
-  add("ocr_min_confidence", settings.ocrMinConfidence, settings.ocrMinConfidence !== previous.ocrMinConfidence);
-  add("ocr_batch_size", settings.ocrBatchSize, settings.ocrBatchSize !== previous.ocrBatchSize);
-  add("mode", settings.mode, settings.mode !== previous.mode);
-  add("permission_mode", settings.permissionMode, settings.permissionMode !== previous.permissionMode);
-  add("allow_cloud_context", settings.allowCloudContext, settings.allowCloudContext !== previous.allowCloudContext);
-  add(
-    "allow_file_content_upload",
-    settings.allowFileContentUpload,
-    settings.allowFileContentUpload !== previous.allowFileContentUpload
-  );
+  for (const [backendKey, settingsKey] of [
+    ["browser_max_page_bytes", "browserMaxPageBytes"],
+    ["browser_screenshot_dir", "browserScreenshotDir"],
+    ["onnx_model_path", "onnxModelPath"],
+    ["onnx_execution_provider", "onnxExecutionProvider"],
+    ["onnx_provider_preference", "onnxProviderPreference"],
+    ["onnx_directml_device_id", "onnxDirectmlDeviceId"],
+    ["onnx_openvino_device", "onnxOpenvinoDevice"],
+    ["onnx_openvino_cache_dir", "onnxOpenvinoCacheDir"],
+    ["onnx_warm_on_startup", "onnxWarmOnStartup"],
+    ["onnx_model_family", "onnxModelFamily"],
+    ["embedding_backend", "onnxEmbeddingBackend"],
+    ["onnx_embedding_model_path", "onnxEmbeddingModelPath"],
+    ["onnx_embedding_execution_provider", "onnxEmbeddingExecutionProvider"],
+    ["onnx_embedding_model_id", "onnxEmbeddingModelId"],
+    ["onnx_embedding_max_batch_size", "onnxEmbeddingMaxBatchSize"],
+    ["image_embedding_backend", "imageEmbeddingBackend"],
+    ["onnx_image_embedding_model_path", "onnxImageEmbeddingModelPath"],
+    ["onnx_image_embedding_execution_provider", "onnxImageEmbeddingExecutionProvider"],
+    ["onnx_image_embedding_model_id", "onnxImageEmbeddingModelId"],
+    ["onnx_image_embedding_max_batch_size", "onnxImageEmbeddingMaxBatchSize"],
+    ["ocr_backend", "ocrBackend"],
+    ["ocr_execution_provider", "ocrExecutionProvider"],
+    ["ocr_openvino_model_dir", "ocrOpenvinoModelDir"],
+    ["ocr_openvino_device", "ocrOpenvinoDevice"],
+    ["ocr_lang", "ocrLang"],
+    ["ocr_min_confidence", "ocrMinConfidence"],
+    ["ocr_batch_size", "ocrBatchSize"],
+    ["mode", "mode"],
+    ["permission_mode", "permissionMode"],
+    ["allow_cloud_context", "allowCloudContext"],
+    ["allow_file_content_upload", "allowFileContentUpload"]
+  ] as const) {
+    add(backendKey, settings[settingsKey], settings[settingsKey] !== previous[settingsKey]);
+  }
   const mcpServers = settings.mcpServers.map(mapMcpServerForBackend).filter(hasPersistableMcpServerTarget);
   const previousMcpServers = previous.mcpServers.map(mapMcpServerForBackend).filter(hasPersistableMcpServerTarget);
   add("mcp_servers", mcpServers, JSON.stringify(mcpServers) !== JSON.stringify(previousMcpServers));

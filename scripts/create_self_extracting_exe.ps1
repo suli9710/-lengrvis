@@ -62,6 +62,8 @@ if not exist "%TARGET%" mkdir "%TARGET%"
 set "LENGRVIS_SFX_PAYLOAD_ZIP=%~dp0lengrvis-payload.zip"
 set "LENGRVIS_SFX_TARGET=%TARGET%"
 powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand __LENGRVIS_SFX_EXPAND_COMMAND__
+if errorlevel 1 exit /b %errorlevel%
+if not exist "%TARGET%\Lengrvis.exe" exit /b 1
 start "" "%TARGET%\Lengrvis.exe"
 endlocal
 '@.Replace("__LENGRVIS_SFX_EXPAND_COMMAND__", $LauncherEncodedCommand) | Set-Content -LiteralPath $LauncherCmd -Encoding ASCII

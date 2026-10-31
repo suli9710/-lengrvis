@@ -688,6 +688,15 @@ def test_httpx_observe_rejects_redirect_to_different_public_origin(monkeypatch) 
 
 
 def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_errors(monkeypatch) -> None:
+    client_options = []
+    real_client = httpx.Client
+
+    def direct_client(**kwargs):
+        client_options.append(kwargs)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(browser_activity_runtime.httpx, "Client", direct_client)
+
     def failing_sync_playwright():
         raise RuntimeError("playwright launch failed")
 
@@ -707,6 +716,7 @@ def test_local_adapter_observe_falls_back_to_httpx_for_expected_playwright_error
     assert result["ok"] is True
     assert result["adapter"] == "httpx"
     assert result["title"] == "Fallback"
+    assert client_options[0]["trust_env"] is False
     assert "playwright launch failed" in result["playwright_error"]
 
 

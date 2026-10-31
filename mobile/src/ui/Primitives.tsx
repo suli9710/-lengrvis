@@ -33,7 +33,7 @@ export function ScreenShell({
   const body = <View style={[styles.content, !scroll && styles.flex, contentStyle]}>{children}</View>;
   return (
     <SafeAreaView style={[styles.safeArea, dark && styles.remoteSafeArea]} testID={testID}>
-      <StatusBar barStyle={dark ? "light-content" : "dark-content"} backgroundColor={dark ? colors.remoteBg : colors.canvas} />
+      <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
       {scroll ? (
         <ScrollView
           contentContainerStyle={styles.scrollContent}

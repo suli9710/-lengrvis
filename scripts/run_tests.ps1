@@ -126,6 +126,9 @@ if (Test-Path "mobile\package.json") {
     npm --prefix mobile run smoke:session-lifecycle
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    npm --prefix mobile run smoke:companion-stream-lifecycle
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     npm --prefix mobile run smoke:push-notifications
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

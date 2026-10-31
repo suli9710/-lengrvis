@@ -814,3 +814,43 @@ def test_rc_release_rejects_scoped_maintenance_waivers():
         expected_repo="example/repo",
     )
     assert any("RR-P0-014" in e and "RC release requires passed P0 evidence" in e for e in errors)
+
+
+def test_strict_requires_external_run_binding_not_only_old_signed_summary(tmp_path, monkeypatch):
+    commit = "a" * 40
+    for key in (
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ID",
+        "LENGRVIS_RELEASE_CANDIDATE_RUN_ATTEMPT",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(mod, "_git_head_sha", lambda _: commit)
+    monkeypatch.setattr(mod, "_git_remote_github_repo", lambda _: "example/repo")
+    directory = tmp_path / "docs" / "release"
+    directory.mkdir(parents=True)
+    (directory / "current-release-evidence.md").write_text(
+        f"- Commit SHA: {commit}\n- Run id: 123\n- Run attempt: 2\n"
+        "- CI status: machine_gates_passed\n- Worktree status: clean\n"
+        "- Manual sign-off status: release_signoff_recorded\n"
+        "- Owner signature: release-owner-accepted\n- Owner signature verification: verified\n"
+        f"- Owner signature payload SHA-256: sha256:{'1' * 64}\n"
+        f"- Owner signature key fingerprint: sha256:{'2' * 64}\n"
+        "| CI job | Command |\n| scorecard | `npm run review:scorecard` |\n",
+        encoding="utf-8",
+    )
+    _write_signed_evidence(tmp_path, monkeypatch, commit)
+    dashboard = (
+        f"| Candidate commit | `{commit}` |\n"
+        "| RR-P0-006 | Sign-off | ev | passed | docs/release/current-release-evidence.md | alice | 2099-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(dashboard),
+        strict=True,
+        rc_release=True,
+        artifact_root=tmp_path,
+        dashboard_text=dashboard,
+        expected_repo="example/repo",
+        current_sha=commit,
+    )
+    assert any("CI run id binding" in error for error in errors), errors

@@ -387,6 +387,20 @@ class ButlerResident:
         from app.services.butler_evidence import resume_readiness
 
         for matter in store.list_records(ButlerMatter, limit=None):
+            if (
+                matter.status == MatterStatus.WAITING_EVENT
+                and matter.interaction
+                and (matter.waiting is None or matter.waiting.kind == "user")
+            ):
+                # Older versions persisted user handoffs as event waits, which
+                # ordinary conversational answers could never resolve.
+                store.mutate(
+                    ButlerMatter,
+                    matter.id,
+                    lambda item: setattr(item, "status", MatterStatus.WAITING_INPUT),
+                    expected_version=matter.version,
+                )
+                continue
             if matter.status in {MatterStatus.RUNNING, MatterStatus.PLANNING}:
                 try:
                     matter_scopes(matter)

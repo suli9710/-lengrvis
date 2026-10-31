@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 
-import { inferActiveOfficeAgentId } from "../features/office";
+import { inferActiveOfficeAgentId } from "../features/office/model";
 import { ShellFrame } from "../features/shell";
 import { RouteLoading } from "../appViewModel";
 import { localLibraryViewKeys } from "../views/localLibrarySections";

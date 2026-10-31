@@ -152,9 +152,6 @@ export function zhBackendText(text?: string): string {
   const userFacingError = zhUserFacingError(text);
   if (userFacingError !== text.trim()) return userFacingError;
   const exact: Record<string, string> = {
-    "Primary provider failed; using MockProvider fallback:": "AI 服务暂时不可用，已用临时模式继续处理：",
-    "Provider returned invalid plan; using MockProvider fallback:": "AI 服务返回的计划不完整，已用临时模式继续处理：",
-    "File paths must stay inside authorized directories; modifying steps need dry-run previews.": "为了保护你的文件，只会处理你先选择过的文件夹；移动、重命名或删除前会先给你确认。",
     "System inspection is read-only unless a Windows settings operation is explicitly approved.": "系统检查默认只读；只有明确审批后才允许执行 Windows 设置类操作。",
     "Application operations are limited to indexed apps and authorized file/folder open actions; unknown executables require approval or are blocked.": "应用操作只会打开已识别的应用，以及你先选择过的文件或文件夹；不认识的程序会先停下来确认。",
     "Browser operations start read-only; login, payment, submission, and messaging are handoff-only.": "浏览器操作默认只读；登录、支付、提交表单和发消息都必须交给人工处理。",
@@ -167,9 +164,6 @@ export function zhBackendText(text?: string): string {
     "Task completed with read-only/open-only MVP tools.": "任务已通过只读或打开类工具完成。",
     "Waiting for user approval before executing modifying operation.": "正在等待用户审批，审批后才会执行修改操作。",
     "Preview only. Approval is required before any file is moved, copied, renamed, or deleted.": "当前仅为预览。移动、复制、重命名或删除文件前必须先获得审批。",
-    "Explicit absolute path is required when no authorized directories are configured.": "请先选择要整理的文件夹，或填写完整的文件位置，例如桌面、下载、文档、图片里的某个文件。",
-    "No authorized directories configured.": "还没有选择要整理的文件夹。请先添加桌面、下载、文档或图片。",
-    "Path is outside authorized directories.": "这个文件不在你已选择的文件夹里。请换一个文件，或先把所在文件夹加入设置。",
     "Plan denied.": "计划已被安全策略拦截。",
     "Analyze spreadsheet": "分析表格",
     "Analyze the visible spreadsheet and summarize the important numbers.": "分析当前可见的表格，并总结重要数据。",

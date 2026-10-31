@@ -97,7 +97,11 @@ def test_task_metrics_normalize_legacy_failed_rollback_records() -> None:
     metrics = _task_metrics(rows)
 
     assert metrics["terminal"] == 2
-    assert metrics["succeeded"] == 1
+    assert metrics["succeeded"] == 0
+    assert metrics["success_rate"] == 0.0
+    assert metrics["rolled_back"] == 1
+    assert metrics["rollback_attempts"] == 2
+    assert metrics["rollback_recovery_rate"] == 0.5
     assert metrics["by_status"] == {"repair_required": 1, "rolled_back": 1}
 
 
@@ -121,6 +125,9 @@ def test_collect_local_metrics_empty_db(monkeypatch, tmp_path):
 
     assert payload["tasks"]["total"] == 0
     assert payload["tasks"]["success_rate"] is None
+    assert payload["tasks"]["rollback_recovery_rate"] is None
+    assert payload["tasks"]["rolled_back"] == 0
+    assert payload["tasks"]["rollback_attempts"] == 0
     assert payload["recovery"]["recovery_trigger_rate"] is None
     assert payload["llm"]["anomaly_rate"] is None
 
@@ -149,3 +156,36 @@ def test_metrics_endpoint_returns_data_when_enabled(monkeypatch, tmp_path):
     body = response.json()
     assert body["tasks"]["terminal"] == 3
     assert body["recovery"]["decided_actions"]["ask_user"] == 1
+
+
+def test_task_success_rate_does_not_count_successful_undo_as_goal_completion() -> None:
+    rows = [{"data": json.dumps({"status": status})} for status in ("completed", "rolled_back", "failed")]
+
+    metrics = _task_metrics(rows)
+
+    assert metrics["succeeded"] == 1
+    assert metrics["terminal"] == 3
+    assert metrics["success_rate"] == round(1 / 3, 4)
+    assert metrics["by_status"]["rolled_back"] == 1
+    assert metrics["rolled_back"] == 1
+    assert metrics["rollback_attempts"] == 1
+    assert metrics["rollback_recovery_rate"] == 1.0
+
+
+def test_task_metrics_separate_recovery_and_exclude_nonterminal_denominator() -> None:
+    statuses = ("completed", "rolled_back", "repair_required", "denied", "cancelled", "execution", "approval")
+    rows = [{"data": json.dumps({"status": status})} for status in statuses]
+    metrics = _task_metrics(rows)
+    assert metrics["total"] == 7
+    assert metrics["terminal"] == 5
+    assert metrics["success_rate"] == 0.2
+    assert metrics["rollback_attempts"] == 2
+    assert metrics["rollback_recovery_rate"] == 0.5
+
+
+def test_task_metrics_tolerate_malformed_legacy_metadata() -> None:
+    rows = [{"data": json.dumps({"status": "failed", "metadata": value})} for value in ("old", [1], 42, None)]
+    metrics = _task_metrics(rows)
+    assert metrics["terminal"] == 4
+    assert metrics["by_status"] == {"failed": 4}
+    assert metrics["rollback_recovery_rate"] is None

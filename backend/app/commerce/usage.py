@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from dataclasses import dataclass
@@ -125,7 +126,7 @@ def _env_int(name: str) -> int | None:
         return None
     try:
         return max(0, int(float(raw.strip())))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -134,25 +135,20 @@ def _env_float(name: str) -> float | None:
     if raw is None or not raw.strip():
         return None
     try:
-        return max(0.0, float(raw.strip()))
-    except (TypeError, ValueError):
+        value = float(raw.strip())
+        return max(0.0, value) if math.isfinite(value) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
-def _env_present(name: str) -> bool:
-    raw = os.getenv(name)
-    return raw is not None and bool(raw.strip())
-
-
 def _quota_override_present() -> bool:
-    return any(
-        _env_present(name)
-        for name in (
-            CLOUD_QUOTA_WINDOW_ENV_VAR,
-            CLOUD_QUOTA_TOKENS_ENV_VAR,
-            CLOUD_QUOTA_CALLS_ENV_VAR,
-            CLOUD_QUOTA_COST_ENV_VAR,
+    # Invalid configuration must not silently discard the default weekly window.
+    return (
+        any(
+            _env_int(name) is not None
+            for name in (CLOUD_QUOTA_WINDOW_ENV_VAR, CLOUD_QUOTA_TOKENS_ENV_VAR, CLOUD_QUOTA_CALLS_ENV_VAR)
         )
+        or _env_float(CLOUD_QUOTA_COST_ENV_VAR) is not None
     )
 
 

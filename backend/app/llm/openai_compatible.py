@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC
@@ -63,27 +65,82 @@ class _CircuitState:
 
 
 _CIRCUITS: dict[tuple[str, str, str, str], _CircuitState] = {}
-_SHARED_HTTP_CLIENT: httpx.AsyncClient | None = None
+_SHARED_HTTP_CLIENTS: dict[tuple[asyncio.AbstractEventLoop, bool], tuple[httpx.AsyncClient, asyncio.Task]] = {}
+_HTTP_CLIENT_LOCK = threading.Lock()
 _HTTP_LIMITS = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0)
 
 
-def _shared_http_client() -> httpx.AsyncClient:
-    """Process-wide AsyncClient so LLM calls reuse TCP/TLS connections."""
-    global _SHARED_HTTP_CLIENT
-    if _SHARED_HTTP_CLIENT is None or _SHARED_HTTP_CLIENT.is_closed:
-        _SHARED_HTTP_CLIENT = httpx.AsyncClient(
+async def _client_lifetime(key: tuple[asyncio.AbstractEventLoop, bool], client: httpx.AsyncClient) -> None:
+    try:
+        await asyncio.Future()
+    finally:
+        try:
+            await client.aclose()
+        finally:
+            with _HTTP_CLIENT_LOCK:
+                entry = _SHARED_HTTP_CLIENTS.get(key)
+                if entry is not None and entry[0] is client:
+                    _SHARED_HTTP_CLIENTS.pop(key, None)
+
+
+def _shared_http_client(*, trust_env: bool = True) -> httpx.AsyncClient:
+    """Reuse connections only inside their owning asyncio event loop."""
+    loop = asyncio.get_running_loop()
+    key = (loop, trust_env)
+    with _HTTP_CLIENT_LOCK:
+        entry = _SHARED_HTTP_CLIENTS.get(key)
+        if entry is not None and not entry[0].is_closed:
+            return entry[0]
+        client = httpx.AsyncClient(
             limits=_HTTP_LIMITS,
             timeout=httpx.Timeout(60.0),
             follow_redirects=False,
+            trust_env=trust_env,
         )
-    return _SHARED_HTTP_CLIENT
+        # asyncio.run() and normal loop shutdown cancel resident tasks. Keep
+        # cleanup on the same loop as the sockets, even for short-lived callers.
+        lifetime = loop.create_task(_client_lifetime(key, client), name="llm-http-client-lifetime")
+        _SHARED_HTTP_CLIENTS[key] = (client, lifetime)
+        return client
+
+
+async def _close_client_lifetime(client: httpx.AsyncClient, lifetime: asyncio.Task) -> None:
+    lifetime.cancel()
+    results = await asyncio.gather(lifetime, return_exceptions=True)
+    # A task cancelled before its first turn never enters its finally block.
+    if not client.is_closed:
+        await client.aclose()
+    error = results[0]
+    if isinstance(error, BaseException) and not isinstance(error, asyncio.CancelledError):
+        raise error
 
 
 async def close_shared_http_client() -> None:
-    global _SHARED_HTTP_CLIENT
-    if _SHARED_HTTP_CLIENT is not None and not _SHARED_HTTP_CLIENT.is_closed:
-        await _SHARED_HTTP_CLIENT.aclose()
-    _SHARED_HTTP_CLIENT = None
+    current = asyncio.get_running_loop()
+    with _HTTP_CLIENT_LOCK:
+        entries = list(_SHARED_HTTP_CLIENTS.items())
+    for key, (client, lifetime) in entries:
+        loop = key[0]
+        if client.is_closed:
+            with _HTTP_CLIENT_LOCK:
+                if _SHARED_HTTP_CLIENTS.get(key) == (client, lifetime):
+                    _SHARED_HTTP_CLIENTS.pop(key, None)
+            continue
+        if loop is current:
+            await _close_client_lifetime(client, lifetime)
+        elif loop.is_running():
+            close_coro = _close_client_lifetime(client, lifetime)
+            try:
+                closing = asyncio.run_coroutine_threadsafe(close_coro, loop)
+            except RuntimeError:
+                close_coro.close()
+                raise
+            await asyncio.wrap_future(closing)
+        else:
+            raise RuntimeError("LLM HTTP client owner loop stopped before resource cleanup")
+        with _HTTP_CLIENT_LOCK:
+            if _SHARED_HTTP_CLIENTS.get(key) == (client, lifetime):
+                _SHARED_HTTP_CLIENTS.pop(key, None)
 
 
 def normalize_openai_base_url(base_url: str) -> str:
@@ -211,11 +268,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 model=model,
             )
             try:
-                client = _shared_http_client()
+                local_route = self._allow_private_base(endpoint)
+                client = _shared_http_client(trust_env=False) if local_route else _shared_http_client()
                 # Re-pin per attempt (DNS-rebinding TOCTOU): connect to the IP
                 # that passed SSRF validation; Host/SNI keep the real hostname
                 # so TLS certificate verification is unchanged.
-                pinned = pin_outbound_http_url(endpoint, allow_private=self._allow_private_base(endpoint))
+                pinned = pin_outbound_http_url(endpoint, allow_private=local_route)
                 response = await client.post(
                     pinned.url,
                     headers={**self._headers(), **pinned.headers},

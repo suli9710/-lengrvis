@@ -41,14 +41,14 @@ def test_mobile_expo_patch_dependencies_match_the_supported_sdk_line(project_roo
     eas = json.loads((project_root / "mobile" / "eas.json").read_text(encoding="utf-8"))
 
     expected = {
-        "expo": "56.0.20",
-        "expo-notifications": "56.0.24",
-        "expo-router": "56.2.19",
+        "expo": "58.0.22",
+        "expo-notifications": "58.1.7",
+        "expo-router": "58.0.29",
     }
     assert {name: package["dependencies"][name] for name in expected} == expected
     assert {name: lock["packages"][""]["dependencies"][name] for name in expected} == expected
     assert eas["cli"]["version"] == package["devDependencies"]["eas-cli"]
-    assert package["overrides"]["eas-cli@22.2.0"] == {
+    assert package["overrides"][f"eas-cli@{package['devDependencies']['eas-cli']}"] == {
         "minimatch@5.1.2": "5.1.9",
         "ts-deepmerge@6.2.0": "8.0.0",
     }
@@ -151,3 +151,13 @@ def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) ->
     assert ":app:compileDebugKotlin" in kotlin_compile["run"]
     assert ":app:compileDebugAndroidTestKotlin" in kotlin_compile["run"]
     assert codeql_analyze["with"]["category"] == "${{ matrix.category }}"
+
+
+def test_companion_stream_lifecycle_smoke_is_gated(project_root: Path) -> None:
+    command = "npm --prefix mobile run smoke:companion-stream-lifecycle"
+    for relative in (
+        ".github/workflows/ci.yml",
+        "scripts/run_tests.ps1",
+        "scripts/generate_current_release_evidence.ps1",
+    ):
+        assert command in _text(project_root, relative)

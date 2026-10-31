@@ -611,3 +611,18 @@ def _replace_empty_migration_table(conn: sqlite3.Connection, table: str, replace
         conn.executescript(replacement_schema)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def test_init_rejects_future_migrations_before_mutating_schema(tmp_path):
+    with db.using_data_dir(tmp_path / "future-schema"):
+        with db.connect() as conn:
+            conn.execute(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO schema_migrations VALUES (999, 'future_release', '2030-01-01')")
+            before = list(conn.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name"))
+        with pytest.raises(RuntimeError, match="unknown schema migration"):
+            db.init_db()
+        with db.connect() as conn:
+            after = list(conn.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name"))
+        assert [tuple(row) for row in after] == [tuple(row) for row in before]

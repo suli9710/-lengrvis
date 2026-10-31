@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -79,7 +79,7 @@ describe("packaged renderer protocol", () => {
   });
 
   it("resolves only exact-host files inside the renderer root", () => {
-    const root = join("D:\\app", "renderer");
+    const root = resolve("renderer-test-root");
 
     expect(resolveRendererAssetPath(root, "app://local/")).toBe(join(root, "index.html"));
     expect(resolveRendererAssetPath(root, "app://local/assets/app-123.js")).toBe(

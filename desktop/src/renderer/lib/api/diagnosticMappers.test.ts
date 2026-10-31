@@ -23,6 +23,9 @@ describe("diagnostic mappers", () => {
         terminal: 0,
         succeeded: 0,
         successRate: null,
+        rolledBack: 0,
+        rollbackAttempts: 0,
+        rollbackRecoveryRate: null,
         byStatus: {}
       },
       runs: {
@@ -68,6 +71,29 @@ describe("diagnostic mappers", () => {
       recovery: { reflectionsStarted: 1, runsWithReflection: 2, decidedActions: { retry: 1 } },
       llm: { calls: 9, anomalies: 1, byFinishReason: { stop: 8 } }
     });
+  });
+
+  it("keeps completed goals separate from successful rollback recovery", () => {
+    const mapped = mapLocalMetrics({ tasks: {
+      total: 4, terminal: 4, succeeded: 1, success_rate: 0.25,
+      rolled_back: 2, rollback_attempts: 3, rollback_recovery_rate: 2 / 3,
+      by_status: { completed: 1, rolled_back: 2, repair_required: 1 }
+    } });
+    expect(mapped.tasks).toMatchObject({
+      succeeded: 1, successRate: 0.25, rolledBack: 2,
+      rollbackAttempts: 3, rollbackRecoveryRate: 2 / 3
+    });
+  });
+
+  it("does not show rates without samples or with invalid values", () => {
+    expect(mapLocalMetrics({ tasks: { terminal: 0, success_rate: 1,
+      rollback_attempts: 0, rollback_recovery_rate: 0 } }).tasks)
+      .toMatchObject({ successRate: null, rollbackRecoveryRate: null });
+    for (const rate of [NaN, Infinity, -0.1, 1.1]) {
+      expect(mapLocalMetrics({ tasks: { terminal: 1, success_rate: rate,
+        rollback_attempts: 1, rollback_recovery_rate: rate } }).tasks)
+        .toMatchObject({ successRate: null, rollbackRecoveryRate: null });
+    }
   });
 
   it("maps process, startup, diagnostics, and export payloads", () => {
