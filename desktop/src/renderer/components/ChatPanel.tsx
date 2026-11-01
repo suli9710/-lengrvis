@@ -5,6 +5,7 @@ import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../share
 import type { LengrvisApiClient } from "../lib/apiClient";
 import { sanitizeTechnicalText } from "../lib/technicalDetails";
 import { zhUserFacingError } from "../lib/zh";
+import { SESSION_DRAFT_KEYS, useSessionDraft } from "../lib/useSessionDraft";
 import { Badge, Panel } from "./Panel";
 import { TechnicalDetails } from "./TechnicalDetails";
 import { VoiceInputButton } from "./VoiceInputButton";
@@ -34,16 +35,21 @@ export function ChatPanel({
   context,
   api
 }: ChatPanelProps) {
-  const [draft, setDraft] = useState(initialDraft);
+  const [draft, setDraft] = useSessionDraft(SESSION_DRAFT_KEYS.chat, initialDraft);
   const [isSending, setIsSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [executingSuggestionId, setExecutingSuggestionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const sendInFlight = useRef(false);
+  const previousInitialDraft = useRef(initialDraft);
   const hasDraft = draft.trim().length > 0;
 
   useEffect(() => {
-    setDraft(initialDraft);
-  }, [initialDraft]);
+    if (initialDraft !== previousInitialDraft.current) {
+      previousInitialDraft.current = initialDraft;
+      setDraft(initialDraft);
+    }
+  }, [initialDraft, setDraft]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -53,25 +59,27 @@ export function ChatPanel({
 
   const submit = async () => {
     const content = draft.trim();
-    if (!content || isSending) {
+    if (!content || sendInFlight.current) {
       return;
     }
 
-    setDraft("");
+    const submittedDraft = draft;
+    sendInFlight.current = true;
     setSubmitError(null);
     setIsSending(true);
     try {
       const result = await onSend(content);
       if (isSendFailure(result)) {
-        setDraft(content);
         setSubmitError(result.error ?? "消息没有发送成功，输入内容已保留，可以稍后重试。");
         window.setTimeout(() => inputRef.current?.focus(), 0);
+      } else {
+        setDraft((current) => current === submittedDraft ? "" : current);
       }
     } catch (error) { // broad-exception-boundary
-      setDraft(content);
       setSubmitError(formatSendError(error));
       window.setTimeout(() => inputRef.current?.focus(), 0);
     } finally {
+      sendInFlight.current = false;
       setIsSending(false);
     }
   };
@@ -169,15 +177,19 @@ export function ChatPanel({
         <textarea
           ref={inputRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setSubmitError(null);
+          }}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (!event.nativeEvent.isComposing && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
               event.preventDefault();
               void submit();
             }
           }}
           placeholder="让 Lengrvis 帮你找文件、总结文档，或检查这台电脑。"
           rows={3}
+          aria-label="输入任务或消息"
           aria-invalid={Boolean(submitError)}
           aria-describedby={submitError ? "chat-composer-error" : undefined}
         />

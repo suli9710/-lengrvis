@@ -189,6 +189,13 @@ def _thread_connection_state() -> _ThreadConnectionState | None:
 
 
 def _open_connection(path: Path) -> sqlite3.Connection:
+    import sys
+
+    from app.core.sqlite_runtime import require_safe_sqlite, wal_reset_fixed
+    from app.security.execution_isolation import release_profile_active
+
+    if getattr(sys, "frozen", False) or release_profile_active():
+        require_safe_sqlite()
     conn = sqlite3.connect(path, isolation_level=None, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -197,7 +204,16 @@ def _open_connection(path: Path) -> sqlite3.Connection:
     # "database is locked" errors under load. Set the timeout before WAL
     # initialization because changing journal mode can itself need the lock.
     conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # Old development Python distributions must not enter the affected WAL
+    # mode. Packaged/release runtimes are rejected above instead of degrading.
+    journal = "WAL" if wal_reset_fixed(sqlite3.sqlite_version) else "DELETE"
+    try:
+        actual_journal = str(conn.execute(f"PRAGMA journal_mode = {journal}").fetchone()[0]).upper()
+        if actual_journal != journal:
+            raise RuntimeError("SQLite could not enter the required safe journal mode.")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -254,8 +270,11 @@ def init_db(*, force: bool = False) -> None:
 
 
 def _init_db_schema() -> None:
+    from app.core.db_backups import snapshot_before_schema_upgrade
+
     with connect() as conn:
         validate_schema_compatibility(conn)
+        snapshot_before_schema_upgrade(conn)
         initialize_schema(conn, _ensure_columns)
         apply_schema_migrations(conn)
 

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   CheckCircle2,
   Clock,
@@ -20,6 +21,7 @@ import type {
 } from "./OfficeScene";
 
 interface OfficeInspectorProps {
+  children?: ReactNode;
   quickSkills: OfficeQuickSkill[];
   selectedQuickSkill: OfficeQuickSkill | null;
   readinessItems: HomeReadinessItem[];
@@ -27,6 +29,7 @@ interface OfficeInspectorProps {
   presentation: OfficeTaskPresentation;
   pendingApprovalCount: number;
   safetyAlert: boolean;
+  onOpenApprovals: () => void;
   onQuickSkillClick: (skill: OfficeQuickSkill) => void;
   onReadinessAction: OfficeSceneProps["onReadinessAction"];
   onTaskPilotAction: OfficeSceneProps["onTaskPilotAction"];
@@ -42,6 +45,7 @@ interface HomeStatusChip {
 }
 
 export function OfficeInspector({
+  children,
   quickSkills,
   selectedQuickSkill,
   readinessItems,
@@ -49,6 +53,7 @@ export function OfficeInspector({
   presentation,
   pendingApprovalCount,
   safetyAlert,
+  onOpenApprovals,
   onQuickSkillClick,
   onReadinessAction,
   onTaskPilotAction
@@ -66,12 +71,65 @@ export function OfficeInspector({
     outcomeCards
   } = presentation;
 
+  const resultCard = (
+          <div className={`inspector-card result-timeline-card result-timeline-card--${resultTimeline.tone}`} data-testid="home-result-timeline-card">
+            <div className="inspector-card__head">
+              <strong>{resultTimeline.task && ["blocked", "paused", "repair_required", "running", "queued"].includes(resultTimeline.task.state) ? "当前任务" : "最近结果"}</strong>
+              <span>{resultTimeline.statusLabel}</span>
+            </div>
+            <div className="result-timeline-card__summary">
+              <strong>{resultTimeline.title}</strong>
+              <p>{resultTimeline.detail}</p>
+              {resultTimeline.missingChecks.length ? (
+                <em>缺少：{resultTimeline.missingChecks.slice(0, 2).join("、")}；下一步：{resultTimeline.nextStep}</em>
+              ) : (
+                <em>{resultTimeline.canTreatAsDone ? "结果可以作为完成记录" : resultTimeline.privacyNote}</em>
+              )}
+            </div>
+            <details className="result-phase-details"><summary>查看执行阶段</summary>
+            <div className="result-timeline-steps" aria-label="任务结果时间线">
+              {resultTimeline.steps.map((step) => {
+                const Icon = resultTimelineStepIcon(step.id);
+                return (
+                  <span key={step.id} className={`result-timeline-step result-timeline-step--${step.state}`}>
+                    <Icon size={13} aria-hidden="true" />
+                    <b>{step.label}</b>
+                    <em>{step.detail}</em>
+                  </span>
+                );
+              })}
+            </div>
+            </details>
+            <button
+              className="task-pilot-action result-timeline-card__action"
+              type="button"
+              onClick={() => onTaskPilotAction?.(resultTimeline.task, resultTimeline.action)}
+            >
+              {resultTimeline.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : resultTimeline.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+              {resultTimeline.actionLabel}
+            </button>
+          </div>
+
+  );
+
   return (
     <aside className="office-inspector office-inspector--simple" aria-label="首页建议和最近任务">
+
+      {pendingApprovalCount > 0 || safetyAlert ? (
+        <div className="home-attention" role="status">
+          <ShieldCheck size={18} aria-hidden="true" />
+          <div><strong>{pendingApprovalCount > 0 ? `${pendingApprovalCount} 项操作等待你确认` : "有操作需要安全复核"}</strong><p>请核对影响范围和风险后再决定。</p></div>
+          <button type="button" className="button button--ghost" onClick={() => pendingApprovalCount > 0 ? onOpenApprovals() : onTaskPilotAction?.(resultTimeline.task, "open")}>{pendingApprovalCount > 0 ? "查看审批" : "查看进度"}</button>
+        </div>
+      ) : null}
+      {resultTimeline.task ? resultCard : null}
+
+      <details className="home-templates" data-testid="home-templates">
+        <summary className="home-more__summary"><span>常用任务</span><em>检查电脑、整理文件、文档问答</em></summary>
       <div className="inspector-card home-examples-card">
         <div className="inspector-card__head">
           <strong>可以这样开始</strong>
-          <span>普通话输入即可</span>
+          <span>选择模板，或直接描述目标</span>
         </div>
         <div className="office-quick-actions office-quick-actions--workbench">
           {quickSkills.map((skill) => (
@@ -95,7 +153,7 @@ export function OfficeInspector({
                   <em>边界：{skill.wizard.preflight}</em>
                 </span>
                 <span className="office-quick-card__meta">
-                  <b>{skill.trust.estimate}</b>
+                  <b>参考 {skill.trust.estimate}</b>
                   <b>{skill.trust.approval}</b>
                 </span>
                 <small className="office-quick-card__trust">
@@ -107,7 +165,7 @@ export function OfficeInspector({
               <span className="office-quick-card__action" aria-hidden="true">
                 {selectedQuickSkill?.id === skill.id
                   ? skill.kind === "view" ? "已打开" : "已选择 · 点发送"
-                  : skill.kind === "view" ? "打开查看" : "点发送开始"}
+                  : skill.kind === "view" ? "打开查看" : "填入任务"}
               </span>
             </button>
           ))}
@@ -143,30 +201,16 @@ export function OfficeInspector({
         ) : null}
       </div>
 
-      <div className="inspector-card home-status-strip" data-testid="home-status-strip">
-        <div className="inspector-card__head">
-          <strong>当前状态</strong>
-          <span>{readinessSummary(readinessItems)}</span>
-        </div>
-        <div className="home-status-grid">
-          {statusChips.map((chip) => {
-            const Icon = chip.icon;
-            return (
-              <div key={chip.id} className={`home-status-chip home-status-chip--${chip.tone}`}>
-                <span className="home-status-chip__icon" aria-hidden="true">
-                  <Icon size={14} />
-                </span>
-                <div className="home-status-chip__body">
-                  <span>{chip.label}</span>
-                  <strong>{chip.value}</strong>
-                  <em>{chip.detail}</em>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
+      </details>
+
+      <details className="home-more" data-testid="home-more">
+        <summary className="home-more__summary">
+          <span>历史与详情</span>
+          <em>任务记录、权限状态与小马办公室</em>
+        </summary>
+        <div className="home-more__cards">
+          {!resultTimeline.task ? resultCard : null}
       <div className="inspector-card task-list-card">
         <div className="inspector-card__head">
           <strong>最近任务</strong>
@@ -220,47 +264,31 @@ export function OfficeInspector({
         </div>
       </div>
 
-      <details className="home-more" data-testid="home-more">
-        <summary className="home-more__summary">
-          <span>更多状态与详情</span>
-          <em>结果核验、隐私权限、任务驾驶舱与成果</em>
-        </summary>
-        <div className="home-more__cards">
-          <div className={`inspector-card result-timeline-card result-timeline-card--${resultTimeline.tone}`} data-testid="home-result-timeline-card">
-            <div className="inspector-card__head">
-              <strong>结果时间线</strong>
-              <span>{resultTimeline.statusLabel}</span>
-            </div>
-            <div className="result-timeline-card__summary">
-              <strong>{resultTimeline.title}</strong>
-              <p>{resultTimeline.detail}</p>
-              {resultTimeline.missingChecks.length ? (
-                <em>缺少：{resultTimeline.missingChecks.slice(0, 2).join("、")}；下一步：{resultTimeline.nextStep}</em>
-              ) : (
-                <em>{resultTimeline.canTreatAsDone ? "结果可以作为完成记录" : resultTimeline.privacyNote}</em>
-              )}
-            </div>
-            <div className="result-timeline-steps" aria-label="任务结果时间线">
-              {resultTimeline.steps.map((step) => {
-                const Icon = resultTimelineStepIcon(step.id);
-                return (
-                  <span key={step.id} className={`result-timeline-step result-timeline-step--${step.state}`}>
-                    <Icon size={13} aria-hidden="true" />
-                    <b>{step.label}</b>
-                    <em>{step.detail}</em>
-                  </span>
-                );
-              })}
-            </div>
-            <button
-              className="task-pilot-action result-timeline-card__action"
-              type="button"
-              onClick={() => onTaskPilotAction?.(resultTimeline.task, resultTimeline.action)}
-            >
-              {resultTimeline.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : resultTimeline.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
-              {resultTimeline.actionLabel}
-            </button>
-          </div>
+      <div className="inspector-card home-status-strip" data-testid="home-status-strip">
+        <div className="inspector-card__head">
+          <strong>当前状态</strong>
+          <span>{readinessSummary(readinessItems)}</span>
+        </div>
+        <div className="home-status-grid">
+          {statusChips.map((chip) => {
+            const Icon = chip.icon;
+            return (
+              <div key={chip.id} className={`home-status-chip home-status-chip--${chip.tone}`}>
+                <span className="home-status-chip__icon" aria-hidden="true">
+                  <Icon size={14} />
+                </span>
+                <div className="home-status-chip__body">
+                  <span>{chip.label}</span>
+                  <strong>{chip.value}</strong>
+                  <em>{chip.detail}</em>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+
 
           <div className="inspector-card home-trust-card">
             <div className="inspector-card__head">
@@ -379,6 +407,7 @@ export function OfficeInspector({
               ))}
             </div>
           </div>
+          {children}
         </div>
       </details>
     </aside>

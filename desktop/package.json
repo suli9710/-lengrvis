@@ -1,6 +1,6 @@
 {
   "name": "lengrvis-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Lengrvis desktop frontend shell",
   "main": "dist/main/main.js",

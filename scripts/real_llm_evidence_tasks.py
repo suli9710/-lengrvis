@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from scripts.real_llm_eval_fixtures import benchmark_capabilities
+from scripts.real_llm_eval_outcomes import validate_product_evidence
 from scripts.real_llm_eval_safety import _requires_memory_lifecycle_evidence
 from scripts.real_llm_evidence_schema import (
     OPTIONAL_TASK_FIELDS,
@@ -515,3 +516,7 @@ def validate_task_record(
         plan_observed=plan_observed,
     )
     _validate_safety_evidence(record, expected)
+    try:
+        validate_product_evidence(record, expected)
+    except ValueError as exc:
+        raise TaskEvidenceError(str(exc)) from exc

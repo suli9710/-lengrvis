@@ -92,7 +92,7 @@ export const emptySafetyReview: SafetyReview = {
 };
 
 export const emptySystemInfo: SystemInfo = {
-  appVersion: window.lengrvis?.versions.app ?? "0.1.2",
+  appVersion: window.lengrvis?.versions.app ?? "0.1.3",
   electronVersion: window.lengrvis?.versions.electron ?? "未知",
   chromeVersion: window.lengrvis?.versions.chrome ?? "未知",
   nodeVersion: window.lengrvis?.versions.node ?? "未知",

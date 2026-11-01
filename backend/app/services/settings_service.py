@@ -287,7 +287,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
                         default=True,
                     ),
                     "client_name": str(item.get("client_name") or item.get("clientName") or "Lengrvis").strip(),
-                    "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.2").strip(),
+                    "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.3").strip(),
                 }
             )
         return normalized

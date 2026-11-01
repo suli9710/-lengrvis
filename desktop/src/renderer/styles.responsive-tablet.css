@@ -34,8 +34,7 @@
     overflow: visible;
   }
 
-  .sidebar-section--dialogues,
-  .sidebar-user {
+  .sidebar-section--dialogues {
     display: none;
   }
 

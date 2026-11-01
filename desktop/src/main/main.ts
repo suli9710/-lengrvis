@@ -565,7 +565,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     if (!isDev) {
-      registerPackagedRendererProtocol(join(__dirname, "../renderer"));
+      registerPackagedRendererProtocol(join(__dirname, "../renderer"), backend.getBaseUrl());
     }
     hardenDefaultSessionPermissions();
     await browserHost.initializeScreenshotStore().catch(() => {

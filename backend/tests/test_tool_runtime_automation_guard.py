@@ -16,6 +16,8 @@ from app.core import db
 from app.core.content_provenance import (
     content_binding_payload,
     create_content_envelope,
+    model_rewrite_envelope,
+    propagate_content_envelope,
     revalidate_content_envelope,
 )
 from app.core.schemas import (
@@ -27,6 +29,7 @@ from app.core.schemas import (
     StepStatus,
     Task,
     TaskStatus,
+    ToolResult,
     now_iso,
 )
 from app.orchestration.automation_runtime_guard import authorize_automation_execution
@@ -303,6 +306,77 @@ def test_task_scoped_content_revalidation_allows_side_effect_tool() -> None:
 
     assert outcome.kind == "succeeded"
     assert calls == ["execute"]
+
+
+@pytest.mark.parametrize("execution", ["lost_write", "approved_write", "read_only"])
+def test_derived_dependency_provenance_survives_context_loss(execution: str) -> None:
+    calls: list[str] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    task, step = _task_step("test.derived_content", {"value": "rewritten summary"})
+    source = create_content_envelope(
+        "external page content",
+        source_kind="browser",
+        source_id="page-1",
+        trust_level="untrusted",
+        taint_flags=["external_content"],
+        task_scope=task.id,
+    )
+    summary = propagate_content_envelope(source, "page summary", sanitizer="summary")
+    rewritten = model_rewrite_envelope(summary, {"value": "rewritten summary"})
+    observation = ToolResult(
+        tool_call_id="derived-observation",
+        ok=True,
+        output={"value": "rewritten summary"},
+        content_envelope=rewritten,
+    )
+    handler = orchestrator.step_execution_handler
+    runtime = handler._runtime_context(task)
+    handler._bind_dependency_content_provenance(runtime, observation)
+    tool = _tool("test.derived_content", lambda args, context: calls.append("execute") or {"value": args["value"]})
+
+    # Simulate a delegated action dropping every envelope from its arguments and
+    # mutable tool context after the dependency was observed.
+    runtime.extra_context.clear()
+    if execution == "approved_write":
+        approval = Approval(
+            task_id=task.id,
+            message="review exact derived payload",
+            engineering_boundary={"content_provenance": {"upstream_envelopes": [rewritten.model_dump(mode="json")]}},
+        )
+        assert handler._bind_approved_content_provenance(runtime, approval, step.args, task.id) == ""
+    elif execution == "read_only":
+        tool.risk_level = RiskLevel.R0_READ_ONLY
+        tool.read_only = True
+        tool.effects = ["read"]
+        step.risk_level = RiskLevel.R0_READ_ONLY
+
+    outcome = _execute_with_consumed_approval(orchestrator, task, step, tool, runtime)
+
+    if execution == "lost_write":
+        assert outcome.kind == "fatal_denied"
+        assert outcome.result is not None
+        assert "required content provenance was lost" in outcome.result.error
+        assert calls == []
+    else:
+        assert outcome.kind == "succeeded"
+        assert calls == ["execute"]
+        assert outcome.result is not None and outcome.result.content_envelope is not None
+        assert "external_content" in outcome.result.content_envelope.taint_flags
+
+
+def test_approval_without_sources_cannot_clear_observed_provenance() -> None:
+    orchestrator = OrchestratorAgent()
+    task, step = _task_step("test.missing_approval_source", {"value": "external"})
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    runtime.remember_content_provenance(
+        create_content_envelope("external", source_kind="browser", task_scope=task.id, trust_level="untrusted")
+    )
+    approval = Approval(task_id=task.id, message="incomplete source review")
+
+    error = orchestrator.step_execution_handler._bind_approved_content_provenance(runtime, approval, step.args, task.id)
+
+    assert "does not cover the current source content" in error
 
 
 def test_repeated_read_only_actions_do_not_consume_duplicate_side_effect_budget() -> None:

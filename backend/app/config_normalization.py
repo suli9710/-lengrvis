@@ -60,7 +60,7 @@ def normalize_mcp_servers(value: Any) -> list[dict]:
                             default=True,
                         ),
                         "client_name": str(item.get("client_name") or item.get("clientName") or "Lengrvis"),
-                        "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.2"),
+                        "client_version": str(item.get("client_version") or item.get("clientVersion") or "0.1.3"),
                     }
                 )
         return result

@@ -214,10 +214,25 @@ def valid_report() -> dict[str, object]:
     return _valid_report()
 
 
+@pytest.mark.parametrize("product_evidence", [False, True])
 def test_complete_recomputed_report_is_accepted(
     tmp_path: Path,
     valid_report: dict[str, object],
+    product_evidence: bool,
 ) -> None:
+    from scripts.real_llm_eval_outcomes import empty_outcome_evidence, empty_usage_evidence
+
+    valid_report = deepcopy(valid_report)
+    if product_evidence:
+        corpus = evidence._expected_corpus(REPO_ROOT)
+        for record, expected in zip(valid_report["tasks"], corpus.tasks, strict=True):
+            outcome = empty_outcome_evidence(expected)
+            if outcome["eligible"]:
+                outcome.update(verified=True, checks_passed=outcome["checks_expected"])
+            record["outcome_evidence"] = outcome
+            record["usage_evidence"] = empty_usage_evidence()
+        valid_report["summary"] = _aggregate(valid_report["tasks"])
+        valid_report["quality_gate"] = _quality_gate(valid_report["summary"], evidence._fixed_quality_gate_args())
     report_path = tmp_path / "report.json"
     _write_report(report_path, valid_report)
 

@@ -1007,6 +1007,17 @@ Test-RequiredFile "backend executable" $BackendExePath
 Test-RequiredDirectory "portable directory" $PortablePath
 Test-RequiredFile "portable launcher" $PortableLauncherPath
 Test-RequiredFile "portable backend executable" $PortableBackendExePath
+foreach ($runtimeCandidate in @(
+    @{ Path = $BackendExePath; Label = "backend" },
+    @{ Path = $PortableBackendExePath; Label = "portable-backend" }
+)) {
+    if (Test-Path -LiteralPath $runtimeCandidate.Path -PathType Leaf) {
+        python (Join-Path $Root "scripts\verify_sqlite_runtime.py") --backend $runtimeCandidate.Path --output-dir (Join-Path $DistPath ("sqlite-runtime-evidence\" + $runtimeCandidate.Label))
+        if ($LASTEXITCODE -ne 0) {
+            $Failures.Add("$($runtimeCandidate.Label) failed actual SQLite runtime verification.")
+        }
+    }
+}
 Test-RequiredDirectory "portable app resources" (Join-Path $PortablePath "resources\app")
 Test-RequiredDirectory "portable renderer dist" $PortableAppDistPath
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")

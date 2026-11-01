@@ -9,7 +9,8 @@ import pytest
 
 from app.config import AppSettings
 from app.context import compaction as compaction_module
-from app.context import management as management
+from app.context import projection as projection_module
+from app.context import provider as provider_module
 from app.context.compaction import compact_session_context, compact_task_context, manual_compact_messages
 from app.context.management import (
     ContextAwareProvider,
@@ -171,7 +172,7 @@ def test_projection_observability_disabled_suppresses_success_and_error(
     def fail_normalization(_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         raise original_error
 
-    monkeypatch.setattr(management, "_normalize_messages", fail_normalization)
+    monkeypatch.setattr(projection_module, "_normalize_messages", fail_normalization)
 
     with pytest.raises(RuntimeError) as exc_info:
         project_messages_for_llm(
@@ -188,7 +189,7 @@ def test_projection_observability_disabled_suppresses_success_and_error(
 def test_session_summary_only_projection_is_not_counted_as_compaction() -> None:
     projection = project_messages_for_llm(
         [{"id": "message_1", "role": "user", "content": "continue"}],
-        _settings(context_session_memory_enabled=True),
+        _settings(mode="privacy", context_session_memory_enabled=True),
         session_context={
             "session_id": "private-session-id",
             "conversation_summary": "Earlier work remains in progress.",
@@ -222,7 +223,7 @@ def test_structural_only_auto_candidate_is_ineffective_but_still_applied(
         candidate[0] = {**candidate[0], "metadata": {"structural_only": True}}
         return candidate, False
 
-    monkeypatch.setattr(management, "auto_compact_messages", structural_only_candidate)
+    monkeypatch.setattr(projection_module, "auto_compact_messages", structural_only_candidate)
     projection = project_messages_for_llm(
         [{"id": "message_1", "role": "user", "content": "large enough"}],
         _settings(context_auto_compact_enabled=True, model_auto_compact_token_limit=1),
@@ -285,7 +286,7 @@ def test_manual_session_and_task_nesting_records_one_transformation(
 def test_force_and_fallback_each_record_one_provider_limit_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(management, "_load_session_context", lambda: None)
+    monkeypatch.setattr(provider_module, "_load_session_context", lambda: None)
     settings = _settings(
         model_context_window=400,
         max_tokens=40,
@@ -344,10 +345,10 @@ def test_structured_prompt_limit_reactive_and_fallback_decisions_have_fixed_labe
         context_manual_compact_buffer_tokens=100,
         context_recent_message_limit=4,
     )
-    monkeypatch.setattr(management, "_load_session_context", lambda: None)
-    monkeypatch.setattr(management, "_record_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(management, "record_llm_response", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(management, "_safe_context_usage_snapshot", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(provider_module, "_load_session_context", lambda: None)
+    monkeypatch.setattr(provider_module, "_record_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provider_module, "record_llm_response", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provider_module, "_safe_context_usage_snapshot", lambda *_args, **_kwargs: {})
     wrapped = ContextAwareProvider(provider, settings, task=secret)
 
     payload = asyncio.run(

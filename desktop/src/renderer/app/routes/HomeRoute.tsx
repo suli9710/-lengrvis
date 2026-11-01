@@ -17,6 +17,7 @@ type HomeRouteProps = Pick<
   | "homeTrustItems"
   | "pendingApprovals"
   | "tasks"
+  | "onOpenApprovals"
   | "onDraftChange"
   | "onQuickSkill"
   | "onReadinessAction"
@@ -38,6 +39,7 @@ export function HomeRoute({
   pendingApprovals,
   safetyAlert,
   tasks,
+  onOpenApprovals,
   onDraftChange,
   onQuickSkill,
   onReadinessAction,
@@ -50,6 +52,7 @@ export function HomeRoute({
         <OfficeScene
           agents={officeAgents}
           draft={draft}
+          onOpenApprovals={onOpenApprovals}
           onDraftChange={onDraftChange}
           onSubmitPrompt={onSubmitHeroPrompt}
           onAgentSelect={(prompt) => onDraftChange(prompt)}

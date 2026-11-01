@@ -541,6 +541,30 @@ def assert_content_revalidated(
             )
 
 
+def assert_content_provenance_preserved(
+    required: Iterable[ContentEnvelope],
+    current: Iterable[ContentEnvelope],
+    *,
+    boundary: str,
+) -> None:
+    """Do not interpret provenance lost after observation as trusted input.
+
+    The required sources are held by the runtime, outside model arguments and
+    mutable tool context. Revalidation may change a source's content hash, but
+    must retain its identity and a valid signature. Payload/scope authorization
+    is checked separately by assert_content_revalidated.
+    """
+    authenticated = [item for item in current if content_envelope_integrity_valid(item)]
+    for source in required:
+        if not content_envelope_requires_revalidation(source):
+            continue
+        identity = (source.source_kind, source.source_id, source.origin, source.task_scope)
+        if not content_envelope_integrity_valid(source) or not any(
+            (item.source_kind, item.source_id, item.origin, item.task_scope) == identity for item in authenticated
+        ):
+            raise ContentRevalidationRequired(f"{boundary} is blocked because required content provenance was lost")
+
+
 def collect_content_envelopes(*values: Any) -> list[ContentEnvelope]:
     collected: list[ContentEnvelope] = []
 

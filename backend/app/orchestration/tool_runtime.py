@@ -8,6 +8,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.content_provenance import (
     ContentRevalidationRequired,
+    assert_content_provenance_preserved,
     assert_content_revalidated,
     collect_content_envelopes,
     content_binding_payload,
@@ -95,6 +96,7 @@ class ToolRuntime(
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         orchestrator._set_status(task, TaskStatus.REVIEWING_TOOL_CALL)
+        runtime.remember_content_provenance(step.args, runtime.extra_context, step.model_action)
         boundary_error = model_control_arg_error(step.args)
         if boundary_error:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
@@ -347,6 +349,11 @@ class ToolRuntime(
         ):
             try:
                 envelopes = collect_content_envelopes(args, runtime.extra_context, step.model_action)
+                assert_content_provenance_preserved(
+                    runtime.required_content_envelopes,
+                    envelopes,
+                    boundary=f"{tool.name} execution",
+                )
                 if envelopes:
                     assert_content_revalidated(
                         envelopes,
@@ -479,7 +486,10 @@ class ToolRuntime(
             mark_tool_call_outcome_unknown(call, expected_status="executing")
             raise
 
-        upstream_envelopes = collect_content_envelopes(runtime.extra_context.get("upstream_content_envelopes"))
+        upstream_envelopes = collect_content_envelopes(
+            runtime.required_content_envelopes,
+            runtime.extra_context.get("upstream_content_envelopes"),
+        )
         if result.content_envelope is not None:
             upstream_envelopes.append(result.content_envelope)
         result.content_envelope = content_envelope_for_tool_output(

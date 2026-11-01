@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppSettings
+from app.core.content_provenance import ContentEnvelope, collect_content_envelopes
 from app.core.schemas import Task, now_iso
 from app.orchestration.agent_bus import AgentBus
 
@@ -38,6 +39,9 @@ class TaskRuntimeContext:
     large_results: dict[str, LargeResultReference] = field(default_factory=dict)
     extra_context: dict[str, Any] = field(default_factory=dict)
     abort_requested: bool = False
+    # Kept outside extra_context so model/tool-context rewrites cannot erase the
+    # fact that this step observed external content.
+    required_content_envelopes: tuple[ContentEnvelope, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_task(cls, task: Task, settings: AppSettings, bus: AgentBus) -> TaskRuntimeContext:
@@ -56,6 +60,10 @@ class TaskRuntimeContext:
             "runtime": self,
             **self.extra_context,
         }
+
+    def remember_content_provenance(self, *values: Any) -> None:
+        envelopes = collect_content_envelopes(self.required_content_envelopes, *values)
+        self.required_content_envelopes = tuple(item.model_copy(deep=True) for item in envelopes)
 
     def remember_file(self, path: str | Path, *, partial_view: bool = False, size: int = 0) -> None:
         key = _normalize_path(path)

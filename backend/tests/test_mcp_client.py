@@ -129,6 +129,34 @@ def test_mcp_client_lists_tools(mcp_server):
     assert echo_tool["input_schema"]["type"] == "object"
 
 
+@pytest.mark.parametrize("strict_lifecycle", [True, False])
+@pytest.mark.parametrize("transport", ["http", "stdio"])
+def test_unsupported_protocol_is_rejected_before_transport(monkeypatch, strict_lifecycle, transport):
+    def unexpected_transport(*args, **kwargs):
+        pytest.fail("Unsupported MCP versions must not issue HTTP requests or start a process")
+
+    monkeypatch.setattr("app.mcp.client.httpx.AsyncClient", unexpected_transport)
+    monkeypatch.setattr("app.mcp.client.MCPStdioTransport", unexpected_transport)
+    client = MCPClient(
+        MCPServerConfig(
+            name="future",
+            url="https://example.com/mcp",
+            transport=transport,
+            command="untrusted-command",
+            protocol_version="2026-07-28",
+            strict_lifecycle=strict_lifecycle,
+        )
+    )
+
+    assert asyncio.run(client.list_tools()) == []
+    assert asyncio.run(client.list_resources()) == []
+    result = asyncio.run(client.call_tool("echo", {"text": "hello"}))
+    assert result["ok"] is False
+    assert "Unsupported MCP protocol version: 2026-07-28" in result["error"]
+    assert client.status()["state"] == "unsupported_protocol"
+    assert client.status()["supported_protocol_versions"] == ["2025-11-25"]
+
+
 def test_mcp_client_collects_paginated_tool_discovery(monkeypatch):
     client = MCPClient(MCPServerConfig(name="paged", url="https://mcp.example/mcp", strict_lifecycle=False))
     requests: list[dict[str, Any]] = []

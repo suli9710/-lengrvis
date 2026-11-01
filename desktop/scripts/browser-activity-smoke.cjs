@@ -723,7 +723,16 @@ async function assertNoPlaceholderContent(page, label) {
   }
 }
 
+async function openHomeDetails(page, testId) {
+  const details = page.getByTestId(testId);
+  if (await details.getAttribute("open") === null) {
+    await details.locator("summary").first().click();
+  }
+}
+
 async function assertHomeQuickTemplates(page) {
+  await openHomeDetails(page, "home-templates");
+  await openHomeDetails(page, "home-more");
   await page.getByTestId("office-template-check-computer").waitFor({ timeout: 20_000 });
   for (const name of Object.values(quickTemplateButtonNames)) {
     await page.getByRole("button", { name }).first().waitFor({ timeout: 20_000 });
@@ -748,8 +757,8 @@ async function assertComputerTemplateFallback(page) {
 }
 
 async function assertDocumentQuickEntry(page) {
+  await openHomeDetails(page, "home-templates");
   await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
-  await page.locator("button.command-footer__send").filter({ hasText: /打开文档工具/ }).click();
   await page.getByText(/文档操作区|鏂囨。鎿嶄綔鍖?/).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择文档|閫夋嫨鏂囨。/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择并总结|閫夋嫨骞舵€荤粨/ }).first().waitFor({ timeout: 10_000 });
@@ -774,8 +783,8 @@ async function assertDocumentQuickEntry(page) {
 async function assertDocumentCompareFlow(page, counters) {
   await page.goto(previewUrl, { waitUntil: "networkidle" });
   await assertRootRendered(page);
+  await openHomeDetails(page, "home-templates");
   await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
-  await page.locator("button.command-footer__send").filter({ hasText: /打开文档工具/ }).click();
   await page.getByText(/对比两份文档|瀵规瘮涓や唤鏂囨。/).first().waitFor({ timeout: 10_000 });
   await page.getByPlaceholder(/选择文档，或粘贴文件位置|閫夋嫨鏂囨。/).fill(smokeDocumentPath);
   await page.getByLabel(/第二份文档位置|绗簩浠芥枃妗ｄ綅缃?/).fill(smokeCompareDocumentPath);
@@ -792,12 +801,15 @@ async function assertDocumentCompareFlow(page, counters) {
 }
 
 async function assertQuickPromptEntry(page, counters) {
+  await openHomeDetails(page, "home-templates");
+  await openHomeDetails(page, "home-more");
+  await page.locator(".command-guidance > summary").click();
   await page.getByRole("button", { name: quickTemplateButtonNames.findLargeFiles }).click();
   const commandInput = page.locator("textarea").first();
   await expectTextareaValue(commandInput, /找出这台电脑上最大的文件|鎵惧嚭/);
   await page.getByText(/已选择.*下一步点“发送”开始|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
+  await page.locator(".command-preview").getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
+  await page.locator(".command-preview").getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
   await assertRootTextIncludes(page, /(?:任务工作区|Task Workspace).*(?:文件工具|鏂囦欢宸ュ叿)|(?:文件工具|鏂囦欢宸ュ叿).*(?:任务工作区|Task Workspace)/s, "quick prompt should update Task Workspace");
   await assertRootTextIncludes(page, /发送后先选文件夹|清理前会确认|清理前不会删除任何文件/, "large-file quick entry should explain scope and deletion safety");
   assert.equal(counters.taskLaunchRequests ?? 0, 0, "quick prompt should fill the command box without starting a task");
@@ -805,6 +817,7 @@ async function assertQuickPromptEntry(page, counters) {
 }
 
 async function assertComputerCheckEntry(page, counters) {
+  await openHomeDetails(page, "home-templates");
   const systemInfoRequestsBefore = counters.systemInfoRequests ?? 0;
   const taskLaunchRequestsBefore = counters.taskLaunchRequests ?? 0;
   await page.getByRole("button", { name: quickTemplateButtonNames.checkComputer }).click();
@@ -817,17 +830,20 @@ async function assertComputerCheckEntry(page, counters) {
   await page.locator("button.command-footer__send").filter({ hasText: /发送/ }).click();
   await waitForCounter(() => (counters.taskLaunchRequests ?? 0) > taskLaunchRequestsBefore, "computer template send");
   assert.equal((counters.taskLaunchRequests ?? 0) - taskLaunchRequestsBefore, 1, "computer template send should start one run");
+  await page.getByRole("heading", { level: 1, name: "对话", exact: true }).waitFor({ timeout: 10_000 });
   await assertNoPlaceholderContent(page, "computer check quick entry");
   await assertNoHorizontalOverflow(page, "computer check quick entry");
 }
 
 async function assertTaskPilotCard(page) {
-  await page.getByText(/任务驾驶舱|浠诲姟椹鹃┒鑸?/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/清理下载目录的大文件|娓呯悊涓嬭浇鐩綍/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/待审批|等待你的确认|需要你确认|寰呭鎵?/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/确认范围|纭鑼冨洿/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/结果留痕|缁撴灉鐣欑棔/).first().waitFor({ timeout: 10_000 });
+  await openHomeDetails(page, "home-more");
+  const pilotCard = page.locator(".task-pilot-card");
+  await pilotCard.getByText(/任务驾驶舱|浠诲姟椹鹃┒鑸?/).first().waitFor({ timeout: 10_000 });
+  await pilotCard.getByText(/清理下载目录的大文件|娓呯悊涓嬭浇鐩綍/).first().waitFor({ timeout: 10_000 });
+  await pilotCard.getByText(/待审批|等待你的确认|需要你确认|寰呭鎵?/).first().waitFor({ timeout: 10_000 });
+  await pilotCard.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
+  await pilotCard.getByText(/确认范围|纭鑼冨洿/).first().waitFor({ timeout: 10_000 });
+  await pilotCard.getByText(/结果留痕|缁撴灉鐣欑棔/).first().waitFor({ timeout: 10_000 });
   await assertNoPlaceholderContent(page, "task pilot card");
   await assertNoHorizontalOverflow(page, "task pilot card");
 }
@@ -978,6 +994,7 @@ async function assertSettingsPrivacyAccessibility(page) {
 }
 
 async function assertRecentTaskRowAction(page) {
+  await openHomeDetails(page, "home-more");
   const taskRow = page.locator(".task-row").filter({ hasText: /清理下载目录的大文件|娓呯悊涓嬭浇鐩綍/ }).first();
   if (await taskRow.count()) {
     await taskRow.click();
@@ -1142,7 +1159,7 @@ async function returnToSearchTab(page) {
 
 async function assertPrimaryRouteAccessibility(page) {
   const routes = [
-    { label: "首页", heading: "首页", ready: () => page.getByTestId("office-template-check-computer") },
+    { label: "首页", heading: "首页", ready: () => page.locator("#office-command-input") },
     { label: "对话", heading: "对话", ready: () => page.locator(".conversation-view") },
     { label: "进度", heading: "进度", ready: () => page.getByTestId("progress-more") },
     { label: "设置", heading: "设置", ready: () => page.getByRole("heading", { level: 2, name: "设置", exact: true }) },
@@ -1157,7 +1174,9 @@ async function assertPrimaryRouteAccessibility(page) {
   ];
 
   for (const { label, heading, ready } of routes) {
-    await page.getByRole("button", { name: label, exact: true }).first().click();
+    const navigationButton = page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: label, exact: true });
+    if (!await navigationButton.isVisible()) await page.getByTestId("nav-tools-toggle").click();
+    await navigationButton.click();
     await page.getByRole("heading", { level: 1, name: heading, exact: true }).waitFor({ timeout: 10_000 });
     await ready().waitFor({ timeout: 10_000 });
     await page.locator(".route-loading").waitFor({ state: "detached", timeout: 10_000 });

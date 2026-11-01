@@ -76,6 +76,8 @@ export function deriveOfficeTaskPresentation({
 }: OfficeTaskPresentationInput): OfficeTaskPresentation {
   const currentTasks = getHomeCurrentTasks(tasks);
   const displayedTasks = getHomeVisibleTasks(tasks);
+  const summaryTask = getHomeSummaryTask(tasks);
+  const summaryTasks = summaryTask ? [summaryTask] : [];
 
   return {
     currentTasks,
@@ -84,11 +86,21 @@ export function deriveOfficeTaskPresentation({
     recentTaskLabel: displayedTasks.length > 0 ? `显示最近 ${displayedTasks.length} 项` : "还没有最近任务",
     blockedTaskCount: currentTasks.filter((task) => task.state === "blocked").length,
     runningTaskCount: currentTasks.filter((task) => task.state === "running" || task.state === "queued").length,
-    taskPilot: buildTaskPilotSummary(tasks, hasDraft),
-    resultTimeline: buildTaskResultTimelineSummary(tasks, hasDraft),
-    taskWorkspaceItems: buildTaskWorkspaceItems(tasks, readinessItems, trustItems, pendingApprovalCount, selectedSkill),
+    taskPilot: buildTaskPilotSummary(summaryTasks, hasDraft),
+    resultTimeline: buildTaskResultTimelineSummary(summaryTasks, hasDraft),
+    taskWorkspaceItems: buildTaskWorkspaceItems(summaryTasks, readinessItems, trustItems, pendingApprovalCount, selectedSkill),
     outcomeCards: buildOutcomeCards(tasks)
   };
+}
+
+function getHomeSummaryTask(tasks: TaskEvent[]): TaskEvent | undefined {
+  const sortedTasks = sortTasksByUpdatedAt(tasks);
+  const recentTasks = sortedTasks.filter((task) => isRecentTask(task, 24));
+  // Keep the single home summary on work that still needs attention. History
+  // remains chronological, and the original task retains all result evidence.
+  return recentTasks.find((task) => ["blocked", "paused", "repair_required"].includes(task.state))
+    ?? recentTasks.find((task) => task.state === "running" || task.state === "queued")
+    ?? sortedTasks[0];
 }
 
 function buildTaskWorkspaceItems(

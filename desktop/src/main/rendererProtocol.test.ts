@@ -65,7 +65,7 @@ describe("packaged renderer protocol", () => {
       new Response("<main>registered</main>", { status: 200 })
     );
 
-    registerPackagedRendererProtocol(root);
+    registerPackagedRendererProtocol(root, "http://127.0.0.1:8123");
 
     expect(electronProtocolMocks.handle).toHaveBeenCalledOnce();
     expect(electronProtocolMocks.handle).toHaveBeenCalledWith("app", expect.any(Function));
@@ -76,6 +76,19 @@ describe("packaged renderer protocol", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("<main>registered</main>");
     expect(electronProtocolMocks.netFetch).toHaveBeenCalledOnce();
+    const policy = response.headers.get("content-security-policy")!;
+    expect(policy.split("; ").filter((directive) => /^(img|connect)-src /.test(directive))).toEqual([
+      "img-src 'self' data: http://127.0.0.1:8123",
+      "connect-src 'self' http://127.0.0.1:8123"
+    ]);
+  });
+
+  it("rejects non-loopback or non-HTTP backend configuration before registering a handler", () => {
+    const root = createTemporaryDirectory("lengrvis-renderer-invalid-backend-");
+    for (const backendUrl of ["https://example.com", "ws://127.0.0.1:8123", "file:///C:/private"]) {
+      expect(() => registerPackagedRendererProtocol(root, backendUrl)).toThrow();
+    }
+    expect(electronProtocolMocks.handle).not.toHaveBeenCalled();
   });
 
   it("resolves only exact-host files inside the renderer root", () => {
@@ -144,6 +157,8 @@ describe("packaged renderer protocol", () => {
     expect(await response.text()).toBe("<main>Lengrvis</main>");
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'self'");
+    expect(response.headers.get("content-security-policy")).not.toMatch(/(?:https?|wss?):/);
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");

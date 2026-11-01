@@ -51,6 +51,7 @@ DEFAULT_TIMEOUT = 30
 MAX_PAGINATION_PAGES = 100
 MAX_PROGRESS_NOTIFICATIONS_PER_SECOND = 20
 MCP_PROTOCOL_VERSION = "2025-11-25"
+SUPPORTED_MCP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION})
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
@@ -71,7 +72,7 @@ class MCPServerConfig:
     protocol_version: str = MCP_PROTOCOL_VERSION
     strict_lifecycle: bool = True
     client_name: str = "Lengrvis"
-    client_version: str = "0.1.2"
+    client_version: str = "0.1.3"
 
 
 @dataclass(slots=True)
@@ -316,6 +317,9 @@ class MCPClient:
         return {"ok": True, "result": result, "server": self.config.name}
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        protocol_error = self._unsupported_protocol_error()
+        if protocol_error:
+            return {"error": {"message": protocol_error, "type": "unsupported_protocol"}}
         if self._is_stdio_transport():
             return await self._stdio_post(payload)
         auth_error = self._auth_error()
@@ -434,9 +438,12 @@ class MCPClient:
         return None, None, f"unknown MCP tool '{tool_name}' was not advertised by server '{self.config.name}'"
 
     def status(self) -> dict[str, Any]:
+        protocol_error = self._unsupported_protocol_error()
         unsupported = self._unsupported_transport_error()
         auth_error = self._auth_error()
-        if auth_error:
+        if protocol_error:
+            state = "unsupported_protocol"
+        elif auth_error:
             state = "needs_auth"
         elif unsupported:
             state = "unsupported_transport"
@@ -454,13 +461,14 @@ class MCPClient:
             "command": capability["command"],
             "enabled": self.config.enabled,
             "state": state,
-            "error": unsupported or auth_error or self._initialization_error,
+            "error": protocol_error or unsupported or auth_error or self._initialization_error,
             "auth_required": bool(auth_error),
             "tool_count": len(self._tools_cache or []),
             "owner": self.config.owner,
             "policy_id": self.config.policy_id,
             "allowed_tools": list(self.config.allowed_tools or []),
             "protocol_version": self._negotiated_protocol_version or self.config.protocol_version,
+            "supported_protocol_versions": sorted(SUPPORTED_MCP_PROTOCOL_VERSIONS),
             "initialized": self._initialized,
             "server_capabilities": sorted(self._server_capabilities),
             "server_info": {
@@ -521,6 +529,10 @@ class MCPClient:
             self._reset_lifecycle()
 
     async def _ensure_initialized(self) -> str:
+        protocol_error = self._unsupported_protocol_error()
+        if protocol_error:
+            self._initialization_error = protocol_error
+            return protocol_error
         if not self.config.strict_lifecycle:
             return ""
         if self._initialized:
@@ -796,6 +808,9 @@ class MCPClient:
         return (self.config.transport or "http").strip().casefold() == "stdio"
 
     def _capability_error(self) -> str:
+        protocol_error = self._unsupported_protocol_error()
+        if protocol_error:
+            return protocol_error
         try:
             assert_capability_allowed(
                 "mcp_server",
@@ -805,3 +820,12 @@ class MCPClient:
         except CapabilityManifestError as exc:
             return exc.message
         return ""
+
+    def _unsupported_protocol_error(self) -> str:
+        if self.config.protocol_version in SUPPORTED_MCP_PROTOCOL_VERSIONS:
+            return ""
+        supported = ", ".join(sorted(SUPPORTED_MCP_PROTOCOL_VERSIONS))
+        return (
+            f"Unsupported MCP protocol version: {self.config.protocol_version}. "
+            f"This client implements {supported}; changing protocol_version does not enable a newer transport."
+        )

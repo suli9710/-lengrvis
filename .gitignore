@@ -65,6 +65,7 @@ UsersSuliAppDataLocalTempLengrvis-Code-review
 .codex-vite-job.id
 # Canonical local runtime data directory is .lengrvis_data.
 .lengrvis_data/
+.runtime/
 # Locally generated secrets and keys must never be committed, regardless of
 # where a custom LENGRVIS_DATA_DIR places them.
 *.secret

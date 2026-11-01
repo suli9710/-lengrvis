@@ -88,8 +88,9 @@
 
 .home-more__summary {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   list-style: none;
   cursor: pointer;
   padding: 14px;
@@ -102,7 +103,7 @@
 
 .home-more__summary > span {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
 }
 
@@ -112,12 +113,12 @@
   color: var(--muted);
 }
 
-.home-more[open] .home-more__summary > span::before {
+details[open] > .home-more__summary > span::before {
   content: "▾";
 }
 
 .home-more__summary > em {
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   color: var(--muted);
 }

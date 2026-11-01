@@ -4,6 +4,7 @@ import {
   BookOpenText,
   Brain,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   FolderOpen,
   Globe,
@@ -12,6 +13,7 @@ import {
   Laptop,
   Loader2,
   MessageSquarePlus,
+  Menu,
   Puzzle,
   RefreshCw,
   Settings,
@@ -22,7 +24,7 @@ import {
   X,
   type LucideIcon
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 
 import type { ChatMessage } from "../../../shared/catalogTypes";
 import type { TaskEvent } from "../../../shared/executionTypes";
@@ -61,32 +63,28 @@ export const primaryNavGroups: NavGroup[] = [
   {
     items: [
       { icon: Home, label: "首页", view: "home" },
-      { icon: Sparkles, label: "管家", view: "butler" },
       { icon: MessageSquarePlus, label: "对话", view: "chat" },
       { icon: TerminalSquare, label: "进度", view: "agents" },
-      { icon: Settings, label: "设置", view: "settings" }
+      { icon: ShieldCheck, label: "审批", view: "safety" }
     ]
   },
   {
-    label: "本地内容",
+    label: "工作与内容",
     items: [
-      { icon: BookOpenText, label: "知识库", view: "documents" },
-      { icon: ImageIcon, label: "图库", view: "gallery" }
-    ]
-  },
-  {
-    items: [
+      { icon: Sparkles, label: "管家", view: "butler" },
       { icon: FolderOpen, label: "文件工具", view: "files" },
+      { icon: BookOpenText, label: "知识库", view: "documents" },
+      { icon: ImageIcon, label: "图库", view: "gallery" },
       { icon: Laptop, label: "此电脑", view: "computer" }
     ]
   },
   {
-    label: "更多",
+    label: "偏好与扩展",
     items: [
       { icon: Puzzle, label: "技能", view: "skills" },
-      { icon: ShieldCheck, label: "审批", view: "safety" },
       { icon: Brain, label: "记忆", view: "memories" },
-      { icon: Globe, label: "浏览器", view: "browser" }
+      { icon: Globe, label: "浏览器", view: "browser" },
+      { icon: Settings, label: "设置", view: "settings" }
     ]
   }
 ];
@@ -309,7 +307,7 @@ function WorkbenchPanel({
   isClosing,
   onClose
 }: {
-  panelRef: RefObject<HTMLElement | null>;
+  panelRef: Ref<HTMLElement>;
   state: WorkbenchAgentState;
   title: string;
   detail: string;
@@ -625,6 +623,17 @@ function Sidebar({
   activeView: ViewKey;
   onViewChange: (view: ViewKey) => void;
 }) {
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsToggleRef = useRef<HTMLButtonElement>(null);
+  const toolGroups = primaryNavGroups.slice(1);
+  const activeTool = toolGroups.flatMap((group) => group.items)
+    .find((item) => isNavItemActive(item.view, activeView));
+
+  const closeTools = () => {
+    setToolsOpen(false);
+    toolsToggleRef.current?.focus();
+  };
+
   return (
     <aside className="lengrvis-sidebar">
       <div className="sidebar-brand">
@@ -636,8 +645,29 @@ function Sidebar({
       </div>
 
       <div className="primary-nav-wrap">
-        <nav className="primary-nav" aria-label="主导航">
-          {primaryNavGroups.map((group, groupIndex) => (
+        <nav className="primary-nav" aria-label="主导航" onKeyDown={(event) => {
+          if (toolsOpen && event.key === "Escape") {
+            event.preventDefault();
+            closeTools();
+          }
+        }}>
+          {primaryNavGroups[0].items.map((item) => (
+            <SideButton key={item.view} icon={item.icon} label={item.label}
+              active={isNavItemActive(item.view, activeView)}
+              onClick={() => { setToolsOpen(false); onViewChange(item.view); }} />
+          ))}
+          <button ref={toolsToggleRef} type="button" data-testid="nav-tools-toggle"
+            className={`side-button nav-tools-toggle${activeTool ? " side-button--active" : ""}`}
+            aria-expanded={toolsOpen} aria-controls="nav-tools-panel"
+            aria-label={`${activeTool?.label ?? "更多"}，展开或收起功能与设置`}
+            aria-current={activeTool ? "page" : undefined}
+            onClick={() => setToolsOpen((open) => !open)}>
+            <Menu size={15} aria-hidden="true" />
+            <span>{activeTool?.label ?? "更多"}</span>
+            <ChevronDown className="nav-tools-toggle__chevron" size={13} aria-hidden="true" />
+          </button>
+          <div id="nav-tools-panel" className="nav-tools-panel" hidden={!toolsOpen}>
+          {toolGroups.map((group, groupIndex) => (
             <div className="primary-nav__group" key={group.label ?? `group-${groupIndex}`}>
               {group.label ? <span className="primary-nav__label">{group.label}</span> : null}
               {group.items.map((item) => (
@@ -646,21 +676,13 @@ function Sidebar({
                   icon={item.icon}
                   label={item.label}
                   active={isNavItemActive(item.view, activeView)}
-                  onClick={() => onViewChange(item.view)}
+                  onClick={() => { closeTools(); onViewChange(item.view); }}
                 />
               ))}
             </div>
           ))}
+          </div>
         </nav>
-        <span className="primary-nav__more" aria-hidden="true">横向滑动查看全部入口</span>
-      </div>
-
-      <div className="sidebar-user">
-        <XiaoMaAvatar className="mini-avatar" />
-        <span className="sidebar-user__meta">
-          <strong>Lengrvis</strong>
-          <em>电脑助手</em>
-        </span>
       </div>
     </aside>
   );
@@ -698,17 +720,17 @@ function WindowBar({
   activityCenterState: WorkbenchAgentState;
   activityCenterLabel: string;
   isActivityCenterOpen: boolean;
-  activityCenterTriggerRef: RefObject<HTMLButtonElement | null>;
+  activityCenterTriggerRef: Ref<HTMLButtonElement>;
   onToggleActivityCenter: () => void;
 }) {
   const showConnectionPill = connectionState !== "online" && !(activeView === "home" && connectionState === "checking");
 
   return (
-    <header className="window-bar">
+    <header className={`window-bar${activeView === "home" ? " window-bar--home" : ""}`}>
       <div className="window-bar__left">
         <div className="window-bar__title" key={activeView}>
           <h1>{viewMeta.title}</h1>
-          <small>{viewMeta.subtitle}</small>
+          {activeView !== "home" ? <small>{viewMeta.subtitle}</small> : null}
         </div>
       </div>
       <div className="window-actions">
@@ -742,8 +764,9 @@ function WindowBar({
           )}
         </button>
         {hasPendingApproval ? (
-          <button className="icon-button icon-button--alert" aria-label="有待审批项目" onClick={onOpenApprovals} type="button">
+          <button className="approval-queue-button" aria-label="需要你确认，有待审批项目" onClick={onOpenApprovals} type="button">
             <Bell size={15} aria-hidden="true" />
+            需要你确认
           </button>
         ) : null}
       </div>

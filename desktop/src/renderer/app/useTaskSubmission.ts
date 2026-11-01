@@ -6,6 +6,7 @@ import type { ChatMessage, IntentSuggestion } from "../../shared/catalogTypes";
 import type { TaskEvent } from "../../shared/executionTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
 import type { AssistantMode } from "../store";
+import { SESSION_DRAFT_KEYS, useSessionDraft } from "../lib/useSessionDraft";
 import {
   isBackendTaskSubmitReady,
   isReadOnlySystemDiagnosticsPrompt,
@@ -24,6 +25,7 @@ interface MutableRefValue<T> {
 
 interface UseTaskSubmissionOptions {
   submitButlerMessage?: (content: string) => Promise<ApiResponse<ButlerMessageResult> | null>;
+  onHeroSubmitted?: () => void;
   api: LengrvisApiClient;
   mode: AssistantMode;
   backendStatusRef: MutableRefValue<BackendStatus>;
@@ -85,12 +87,14 @@ export function useTaskSubmission({
   setFocusedTaskId,
   setBackendStatus,
   refreshTaskSnapshot,
-  submitButlerMessage
+  submitButlerMessage,
+  onHeroSubmitted
 }: UseTaskSubmissionOptions): TaskSubmissionActions {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useSessionDraft(SESSION_DRAFT_KEYS.home);
   const [heroSubmitting, setHeroSubmitting] = useState(false);
   const [heroSubmitError, setHeroSubmitError] = useState<string | null>(null);
   const heroSubmitInFlight = useRef(false);
+  const messageInFlight = useRef(false);
 
   const appendFailedAssistantMessage = useCallback((content: string) => {
     setMessages((current) => [
@@ -149,7 +153,7 @@ export function useTaskSubmission({
     }
   }, [api, backendStatusRef, markBackendResponsive, setBackendStatus]);
 
-  const sendMessage = useCallback(async (content: string): Promise<{ ok: boolean; error?: string }> => {
+  const sendMessageRequest = useCallback(async (content: string): Promise<{ ok: boolean; error?: string }> => {
     const readiness = await ensureBackendReadyForTaskSubmit();
     if (!readiness.ok) {
       return readiness;
@@ -239,6 +243,16 @@ export function useTaskSubmission({
     submitButlerMessage
   ]);
 
+  const sendMessage = useCallback(async (content: string): Promise<{ ok: boolean; error?: string }> => {
+    if (messageInFlight.current) return { ok: false, error: "上一条消息仍在发送，请等待处理完成后重试。输入内容已保留。" };
+    messageInFlight.current = true;
+    try {
+      return await sendMessageRequest(content);
+    } finally {
+      messageInFlight.current = false;
+    }
+  }, [sendMessageRequest]);
+
   const executeSuggestion = useCallback(async (suggestion: IntentSuggestion) => {
     const readiness = await ensureBackendReadyForTaskSubmit();
     if (!readiness.ok) {
@@ -289,16 +303,19 @@ export function useTaskSubmission({
     heroSubmitInFlight.current = true;
     setHeroSubmitting(true);
     setHeroSubmitError(null);
-    const result = await sendMessage(value);
-    if (result.ok) {
-      setDraft("");
-    } else {
-      setDraft(value);
-      setHeroSubmitError(result.error ?? "任务没有启动成功，输入内容已保留，可以重试。");
+    try {
+      const result = await sendMessage(value);
+      if (result.ok) {
+        setDraft((current) => current === draft ? "" : current);
+        onHeroSubmitted?.();
+      } else {
+        setHeroSubmitError(result.error ?? "任务没有启动成功，输入内容已保留，可以重试。");
+      }
+    } finally {
+      setHeroSubmitting(false);
+      heroSubmitInFlight.current = false;
     }
-    setHeroSubmitting(false);
-    heroSubmitInFlight.current = false;
-  }, [draft, sendMessage]);
+  }, [draft, onHeroSubmitted, sendMessage, setDraft]);
 
   const requestCleanupApproval = useCallback(async (scope: string) => {
     await sendMessage(

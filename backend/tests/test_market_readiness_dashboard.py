@@ -147,7 +147,7 @@ def test_strict_cli_binds_waivers_to_package_version(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
-    assert any("current release version v0.1.2" in error for error in payload["errors"])
+    assert any("current release version v0.1.3" in error for error in payload["errors"])
 
 
 def test_strict_waiver_requires_explicit_current_release_context() -> None:

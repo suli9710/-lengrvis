@@ -90,12 +90,13 @@ describe("OfficeInspector", () => {
       presentation,
       pendingApprovalCount: 0,
       safetyAlert: false,
+      onOpenApprovals: vi.fn(),
       onQuickSkillClick: vi.fn(),
       onReadinessAction: vi.fn(),
       onTaskPilotAction: vi.fn()
     }));
 
-    expect(html).toContain("点发送开始");
+    expect(html).toContain("填入任务");
     expect(html).toContain("产出：健康摘要");
     expect(html).toContain("边界：只读读取");
     expect(html).toContain("本机");
@@ -112,6 +113,7 @@ describe("OfficeInspector", () => {
       presentation,
       pendingApprovalCount: 0,
       safetyAlert: false,
+      onOpenApprovals: vi.fn(),
       onQuickSkillClick: vi.fn(),
       onReadinessAction: vi.fn(),
       onTaskPilotAction: vi.fn()
@@ -120,7 +122,7 @@ describe("OfficeInspector", () => {
     expect(html).toContain('data-testid="office-template-check-computer"');
     expect(html).toContain('data-testid="office-template-wizard"');
     expect(html).toContain('data-testid="home-status-strip"');
-    expect(html).toContain("<strong>结果时间线</strong>");
+    expect(html).toContain("<strong>当前任务</strong>");
     expect(html).toContain("已开始处理任务");
     expect(html).toContain("检查电脑状态");
     const taskButton = html.match(/<button[^>]*class="task-row"[^>]*>[\s\S]*?<\/button>/)?.[0];

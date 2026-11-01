@@ -483,6 +483,7 @@ jobs:
             build/attestations/**
             dist/backend.exe
             dist/backend-capabilities.json
+            dist/sqlite-runtime-evidence/**
             dist/Lengrvis-win-portable/**
             dist/Lengrvis-win-portable.zip
             dist/Lengrvis-*-x64-self-extracting.exe

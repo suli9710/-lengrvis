@@ -3,15 +3,10 @@
    ========================================================================== */
 
 .office-inspector {
-  display: flex;
   flex-direction: column;
   align-content: start;
-  gap: 12px;
-  min-width: 0;
   min-height: 0;
-  height: 100%;
   padding-top: 4px;
-  overflow: auto;
   overscroll-behavior: contain;
   padding-right: 3px;
 }
@@ -20,7 +15,6 @@
   position: relative;
   flex: 0 0 auto;
   min-width: 0;
-  padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   background:
@@ -32,7 +26,6 @@
 
 .inspector-card__head {
   display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
@@ -45,8 +38,6 @@
 .inspector-card__head span {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
 }
 
 .inspector-card__head strong {
@@ -81,7 +72,6 @@
 }
 
 .home-examples-card {
-  border-color: rgba(74, 108, 247, 0.18);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 249, 255, 0.82)),
     var(--surface);
@@ -146,8 +136,6 @@
 }
 
 .metric-row strong {
-  font-size: 14px;
-  font-weight: 850;
   color: var(--text);
   letter-spacing: 0;
 }

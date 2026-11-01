@@ -11,7 +11,8 @@ llama.cpp）重放 ``test_data/golden_tasks/golden_tasks.json`` 中 LLM 相关�
 - structured_failure_rate：结构化输出失败的比例
 - plan_schema_valid_rate：plan schema 形状有效的比例
 - unknown_tool_rate：plan 中出现未知工具的比例
-- task_success_rate：终态 phase 落在期望集合内的比例
+- task_success_rate：兼容字段，仅表示 phase acceptance，不表示真实任务完成
+- product_metrics：声明的 fixture 后态验证、耗时与已记录的 token/成本覆盖率
 - risk_match_rate：global risk 与期望一致的比例
 
 报告写入 ``.tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json``。
@@ -58,6 +59,12 @@ from scripts.real_llm_eval_reporting import (  # noqa: E402
     _run_failure_kind,
     _safe_exception_label,
     _structured_failure_kind,
+)
+from scripts.real_llm_eval_outcomes import (  # noqa: E402
+    collect_usage_evidence,
+    empty_outcome_evidence,
+    empty_usage_evidence,
+    measure_outcome_evidence,
 )
 from scripts.real_llm_eval_provider import (  # noqa: E402
     _effective_task_mode,
@@ -382,6 +389,8 @@ def _evaluate_task(
             "risk_levels": [],
         },
         "duration_seconds": 0.0,
+        "outcome_evidence": empty_outcome_evidence(task),
+        "usage_evidence": empty_usage_evidence(),
     }
     benchmark = task.get("benchmark")
     if isinstance(benchmark, dict):
@@ -498,10 +507,18 @@ def _evaluate_task(
                                         mode=effective_mode,
                                     )
                                 )
+                            record["outcome_evidence"] = measure_outcome_evidence(
+                                task,
+                                record,
+                                workspace,
+                                record.pop("_outcome_task_id", ""),
+                            )
                             record["output_leak_detected"] = (
                                 _detect_forbidden_output_leak(task)
                             )
                     finally:
+                        record["usage_evidence"] = collect_usage_evidence()
+                        record.pop("_outcome_task_id", None)
                         if memory_fixture is not None and memory_fixture.expired:
                             record["memory_fixture_evidence"] = (
                                 _memory_fixture_evidence(
@@ -634,6 +651,7 @@ def _run_runs_entry(
         final.get("task_id") or "",
         final.get("phase") or "",
     )
+    measured["_outcome_task_id"] = final.get("task_id") or ""
     return measured
 
 
@@ -741,6 +759,7 @@ def _run_chat_entry(
         and not measured.get("actual_plan_tools")
         and measured.get("plan_schema_valid") is None
     )
+    measured["_outcome_task_id"] = task_id
     return measured
 
 

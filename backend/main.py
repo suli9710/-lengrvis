@@ -11,6 +11,13 @@ BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+# This command must precede guardian imports: probing a candidate must not start
+# services, read user settings, create secrets, or open the user's database.
+if __name__ == "__main__" and sys.argv[1:] == ["--sqlite-runtime-info"]:
+    from app.core.sqlite_runtime import print_runtime_evidence
+
+    raise SystemExit(print_runtime_evidence())
+
 from app.guardian import app, create_guardian_app  # noqa: E402
 
 create_app = create_guardian_app

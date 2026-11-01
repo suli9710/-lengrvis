@@ -4,11 +4,8 @@
 
 .office-command-dock {
   position: relative;
-  padding: 15px 16px;
   border: 1px solid var(--line);
-  border-radius: var(--r-xl);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
   transition:
     border-color 0.2s ease,
     box-shadow 0.2s ease,
@@ -21,34 +18,14 @@
   transform: none;
 }
 
-.office-command-dock__hint {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-}
 
-.office-command-dock__hint span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
 
 .office-command-dock textarea {
   width: 100%;
-  min-height: 52px;
-  max-height: 140px;
-  resize: none;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
-  font-size: 15px;
-  line-height: 1.55;
   font-family: inherit;
 }
 
@@ -58,8 +35,6 @@
 
 .command-preview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
   margin-top: 10px;
   min-width: 0;
 }
@@ -71,10 +46,7 @@
   align-items: center;
   min-width: 0;
   min-height: 42px;
-  padding: 8px;
-  border: 1px solid var(--line-soft);
   border-radius: 8px;
-  background: rgba(248, 250, 253, 0.64);
   color: var(--muted);
   transition:
     border-color 0.18s var(--ease-out),
@@ -111,15 +83,11 @@
 
 .command-preview__step strong {
   color: var(--text);
-  font-size: 11px;
-  font-weight: 850;
 }
 
 .command-preview__step em {
   color: var(--muted);
-  font-size: 10px;
   font-style: normal;
-  font-weight: 700;
 }
 
 .command-preview__step--ready {
@@ -136,8 +104,6 @@
 
 .command-preview__step--blocked {
   border-color: rgba(210, 130, 0, 0.26);
-  background: var(--amber-soft);
-  color: var(--amber);
 }
 
 .command-preview--ready .command-preview__step {
@@ -148,7 +114,6 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
   margin-top: 8px;
   padding-top: 10px;
   border-top: 1px solid var(--line-soft);
@@ -157,8 +122,6 @@
 .command-footer__note {
   min-width: 0;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -170,8 +133,4 @@
 .command-footer__note--warning {
   color: var(--amber);
   font-weight: 800;
-}
-
-.command-footer__send {
-  min-width: 86px;
 }

@@ -54,7 +54,7 @@ class ActivationTrustedProxyHeadersMiddleware:
 def create_app() -> FastAPI:
     configure_logging()
     install_crash_handlers()
-    app = FastAPI(title="Lengrvis Activation Server", version="0.1.2")
+    app = FastAPI(title="Lengrvis Activation Server", version="0.1.3")
     configure_cors(app)
     register_error_handlers(app)
 

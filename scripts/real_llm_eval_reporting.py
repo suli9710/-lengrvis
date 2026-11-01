@@ -1,5 +1,7 @@
 from typing import Any
 
+from scripts.real_llm_eval_outcomes import product_metrics
+
 from scripts.real_llm_benchmark_catalog import (
     MIN_REAL_LLM_BENCHMARK_CASES,
     REQUIRED_ATTACK_VECTORS,
@@ -358,6 +360,20 @@ def _failure_attribution(record: dict[str, Any]) -> dict[str, Any]:
 
 def _apply_failure_attribution(record: dict[str, Any]) -> dict[str, Any]:
     record.update(_failure_attribution(record))
+    evidence = record.get("outcome_evidence") or {}
+    if (
+        record["evaluation_passed"]
+        and evidence.get("eligible") is True
+        and evidence.get("verified") is not True
+    ):
+        record.update(
+            {
+                "evaluation_passed": False,
+                "primary_failure_class": "result_postcondition",
+                "error_code": "RESULT_POSTCONDITION_UNVERIFIED",
+                "diagnostic": "The completed task did not satisfy its declared fixture postconditions.",
+            }
+        )
     return record
 
 
@@ -681,6 +697,20 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             if record not in attributed_failures
         ],
         "scorecard": _build_scorecard(records),
+        # Preserve exact recomputation of previously sealed v2 reports. New
+        # runner records opt into this explicitly named, additive extension.
+        **(
+            {
+                "product_metrics": product_metrics(
+                    records, task_success_count, len(phase_known)
+                )
+            }
+            if any(
+                "outcome_evidence" in record or "usage_evidence" in record
+                for record in records
+            )
+            else {}
+        ),
     }
 
 

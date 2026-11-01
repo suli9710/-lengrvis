@@ -25,45 +25,12 @@
     height: 30px;
   }
 
-  .sidebar-user,
   .primary-nav__label {
     display: none;
   }
 
-  .primary-nav {
-    display: flex;
-    flex-wrap: nowrap;
-    grid-auto-flow: column;
-    gap: 6px;
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding-bottom: 2px;
-    scrollbar-width: thin;
-  }
 
-  .primary-nav-wrap::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 34px;
-    height: calc(100% - 18px);
-    pointer-events: none;
-    background: linear-gradient(90deg, rgba(248, 250, 253, 0), var(--bg));
-  }
 
-  .primary-nav__more {
-    display: block;
-    margin-top: 2px;
-    padding-right: 4px;
-    color: var(--muted);
-    font-size: 10px;
-    font-weight: 800;
-    line-height: 1.2;
-    text-align: right;
-  }
 
   .primary-nav__group {
     display: flex;

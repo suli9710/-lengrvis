@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskEvent } from "../../../shared/executionTypes";
 import {
@@ -32,6 +32,8 @@ function derive(tasks: TaskEvent[], hasDraft = false) {
 }
 
 describe("deriveOfficeTaskPresentation", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("sorts recent work and exposes blocked tasks as the current priority", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-03T03:00:00.000Z"));
@@ -39,18 +41,54 @@ describe("deriveOfficeTaskPresentation", () => {
     const model = derive([
       task({ id: "running", updatedAt: "2026-07-03T02:00:00.000Z" }),
       task({ id: "blocked", title: "确认文件范围", state: "blocked", updatedAt: "2026-07-03T02:30:00.000Z" }),
+      task({ id: "finished", state: "completed", updatedAt: "2026-07-03T02:45:00.000Z" }),
       task({ id: "old", state: "completed", updatedAt: "2026-06-30T02:00:00.000Z" })
     ]);
 
     expect(model.currentTasks.map((item) => item.id)).toEqual(["blocked", "running"]);
-    expect(model.displayedTasks.map((item) => item.id)).toEqual(["blocked", "running"]);
+    expect(model.displayedTasks.map((item) => item.id)).toEqual(["finished", "blocked", "running"]);
     expect(model.activeTaskLabel).toBe("有项目需要你确认");
     expect(model.blockedTaskCount).toBe(1);
     expect(model.runningTaskCount).toBe(1);
     expect(model.taskPilot).toMatchObject({ action: "approve", tone: "blocked", task: { id: "blocked" } });
     expect(model.resultTimeline).toMatchObject({ action: "approve", tone: "blocked", task: { id: "blocked" } });
+    expect(model.taskWorkspaceItems).toContainEqual(expect.objectContaining({ label: "当前动作", value: "待审批" }));
+  });
 
-    vi.useRealTimers();
+  it.each(["paused", "repair_required"] as const)("keeps a recent %s task ahead of newer running and finished work", (state) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-03T03:00:00.000Z"));
+
+    const model = derive([
+      task({ id: "attention", state, updatedAt: "2026-07-03T01:30:00.000Z" }),
+      task({ id: "running", updatedAt: "2026-07-03T02:00:00.000Z" }),
+      task({ id: "finished", state: "completed", updatedAt: "2026-07-03T02:30:00.000Z" })
+    ]);
+
+    expect(model.resultTimeline).toMatchObject({ task: { id: "attention" }, action: "open", canTreatAsDone: false });
+    expect(model.taskPilot.task?.id).toBe("attention");
+    expect(model.displayedTasks[0]?.id).toBe("finished");
+    if (state === "repair_required") {
+      expect(model.taskPilot).toMatchObject({ status: "回滚需修复", tone: "failed", actionLabel: "查看修复项" });
+      expect(model.taskPilot.steps.find((step) => step.id === "execute")?.state).toBe("failed");
+    }
+  });
+
+  it("prioritizes recent queued work without promoting stale blockers or treating a finished status as verified", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-03T03:00:00.000Z"));
+    const tasks = [
+      task({ id: "stale-blocker", state: "blocked", updatedAt: "2026-06-30T02:00:00.000Z" }),
+      task({ id: "queued", state: "queued", updatedAt: "2026-07-03T01:30:00.000Z" }),
+      task({ id: "finished", state: "completed", updatedAt: "2026-07-03T02:30:00.000Z" })
+    ];
+
+    expect(derive(tasks).resultTimeline).toMatchObject({ task: { id: "queued" }, statusLabel: "等待执行", canTreatAsDone: false });
+    expect(derive(tasks.filter((item) => item.id !== "queued")).resultTimeline).toMatchObject({
+      task: { id: "finished" },
+      resultState: "task_evidence_only",
+      canTreatAsDone: false
+    });
   });
 
   it("marks only verified completion evidence as a completed result", () => {
@@ -84,8 +122,6 @@ describe("deriveOfficeTaskPresentation", () => {
       statusLabel: "完成结果已核验",
       tone: "ready"
     });
-
-    vi.useRealTimers();
   });
 });
 

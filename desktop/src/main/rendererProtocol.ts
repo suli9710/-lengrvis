@@ -3,11 +3,13 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { assertLoopbackBackendUrl } from "./backendUrl";
+
 export const PACKAGED_RENDERER_SCHEME = "app";
 export const PACKAGED_RENDERER_HOST = "local";
 export const PACKAGED_RENDERER_ENTRY_URL = `${PACKAGED_RENDERER_SCHEME}://${PACKAGED_RENDERER_HOST}/index.html`;
 
-const RENDERER_CSP = [
+const RENDERER_CSP_DIRECTIVES = [
   "default-src 'self'",
   "base-uri 'none'",
   "object-src 'none'",
@@ -16,10 +18,8 @@ const RENDERER_CSP = [
   "script-src 'self'",
   "style-src 'self'",
   "style-src-elem 'self'",
-  "style-src-attr 'unsafe-inline'",
-  "img-src 'self' data: http://127.0.0.1:* http://localhost:*",
-  "connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*"
-].join("; ");
+  "style-src-attr 'unsafe-inline'"
+];
 const RENDERER_CONTENT_TYPES = new Map<string, string>([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -54,17 +54,19 @@ export function registerRendererSchemePrivileges(): void {
   ]);
 }
 
-export function registerPackagedRendererProtocol(rendererRoot: string): void {
+export function registerPackagedRendererProtocol(rendererRoot: string, backendBaseUrl: string): void {
   const canonicalRoot = realpathSync(resolve(rendererRoot));
+  const backendOrigin = assertLoopbackBackendUrl(backendBaseUrl, "Renderer CSP").origin;
   protocol.handle(PACKAGED_RENDERER_SCHEME, (request) => {
-    return handleRendererProtocolRequest(canonicalRoot, request, (url) => net.fetch(url));
+    return handleRendererProtocolRequest(canonicalRoot, request, (url) => net.fetch(url), backendOrigin);
   });
 }
 
 export async function handleRendererProtocolRequest(
   canonicalRendererRoot: string,
   request: RendererProtocolRequest,
-  fetchFile: RendererFileFetch
+  fetchFile: RendererFileFetch,
+  backendBaseUrl?: string
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return secureTextResponse(405, "Method Not Allowed", { Allow: "GET, HEAD" });
@@ -96,7 +98,7 @@ export async function handleRendererProtocolRequest(
     const fileResponse = await fetchFile(pathToFileURL(canonicalCandidate).toString());
     const headers = new Headers(fileResponse.headers);
     headers.set("Content-Type", contentType);
-    applySecurityHeaders(headers);
+    applySecurityHeaders(headers, backendBaseUrl);
     return new Response(request.method === "HEAD" ? null : fileResponse.body, {
       status: fileResponse.status,
       statusText: fileResponse.statusText,
@@ -231,8 +233,19 @@ function secureTextResponse(
   return new Response(body, { status, headers });
 }
 
-function applySecurityHeaders(headers: Headers): void {
-  headers.set("Content-Security-Policy", RENDERER_CSP);
+function applySecurityHeaders(headers: Headers, backendBaseUrl?: string): void {
+  // Desktop requests and realtime streams use the main-process IPC bridges.
+  // Only the existing health probe and image URLs need direct backend access;
+  // bind those to the configured origin, including its port. No WebSocket or
+  // arbitrary loopback port fallback is needed in the packaged renderer.
+  const backendSource = backendBaseUrl
+    ? ` ${assertLoopbackBackendUrl(backendBaseUrl, "Renderer CSP").origin}`
+    : "";
+  headers.set("Content-Security-Policy", [
+    ...RENDERER_CSP_DIRECTIVES,
+    `img-src 'self' data:${backendSource}`,
+    `connect-src 'self'${backendSource}`
+  ].join("; "));
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");
   headers.set("X-Content-Type-Options", "nosniff");

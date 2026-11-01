@@ -45,6 +45,7 @@ import "./components/legal/privacy-consent.css";
 import "./components/settings/settings-commerce-privacy.css";
 import "./styles.diagnostics-fix.css";
 import "./styles.motion.css";
+import "./styles.task-workspace.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

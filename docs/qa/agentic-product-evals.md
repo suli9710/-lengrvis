@@ -32,6 +32,48 @@ The first productization round is complete only when these checks are true or ex
 
 ## Real-LLM Benchmark Contract
 
+### Measurement semantics (2026-11-01)
+
+The real-model runner preserves the existing plan, risk, adversarial and release
+thresholds. `task_success_rate` remains a compatibility field for **phase
+acceptance**: an expected denial, failure or approval wait can satisfy it. It is
+not the proportion of completed user goals. New reports expose the same value
+as `summary.product_metrics.phase_acceptance_rate`.
+
+`outcome_evidence` reuses existing golden-task declarations (`files_exist`,
+`files_absent`, `tool_output_has_keys`, `tool_output_contains`). Only benign
+tasks that expect completion and declare a result assertion are eligible;
+surviving input files alone, approval waits and cases without assertions do not
+prove completion. The runner checks the isolated workspace and successful,
+committed, reviewed tool outputs before cleanup. Reports contain only scope,
+counts and verdicts, never fixture paths or output bodies. A failed or missing
+eligible verification adds a failure to the existing quality gate. It does not
+relax tool-order, safety or schema checks. `verified_outcome_rate` includes all
+eligible cases in its denominator, including failed attempts, and counts a case
+only when its postconditions **and** existing contracts pass. This is declared
+fixture-postcondition evidence, not semantic correctness, live GUI verification
+or human result-quality sign-off. Unsupported cases remain unmeasured.
+
+`usage_evidence` reads the per-case isolated usage ledger, including its
+estimation flag. No rows, pending reservations and unknown prices are not zero
+cost. Summary token/cost totals stay `null` unless every case has the respective
+measurement; coverage counts show the difference. `cost_per_verified_outcome_usd`
+uses all recorded costs in the eligible outcome cohort, including its failures,
+divided by verified successes, and stays `null` if any cohort cost is unknown or
+there are no successes. These are recorded/estimated model costs, not a provider
+billing reconciliation; unrecorded provider retries cannot be reconstructed.
+Elapsed-time statistics measure the evaluation attempt (including setup and
+polling), not UI responsiveness or time to first token. Failed attempts remain
+in latency samples; skipped placeholders without an execution or error do not.
+P95 uses nearest rank and
+is omitted below 20 observations; the median and sample count remain available.
+
+Both evidence objects are optional, strictly validated extensions to report v2.
+Legacy records retain their previous summary shape so existing sealed reports
+can still be recomputed. New runner output opts into `product_metrics`; unknown
+evidence is never promoted to verified success. This change adds no benchmark
+cases and does not replace the full candidate evaluation or 30-task human review.
+
 - `test_data/real_llm_benchmark/catalog.json` materializes 105 cases from 35 base scenarios and 3 message variants. The catalog covers `read`, `write`, `browser`, `document`, `memory`, `mobile`, and `developer`, plus the required web-hidden-instruction, PDF/Office, OCR, MCP-tool-poisoning, cross-Agent, and memory-pollution labels.
 - `python scripts/run_real_llm_eval.py --quality-gate` must run at least 100 versioned benchmark cases, not merely 100 combined golden and benchmark tasks. Formal candidate evidence adds `--release-evidence`, which forbids filters and profile overrides and requires all current 25 eligible golden plus 105 benchmark tasks before a clean sealer can bind the report to the candidate. The gate also fails when any required category or adversarial vector is absent, when the executable builtin registry does not recognize a planned tool, or when plan schema quality misses its threshold. Every adversarial case must independently reach an allowed phase with the exact expected safe plan and risk, without missing parameters, unknown tools, structured failures, or forbidden output markers; aggregate success rates cannot hide one failed attack case.
 - Reports contain case ids, safe titles, tool names, risk labels, aggregate coverage, and sanitized failure classifications. They do not contain task prompts, fixture bodies, provider exception text, API keys, or raw run errors.

@@ -2,7 +2,6 @@
 .office-quick-actions {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 8px;
   min-width: 0;
 }
 
@@ -49,9 +48,7 @@
 
 .office-quick-actions button:hover {
   border-color: var(--brand);
-  transform: translateY(-1px);
   color: var(--brand-deep);
-  box-shadow: 0 10px 24px rgba(44, 58, 92, 0.1);
 }
 
 .office-quick-actions button:hover::after {
@@ -80,15 +77,11 @@
 
 .office-quick-actions strong {
   color: inherit;
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .office-quick-actions em {
   color: var(--muted);
-  font-size: 11px;
   font-style: normal;
-  font-weight: 600;
 }
 
 .office-quick-actions small {
@@ -103,12 +96,8 @@
   align-items: center;
   min-height: 18px;
   max-width: 100%;
-  padding: 2px 6px;
   border-radius: 6px;
   color: var(--text-soft);
-  background: rgba(237, 242, 247, 0.82);
-  font-size: 10px;
-  font-weight: 800;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -128,7 +117,6 @@
 }
 
 .office-quick-card__icon {
-  display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
@@ -194,9 +182,6 @@
   min-width: 64px !important;
   padding: 5px 8px;
   border-radius: 999px;
-  background: rgba(237, 242, 247, 0.88);
-  color: var(--muted);
-  font-size: 10px;
   font-weight: 850;
   line-height: 1;
   white-space: nowrap;

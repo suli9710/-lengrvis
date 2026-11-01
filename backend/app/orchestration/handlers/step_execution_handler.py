@@ -95,6 +95,7 @@ class StepExecutionHandler:
         runtime.extra_context.update(
             {key: value for key, value in raw.items() if key not in {"allowed_directories", "settings"}}
         )
+        runtime.remember_content_provenance(runtime.extra_context)
         return runtime
 
     def _runtime_context_for_step(
@@ -564,6 +565,7 @@ class StepExecutionHandler:
         envelopes = list(existing) if isinstance(existing, list | tuple) else []
         envelopes.append(observation.content_envelope.model_dump(mode="json"))
         runtime.extra_context["upstream_content_envelopes"] = envelopes
+        runtime.remember_content_provenance(observation.content_envelope)
 
     def _bind_approved_content_provenance(
         self,
@@ -577,13 +579,16 @@ class StepExecutionHandler:
         raw_envelopes = provenance.get("upstream_envelopes") if isinstance(provenance, dict) else None
         try:
             envelopes = collect_content_envelopes(raw_envelopes)
-            if not envelopes:
-                return ""
             current = collect_content_envelopes(runtime.extra_context.get("upstream_content_envelopes"))
+            if not envelopes:
+                if current or runtime.required_content_envelopes:
+                    return "Approval does not cover the current source content; obtain a fresh preview."
+                return ""
             covered = {canonical_json(envelope.model_dump(mode="json")) for envelope in envelopes}
             if any(canonical_json(envelope.model_dump(mode="json")) not in covered for envelope in current):
                 return "Approval does not cover the current source content; obtain a fresh preview."
             payload = content_binding_payload(args)
+            runtime.remember_content_provenance(envelopes)
             runtime.extra_context["approved_content_envelopes"] = [
                 revalidate_content_envelope(envelope, payload, task_scope=task_id).model_dump(mode="json")
                 for envelope in envelopes

@@ -163,6 +163,8 @@ REQUIRED_TASK_FIELDS = frozenset(
 )
 OPTIONAL_TASK_FIELDS = frozenset(
     {
+        "outcome_evidence",
+        "usage_evidence",
         "benchmark",
         "chat_agent",
         "chat_delegated",

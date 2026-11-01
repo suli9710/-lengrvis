@@ -56,6 +56,82 @@ describe("task submission view model", () => {
 });
 
 describe("useTaskSubmission", () => {
+  it.each([true, false])("opens the reply only after a successful home submission: %s", async (succeeds) => {
+    Object.assign(window, { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
+    const connected = backendStatus({ state: "running", health: { ok: true } });
+    const sendChat = succeeds
+      ? vi.fn().mockResolvedValue({ ok: true, data: { message: {
+        id: "reply", role: "assistant", author: "Lengrvis", content: "已收到任务", createdAt: "now", status: "sent"
+      } } })
+      : vi.fn().mockRejectedValue(new Error("连接中断"));
+    const api = { getBackendStatus: vi.fn().mockResolvedValue(connected), sendChat } as unknown as LengrvisApiClient;
+    const onHeroSubmitted = vi.fn();
+    let actions!: TaskSubmissionActions;
+    function Harness() {
+      actions = useTaskSubmission({
+        api, mode: "efficiency", backendStatusRef: { current: connected },
+        chatStartedTaskIds: { current: new Set<string>() },
+        setMessages: () => undefined, setTasks: () => undefined,
+        setFocusedTaskId: () => undefined, setBackendStatus: () => undefined,
+        refreshTaskSnapshot: async () => undefined, onHeroSubmitted
+      });
+      return null;
+    }
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => { renderer = create(createElement(Harness)); });
+    act(() => { actions.setDraft("整理项目资料"); });
+    await act(async () => { await actions.submitHeroPrompt(); });
+    expect(onHeroSubmitted).toHaveBeenCalledTimes(succeeds ? 1 : 0);
+    expect(actions.draft).toBe(succeeds ? "" : "整理项目资料");
+    expect(actions.heroSubmitting).toBe(false);
+    expect(actions.heroSubmitError).toBe(succeeds ? null : "连接中断");
+    // A failed request must release both locks so a deliberate retry can proceed.
+    if (!succeeds) {
+      await act(async () => { await actions.submitHeroPrompt(); });
+      expect(sendChat).toHaveBeenCalledTimes(2);
+    }
+    act(() => { actions.setDraft(""); renderer.unmount(); });
+  });
+
+  it("blocks duplicate requests across entry points and preserves a newer home draft", async () => {
+    Object.assign(window, { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
+    const connected = backendStatus({ state: "running", health: { ok: true } });
+    let complete!: (result: Awaited<ReturnType<LengrvisApiClient["sendChat"]>>) => void;
+    const sendChat = vi.fn(() => new Promise<Awaited<ReturnType<LengrvisApiClient["sendChat"]>>>((resolve) => { complete = resolve; }));
+    const api = { getBackendStatus: vi.fn().mockResolvedValue(connected), sendChat } as unknown as LengrvisApiClient;
+    let actions!: TaskSubmissionActions;
+    function Harness() {
+      actions = useTaskSubmission({
+        api, mode: "efficiency", backendStatusRef: { current: connected },
+        chatStartedTaskIds: { current: new Set<string>() },
+        setMessages: () => undefined, setTasks: () => undefined,
+        setFocusedTaskId: () => undefined, setBackendStatus: () => undefined,
+        refreshTaskSnapshot: async () => undefined
+      });
+      return null;
+    }
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => { renderer = create(createElement(Harness)); });
+    act(() => { actions.setDraft("寻找文档"); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = actions.submitHeroPrompt(); });
+    expect(actions.heroSubmitting).toBe(true);
+    expect(await actions.sendMessage("寻找文档")).toMatchObject({ ok: false });
+    expect(sendChat).toHaveBeenCalledOnce();
+    act(() => { actions.setDraft("用户重新选择的任务"); });
+    await act(async () => {
+      complete({
+        ok: true, status: 200, receivedAt: "now", data: {
+          message: { id: "assistant", role: "assistant", author: "Lengrvis", content: "已收到", createdAt: "now", status: "sent" }
+        }
+      });
+      await pending;
+    });
+    expect(actions.heroSubmitting).toBe(false);
+    expect(actions.draft).toBe("用户重新选择的任务");
+    act(() => { actions.setDraft(""); renderer.unmount(); });
+  });
+
   it.each([false, true])("uses persisted Butler IDs when workspace history arrives first: %s", async (historyFirst) => {
     Object.assign(window, { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
     const connected = backendStatus({ state: "running", health: { ok: true } });

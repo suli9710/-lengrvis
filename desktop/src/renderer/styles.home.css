@@ -17,12 +17,6 @@
 
 .office-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(344px, 28vw, 392px);
-  align-items: stretch;
-  gap: 20px;
-  height: 100%;
-  min-height: 0;
-  padding: 4px 4px 8px;
 }
 
 .office-workspace > * {
@@ -37,14 +31,10 @@
 .office-stage {
   position: relative;
   min-width: 0;
-  min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(280px, 1fr);
-  gap: 12px;
 }
 
 .office-headline {
-  display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
@@ -54,7 +44,6 @@
 
 .office-headline__title {
   display: grid;
-  gap: 5px;
   min-width: 0;
 }
 
@@ -72,34 +61,25 @@
 
 .office-headline__title h2 {
   margin: 0;
-  font-size: 28px;
   font-weight: 850;
-  letter-spacing: -0.5px;
-  line-height: 1.12;
   color: var(--text);
-  background: linear-gradient(115deg, var(--text) 55%, color-mix(in srgb, var(--brand) 62%, var(--text)) 100%);
   -webkit-background-clip: text;
   background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
 
 .office-headline__title p {
   margin: 0;
-  font-size: 13px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .office-headline__status {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
-  max-width: min(520px, 58%);
 }
 
 .home-status-pill {

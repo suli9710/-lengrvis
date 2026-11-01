@@ -93,7 +93,7 @@ def erase_local_content(
 
 
 def _erase_managed_files(data_dir: Path) -> dict[str, int]:
-    counts = {"diagnostic_packages": 0, "tool_results": 0, "file_tool_backups": 0}
+    counts = {"diagnostic_packages": 0, "tool_results": 0, "file_tool_backups": 0, "database_backups": 0}
     failed: set[str] = set()
 
     def erase_tree(path: Path, category: str) -> None:
@@ -115,6 +115,7 @@ def _erase_managed_files(data_dir: Path) -> dict[str, int]:
 
     erase_tree(data_dir / "diagnostic-packages", "diagnostic_packages")
     erase_tree(data_dir / "file-tool-backups", "file_tool_backups")
+    erase_tree(data_dir / "database-backups", "database_backups")
     tasks = data_dir / "tasks"
     try:
         ensure_mutation_path_safe(tasks, [str(data_dir)], include_self=True)
@@ -126,7 +127,12 @@ def _erase_managed_files(data_dir: Path) -> dict[str, int]:
     except (OSError, SecurityError):
         failed.add("tool_results")
     if failed:
-        labels = {"diagnostic_packages": "诊断包", "tool_results": "工具结果", "file_tool_backups": "文件备份"}
+        labels = {
+            "diagnostic_packages": "诊断包",
+            "tool_results": "工具结果",
+            "file_tool_backups": "文件备份",
+            "database_backups": "数据库备份",
+        }
         error = AppError(
             "local_data_cleanup_incomplete",
             "部分应用生成文件未能删除，请关闭占用程序并检查目录后重试："

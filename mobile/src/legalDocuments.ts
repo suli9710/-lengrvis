@@ -9,8 +9,8 @@ export type MobileLegalDocument = "eula" | "privacy";
  * document change after a consent record had already captured its version.
  */
 export const MOBILE_LEGAL_DOCUMENT_URLS: Record<MobileLegalDocument, string> = {
-  eula: "https://github.com/suli9710/-lengrvis/blob/v0.1.2/docs/legal/eula.md",
-  privacy: "https://github.com/suli9710/-lengrvis/blob/v0.1.2/docs/legal/privacy-policy.md",
+  eula: "https://github.com/suli9710/-lengrvis/blob/v0.1.3/docs/legal/eula.md",
+  privacy: "https://github.com/suli9710/-lengrvis/blob/v0.1.3/docs/legal/privacy-policy.md",
 };
 
 export function mobileLegalDocumentLabel(document: MobileLegalDocument): string {

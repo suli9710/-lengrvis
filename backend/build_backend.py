@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -79,6 +80,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = Path(__file__).resolve().parents[1]
     backend_dir = root / "backend"
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from app.core.sqlite_runtime import require_safe_sqlite
+
+    require_safe_sqlite()
     temp_root = root / "build" / "backend-src"
     temp_root.mkdir(parents=True, exist_ok=True)
     source_dir = Path(tempfile.mkdtemp(prefix="lengrvis-backend-src-", dir=temp_root))
@@ -124,10 +130,84 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         exit_code = subprocess.call(command, cwd=source_dir, env=env)  # noqa: S603
         if exit_code == 0:
+            executable = dist_dir / ("backend.exe" if sys.platform == "win32" else "backend")
+            if args.onedir:
+                executable = dist_dir / "backend" / executable.name
+            verify_frozen_sqlite(executable, dist_dir)
             write_capability_manifest(dist_dir if args.onedir else root / "dist")
         return exit_code
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)
+
+
+def verify_frozen_sqlite(executable: Path, output_dir: Path) -> Path:
+    """Probe the built executable, not the packaging interpreter's sqlite DLL."""
+    from app.core.process_tree import run_process_tree
+    from app.core.sqlite_runtime import wal_reset_fixed
+
+    with executable.open("rb") as artifact:
+        before_digest = hashlib.file_digest(artifact, "sha256").hexdigest()
+    # Older candidates may ignore an unknown CLI switch and start their server.
+    # Give even those binaries disposable data/config and a private process tree.
+    with tempfile.TemporaryDirectory(prefix="lengrvis-sqlite-probe-") as temporary:
+        probe_root = Path(temporary)
+        (probe_root / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (probe_root / ".env").write_text("", encoding="utf-8")
+        probe_env = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper()
+            in {
+                "SYSTEMROOT",
+                "WINDIR",
+                "SYSTEMDRIVE",
+                "PATH",
+                "TEMP",
+                "TMP",
+                "LANG",
+                "LC_ALL",
+            }
+        }
+        probe_env.update(
+            {
+                "LENGRVIS_DATA_DIR": str(probe_root / "data"),
+                "LENGRVIS_CONFIG_FILE": str(probe_root / "config.yaml"),
+                "LENGRVIS_ENV_FILE": str(probe_root / ".env"),
+                "LENGRVIS_BACKEND_HOST": "127.0.0.1",
+                "LENGRVIS_BACKEND_PORT": "0",
+                "LENGRVIS_FULL_BACKEND": "0",
+                "HOME": temporary,
+                "USERPROFILE": temporary,
+                "APPDATA": temporary,
+                "LOCALAPPDATA": temporary,
+            }
+        )
+        result = run_process_tree(
+            [str(executable), "--sqlite-runtime-info"],
+            cwd=probe_root,
+            env=probe_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            hide_window=True,
+            require_windows_isolation=os.name == "nt",
+        )
+    evidence = json.loads(result.stdout)
+    if (
+        evidence.get("schema") != "lengrvis-sqlite-runtime/v1"
+        or evidence.get("frozen") is not True
+        or evidence.get("wal_reset_fixed") is not True
+        or not wal_reset_fixed(str(evidence.get("sqlite_version", "")))
+    ):
+        raise RuntimeError("Built backend failed the SQLite runtime gate.")
+    with executable.open("rb") as artifact:
+        evidence["artifact_sha256"] = hashlib.file_digest(artifact, "sha256").hexdigest()
+    if evidence["artifact_sha256"] != before_digest:
+        raise RuntimeError("Backend changed during SQLite runtime verification.")
+    target = output_dir / "backend-sqlite-runtime.json"
+    target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target
 
 
 if __name__ == "__main__":

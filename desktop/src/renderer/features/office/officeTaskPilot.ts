@@ -128,6 +128,19 @@ export function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): Ta
     };
   }
 
+  if (latestTask.state === "repair_required") {
+    return {
+      title: baseTitle,
+      detail: "回滚没有完整恢复变更。请查看记录，核对受影响的文件或应用并完成剩余修复。",
+      status: "回滚需修复",
+      tone: "failed",
+      action: "open",
+      actionLabel: "查看修复项",
+      task: latestTask,
+      steps: taskPilotSteps("failed")
+    };
+  }
+
   if (isSafeFailureEvidence(latestTask)) {
     return {
       title: baseTitle,

@@ -1,4 +1,4 @@
-import { CornerDownLeft, LockKeyhole, Radio, Sparkles } from "lucide-react";
+import { ArrowUp, Loader2, ShieldCheck } from "lucide-react";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskEvent, TaskPilotAction } from "../../../shared/executionTypes";
@@ -16,7 +16,6 @@ import {
 } from "./model";
 import { OfficeInspector } from "./OfficeInspector";
 import {
-  getFriendlyAgentCopy,
   OfficeAgent,
   OfficeLayout,
   resolveOfficeAgentRuntime
@@ -80,6 +79,7 @@ export interface OfficeSceneProps {
   connectionState: ConnectionState;
   isSubmitting: boolean;
   submitError: string | null;
+  onOpenApprovals: () => void;
   onDraftChange: (value: string) => void;
   onSubmitPrompt: () => void;
   onAgentSelect: (prompt: string) => void;
@@ -111,6 +111,7 @@ export function OfficeScene({
   connectionState,
   isSubmitting,
   submitError,
+  onOpenApprovals,
   onDraftChange,
   onSubmitPrompt,
   onAgentSelect,
@@ -233,7 +234,7 @@ export function OfficeScene({
     return () => query.removeEventListener?.("change", handleChange);
   }, []);
 
-  const idleMotionAllowed = effectiveMotion === "full" && pageVisible && !isNarrowOffice;
+  const idleMotionAllowed = effectiveMotion === "full" && pageVisible && !isNarrowOffice && officeMapSize.width > 0 && officeMapSize.height > 0;
 
   useEffect(() => {
     if (!idleMotionAllowed) return undefined;
@@ -296,59 +297,56 @@ export function OfficeScene({
   }, [safetyAlert, triggerAgentFeedback]);
 
   const activateAgent = (agent: OfficeAgentDefinition) => {
+    if (draft.trim()) {
+      setQuickSkillNotice("输入框已有草稿，请先发送或清空后再选择助手。");
+      commandInputRef.current?.focus();
+      return;
+    }
     setWorkingAgentId(agent.id);
     triggerAgentFeedback(agent.id, "selected");
     onAgentSelect(agent.prompt);
   };
 
   const handleQuickSkillClick = (skill: OfficeQuickSkill) => {
+    if (isSubmitting) return;
+    if (skill.kind === "view") {
+      onQuickSkill(skill);
+      return;
+    }
+    if (draft.trim() && (selectedQuickSkill?.kind !== "prompt" || draft !== selectedQuickSkill.prompt)) {
+      setQuickSkillNotice("输入框已有草稿，请先发送或清空后再选择模板。");
+      commandInputRef.current?.focus();
+      return;
+    }
     const responseAgentId = officeAgentForSkill(skill.id);
     setQuickSkillIntent(skill.id);
     setWorkingAgentId(responseAgentId);
     triggerAgentFeedback(responseAgentId, "selected");
 
-    if (skill.kind === "prompt") {
-      onQuickSkill(skill);
-      setQuickSkillNotice(`已选择「${skill.title}」，下一步点“发送”开始。`);
-    } else if (skill.kind === "view") {
-      onDraftChange("");
-      setQuickSkillNotice(`已选择「${skill.title}」，下一步点“打开文档工具”，再选择文件。`);
-    }
+    onQuickSkill(skill);
+    setQuickSkillNotice(`已选择「${skill.title}」，下一步点“发送”开始。`);
     window.requestAnimationFrame(() => commandInputRef.current?.focus());
   };
 
   const draftReady = draft.trim().length > 0;
   const selectedQuickSkill = quickSkills.find((skill) => skill.id === quickSkillIntent) ?? null;
-  const selectedSkillNeedsButton = selectedQuickSkill?.kind === "view";
-  const canSubmit = !isSubmitting && (draftReady || selectedSkillNeedsButton);
+  const canSubmit = !isSubmitting && draftReady;
   const commandNote = commandFooterNote({
-    draftReady,
     isSubmitting,
     connectionState,
     quickSkillNotice,
-    submitError,
-    selectedQuickSkill
+    submitError
   });
   const commandNoteTone = submitError || connectionState === "offline" ? "warning" : quickSkillNotice || isSubmitting || selectedQuickSkill ? "ready" : "";
-  const activeAgent = agents.find((agent) => agent.id === workingAgentId) ?? agents[0];
-  const activeHelper = getFriendlyAgentCopy(activeAgent);
   const commandPreviewSteps = useMemo(
     () => buildCommandPreviewSteps(draft, quickSkillNotice, safetyAlert, quickSkillIntent),
     [draft, quickSkillIntent, quickSkillNotice, safetyAlert]
   );
-  const commandButtonLabel = isSubmitting
-    ? "启动中"
-    : selectedQuickSkill?.kind === "view"
-      ? "打开文档工具"
-      : "发送";
+  const commandButtonLabel = isSubmitting ? "启动中" : "发送";
   const commandPreviewReady = draftReady || Boolean(selectedQuickSkill);
-  const CommandIcon = isSubmitting ? Radio : CornerDownLeft;
+  const CommandIcon = isSubmitting ? Loader2 : ArrowUp;
   const runPrimaryCommand = () => {
     if (!canSubmit) return;
-    if (selectedQuickSkill && selectedSkillNeedsButton && !draftReady) {
-      onQuickSkill(selectedQuickSkill);
-      return;
-    }
     onSubmitPrompt();
   };
   const taskPresentation = useMemo(
@@ -362,7 +360,6 @@ export function OfficeScene({
     }),
     [draftReady, pendingApprovalCount, readinessItems, recentTasks, selectedQuickSkill, trustItems]
   );
-  const { runningTaskCount } = taskPresentation;
   const isOfficeMapReady = officeMapSize.width > 0 && officeMapSize.height > 0;
   const officeScale = isOfficeMapReady
     ? Math.min(officeMapSize.width / officeViewBox.width, officeMapSize.height / officeViewBox.height)
@@ -379,40 +376,12 @@ export function OfficeScene({
       <div className="office-stage">
         <div className="office-headline">
           <div className="office-headline__title">
-            <span className="office-headline__eyebrow">
-              <Sparkles size={13} aria-hidden="true" />
-              本机优先 AI 工作台
-            </span>
-            <h2>问问 Lengrvis</h2>
-            <p>一句话处理文件、文档、应用和电脑事务。</p>
-          </div>
-          <div className="office-headline__status" aria-label="当前工作状态">
-            <span className={runningTaskCount > 0 ? "home-status-pill home-status-pill--live" : "home-status-pill"}>
-              <Radio size={13} aria-hidden="true" />
-              {runningTaskCount > 0 ? `${runningTaskCount} 项处理中` : "当前空闲"}
-            </span>
-            <span className="home-status-pill home-status-pill--private">
-              <LockKeyhole size={13} aria-hidden="true" />
-              重要修改先确认
-            </span>
-            <span className="office-headline__legend">
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: activeAgent.accent
-                }}
-              />
-              <strong>{activeHelper.name}</strong>
-            </span>
+            <h2>今天，交给冷维斯什么任务？</h2>
           </div>
         </div>
 
         <div className="office-command-dock">
-          <label className="office-command-dock__hint" htmlFor="office-command-input">
-            <span>说出目标，先判断范围和风险</span>
-          </label>
+          <label className="visually-hidden" htmlFor="office-command-input">任务目标</label>
           <textarea
             id="office-command-input"
             ref={commandInputRef}
@@ -424,15 +393,52 @@ export function OfficeScene({
               onDraftChange(event.target.value);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              if (!event.nativeEvent.isComposing && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
                 runPrimaryCommand();
               }
             }}
-            placeholder="例如：找文件、总结文档，或检查电脑。"
-            aria-invalid={Boolean(submitError)}
-            aria-describedby="office-command-status"
+            placeholder="描述你想完成的事，例如：找出下载目录里的大文件。"
+            aria-describedby="office-command-safety office-command-status"
           />
+          <div className="command-footer">
+            <span className="command-shortcut">Ctrl / ⌘ + Enter 发送 · Enter 换行</span>
+            <button
+              className="button button--primary command-footer__send"
+              onClick={runPrimaryCommand}
+              type="button"
+              disabled={!canSubmit}
+              aria-busy={isSubmitting}
+            >
+              <CommandIcon className={isSubmitting ? "spin-icon" : undefined} size={16} aria-hidden="true" />
+              {commandButtonLabel}
+            </button>
+          </div>
+          <div id="office-command-status"
+            className={`command-footer__note ${commandNoteTone ? `command-footer__note--${commandNoteTone}` : ""}`}
+            role={submitError ? "alert" : "status"}>
+            {commandNote}
+          </div>
+        </div>
+        <p className="command-safety" id="office-command-safety">
+          <ShieldCheck size={14} aria-hidden="true" />重要修改前会先征得你的确认。
+        </p>
+      </div>
+
+      <OfficeInspector
+        quickSkills={quickSkills}
+        selectedQuickSkill={selectedQuickSkill}
+        readinessItems={readinessItems}
+        trustItems={trustItems}
+        presentation={taskPresentation}
+        pendingApprovalCount={pendingApprovalCount}
+        safetyAlert={safetyAlert}
+        onOpenApprovals={onOpenApprovals}
+        onQuickSkillClick={handleQuickSkillClick}
+        onReadinessAction={onReadinessAction}
+        onTaskPilotAction={onTaskPilotAction}
+      >
+      <details className="command-guidance"><summary>任务处理说明</summary>
           <div className={commandPreviewReady ? "command-preview command-preview--ready" : "command-preview"} aria-label="执行预览">
             {commandPreviewSteps.map(([id, label, detail, state], index) => (
               <span key={id} className={`command-preview__step command-preview__step--${state}`}>
@@ -444,31 +450,13 @@ export function OfficeScene({
               </span>
             ))}
           </div>
-          <div className="command-footer">
-            <span
-              id="office-command-status"
-              className={`command-footer__note ${commandNoteTone ? `command-footer__note--${commandNoteTone}` : ""}`}
-              role={submitError ? "alert" : "status"}
-            >
-              {commandNote}
-            </span>
-            <button
-              className="button button--primary command-footer__send"
-              onClick={runPrimaryCommand}
-              type="button"
-              disabled={!canSubmit}
-              aria-busy={isSubmitting}
-            >
-              <CommandIcon size={16} aria-hidden="true" />
-              {commandButtonLabel}
-            </button>
-          </div>
-        </div>
-
+      </details>
+      <details className="office-team">
+        <summary>小马办公室 <span>查看协作伙伴</span></summary>
         <div className="office-map" ref={officeMapRef} style={officeMapStyle}>
           <OfficeLayout
             workingAgentIds={workingAgentIds}
-            motionVisible={pageVisible && !isNarrowOffice}
+            motionVisible={pageVisible && isOfficeMapReady && !isNarrowOffice}
           />
 
           <span className="office-zone-label office-zone-label--pantry">茶水区</span>
@@ -492,7 +480,7 @@ export function OfficeScene({
                       agentScale={agentVisualScale}
                       isWorking={workingAgentIds.has(agent.id)}
                       isPrimary={isPrimary}
-                      motionVisible={pageVisible && (!isNarrowOffice || isPrimary)}
+                      motionVisible={pageVisible && isOfficeMapReady && (!isNarrowOffice || isPrimary)}
                       feedback={agentFeedback?.agentId === agent.id ? agentFeedback.kind : undefined}
                       onSelect={() => activateAgent(agent)}
                     />
@@ -501,20 +489,8 @@ export function OfficeScene({
               : null}
           </div>
         </div>
-      </div>
-
-      <OfficeInspector
-        quickSkills={quickSkills}
-        selectedQuickSkill={selectedQuickSkill}
-        readinessItems={readinessItems}
-        trustItems={trustItems}
-        presentation={taskPresentation}
-        pendingApprovalCount={pendingApprovalCount}
-        safetyAlert={safetyAlert}
-        onQuickSkillClick={handleQuickSkillClick}
-        onReadinessAction={onReadinessAction}
-        onTaskPilotAction={onTaskPilotAction}
-      />
+      </details>
+      </OfficeInspector>
     </div>
   );
 }
@@ -569,30 +545,20 @@ function buildCommandPreviewSteps(
 }
 
 function commandFooterNote({
-  draftReady,
   isSubmitting,
   connectionState,
   quickSkillNotice,
-  submitError,
-  selectedQuickSkill
+  submitError
 }: {
-  draftReady: boolean;
   isSubmitting: boolean;
   connectionState: ConnectionState;
   quickSkillNotice: string;
   submitError: string | null;
-  selectedQuickSkill: OfficeQuickSkill | null;
 }): string {
   if (submitError) return submitError;
-  if (connectionState === "offline") return "连接仍在恢复；发送失败时会保留输入。";
   if (isSubmitting) return "正在启动任务，返回结果前不会重复创建。";
+  if (connectionState === "checking") return "正在连接助手，你可以先写好任务。";
+  if (connectionState === "offline") return "连接仍在恢复；发送失败时会保留输入。";
   if (quickSkillNotice) return quickSkillNotice;
-  if (selectedQuickSkill) {
-    if (selectedQuickSkill.kind === "view") {
-      return `已选择「${selectedQuickSkill.title}」。下一步点“打开文档工具”，选择文件后再继续。`;
-    }
-    return "已填好这句话，下一步点“发送”开始。";
-  }
-  if (draftReady) return "准备好了，发送后进入任务流。";
-  return "重要修改前会先征得你的确认。";
+  return "";
 }

@@ -57,7 +57,7 @@ class MCPRegistry:
                     default=True,
                 ),
                 client_name=str(entry.get("client_name") or entry.get("clientName") or "Lengrvis"),
-                client_version=str(entry.get("client_version") or entry.get("clientVersion") or "0.1.2"),
+                client_version=str(entry.get("client_version") or entry.get("clientVersion") or "0.1.3"),
             )
             if not config.url and not config.command:
                 continue

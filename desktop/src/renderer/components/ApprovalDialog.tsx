@@ -1,5 +1,5 @@
 import { CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, Trash2, Undo2, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { CleanupPlan } from "../../shared/cleanupTypes";
 import type { ApprovalRequest } from "../../shared/executionTypes";
@@ -38,6 +38,7 @@ export function ApprovalDialog({
 }: ApprovalDialogProps) {
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const decisionInFlight = useRef(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
 
@@ -72,7 +73,12 @@ export function ApprovalDialog({
   const isHighRisk = approval.riskLevel === "high" || approval.riskLevel === "critical";
 
   const decide = async (decision: "approved" | "denied") => {
-    if (!canDecide) return;
+    if (!canDecide || decisionInFlight.current) return;
+    if (expiresAt <= Date.now()) {
+      setExpiryClock(Date.now());
+      return;
+    }
+    decisionInFlight.current = true;
     setIsSubmitting(true);
     setSubmissionError(null);
     try {
@@ -81,6 +87,7 @@ export function ApprovalDialog({
     } catch (error) { // broad-exception-boundary
       setSubmissionError(error instanceof Error && error.message.trim() ? error.message : "审批提交失败，请刷新后重试");
     } finally {
+      decisionInFlight.current = false;
       setIsSubmitting(false);
     }
   };
@@ -164,7 +171,7 @@ export function ApprovalDialog({
           </dl>
           <label className="field">
             <span>审批备注</span>
-            <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} />
+            <textarea value={note} onChange={(event) => setNote(event.target.value)} disabled={isSubmitting} rows={4} />
             {error || submissionError ? <p className="field-error" role="alert">{error || submissionError}</p> : null}
           </label>
         </div>

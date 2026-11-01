@@ -23,8 +23,8 @@ STRICT_CANDIDATE = {
 APK_SHA256 = "d" * 64
 SIGNER_SHA256 = "a" * 64
 PACKAGE_NAME = "com.lengrvis.approval"
-VERSION_NAME = "0.1.2"
-VERSION_CODE = 2
+VERSION_NAME = "0.1.3"
+VERSION_CODE = 3
 
 
 def _load_script(name: str):

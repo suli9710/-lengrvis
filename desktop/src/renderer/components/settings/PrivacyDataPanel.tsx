@@ -4,6 +4,7 @@ import { useState } from "react";
 import { PRIVACY_ERASE_CONFIRMATION_TEXT } from "../../../shared/privacy";
 import type { PrivacyEraseResult } from "../../../shared/types";
 import type { LengrvisApiClient } from "../../lib/apiClient";
+import { clearSessionDrafts } from "../../lib/useSessionDraft";
 
 const ERASED_DATA = [
   "任务、对话与运行记录",
@@ -29,6 +30,7 @@ export function PrivacyDataPanel({ api }: { api: LengrvisApiClient }) {
       if (!response.ok || !response.data) {
         throw new Error(response.error?.message || "本机数据删除失败");
       }
+      clearSessionDrafts();
       setResult(response.data);
       setConfirmationText("");
     } catch (eraseError) {

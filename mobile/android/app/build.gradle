@@ -111,8 +111,8 @@ android {
         applicationId 'com.lengrvis.approval'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "0.1.2"
+        versionCode 3
+        versionName "0.1.3"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

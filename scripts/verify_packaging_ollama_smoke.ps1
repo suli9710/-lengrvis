@@ -60,6 +60,12 @@ function New-BackendHealthSmokeExecutable([string]$Path) {
     $source = @"
 public static class $className {
     public static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--sqlite-runtime-info") {
+            // Synthetic protocol fixture only: this executable does not contain SQLite.
+            // The test_fixture marker must remain visible in its disposable evidence.
+            System.Console.Out.WriteLine("{\"schema\":\"lengrvis-sqlite-runtime/v1\",\"python_version\":\"fixture\",\"sqlite_version\":\"3.51.3\",\"sqlite_source_id\":\"packaging-smoke-fixture-not-real-sqlite\",\"compile_options\":[\"PACKAGING_SMOKE_FIXTURE\"],\"wal_reset_fixed\":true,\"frozen\":true,\"test_fixture\":true}");
+            return 0;
+        }
         if (args.Length > 0) {
             System.Console.Error.WriteLine("health fixture expects no command-line arguments; received: " + string.Join(" ", args));
             return 2;
@@ -377,3 +383,4 @@ Write-Host "[ok] tiny fake self-extracting exe is rejected"
 
 Write-Host ""
 Write-Host "Bundled Ollama packaging smoke passed." -ForegroundColor Green
+Write-Host "Synthetic executable fixtures verified gate behavior only; these are not release runtime evidence."

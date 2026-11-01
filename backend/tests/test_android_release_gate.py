@@ -13,8 +13,8 @@ import pytest
 
 SIGNER_SHA256 = "ab" * 32
 PACKAGE_NAME = "com.lengrvis.approval"
-VERSION_NAME = "0.1.2"
-VERSION_CODE = 2
+VERSION_NAME = "0.1.3"
+VERSION_CODE = 3
 
 
 def _powershell() -> str:

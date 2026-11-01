@@ -39,7 +39,7 @@ async def _run(server_url: str) -> None:
             protocol_version=protocol_version,
             strict_lifecycle=True,
             client_name="lengrvis-conformance-client",
-            client_version="0.1.2",
+            client_version="0.1.3",
         ),
         url_pinner=lambda value: pin_outbound_http_url(value, allow_private=True),
     )

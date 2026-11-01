@@ -211,7 +211,7 @@ function runSourceAssertions() {
 
   assert.match(
     officeSceneSource,
-    /if \(skill\.kind === "prompt"\) \{\s*onQuickSkill\(skill\);/,
+    /onQuickSkill\(skill\);\s*setQuickSkillNotice\(/,
     "prompt quick skills should synchronously update the draft before the user can submit"
   );
   assert.match(
@@ -301,14 +301,14 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     await installHealthyBackendMocks(page, counters, { tasks: [completedComputerTemplateTask] });
     await gotoFirstLaunch(page, previewUrl);
 
-    await page.getByRole("heading", { name: /问问 Lengrvis/ }).waitFor({ timeout: 15_000 });
+    await page.getByRole("heading", { name: "今天，交给冷维斯什么任务？", exact: true }).waitFor({ timeout: 15_000 });
     await page.getByText(/可以这样开始/).first().waitFor({ timeout: 15_000 });
 
     const quickEntries = page.locator("button.office-quick-card");
-    assert.ok(await quickEntries.count() >= 1, "first screen should expose at least one task entry button");
+    assert.ok(await quickEntries.count() >= 1, "opening common tasks should expose at least one task entry button");
     const firstEntryText = await quickEntries.first().innerText();
     assert.match(firstEntryText, /检查电脑状态/, "first visible task template should be the safest no-input entry");
-    assert.match(firstEntryText, /点发送开始|一句话可选/, "first task entry should explain how to start explicitly");
+    assert.match(firstEntryText, /填入任务/, "idle task entry should explain that selection fills the draft, rather than starting execution");
     assert.match(firstEntryText, /只读快照|只读取/, "first task entry should make the read-only preflight visible");
     assert.match(firstEntryText, /30 秒/, "first task entry should show a short first-run estimate");
 
@@ -346,6 +346,7 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     assert.equal(counters.taskLaunchRequests ?? 0, 1, "computer template send should create exactly one task/run request");
     assert.equal(counters.taskLaunchEndpoints?.[0], "/api/runs", "computer template should submit through /api/runs");
     assert.equal(launch.message, "帮我检查这台电脑", "computer template should submit the filled command text");
+    await page.getByRole("heading", { name: "对话", exact: true, level: 1 }).waitFor({ timeout: 15_000 });
   } finally {
     await context.close();
     removeTempDir(profileDir);
@@ -361,8 +362,14 @@ async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
 
     const commandInput = page.locator(".office-command-dock textarea");
     await commandInput.waitFor({ timeout: 15_000 });
-    await commandInput.fill("previous stale draft");
+    const manualDraft = "整理报告前请先核对范围，不要移动文件";
+    await commandInput.fill(manualDraft);
 
+    await page.getByTestId("office-template-clean-downloads").click();
+    assert.equal(await commandInput.inputValue(), manualDraft, "selecting a template must preserve a manually edited draft");
+    assert.match(await page.locator("#office-command-status").innerText(), /输入框已有草稿.*先发送或清空/, "template selection should explain how to continue without losing the draft");
+    assert.equal(counters.taskLaunchRequests ?? 0, 0, "a blocked template selection must not submit the manual draft");
+    await commandInput.fill("");
     await page.getByTestId("office-template-clean-downloads").click();
     const selectedPrompt = await commandInput.inputValue();
     const wizardText = await page.getByTestId("office-template-wizard").innerText();
@@ -373,9 +380,9 @@ async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
     assert.match(
       selectedPrompt,
       /\u626b\u63cf\u6211\u7684\u4e0b\u8f7d\u76ee\u5f55/,
-      "prompt quick skill should replace the draft synchronously"
+      "prompt quick skill should fill the explicitly cleared draft synchronously"
     );
-    assert.doesNotMatch(selectedPrompt, /previous stale draft/, "prompt quick skill should not leave the previous draft submit-ready");
+    assert.notEqual(selectedPrompt, manualDraft, "explicitly clearing the draft should allow selecting a different task");
 
     const sendButton = page.locator("button.command-footer__send").first();
     assert.equal(await sendButton.isEnabled(), true, "send should be enabled for the selected quick-skill prompt");
@@ -386,8 +393,9 @@ async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
     assert.equal(
       launchPayload.message,
       selectedPrompt,
-      "immediate Send after a prompt quick-skill click should submit the selected prompt, not the stale draft"
+      "immediate Send after selecting a template in an empty draft should submit the selected prompt"
     );
+    await page.getByRole("heading", { name: "对话", exact: true, level: 1 }).waitFor({ timeout: 15_000 });
   } finally {
     await context.close();
     removeTempDir(profileDir);
@@ -429,6 +437,12 @@ async function assertNaturalLanguageComputerCheckStartsReadOnlyRun(previewUrl) {
     assert.equal(launch.message, "帮我检查这台电脑", "natural-language computer check should submit the user's exact first-task text");
     assert.equal(launch.engine, "auto", "renderer should let the backend route the read-only diagnostics engine");
 
+    await page.getByRole("heading", { name: "对话", exact: true, level: 1 }).waitFor({ timeout: 15_000 });
+    // The shell heading can appear before the lazy conversation route commits.
+    await page.locator(".chat-message--user").filter({ hasText: "帮我检查这台电脑" }).waitFor({ timeout: 15_000 });
+    assert.match(await page.locator("#root").innerText(), /帮我检查这台电脑/, "successful submission should open the conversation with the submitted goal visible");
+    await page.getByRole("button", { name: "首页", exact: true }).click();
+    await revealHomeMoreDetails(page);
     await page.getByText(/已开始处理任务/).first().waitFor({ timeout: 15_000 });
 
     const workspaceText = await page.getByTestId("task-workspace-card").innerText();
@@ -455,7 +469,7 @@ async function assertBackendUnavailableState(previewUrl) {
 
     const checkComputerEntry = page.locator("button.office-quick-card", { hasText: /检查电脑状态/ }).first();
     await checkComputerEntry.waitFor({ timeout: 15_000 });
-    assert.equal(await checkComputerEntry.isVisible(), true, "first-launch task entry should stay visible while backend is unavailable");
+    assert.equal(await checkComputerEntry.isVisible(), true, "common-task entries should remain available after expansion while backend is unavailable");
     await assertComputerTemplateHomeEvidence(page, { hasRecentResult: false });
 
     const connectionReadiness = page.locator(".home-readiness-item", { hasText: /Lengrvis 连接/ }).first();
@@ -631,13 +645,19 @@ async function openDisposablePage() {
 async function gotoFirstLaunch(page, previewUrl) {
   await page.goto(previewUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.waitForSelector("#root > *", { timeout: 30_000 });
+  const templates = page.getByTestId("home-templates");
+  await templates.waitFor({ timeout: 15_000 });
+  assert.equal(await templates.getAttribute("open"), null, "common tasks should be collapsed on the first screen");
+  assert.equal(await page.locator("#office-command-input").isVisible(), true, "the task input should stay directly available");
+  assert.equal(await page.getByTestId("home-status-strip").isVisible(), false, "secondary status cards should not crowd the initial task input");
+  assert.equal(await page.locator(".task-list-card").isVisible(), false, "task history should remain in the secondary disclosure");
+  await templates.locator("summary").first().click();
   await revealHomeMoreDetails(page);
 }
 
-// The home inspector keeps the secondary status cards (trust, readiness,
-// task pilot, workspace, outcomes) inside a collapsed "更多状态与详情"
-// disclosure for progressive disclosure. Expand it so these assertions can
-// read the detail cards that used to be visible by default.
+// Secondary status, history and office details stay behind a disclosure;
+// current task results and actionable approvals remain outside it.
+// Expand intentionally to inspect the complete safety and result information.
 async function revealHomeMoreDetails(page) {
   const details = page.getByTestId("home-more");
   await details.waitFor({ timeout: 15_000 });
@@ -660,6 +680,8 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
   const outcomeCard = page.getByTestId("home-outcome-computer");
   await outcomeCard.waitFor({ timeout: 15_000 });
   const outcomeText = await outcomeCard.innerText();
+  const resultIsSecondary = await page.getByTestId("home-result-timeline-card").evaluate(element => Boolean(element.closest("details.home-more")));
+  assert.equal(resultIsSecondary, !hasRecentResult, "existing task results must be visible outside More; only the empty result placeholder belongs inside it");
   if (hasRecentResult) {
     assert.match(outcomeText, /系统检查完成结果已核验/, "computer template should render a verified outcome only when strict evidence exists");
     assert.match(outcomeText, /完成结果已核验/, "computer outcome should show the verified result label");
@@ -667,7 +689,7 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
     assert.match(outcomeText, /只读状态|不会改系统设置/, "computer outcome should preserve the local task boundary");
 
     const resultTimelineText = await page.getByTestId("home-result-timeline-card").innerText();
-    assert.match(resultTimelineText, /结果时间线/, "home should expose the result-first timeline summary");
+    assert.match(resultTimelineText, /最近结果/, "home should expose the result-first timeline summary");
     assert.match(resultTimelineText, /完成结果已核验/, "result timeline should show the verified result state");
     assert.match(resultTimelineText, /结果可以作为完成记录|查看结果/, "result timeline should expose what the user can do next");
     assert.doesNotMatch(
@@ -702,7 +724,7 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /不能当作最终结果/
     ],
     timelineMatches: [
-      /结果时间线/,
+      /最近结果/,
       /有进度，待核验/,
       /缺少：结果核验|缺 结果核验/
     ],
@@ -725,7 +747,7 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /没有完成结果/
     ],
     timelineMatches: [
-      /结果时间线/,
+      /最近结果/,
       /安全停止/,
       /查看原因后重试/
     ],
@@ -748,7 +770,7 @@ async function assertTaskResultQualityStatesStayActionable(previewUrl) {
       /只说明任务被提交或创建/
     ],
     timelineMatches: [
-      /结果时间线/,
+      /最近结果/,
       /仅有任务记录/,
       /缺少：完成结果、结果核验|缺 完成结果/
     ],
@@ -973,7 +995,16 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+module.exports = {
+  openDisposablePage,
+  installHealthyBackendMocks,
+  installUnavailableBackendMocks,
+  completedComputerTemplateTask
+};
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

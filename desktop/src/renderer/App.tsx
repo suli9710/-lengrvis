@@ -26,7 +26,7 @@ import {
   type OfficeQuickSkill
 } from "./features/office";
 import { LengrvisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
-import type { AssistantMode } from "./store";
+import { useLengrvisStore, type AssistantMode } from "./store";
 import {
   readableError,
   recentReadableChatMessages,
@@ -222,6 +222,9 @@ export function App() {
     requestCleanupApproval
   } = useTaskSubmission({
     submitButlerMessage: butler.submit,
+    onHeroSubmitted: () => {
+      if (useLengrvisStore.getState().activeView === "home") setActiveView("chat");
+    },
     api,
     mode,
     backendStatusRef,
@@ -387,6 +390,7 @@ export function App() {
     decision: "approved" | "denied",
     note?: string
   ) => {
+    let failureMessage = "审批提交失败，请刷新后重试";
     try {
       const result = await api.submitApprovalDecision({ approvalId, decision, note });
       if (result.ok && result.data) {
@@ -405,11 +409,13 @@ export function App() {
         }
         return;
       }
-      setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试");
+      failureMessage = result.error?.message ?? failureMessage;
     } catch (error) { // broad-exception-boundary
-      setApprovalError(readableError(error, "审批提交失败，请刷新后重试"));
+      failureMessage = readableError(error, failureMessage);
     }
+    setApprovalError(failureMessage);
     await refreshPendingApprovals();
+    throw new Error(failureMessage);
   };
 
   const refreshPendingApprovals = async () => {

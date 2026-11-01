@@ -37,7 +37,7 @@ export function AgentsRoute({
       <PlanViewer plan={plan} />
       <Suspense fallback={<RouteLoading />}>
         <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} onTaskPilotAction={onTaskPilotAction} />
-        <AgentConversationPanel conversations={agentConversations} />
+        <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={onRevealPath} />
       </Suspense>
       <details
         className="progress-more detail-grid__full"
@@ -46,13 +46,13 @@ export function AgentsRoute({
         onToggle={(event) => setIsMoreOpen(event.currentTarget.open)}
       >
         <summary className="progress-more__summary">
-          <span>更多：定时任务、成果产物与本机指标</span>
-          <em>需要时再展开，默认聚焦当前进展</em>
+          <span>更多：协作记录、定时任务与本机指标</span>
+          <em>技术详情按需查看，任务进展与成果始终可见</em>
         </summary>
         <div className="progress-more__panels">
           <Suspense fallback={<RouteLoading />}>
+            <AgentConversationPanel conversations={agentConversations} />
             <SchedulePanel api={api} />
-            <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={onRevealPath} />
             <MetricsPanel api={api} />
           </Suspense>
         </div>

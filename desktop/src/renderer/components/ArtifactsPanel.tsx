@@ -1,5 +1,5 @@
 import { FileText, FolderOpen, PackageOpen, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskArtifact, TaskArtifactsSummary, TaskEvent } from "../../shared/executionTypes";
 import type { LengrvisApiClient } from "../lib/apiClient";
@@ -21,6 +21,7 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revealError, setRevealError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
 
   useEffect(() => {
     if (focusedTaskId) setSelectedTaskId(focusedTaskId);
@@ -33,24 +34,34 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
   }, [candidateTasks, selectedTaskId]);
 
   const loadArtifacts = useCallback(async (taskId: string) => {
+    const generation = ++requestGeneration.current;
     setIsLoading(true);
     setError(null);
-    const response = await api.listTaskArtifacts(taskId);
-    setIsLoading(false);
-    if (response.ok && response.data) {
-      setSummary(response.data);
-      return;
-    }
+    setRevealError(null);
     setSummary(null);
-    setError(response.error?.message ?? "无法读取任务成果物");
+    try {
+      const response = await api.listTaskArtifacts(taskId);
+      if (generation !== requestGeneration.current) return;
+      if (response.ok && response.data) {
+        setSummary(response.data);
+        return;
+      }
+      setError(response.error?.message ?? "无法读取任务成果物，请重试。");
+    } catch {
+      if (generation === requestGeneration.current) setError("无法读取任务成果物，请重试。");
+    } finally {
+      if (generation === requestGeneration.current) setIsLoading(false);
+    }
   }, [api]);
 
   useEffect(() => {
     if (!selectedTaskId) {
       setSummary(null);
+      setIsLoading(false);
       return;
     }
     void loadArtifacts(selectedTaskId);
+    return () => { requestGeneration.current += 1; };
   }, [loadArtifacts, selectedTaskId]);
 
   const revealArtifact = async (artifact: TaskArtifact) => {
@@ -91,7 +102,8 @@ export function ArtifactsPanel({ tasks, api, focusedTaskId, onRevealPath }: Arti
         </button>
       </div>
 
-      {error ? <p className="empty-state">{error}</p> : null}
+      {isLoading ? <p className="empty-state" role="status">正在读取任务成果物…</p> : null}
+      {error ? <p className="empty-state" role="alert">{error} 点击“刷新成果物”重新读取。</p> : null}
 
       {!error && summary ? (
         summary.artifacts.length ? (
