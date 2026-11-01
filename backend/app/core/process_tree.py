@@ -30,7 +30,10 @@ def process_tree_popen_kwargs(*, hide_window: bool = False) -> dict[str, Any]:
 
 
 def kill_process_tree(process: subprocess.Popen[Any], *, timeout: float = 5.0) -> None:
-    if process.poll() is not None:
+    # Do not poll/reap the leader before killing its group. A leader may have
+    # exited while descendants still own its stdout/stderr pipes. Keeping the
+    # unreaped PID reserved also avoids signalling a reused process-group ID.
+    if getattr(process, "returncode", None) is not None:
         return
     if os.name == "nt":
         _kill_windows_tree(process, timeout=timeout)
@@ -148,9 +151,27 @@ def run_process_tree(
             cancel_event=cancel_event,
             poll_interval=cancel_poll_interval,
         )
-    except subprocess.TimeoutExpired as exc:
+    except (subprocess.TimeoutExpired, ProcessCancelledError) as exc:
+        # Close the Job Object before draining pipes: descendants may retain
+        # them even after the main process has exited or taskkill has failed.
+        if job_handle:
+            from app.core.windows_job import close_job_handle
+
+            close_job_handle(job_handle)
+            job_handle = None
         kill_process_tree(process)
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired as drain_error:
+            # A child which detached from the group must not keep cancellation
+            # blocked indefinitely. Preserve whatever output has been collected.
+            stdout, stderr = drain_error.output, drain_error.stderr
+            if os.name != "nt":
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+        if isinstance(exc, ProcessCancelledError):
+            raise ProcessCancelledError(command, output=stdout, stderr=stderr) from None
         raise subprocess.TimeoutExpired(
             exc.cmd,
             exc.timeout,
@@ -186,9 +207,7 @@ def _communicate_cancellable(
     communicate_input = input
     while True:
         if cancel_event.is_set():
-            kill_process_tree(process)
-            stdout, stderr = process.communicate()
-            raise ProcessCancelledError(command, output=stdout, stderr=stderr)
+            raise ProcessCancelledError(command)
         remaining = None if deadline is None else deadline - time.monotonic()
         if remaining is not None and remaining <= 0:
             raise subprocess.TimeoutExpired(command, timeout)

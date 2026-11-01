@@ -987,7 +987,8 @@ def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_pat
     payload["approval_id"] = approval.id
     approval.args_binding_hmac = args_binding_hmac(
         "ui_automation.click",
-        {key: value for key, value in payload.items() if key not in {"approved", "approval_id", "dry_run"}},
+        # Route dispatch fields are removed before binding tool arguments.
+        {key: value for key, value in payload.items() if key not in {"action", "approved", "approval_id", "dry_run"}},
         task_id=approval.task_id,
         step_id=approval.step_id,
     )
@@ -1071,7 +1072,8 @@ def test_ui_automation_api_expires_approval_when_target_state_changes(monkeypatc
     payload["approval_id"] = approval.id
     approval.args_binding_hmac = args_binding_hmac(
         "ui_automation.click",
-        {key: value for key, value in payload.items() if key not in {"approved", "approval_id", "dry_run"}},
+        # Route dispatch fields are removed before binding tool arguments.
+        {key: value for key, value in payload.items() if key not in {"action", "approved", "approval_id", "dry_run"}},
         task_id=approval.task_id,
         step_id=approval.step_id,
     )

@@ -80,6 +80,13 @@ _SIGNED_PAYLOAD_LABELS = {
 }
 
 
+def _constant_time_equal(left: str, right: str) -> bool:
+    # compare_digest(str, str) rejects non-ASCII instead of comparing it.
+    return hmac.compare_digest(
+        left.encode("utf-8", errors="surrogatepass"), right.encode("utf-8", errors="surrogatepass")
+    )
+
+
 def _zh_label(label: str) -> str:
     return _SIGNED_PAYLOAD_LABELS.get(label, label)
 
@@ -161,7 +168,7 @@ def _read_clock_watermark(settings: Any | None) -> datetime | None:
     try:
         raw = path.read_text(encoding="utf-8").strip()
         moment = datetime.fromisoformat(raw)
-    except (OSError, ValueError):
+    except (OSError, ValueError, UnicodeError):
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
@@ -211,7 +218,7 @@ def _license_token_with_source(settings: Any | None) -> tuple[str, str | None]:
         return "", None
     try:
         return path.read_text(encoding="utf-8").strip(), "file"
-    except OSError:
+    except (OSError, UnicodeError):
         return "", None
 
 
@@ -224,6 +231,8 @@ def _revocation_token_with_source(settings: Any | None) -> tuple[str, str | None
         return "", None
     try:
         return path.read_text(encoding="utf-8").strip(), "file"
+    except UnicodeError as exc:
+        raise LicenseError("许可证吊销清单编码无效。", code="license_revocation_payload_invalid") from exc
     except OSError:
         return "", None
 
@@ -300,7 +309,10 @@ def _parse_datetime(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
     if isinstance(value, int | float):
-        return datetime.fromtimestamp(float(value), tz=UTC)
+        try:
+            return datetime.fromtimestamp(float(value), tz=UTC)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise LicenseError("许可证时间字段无效。") from exc
     text = str(value).strip()
     if not text:
         return None
@@ -312,7 +324,10 @@ def _parse_datetime(value: Any) -> datetime | None:
         raise LicenseError(f"许可证时间字段无效：{value!r}") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
+        raise LicenseError("许可证时间字段无效。") from exc
 
 
 def _parse_signed_payload(token: str, public_key: str, *, label: str) -> dict[str, Any]:
@@ -347,12 +362,12 @@ def parse_license(token: str, public_key: str) -> License:
     seats_raw = payload.get("seats", 0)
     try:
         seats = max(0, int(seats_raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         seats = 0
     schema_raw = payload.get("schema", 1)
     try:
         schema = int(schema_raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise LicenseError("许可证版本无效。", code="license_schema_invalid") from exc
     plan_catalog = str(payload.get("plan_catalog") or "").strip().lower()
     if plan_catalog and plan_catalog not in {PLAN_CATALOG_CURRENT, PLAN_CATALOG_LEGACY}:
@@ -378,8 +393,12 @@ def parse_license(token: str, public_key: str) -> License:
         device_id=str(payload.get("device_id") or "").strip(),
         device_fingerprint=str(payload.get("device_fingerprint") or "").strip(),
         order_ref=str(payload.get("order_ref") or "").strip(),
-        issued_at=_parse_datetime(payload.get("issued_at") or payload.get("iat")),
-        expires_at=_parse_datetime(payload.get("expires_at") or payload.get("exp")),
+        issued_at=_parse_datetime(
+            payload.get("iat") if payload.get("issued_at") in (None, "") else payload["issued_at"]
+        ),
+        expires_at=_parse_datetime(
+            payload.get("exp") if payload.get("expires_at") in (None, "") else payload["expires_at"]
+        ),
         seats=seats,
         payload=payload,
     )
@@ -441,7 +460,7 @@ def verify_license(
                 code="license_device_unverified",
                 status_code=402,
             )
-        if not hmac.compare_digest(license_.device_id, str(expected_device_id)):
+        if not _constant_time_equal(license_.device_id, str(expected_device_id)):
             raise LicenseError("许可证绑定到另一台设备。", code="license_device_mismatch", status_code=402)
     if license_.device_fingerprint and expected_device_fingerprint is not _DEVICE_BINDING_NOT_CHECKED:
         if not expected_device_fingerprint:
@@ -450,7 +469,7 @@ def verify_license(
                 code="license_device_fingerprint_unverified",
                 status_code=402,
             )
-        if not hmac.compare_digest(license_.device_fingerprint, str(expected_device_fingerprint)):
+        if not _constant_time_equal(license_.device_fingerprint, str(expected_device_fingerprint)):
             raise LicenseError(
                 "许可证绑定到另一台设备的硬件指纹。",
                 code="license_device_fingerprint_mismatch",
@@ -537,9 +556,9 @@ def _commercial_activation_device_binding_error(license_: License) -> str | None
     binding_fingerprint = str(binding.get("fingerprint") or "").strip()
     try:
         hardware_signal_count = int(binding.get("hardware_signal_count") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         hardware_signal_count = 0
-    if not binding_fingerprint or not hmac.compare_digest(binding_fingerprint, license_.device_fingerprint):
+    if not binding_fingerprint or not _constant_time_equal(binding_fingerprint, license_.device_fingerprint):
         return "license_device_proof_mismatch"
     if strength != "strong" or storage not in _STRONG_DEVICE_SECRET_STORAGE or hardware_signal_count < 1:
         return "license_device_proof_weak"
@@ -646,7 +665,12 @@ def _subscription_confirmation_expires_at(
         return None
     if license_.issued_at is None:
         return None
-    return license_.issued_at + timedelta(seconds=_subscription_license_refresh_ttl_seconds(ttl_seconds=ttl_seconds))
+    try:
+        return license_.issued_at + timedelta(
+            seconds=_subscription_license_refresh_ttl_seconds(ttl_seconds=ttl_seconds)
+        )
+    except OverflowError:
+        return None
 
 
 def _subscription_confirmation_status(
@@ -658,7 +682,12 @@ def _subscription_confirmation_status(
     required = _subscription_license_requires_online_confirmation(license_)
     expires_at = _subscription_confirmation_expires_at(license_, ttl_seconds=ttl_seconds)
     moment = now or datetime.now(UTC)
-    fresh = not required or (expires_at is not None and moment < expires_at)
+    fresh = not required or (
+        expires_at is not None
+        and license_.issued_at is not None
+        and license_.issued_at - moment <= timedelta(seconds=CLOCK_WATERMARK_TOLERANCE_SECONDS)
+        and moment < expires_at
+    )
     activation = license_.payload.get("activation")
     activation_source = ""
     if isinstance(activation, dict):
@@ -715,7 +744,7 @@ def require_activation_response_nonce(license_: License, expected_nonce_sha256: 
     actual = ""
     if isinstance(activation, dict):
         actual = str(activation.get("nonce_sha256") or "").strip().lower()
-    if not expected or not actual or not hmac.compare_digest(actual, expected):
+    if not expected or not actual or not _constant_time_equal(actual, expected):
         raise LicenseError(
             "激活服务返回的许可证不是本次请求的结果。",
             code="activation_nonce_mismatch",
@@ -762,6 +791,7 @@ def _verify_runtime_license(
     revocations: RevocationManifest | None = None,
     source: str | None = None,
 ) -> License:
+    now = _effective_now(settings, now)
     parsed = parse_license(token, public_key)
     if revocations is not None and revocations.is_revoked(parsed.license_id):
         raise LicenseError("许可证已被吊销。", code="license_revoked", status_code=402)
@@ -802,6 +832,7 @@ def load_revocation_manifest(
 
 def license_status(settings: Any | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     """Return a renderer-safe diagnosis without exposing the token or verifier."""
+    now = _effective_now(settings, now)
     token, source = _license_token_with_source(settings)
     public_key = _read_public_key()
     requested_env_plan = normalize_plan(os.getenv(PLAN_ENV_VAR))
@@ -853,13 +884,13 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         expired_current = current.is_expired(now=now)
         device_unverified_current = bool(current.device_id and not expected_device_id)
         device_mismatch_current = bool(
-            current.device_id and expected_device_id and not hmac.compare_digest(current.device_id, expected_device_id)
+            current.device_id and expected_device_id and not _constant_time_equal(current.device_id, expected_device_id)
         )
         fingerprint_unverified_current = bool(current.device_fingerprint and not expected_device_fingerprint)
         fingerprint_mismatch_current = bool(
             current.device_fingerprint
             and expected_device_fingerprint
-            and not hmac.compare_digest(current.device_fingerprint, expected_device_fingerprint)
+            and not _constant_time_equal(current.device_fingerprint, expected_device_fingerprint)
         )
         subscription_inactive_current = bool(
             current.subscription_status and current.subscription_status not in {"active", "trialing"}
@@ -1083,12 +1114,12 @@ def subscription_confirmation_fresh(
             if revocations is not None and revocations.is_revoked(license_.license_id):
                 return False
             if license_.device_id and (
-                not expected_device_id or not hmac.compare_digest(license_.device_id, expected_device_id)
+                not expected_device_id or not _constant_time_equal(license_.device_id, expected_device_id)
             ):
                 return False
             if license_.device_fingerprint and (
                 not expected_device_fingerprint
-                or not hmac.compare_digest(license_.device_fingerprint, expected_device_fingerprint)
+                or not _constant_time_equal(license_.device_fingerprint, expected_device_fingerprint)
             ):
                 return False
             if license_.is_expired(now=now):
@@ -1118,6 +1149,7 @@ def install_license(
     expected_activation_nonce_sha256: str | None = None,
 ) -> License:
     """Verify and atomically persist a locally imported offline license."""
+    now = _effective_now(settings, now)
     if os.getenv(LICENSE_KEY_ENV_VAR, "").strip():
         raise LicenseError(
             "当前许可证由部署配置托管，不能在应用内替换。",

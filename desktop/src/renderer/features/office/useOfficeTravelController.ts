@@ -35,8 +35,8 @@ export function useOfficeTravelController({
   const [facing, setFacingState] = useState<OfficeFacing>("right");
   const phaseRef = useRef<OfficeTravelPhase>("idle");
   const facingRef = useRef<OfficeFacing>("right");
-  const previousTargetRef = useRef<OfficeMotionPoint>();
-  const previousMapSizeRef = useRef<OfficeMapSize>();
+  const previousTargetRef = useRef<OfficeMotionPoint | undefined>(undefined);
+  const previousMapSizeRef = useRef<OfficeMapSize | undefined>(undefined);
   const planRef = useRef<OfficeTravelPlan | null>(null);
   const travelAnimationRef = useRef<Animation | null>(null);
   const phaseAnimationRef = useRef<Animation | null>(null);

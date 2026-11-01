@@ -137,9 +137,17 @@ class PinnedHttpProxy:
             connection.request(handler.command, target, body=body, headers=headers)
             response = connection.getresponse()
             handler.send_response(response.status, response.reason)
-            for name, value in response.getheaders():
-                if name.lower() not in _HOP_BY_HOP_HEADERS:
+            # HTTPResponse.read() decodes chunked transfer framing. Do not
+            # advertise the upstream encoding (or its potentially conflicting
+            # length) for the decoded stream. Close-delimit the downstream body
+            # so upstream responses without Content-Length also terminate.
+            response_headers = response.getheaders()
+            excluded = _hop_by_hop_headers(response_headers) | {"content-length"}
+            for name, value in response_headers:
+                if name.lower() not in excluded:
                     handler.send_header(name, value)
+            handler.send_header("Connection", "close")
+            handler.close_connection = True
             handler.end_headers()
             if handler.command != "HEAD":
                 while chunk := response.read(64 * 1024):
@@ -189,8 +197,25 @@ def _relay_bidirectional(client: socket.socket, upstream: socket.socket) -> None
 
 
 _HOP_BY_HOP_HEADERS = frozenset(
-    {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade"}
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
 )
+
+
+def _hop_by_hop_headers(headers: list[tuple[str, str]]) -> set[str]:
+    excluded = set(_HOP_BY_HOP_HEADERS)
+    for name, value in headers:
+        if name.lower() == "connection":
+            excluded.update(token.strip().lower() for token in value.split(",") if token.strip())
+    return excluded
 
 
 def _read_request_body(handler: BaseHTTPRequestHandler) -> bytes | None:
@@ -208,11 +233,8 @@ def _read_request_body(handler: BaseHTTPRequestHandler) -> bytes | None:
 
 
 def _forward_request_headers(handler: BaseHTTPRequestHandler, authority: str) -> dict[str, str]:
-    headers = {
-        name: value
-        for name, value in handler.headers.items()
-        if name.lower() not in _HOP_BY_HOP_HEADERS and name.lower() != "host"
-    }
+    excluded = _hop_by_hop_headers(list(handler.headers.items())) | {"host"}
+    headers = {name: value for name, value in handler.headers.items() if name.lower() not in excluded}
     headers["Host"] = authority
     headers["Connection"] = "close"
     return headers

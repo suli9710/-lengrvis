@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const ts = require("typescript");
+const ts = require("typescript-legacy");
 const QRCode = require("qrcode");
 
 const sourcePath = path.join(__dirname, "..", "src", "shared", "mobilePairingPayload.ts");

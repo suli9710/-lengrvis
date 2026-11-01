@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -44,6 +44,7 @@ def test_mcp_client_sends_authorization_when_token_present() -> None:
         )
 
     mock_http.post = AsyncMock(side_effect=mock_post)
+    mock_http.stream = _mock_stream(mock_http.post)
     pinned = type(
         "Pinned",
         (),
@@ -120,6 +121,7 @@ def test_mcp_client_uses_follow_redirects_false() -> None:
             )
 
         instance.post = AsyncMock(side_effect=mock_post)
+        instance.stream = _mock_stream(instance.post)
         async_client_cls.return_value.__aenter__ = AsyncMock(return_value=instance)
         async_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
@@ -127,3 +129,67 @@ def test_mcp_client_uses_follow_redirects_false() -> None:
 
     _, kwargs = async_client_cls.call_args
     assert kwargs.get("follow_redirects") is False
+    assert kwargs.get("trust_env") is False
+
+
+def test_mcp_session_delete_ignores_environment_proxy() -> None:
+    from app.core.outbound_url import PinnedOutboundRequest
+
+    client = MCPClient(MCPServerConfig(name="demo", url="https://api.example.com/mcp"))
+    client._session_id = "session-test"
+    with (
+        patch(
+            "app.mcp.client.pin_outbound_http_url", return_value=PinnedOutboundRequest(url="https://93.184.216.34/mcp")
+        ),
+        patch("app.mcp.client.httpx.AsyncClient") as client_factory,
+    ):
+        instance = AsyncMock()
+        instance.stream = _mock_stream(AsyncMock(return_value=httpx.Response(204)))
+        client_factory.return_value.__aenter__ = AsyncMock(return_value=instance)
+        client_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+        asyncio.run(client._delete_session())
+    assert client_factory.call_args.kwargs["trust_env"] is False
+
+
+def test_mcp_streaming_http_ignores_environment_proxy(monkeypatch) -> None:
+    from app.core.outbound_url import PinnedOutboundRequest
+    from app.mcp.http_stream import post_streaming_http
+
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    options = []
+
+    def factory(**kwargs):
+        options.append(kwargs)
+        return httpx.AsyncClient(
+            **kwargs,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+            ),
+        )
+
+    result = asyncio.run(
+        post_streaming_http(
+            pinned=PinnedOutboundRequest(url="https://93.184.216.34/mcp"),
+            payload={"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
+            headers={},
+            timeout=1,
+            session_id=None,
+            protocol_version="2025-11-25",
+            auth_token="",
+            handle_notification=AsyncMock(),
+            http_client_factory=factory,
+        )
+    )
+    assert options[0]["trust_env"] is False
+    assert result.message["result"] == {"ok": True}
+
+
+def _mock_stream(request):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def stream(_method, url, **kwargs):
+        yield await request(url, **kwargs)
+
+    return MagicMock(side_effect=stream)

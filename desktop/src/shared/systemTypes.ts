@@ -8,6 +8,9 @@ export interface LocalMetricsSummary {
     terminal: number;
     succeeded: number;
     successRate: number | null;
+    rolledBack: number;
+    rollbackAttempts: number;
+    rollbackRecoveryRate: number | null;
     byStatus: Record<string, number>;
   };
   runs: {

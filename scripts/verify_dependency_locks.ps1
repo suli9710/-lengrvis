@@ -435,8 +435,8 @@ function Test-GradleWrapperDistribution {
 
     $wrapperRelativePath = "mobile\android\gradle\wrapper\gradle-wrapper.properties"
     $wrapperPath = Join-Path $Root $wrapperRelativePath
-    $expectedDistributionUrl = "https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
-    $expectedSha256 = "b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+    $expectedDistributionUrl = "https\://services.gradle.org/distributions/gradle-9.4.1-bin.zip"
+    $expectedSha256 = "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb"
 
     if (-not (Test-Path -LiteralPath $wrapperPath)) {
         $Issues.Add("Missing Gradle wrapper properties: $wrapperRelativePath")
@@ -461,11 +461,11 @@ function Test-GradleWrapperDistribution {
 
     $actualSha256 = $shaMatch.Groups["value"].Value.ToLowerInvariant()
     if ($actualSha256 -ne $expectedSha256) {
-        $Issues.Add("$wrapperRelativePath distributionSha256Sum does not match the pinned Gradle 9.3.1 binary checksum.")
+        $Issues.Add("$wrapperRelativePath distributionSha256Sum does not match the pinned Gradle 9.4.1 binary checksum.")
         return
     }
 
-    Write-Host "Verified Gradle wrapper distribution checksum for Gradle 9.3.1."
+    Write-Host "Verified Gradle wrapper distribution checksum for Gradle 9.4.1."
 }
 
 if ([string]::IsNullOrWhiteSpace($Root)) {

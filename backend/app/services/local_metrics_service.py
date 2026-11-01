@@ -1,9 +1,10 @@
 """Opt-in, local-only execution quality metrics.
 
 Aggregates raw data that the product already records (tasks, runs, run_events,
-llm_usage_events) into the four headline rates the desktop metrics panel shows:
+llm_usage_events) into the headline rates the desktop metrics panel shows:
 
 - task success rate (completed / terminal tasks)
+- rollback recovery rate (rolled back / terminal rollback outcomes)
 - recovery trigger rate (runs that needed at least one OS reflection)
 - ask_user reflection share (reflections that escalated to the user)
 - LLM anomaly rate (recorded responses with a non-success finish reason)
@@ -23,7 +24,8 @@ from typing import Any
 from app.core import db
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "denied", "cancelled", "rolled_back", "repair_required"}
-SUCCESS_TASK_STATUSES = {"completed", "rolled_back"}
+# A successful rollback restores safety; it does not complete the original goal.
+SUCCESS_TASK_STATUSES = {"completed"}
 
 # finish_reason values that indicate a normal completion across providers.
 OK_FINISH_REASONS = {"", "stop", "end_turn", "completed", "tool_calls", "tool_use", "length", "max_tokens"}
@@ -79,18 +81,24 @@ def _task_metrics(rows: list[Any]) -> dict[str, Any]:
             status_counts[status] += 1
     terminal = sum(count for status, count in status_counts.items() if status in TERMINAL_TASK_STATUSES)
     succeeded = sum(count for status, count in status_counts.items() if status in SUCCESS_TASK_STATUSES)
+    rolled_back = status_counts["rolled_back"]
+    rollback_attempts = rolled_back + status_counts["repair_required"]
     return {
         "total": len(rows),
         "terminal": terminal,
         "succeeded": succeeded,
         "success_rate": _rate(succeeded, terminal),
+        "rolled_back": rolled_back,
+        "rollback_attempts": rollback_attempts,
+        "rollback_recovery_rate": _rate(rolled_back, rollback_attempts),
         "by_status": dict(sorted(status_counts.items())),
     }
 
 
 def _effective_task_status(data: dict[str, Any]) -> str:
     status = str(data.get("status") or "").strip().lower()
-    rollback = (data.get("metadata") or {}).get("rollback")
+    metadata = data.get("metadata")
+    rollback = metadata.get("rollback") if isinstance(metadata, dict) else None
     if status == "failed" and isinstance(rollback, dict) and rollback:
         return "rolled_back" if str(rollback.get("state") or "").strip().lower() == "succeeded" else "repair_required"
     return status

@@ -124,14 +124,14 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
 
 
 def activation_install_secret_path(settings: Any) -> Path:
-    data_dir = Path(str(getattr(settings, "data_dir", "") or "")).expanduser()
-    if not data_dir:
+    raw_data_dir = str(getattr(settings, "data_dir", "") or "").strip()
+    if not raw_data_dir:
         raise DeviceIdentityError(
             "激活存储目录不可用。",
             code="activation_storage_unavailable",
             status_code=503,
         )
-    return data_dir / ACTIVATION_INSTALL_SECRET_FILE
+    return Path(raw_data_dir).expanduser() / ACTIVATION_INSTALL_SECRET_FILE
 
 
 def _activation_install_secret(settings: Any) -> str:

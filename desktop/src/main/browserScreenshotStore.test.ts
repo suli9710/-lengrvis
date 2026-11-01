@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
+import { transpileModule, ModuleKind, ScriptTarget } from "typescript-legacy";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 

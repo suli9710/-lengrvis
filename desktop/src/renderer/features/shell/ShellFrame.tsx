@@ -309,7 +309,7 @@ function WorkbenchPanel({
   isClosing,
   onClose
 }: {
-  panelRef: RefObject<HTMLElement>;
+  panelRef: RefObject<HTMLElement | null>;
   state: WorkbenchAgentState;
   title: string;
   detail: string;
@@ -698,7 +698,7 @@ function WindowBar({
   activityCenterState: WorkbenchAgentState;
   activityCenterLabel: string;
   isActivityCenterOpen: boolean;
-  activityCenterTriggerRef: RefObject<HTMLButtonElement>;
+  activityCenterTriggerRef: RefObject<HTMLButtonElement | null>;
   onToggleActivityCenter: () => void;
 }) {
   const showConnectionPill = connectionState !== "online" && !(activeView === "home" && connectionState === "checking");
@@ -724,7 +724,7 @@ function WindowBar({
           type="button"
           aria-controls="lengrvis-activity-center"
           aria-expanded={isActivityCenterOpen}
-          aria-label={`${isActivityCenterOpen ? "关闭" : "打开"}活动中心，当前${activityCenterLabel}`}
+          aria-label={`${isActivityCenterOpen ? "关闭" : "打开"}活动中心${activityCenterLabel}`}
           onClick={onToggleActivityCenter}
         >
           <span className="activity-center-trigger__icon" aria-hidden="true">

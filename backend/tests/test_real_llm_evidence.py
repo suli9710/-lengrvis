@@ -753,3 +753,25 @@ def test_emit_and_verify_bind_candidate_and_refuse_overwrite(
         environment=ENVIRONMENT,
     )
     assert any("github_run_attempt does not match" in error for error in errors)
+
+
+def test_release_report_cannot_pass_with_a_skipped_task(tmp_path, valid_report):
+    report = deepcopy(valid_report)
+    report["tasks"][0]["ran"] = False
+    path = tmp_path / "skipped-task.json"
+    _write_report(path, report)
+    with pytest.raises(evidence.EvidenceError):
+        evidence._report_contract(path, repo_root=REPO_ROOT)
+
+
+@pytest.mark.parametrize("missing", ["evidence", "report"])
+def test_release_verification_fails_when_required_file_is_missing(tmp_path, monkeypatch, valid_report, missing):
+    report_path = tmp_path / "report.json"
+    output = tmp_path / "evidence.json"
+    _write_report(report_path, valid_report)
+    monkeypatch.setattr(evidence, "_checkout_commit", lambda _: COMMIT)
+    corpus = evidence._expected_corpus(REPO_ROOT)
+    monkeypatch.setattr(evidence, "_expected_corpus", lambda _: corpus)
+    evidence.emit_evidence(output, report_path=report_path, repo_root=tmp_path, environment=ENVIRONMENT)
+    (output if missing == "evidence" else report_path).unlink()
+    assert evidence.verify_evidence(output, report_path=report_path, repo_root=tmp_path, environment=ENVIRONMENT)

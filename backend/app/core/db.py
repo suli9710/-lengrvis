@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
-from app.core.db_migrations import apply_schema_migrations
+from app.core.db_migrations import apply_schema_migrations, validate_schema_compatibility
 from app.core.db_schema import ensure_columns as _ensure_columns
 from app.core.db_schema import ensure_document_chunks_fts, initialize_schema
 from app.core.db_tables import (
@@ -255,6 +255,7 @@ def init_db(*, force: bool = False) -> None:
 
 def _init_db_schema() -> None:
     with connect() as conn:
+        validate_schema_compatibility(conn)
         initialize_schema(conn, _ensure_columns)
         apply_schema_migrations(conn)
 

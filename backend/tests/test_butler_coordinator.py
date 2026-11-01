@@ -9,6 +9,7 @@ from app.core.butler_models import (
     AutonomyScope,
     ButlerMatter,
     ButlerMessage,
+    MatterInteraction,
     MatterResponse,
     MatterStatus,
     WaitCondition,
@@ -125,3 +126,59 @@ async def test_runtime_binding_exists_before_the_run_can_execute(coordinator):
     saved = store.get(ButlerMatter, matter.id)
     assert saved.status == MatterStatus.RUNNING and saved.active_task_id == "task-owned"
     assert captured[0]["butler_execution_ticket"] == saved.execution_ticket
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [None, {"kind": "user"}])
+async def test_user_wait_accepts_conversational_answer_on_original_matter(coordinator, waiting):
+    async def decide(matter):
+        return {"action": "wait", "reason": "请在原应用完成登录后告诉我", "waiting": waiting}
+
+    coordinator.decision_provider = decide
+    original = await coordinator.message(ButlerMessage(message="整理已登录应用中的资料"))
+    matter_id = original["matter"]["id"]
+    await coordinator.dispatch(matter_id)
+    waiting_matter = store.get(ButlerMatter, matter_id)
+    assert waiting_matter.status == MatterStatus.WAITING_INPUT
+    assert waiting_matter.interaction is not None
+
+    response = await coordinator.message(ButlerMessage(message="已经登录好了"))
+    assert response["matter"]["id"] == matter_id
+    assert response["matter"]["status"] == MatterStatus.QUEUED
+    assert response["matter"]["answers"]["user_replies"] == ["已经登录好了"]
+    assert len(store.list_records(ButlerMatter)) == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_wait_remains_an_event_wait_without_user_interaction(coordinator):
+    async def decide(matter):
+        return {
+            "action": "wait",
+            "reason": "等待约定时间",
+            "waiting": {"kind": "time", "due_at": "2030-01-01T00:00:00+00:00"},
+        }
+
+    coordinator.decision_provider = decide
+    matter = store.save(ButlerMatter(goal="到约定时间再处理"))
+    await coordinator.dispatch(matter.id)
+    saved = store.get(ButlerMatter, matter.id)
+    assert saved.status == MatterStatus.WAITING_EVENT
+    assert saved.interaction is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [None, WaitCondition(kind="user")])
+async def test_recover_repairs_legacy_user_handoffs(coordinator, waiting):
+    matter = store.save(
+        ButlerMatter(
+            goal="接续网页任务",
+            status=MatterStatus.WAITING_EVENT,
+            waiting=waiting,
+            interaction=MatterInteraction(kind="takeover", message="请完成登录"),
+        )
+    )
+    await coordinator.recover()
+    assert store.get(ButlerMatter, matter.id).status == MatterStatus.WAITING_INPUT
+    response = await coordinator.message(ButlerMessage(message="登录好了"))
+    assert response["matter"]["id"] == matter.id
+    assert response["matter"]["status"] == MatterStatus.QUEUED

@@ -788,6 +788,26 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
 )
 
 
+def validate_schema_compatibility(conn: sqlite3.Connection) -> dict[int, str]:
+    """Reject incompatible databases before any unversioned schema writes."""
+    _validate_migration_registry()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'schema_migrations'").fetchone() is None:
+        return {}
+    applied_rows = conn.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
+    applied = {int(row[0]): str(row[1]) for row in applied_rows}
+    known = {migration.version: migration.name for migration in MIGRATIONS}
+    unknown_versions = sorted(set(applied) - set(known))
+    if unknown_versions:
+        versions = ", ".join(str(version) for version in unknown_versions)
+        raise RuntimeError(f"database contains unknown schema migration versions: {versions}")
+    for version, applied_name in applied.items():
+        if applied_name != known[version]:
+            raise RuntimeError(
+                f"schema migration {version} name mismatch: database={applied_name!r}, code={known[version]!r}"
+            )
+    return applied
+
+
 def apply_schema_migrations(conn: sqlite3.Connection) -> list[int]:
     if conn.in_transaction:
         raise RuntimeError("schema migrations require a connection without an active transaction")
@@ -801,18 +821,7 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> list[int]:
         )
         """
     )
-    applied_rows = conn.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
-    applied = {int(row[0]): str(row[1]) for row in applied_rows}
-    known = {migration.version: migration.name for migration in MIGRATIONS}
-    unknown_versions = sorted(set(applied) - set(known))
-    if unknown_versions:
-        versions = ", ".join(str(version) for version in unknown_versions)
-        raise RuntimeError(f"database contains unknown schema migration versions: {versions}")
-    for version, applied_name in applied.items():
-        if applied_name != known[version]:
-            raise RuntimeError(
-                f"schema migration {version} name mismatch: database={applied_name!r}, code={known[version]!r}"
-            )
+    applied = validate_schema_compatibility(conn)
     completed: list[int] = []
     for migration in MIGRATIONS:
         if migration.version in applied:

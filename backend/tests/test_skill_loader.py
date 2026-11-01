@@ -406,11 +406,20 @@ tools:
         load_skill_package(skill_root)
 
 
-def test_http_handler_rejects_non_loopback_entry(tmp_path: Path):
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "https://example.com/skill",
+        "http://127.attacker.example:9001/skill",
+        "http://127.0.0.1.attacker.example:9001/skill",
+        "http://127.1:9001/skill",
+    ],
+)
+def test_http_handler_rejects_non_loopback_entry(tmp_path: Path, entry: str):
     skill_root = tmp_path / "remote_http_skill"
     skill_root.mkdir()
     (skill_root / "skill.yaml").write_text(
-        """
+        f"""
 name: remote-http-skill
 version: "1.0"
 agent_owner: SearchAgent
@@ -418,7 +427,7 @@ tools:
   - name: skill.http.remote
     execution:
       type: http
-      entry: https://example.com/skill
+      entry: {entry}
 """.strip(),
         encoding="utf-8",
     )
@@ -454,3 +463,25 @@ def test_repository_skill_manifests_do_not_use_legacy_permissions(test_data_dir:
 
     assert legacy_warnings == []
     assert legacy_defaults == []
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.42.0.1", "[::1]", "localhost"])
+def test_http_skill_literal_loopback_hosts_remain_allowed(host: str):
+    from app.skills.sandbox import is_loopback_http_url
+
+    assert is_loopback_http_url(f"http://{host}:9001/skill")
+
+
+def test_http_skill_ignores_environment_proxy(monkeypatch, tmp_path: Path, http_skill_server: str):
+    from app.skills.sandbox import SkillSandbox
+    from app.skills.schemas import SkillExecution
+
+    # An unusable proxy proves that the loopback payload never follows proxy
+    # environment variables. NO_PROXY is explicitly empty to exercise this.
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    sandbox = SkillSandbox(tmp_path, allow_unsafe_local_skill_execution=True)
+    execution = SkillExecution(type="http", entry=http_skill_server)
+    result = sandbox.execute(execution, {"text": "local only"}, {})
+    assert result == {"ok": True, "echo": "local only", "saw_context": True}

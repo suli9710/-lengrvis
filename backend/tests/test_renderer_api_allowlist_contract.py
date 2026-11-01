@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from fastapi.routing import iter_route_contexts
+
 from app.main import create_app
 
 ALLOWLIST_PATH = Path(__file__).resolve().parents[2] / "desktop" / "src" / "shared" / "apiRequestAllowlist.ts"
@@ -35,7 +37,7 @@ def _route_shape(path: str) -> tuple[str, ...]:
 
 def _backend_route_shapes() -> set[tuple[str, tuple[str, ...]]]:
     routes: set[tuple[str, tuple[str, ...]]] = set()
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         path = str(getattr(route, "path", "") or "")
         for method in getattr(route, "methods", set()) or set():
             routes.add((str(method).upper(), _route_shape(path)))
@@ -44,7 +46,7 @@ def _backend_route_shapes() -> set[tuple[str, tuple[str, ...]]]:
 
 def _backend_routes() -> set[tuple[str, str]]:
     routes: set[tuple[str, str]] = set()
-    for route in create_app().routes:
+    for route in iter_route_contexts(create_app().routes):
         path = str(getattr(route, "path", "") or "")
         for method in getattr(route, "methods", set()) or set():
             routes.add((str(method).upper(), path))

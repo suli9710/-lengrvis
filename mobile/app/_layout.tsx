@@ -1,6 +1,6 @@
 import { Slot, usePathname, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, type AppStateStatus, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { AuthExpiredError, clearRemoteInputGrantTokens, getApprovalDetail, type PairingSession, type RemoteInputGrant } from "../src/api/client";
@@ -28,7 +28,7 @@ export default function RootLayout() {
   const [remoteInputGrant, setRemoteInputGrant] = useState<RemoteInputGrant | null>(null);
   const [consentGate, setConsentGate] = useState<ConsentGateState>("checking");
   const [sessionLocked, setSessionLocked] = useState(() => AppState.currentState !== "active");
-  const appStateRef = useRef<AppStateStatus | null>(AppState.currentState);
+  const appStateRef = useRef<string | null | undefined>(AppState.currentState);
   const sessionLockEpochRef = useRef(0);
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function RootLayout() {
   }, [router]);
 
   useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
+    const handleAppStateChange = (nextState: string) => {
       const transition = mobileSessionTransition(appStateRef.current, nextState);
       appStateRef.current = nextState;
       if (transition === "lock") {
@@ -253,7 +253,7 @@ export default function RootLayout() {
     return (
       <GestureHandlerRootView style={styles.flex}>
         <SafeAreaView style={styles.safeArea} testID="app-consent-checking">
-          <StatusBar barStyle="dark-content" backgroundColor={colors.canvas} />
+          <StatusBar barStyle="dark-content" />
           <View style={styles.centered}>
             <ActivityIndicator accessibilityLabel="正在检查使用条款状态" color={colors.accent} size="large" />
           </View>
@@ -395,7 +395,7 @@ function SessionLoadScreen({
       : "手机没有读到可用的本地会话。你可以重试，或重新和电脑配对。";
   return (
     <SafeAreaView style={styles.safeArea} testID="app-session-load-screen">
-      <StatusBar barStyle="dark-content" backgroundColor={colors.canvas} />
+      <StatusBar barStyle="dark-content" />
       <View
         accessibilityLabel={`${title}。${detail}`}
         accessibilityLiveRegion="polite"

@@ -36,6 +36,11 @@ function validateSafeExternalUrl(rawUrl: string): URL {
     throw new Error("External URL protocol is not allowed");
   }
   if (parsed.protocol === "mailto:") {
+    // Mail clients decode the recipient as well as the query. Encoded CR/LF
+    // must not cross the shell boundary in either part of the mailto URL.
+    if (hasControlCharacters(decodeURIComponent(parsed.pathname))) {
+      throw new Error("External mailto URL contains unsafe recipient characters");
+    }
     for (const [key, value] of parsed.searchParams.entries()) {
       if (hasControlCharacters(key) || hasControlCharacters(value)) {
         throw new Error("External mailto URL contains unsafe header characters");

@@ -45,7 +45,7 @@ def normalize_mcp_servers(value: Any) -> list[dict]:
                         "command": str(item.get("command") or ""),
                         "args": _normalize_string_list(item.get("args")),
                         "transport": str(item.get("transport", "http")),
-                        "enabled": bool(item.get("enabled", True)),
+                        "enabled": _normalize_bool(item.get("enabled", True), default=False),
                         "auth": dict(item.get("auth") or {}),
                         "env": _normalize_string_mapping(item.get("env")),
                         "inherit_env": _normalize_string_list(item.get("inherit_env") or item.get("inheritEnv")),

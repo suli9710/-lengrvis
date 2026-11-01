@@ -22,7 +22,7 @@ class ActiveRunHandle(concurrent.futures.Future):
     def bind(self, work: FutureLike) -> None:
         with self._work_lock:
             if self.done():
-                work.cancel()
+                _cancel_future(work)
                 return
             self._work = work
         if _future_done(work):
@@ -36,7 +36,7 @@ class ActiveRunHandle(concurrent.futures.Future):
         with self._work_lock:
             work = self._work
         if work is not None and not _future_done(work):
-            work.cancel()
+            _cancel_future(work)
         return super().cancel()
 
     def _complete_from_work(self, work: FutureLike) -> None:
@@ -85,6 +85,30 @@ def schedule_background(coro, *, data_dir: str | None = None) -> concurrent.futu
             return await coro
 
     return asyncio.run_coroutine_threadsafe(run_with_data_dir(), ensure_background_loop())
+
+
+def _cancel_future(work: FutureLike) -> None:
+    """Wake asyncio work on its owner loop, including cancellation from API threads."""
+    if isinstance(work, asyncio.Future):
+        loop = work.get_loop()
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is not loop:
+            # A closed owner cannot execute cancellation or coroutine cleanup.
+            # Do not mutate its asyncio objects from this thread; allow the
+            # concurrent claim handle to be cancelled independently instead.
+            if loop.is_closed():
+                return
+            try:
+                loop.call_soon_threadsafe(work.cancel)
+            except RuntimeError:
+                # The owner may close between the check and scheduling.
+                if not loop.is_closed():
+                    raise
+            return
+    work.cancel()
 
 
 def _future_done(task: object) -> bool:
@@ -193,9 +217,9 @@ def cancel_active_run_task(run_id: str, *, grace_seconds: float = 0.0) -> None:
         with _ACTIVE_RUN_TASKS_LOCK:
             resident = _RESIDENT_LOOP_TASKS.get(run_id)
         if resident is not None and not _future_done(resident):
-            resident.cancel()
+            _cancel_future(resident)
             return
-        work.cancel()
+        _cancel_future(work)
 
     if grace_seconds <= 0:
         _hard_cancel()

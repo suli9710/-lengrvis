@@ -404,6 +404,7 @@ $gates = @(
             "npm --prefix mobile run smoke:token",
             "npm --prefix mobile run smoke:consent",
             "npm --prefix mobile run smoke:session-lifecycle",
+            "npm --prefix mobile run smoke:companion-stream-lifecycle",
             "npm --prefix mobile run smoke:push-notifications",
             "npm --prefix mobile run smoke:push-subscription-lifecycle",
             "npm --prefix mobile run smoke:task-companion",

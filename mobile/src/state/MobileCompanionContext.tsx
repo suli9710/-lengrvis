@@ -259,13 +259,14 @@ export function MobileCompanionProvider({
     setError("");
     void refreshAllAsync()
       .catch((currentError: unknown) => {
+        if (closedByEffect) return;
         if (currentError instanceof AuthExpiredError) {
           handleAuthExpired();
           return;
         }
         setError(errorMessage(currentError));
       })
-      .finally(() => setHasLoadedOnce(true));
+      .finally(() => { if (!closedByEffect) setHasLoadedOnce(true); });
 
     let connectionInfo: ReturnType<typeof approvalWebSocketConnectionInfo>;
     try {
@@ -288,12 +289,14 @@ export function MobileCompanionProvider({
     socketRef.current = socket;
 
     socket.onopen = () => {
+      if (closedByEffect) return;
       reconnectAttemptRef.current = 0;
       setConnection("online");
       setError("");
     };
 
     socket.onmessage = (event) => {
+      if (closedByEffect) return;
       try {
         const payload = JSON.parse(String(event.data)) as ApprovalEvent;
         if (payload.type === "connected") {
@@ -328,10 +331,12 @@ export function MobileCompanionProvider({
     };
 
     socket.onerror = () => {
+      if (closedByEffect) return;
       setError("无法保持与电脑的连接。请确认 Lengrvis 已打开，然后点刷新。");
     };
 
     socket.onclose = (event) => {
+      if (closedByEffect) return;
       if (event.code === 1008) {
         handleAuthExpired();
         return;

@@ -281,3 +281,20 @@ def test_fts_search_without_allowed_directories_is_fail_closed(tmp_path: Path) -
     assert FTSIndex().search("automobile") == []
     assert FTSIndex().search("automobile", allowed_directories=[]) == []
     assert FTSIndex().search("automobile", allowed_directories=[str(workspace)])
+
+
+@pytest.mark.parametrize("stored", [b"bad", "[NaN, 1]", "[[1, 2]]", '["broken"]'])
+def test_semantic_search_falls_back_for_invalid_cached_vectors(tmp_path: Path, stored) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "garage.txt").write_text("Automobile garage repair notes.", encoding="utf-8")
+    FTSIndex(embedder=semantic_embedder).rebuild([str(workspace)])
+    with db.connect() as conn:
+        conn.execute("UPDATE document_chunk_embeddings SET embedding = ?", (stored,))
+
+    result = VectorIndex(embedder=semantic_embedder).search("automobile", allowed_directories=[str(workspace)])
+
+    assert result["source"] == "fts_lexical_fallback"
+    assert result["count"] == 1
+    assert result["results"][0]["name"] == "garage.txt"
+    assert result["results"][0]["vector_score"] == 0.0

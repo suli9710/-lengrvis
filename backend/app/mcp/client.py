@@ -26,7 +26,7 @@ import httpx
 
 from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
-from app.mcp.http_stream import post_streaming_http
+from app.mcp.http_stream import post_streaming_http, read_bounded_response
 from app.mcp.protocol import (
     JSONRPC_VERSION,
     _canonical_mcp_resource,
@@ -362,11 +362,12 @@ class MCPClient:
                 self._reset_lifecycle()
             return streamed.message
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
             try:
-                response = await client.post(
-                    pinned.url, json=payload, headers=headers, extensions=dict(pinned.extensions)
-                )
+                async with client.stream(
+                    "POST", pinned.url, json=payload, headers=headers, extensions=dict(pinned.extensions)
+                ) as incoming:
+                    response = await read_bounded_response(incoming)
                 self._last_response_headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
                 if response.status_code == 404 and self._session_id and method != "initialize":
                     self._reset_lifecycle()
@@ -719,8 +720,11 @@ class MCPClient:
             token = self._auth_token()
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
-                await client.delete(pinned.url, headers=headers, extensions=dict(pinned.extensions))
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+                # No response body is needed to end the session. Close without
+                # buffering an untrusted server's potentially unlimited body.
+                async with client.stream("DELETE", pinned.url, headers=headers, extensions=dict(pinned.extensions)):
+                    pass
         except (httpx.HTTPError, ValueError):
             return
 

@@ -23,7 +23,10 @@ export function mapLocalMetrics(data: BackendLocalMetrics, fallbackWindowDays = 
       total: Number(data.tasks?.total ?? 0),
       terminal: Number(data.tasks?.terminal ?? 0),
       succeeded: Number(data.tasks?.succeeded ?? 0),
-      successRate: data.tasks?.success_rate ?? null,
+      successRate: metricRate(data.tasks?.success_rate, data.tasks?.terminal),
+      rolledBack: Number(data.tasks?.rolled_back ?? 0),
+      rollbackAttempts: Number(data.tasks?.rollback_attempts ?? 0),
+      rollbackRecoveryRate: metricRate(data.tasks?.rollback_recovery_rate, data.tasks?.rollback_attempts),
       byStatus: data.tasks?.by_status ?? {}
     },
     runs: {
@@ -45,6 +48,12 @@ export function mapLocalMetrics(data: BackendLocalMetrics, fallbackWindowDays = 
       byFinishReason: data.llm?.by_finish_reason ?? {}
     }
   };
+}
+
+function metricRate(value: number | null | undefined, sampleCount: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    && typeof sampleCount === "number" && Number.isFinite(sampleCount) && sampleCount > 0
+    ? value : null;
 }
 
 export function mapProcess(process: BackendProcess): SystemProcess {

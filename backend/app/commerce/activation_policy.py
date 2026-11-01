@@ -155,9 +155,9 @@ class PreparedActivation:
             raise _error("activation_device_fingerprint_invalid", status_code=422)
 
     def ensure_existing_device_matches(self, *, fingerprint: str, server_device_ref: str) -> None:
-        if fingerprint and self.device.fingerprint and not hmac.compare_digest(fingerprint, self.device.fingerprint):
+        if fingerprint and self.device.fingerprint and not _constant_time_equal(fingerprint, self.device.fingerprint):
             raise _error("activation_device_fingerprint_mismatch", status_code=409)
-        if server_device_ref and not hmac.compare_digest(server_device_ref, self.server_device_ref):
+        if server_device_ref and not _constant_time_equal(server_device_ref, self.server_device_ref):
             raise _error("activation_device_fingerprint_mismatch", status_code=409)
 
 
@@ -185,7 +185,7 @@ class PreparedRefresh:
         if (
             stored_fingerprint
             and self.device.fingerprint
-            and not hmac.compare_digest(stored_fingerprint, self.device.fingerprint)
+            and not _constant_time_equal(stored_fingerprint, self.device.fingerprint)
         ):
             raise _error("activation_device_fingerprint_mismatch", status_code=409)
         next_fingerprint = self.device.fingerprint or stored_fingerprint or license_fingerprint
@@ -201,7 +201,7 @@ class PreparedRefresh:
         if (
             stored_server_device_ref
             and next_server_device_ref
-            and not hmac.compare_digest(stored_server_device_ref, next_server_device_ref)
+            and not _constant_time_equal(stored_server_device_ref, next_server_device_ref)
         ):
             raise _error("activation_device_fingerprint_mismatch", status_code=409)
         return ResolvedDeviceBinding(
@@ -258,7 +258,7 @@ class ActivationPolicy:
         expected_device_id: str = "",
     ) -> PreparedRefresh:
         device_id = _clean_device_id(request.device_id)
-        if expected_device_id and not hmac.compare_digest(expected_device_id, device_id):
+        if expected_device_id and not _constant_time_equal(expected_device_id, device_id):
             raise _error("license_device_mismatch", status_code=402)
         return PreparedRefresh(
             device=self._prepare_device(
@@ -317,6 +317,12 @@ def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> st
     return ActivationPolicy(key_pepper=str(configured_pepper or "").strip()).hash_activation_key(activation_key)
 
 
+def _constant_time_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest(
+        left.encode("utf-8", errors="surrogatepass"), right.encode("utf-8", errors="surrogatepass")
+    )
+
+
 def clean_activation_key(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -372,7 +378,7 @@ def device_binding_claim(device_profile: str, *, device_fingerprint: str) -> dic
     profile = decode_device_profile(device_profile)
     try:
         hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         hardware_signal_count = 0
     return {
         "strength": safe_label(profile.get("binding_strength"), max_length=32),
@@ -435,6 +441,10 @@ def _clean_device_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise _error("activation_device_required", status_code=422)
+    try:
+        text.encode("utf-8")
+    except UnicodeError as exc:
+        raise _error("activation_device_invalid", status_code=422) from exc
     if len(text) > MAX_DEVICE_ID_CHARS or any(char.isspace() for char in text):
         raise _error("activation_device_invalid", status_code=422)
     return text
@@ -466,13 +476,13 @@ def _enforce_device_profile_consistency(profile: Mapping[str, Any], *, device_fi
     if (
         not device_fingerprint
         or not reported_fingerprint
-        or not hmac.compare_digest(reported_fingerprint, device_fingerprint)
+        or not _constant_time_equal(reported_fingerprint, device_fingerprint)
         or not str(profile.get("install_hash") or "").strip()
     ):
         raise _error("activation_device_profile_mismatch", status_code=422)
     try:
         hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         hardware_signal_count = 0
     signals_raw = profile.get("signals")
     signals = (
@@ -494,7 +504,7 @@ def _enforce_strong_device_proof(profile: Mapping[str, Any]) -> None:
     storage = str(profile.get("secret_storage") or "").strip().lower()
     try:
         hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         hardware_signal_count = 0
     if strength != "strong" or storage not in {"dpapi", "keyring"} or hardware_signal_count < 1:
         raise _error("activation_device_proof_weak", status_code=422)

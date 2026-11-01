@@ -41,14 +41,14 @@ def test_mobile_expo_patch_dependencies_match_the_supported_sdk_line(project_roo
     eas = json.loads((project_root / "mobile" / "eas.json").read_text(encoding="utf-8"))
 
     expected = {
-        "expo": "56.0.20",
-        "expo-notifications": "56.0.24",
-        "expo-router": "56.2.19",
+        "expo": "58.0.22",
+        "expo-notifications": "58.1.7",
+        "expo-router": "58.0.29",
     }
     assert {name: package["dependencies"][name] for name in expected} == expected
     assert {name: lock["packages"][""]["dependencies"][name] for name in expected} == expected
     assert eas["cli"]["version"] == package["devDependencies"]["eas-cli"]
-    assert package["overrides"]["eas-cli@22.2.0"] == {
+    assert package["overrides"][f"eas-cli@{package['devDependencies']['eas-cli']}"] == {
         "minimatch@5.1.2": "5.1.9",
         "ts-deepmerge@6.2.0": "8.0.0",
     }
@@ -101,13 +101,13 @@ def test_gradle_wrapper_distribution_is_checksum_pinned_and_checked_by_lock_gate
 ) -> None:
     wrapper = _text(project_root, "mobile/android/gradle/wrapper/gradle-wrapper.properties")
     lock_gate = _text(project_root, "scripts/verify_dependency_locks.ps1")
-    expected_sha256 = "b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+    expected_sha256 = "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb"
 
-    assert "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" in wrapper
+    assert "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.4.1-bin.zip" in wrapper
     assert f"distributionSha256Sum={expected_sha256}" in wrapper
     assert "Test-GradleWrapperDistribution" in lock_gate
     assert "distributionSha256Sum" in lock_gate
-    assert "gradle-9.3.1-bin.zip" in lock_gate
+    assert "gradle-9.4.1-bin.zip" in lock_gate
 
 
 def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) -> None:
@@ -151,3 +151,41 @@ def test_codeql_scans_custom_android_kotlin_security_code(project_root: Path) ->
     assert ":app:compileDebugKotlin" in kotlin_compile["run"]
     assert ":app:compileDebugAndroidTestKotlin" in kotlin_compile["run"]
     assert codeql_analyze["with"]["category"] == "${{ matrix.category }}"
+
+
+def test_companion_stream_lifecycle_smoke_is_gated(project_root: Path) -> None:
+    command = "npm --prefix mobile run smoke:companion-stream-lifecycle"
+    for relative in (
+        ".github/workflows/ci.yml",
+        "scripts/run_tests.ps1",
+        "scripts/generate_current_release_evidence.ps1",
+    ):
+        assert command in _text(project_root, relative)
+
+
+def test_windows_android_native_gate_uses_verified_long_path_toolchain(project_root: Path) -> None:
+    properties = _text(project_root, "mobile/android/gradle.properties")
+    assert "android.cmakeVersion=3.31.6" in properties
+    assert "reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64" in properties
+    assert "newArchEnabled=true" in properties
+    ci = yaml.safe_load(_text(project_root, ".github/workflows/ci.yml"))
+    step = next(
+        step
+        for step in ci["jobs"]["mobile"]["steps"]
+        if step.get("name") == "Android native debug + androidTest compilation gate"
+    )
+    script = step["run"]
+    assert '$env:GITHUB_ACTIONS -ne "true"' in script
+    assert 'Get-ItemPropertyValue -Path $fileSystemKey -Name "LongPathsEnabled"' in script
+    assert '$cmakeVersion = "3.31.6"' in script
+    assert '& $sdkManager "cmake;$cmakeVersion"' in script
+    assert '"cmake/$cmakeVersion/bin/ninja.exe"' in script
+    assert "& $ninja --version" in script
+    assert '[version]$ninjaVersion -lt [version]"1.12.0"' in script
+    assert "CMAKE_MAKE_PROGRAM:FILEPATH=" in script
+    assert "& node mobile/scripts/verify-native-tool-identity.cjs $ninja $selectedNinja" in script
+    assert "$selectedNinja -ine [System.IO.Path]::GetFullPath($ninja)" not in script
+    assert "$nativeCaches.Count -eq 0" in script
+    assert ":app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace" in script
+    assert "-PreactNativeArchitectures" not in script
+    assert "-x " not in script

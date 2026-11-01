@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +27,37 @@ class MCPHTTPStreamResult:
     session_expired: bool = False
 
 
+class _LimitedResponseStream(httpx.AsyncByteStream):
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        total = 0
+        async for chunk in self.response.aiter_bytes():
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise ValueError("MCP response exceeded the size limit")
+            yield chunk
+
+
+def _limited_response(response: httpx.Response) -> httpx.Response:
+    # Limit decoded chunks before either body buffering or line decoding. In
+    # particular, aiter_lines alone can buffer an unlimited newline-free SSE
+    # event before yielding anything to the caller's size check.
+    headers = [
+        (name, value)
+        for name, value in response.headers.multi_items()
+        if name.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+    ]
+    return httpx.Response(response.status_code, headers=headers, stream=_LimitedResponseStream(response))
+
+
+async def read_bounded_response(response: httpx.Response) -> httpx.Response:
+    bounded = _limited_response(response)
+    await bounded.aread()
+    return bounded
+
+
 async def post_streaming_http(
     *,
     pinned: Any,
@@ -45,7 +76,7 @@ async def post_streaming_http(
     expected_id = payload.get("id")
     response_headers: dict[str, str] = {}
     try:
-        async with http_client_factory(timeout=timeout, follow_redirects=False) as client:
+        async with http_client_factory(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             async with client.stream(
                 "POST",
                 pinned.url,
@@ -64,9 +95,9 @@ async def post_streaming_http(
                     return await _http_error_result(response, response_headers)
                 content_type = response.headers.get("content-type", "").casefold()
                 if "text/event-stream" not in content_type:
-                    await response.aread()
+                    buffered = await read_bounded_response(response)
                     return MCPHTTPStreamResult(
-                        _decode_json_response(response, expected_id=expected_id),
+                        _decode_json_response(buffered, expected_id=expected_id),
                         response_headers,
                     )
                 result, last_event_id, retry_milliseconds = await consume_sse_stream(
@@ -108,7 +139,6 @@ async def post_streaming_http(
                 ) as resumed:
                     response_headers = _normalized_headers(resumed)
                     if resumed.status_code >= 400:
-                        await resumed.aread()
                         return MCPHTTPStreamResult(
                             _error(
                                 f"MCP SSE resume HTTP error {resumed.status_code}",
@@ -125,7 +155,6 @@ async def post_streaming_http(
                         )
                     resumed_type = resumed.headers.get("content-type", "").casefold()
                     if "text/event-stream" not in resumed_type:
-                        await resumed.aread()
                         return MCPHTTPStreamResult(
                             _error("MCP SSE resume returned a non-SSE response", "protocol"),
                             response_headers,
@@ -185,7 +214,7 @@ async def consume_sse_stream(
             return message
         return None
 
-    async for line in response.aiter_lines():
+    async for line in _limited_response(response).aiter_lines():
         byte_count += len(line.encode("utf-8")) + 1
         if byte_count > MAX_RESPONSE_BYTES:
             raise ValueError("MCP response exceeded the size limit")
@@ -206,9 +235,9 @@ async def _http_error_result(
     response: httpx.Response,
     response_headers: dict[str, str],
 ) -> MCPHTTPStreamResult:
-    await response.aread()
+    buffered = await read_bounded_response(response)
     try:
-        body = _decode_json_response(response)
+        body = _decode_json_response(buffered)
     except ValueError:
         body = {}
     if isinstance(body, dict) and isinstance(body.get("error"), dict):

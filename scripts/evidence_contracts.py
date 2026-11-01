@@ -623,9 +623,16 @@ def is_passed(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in PASS_VALUES
     if isinstance(value, dict):
-        for key in ("passed", "status", "result", "outcome"):
-            if key in value and is_passed(value[key]):
-                return True
+        # A positive alias cannot override an explicit failure or skipped gate.
+        # Review signatures authenticate the payload, not its internal consistency.
+        if value.get("skipped") not in (None, False):
+            return False
+        outcomes = [
+            value[key]
+            for key in ("passed", "status", "result", "outcome")
+            if key in value
+        ]
+        return bool(outcomes) and all(is_passed(outcome) for outcome in outcomes)
     return False
 
 

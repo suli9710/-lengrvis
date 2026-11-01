@@ -57,7 +57,7 @@ export function LocalModelInstaller({
   const [selectedSetupPlan, setSelectedSetupPlan] = useState<LocalModelSetupPlan | null>(setupPlan);
   const [isCheckingSetupPlan, setIsCheckingSetupPlan] = useState(false);
   const [setupPlanError, setSetupPlanError] = useState("");
-  const closeProgressSocketRef = useRef<() => void>();
+  const closeProgressSocketRef = useRef<(() => void) | undefined>(undefined);
 
   const isInstalling = status === "installing";
   const effectiveSetupPlan = selectedSetupPlan ?? setupPlan;

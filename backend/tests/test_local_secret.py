@@ -229,3 +229,112 @@ def test_concurrent_create_returns_single_secret(monkeypatch, tmp_path: Path):
     assert len(set(values)) == 1
     assert read_local_secret(secret_path) == values[0]
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_null_keyring_is_not_secure_storage(monkeypatch):
+    import keyring
+    from keyring.backends.null import Keyring
+
+    monkeypatch.setattr(local_secret.os, "name", "posix")
+    monkeypatch.setattr(keyring, "get_keyring", Keyring)
+    assert local_secret.keyring_available() is False
+
+
+def test_plaintext_keyring_and_subclasses_are_not_secure_storage(monkeypatch):
+    import sys
+    import types
+
+    import keyring
+
+    class PlaintextKeyring:
+        pass
+
+    class CustomPlaintextKeyring(PlaintextKeyring):
+        pass
+
+    module = types.ModuleType("keyrings.alt.file")
+    module.PlaintextKeyring = PlaintextKeyring
+    monkeypatch.setitem(sys.modules, "keyrings.alt.file", module)
+    monkeypatch.setattr(local_secret.os, "name", "posix")
+    monkeypatch.setattr(keyring, "get_keyring", CustomPlaintextKeyring)
+    assert local_secret.keyring_available() is False
+
+
+def test_chainer_uses_safe_backend_without_null_or_plaintext_fallback(monkeypatch, tmp_path):
+    import keyring
+    from keyring.backends.chainer import ChainerBackend
+    from keyring.backends.null import Keyring
+
+    class MemoryBackend:
+        def __init__(self):
+            self.values = {}
+
+        def set_password(self, service, account, value):
+            self.values[(service, account)] = value
+
+        def get_password(self, service, account):
+            return self.values.get((service, account))
+
+    safe = MemoryBackend()
+
+    class TestChainer(ChainerBackend):
+        @property
+        def backends(self):
+            return [Keyring(), safe]
+
+    monkeypatch.setattr(local_secret.os, "name", "posix")
+    monkeypatch.setattr(keyring, "get_keyring", TestChainer)
+    assert local_secret.keyring_available() is True
+    stored = local_secret._keyring_store(tmp_path / "unit.secret", "test-marker-value")
+    assert local_secret._keyring_read(stored) == "test-marker-value"
+    assert list(safe.values.values()) == ["test-marker-value"]
+
+
+def test_keyring_write_without_persistence_fails(monkeypatch, tmp_path):
+    import keyring
+
+    class DroppingBackend:
+        def set_password(self, *_args):
+            pass
+
+        def get_password(self, *_args):
+            return None
+
+    monkeypatch.setattr(keyring, "get_keyring", DroppingBackend)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        local_secret._keyring_store(tmp_path / "unit.secret", "test-marker-value")
+
+
+def test_existing_keyring_reference_is_not_replaced_when_backend_is_unsafe(monkeypatch, tmp_path):
+    import keyring
+    from keyring.backends.null import Keyring
+
+    path = tmp_path / "existing.secret"
+    reference = LOCAL_SECRET_KEYRING_PREFIX + "existing-account"
+    path.write_text(reference, encoding="utf-8")
+    monkeypatch.setattr(keyring, "get_keyring", Keyring)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        load_or_create_local_secret(path, unavailable_message="unavailable")
+    assert path.read_text(encoding="utf-8") == reference
+
+
+def test_failed_keyring_migration_preserves_legacy_secret(monkeypatch, tmp_path):
+    import keyring
+
+    class DroppingBackend:
+        def set_password(self, *_args):
+            pass
+
+        def get_password(self, *_args):
+            return None
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv(local_secret.ALLOW_INSECURE_LOCAL_SECRETS_ENV, raising=False)
+    path = tmp_path / "legacy.secret"
+    path.write_text("legacy-marker", encoding="utf-8")
+    monkeypatch.setattr(local_secret, "dpapi_available", lambda: False)
+    monkeypatch.setattr(local_secret, "keyring_available", lambda: True)
+    monkeypatch.setattr(keyring, "get_keyring", DroppingBackend)
+    with pytest.raises(RuntimeError):
+        load_or_create_local_secret(path, unavailable_message="unavailable")
+    assert path.read_text(encoding="utf-8") == "legacy-marker"

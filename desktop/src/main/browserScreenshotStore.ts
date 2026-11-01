@@ -150,20 +150,22 @@ export class BrowserScreenshotStore {
     await rejectScreenshotLinks(this.rootDir);
     await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     const files = await ownedScreenshotFiles(this.rootDir, OWNER_MARKER);
-    const marker = join(this.rootDir, OWNER_MARKER);
-    if (files.includes(marker)) {
+    const marker = files.find((file) => basename(file) === OWNER_MARKER);
+    if (marker) {
       if (await readFile(marker, "utf8") !== OWNER_CONTENT) throw new Error("Screenshot directory ownership changed");
     } else {
       if (files.length) throw new Error("Screenshot directory has no ownership marker");
-      await writeFile(marker, OWNER_CONTENT, { flag: "wx", mode: 0o600 });
+      await writeFile(join(this.rootDir, OWNER_MARKER), OWNER_CONTENT, { flag: "wx", mode: 0o600 });
     }
   }
 
   private async clearOwnedRoot(): Promise<void> {
     const files = await ownedScreenshotFiles(this.rootDir, OWNER_MARKER);
-    for (const file of files.filter(path => basename(path) !== OWNER_MARKER)) await unlink(file);
-    await unlink(join(this.rootDir, OWNER_MARKER));
-    await rmdir(this.rootDir);
+    const marker = files.find((file) => basename(file) === OWNER_MARKER);
+    if (!marker) throw new Error("Screenshot directory has no ownership marker");
+    for (const file of files.filter(path => path !== marker)) await unlink(file);
+    await unlink(marker);
+    await rmdir(dirname(marker));
   }
 }
 

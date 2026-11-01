@@ -55,7 +55,9 @@ export function localLibraryLoadReducer(
   if (action.type === "success") {
     return {
       contextKey: action.contextKey,
-      library: action.library,
+      // A completed refresh is a new snapshot even when a cached API response
+      // reuses its items array. Icon retries depend on this refresh boundary.
+      library: { ...action.library, items: [...action.library.items] },
       selectedItem: action.selectedItem,
       isLoading: false,
       error: null

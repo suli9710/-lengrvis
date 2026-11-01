@@ -238,3 +238,42 @@ def test_signed_but_malformed_permission_policy_is_semantic_integrity_failure() 
     assert any("payload is invalid" in failure["reason"] for failure in result["failures"])
     with pytest.raises(db.SensitiveRecordIntegrityError, match="payload is invalid"):
         store.get_policy()
+
+
+@pytest.mark.parametrize("replacement_id", [None, ""])
+@pytest.mark.parametrize("reader", ["fetch_many", "fetch_many_by_fields", "fetch_many_in"])
+def test_sensitive_list_reads_verify_physical_row_identity(replacement_id, reader):
+    approval = Approval(task_id="task_integrity", message="approve", status=ApprovalStatus.PENDING)
+    db.upsert_model("approvals", approval, status=approval.status)
+    payload = approval.model_dump(mode="json")
+    if replacement_id is None:
+        payload.pop("id")
+    else:
+        payload["id"] = replacement_id
+    payload["status"] = "approved"
+    with db.connect() as conn:
+        conn.execute("UPDATE approvals SET data = ? WHERE id = ?", (json.dumps(payload), approval.id))
+    with pytest.raises(db.SensitiveRecordIntegrityError):
+        if reader == "fetch_many":
+            db.fetch_many("approvals")
+        elif reader == "fetch_many_by_fields":
+            db.fetch_many_by_fields("approvals", {"task_id": approval.task_id})
+        else:
+            db.fetch_many_in("approvals", "task_id", [approval.task_id])
+
+
+def test_sensitive_list_rejects_valid_payload_copied_to_another_physical_row():
+    source = Approval(task_id="source", message="source", status=ApprovalStatus.APPROVED)
+    target = Approval(task_id="target", message="target", status=ApprovalStatus.PENDING)
+    db.upsert_model("approvals", source, status=source.status)
+    db.upsert_model("approvals", target, status=target.status)
+    with db.connect() as conn:
+        source_data = conn.execute("SELECT data FROM approvals WHERE id = ?", (source.id,)).fetchone()["data"]
+        conn.execute(
+            "UPDATE approvals SET data = ?, created_at = ? WHERE id = ?",
+            (source_data, "9999-12-31T00:00:00+00:00", target.id),
+        )
+    # The valid source HMAC cannot authenticate a different physical record,
+    # including when sorting/limiting makes that substituted row the only hit.
+    with pytest.raises(db.SensitiveRecordIntegrityError):
+        db.fetch_many("approvals", limit=1)

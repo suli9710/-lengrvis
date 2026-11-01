@@ -233,17 +233,15 @@ class ButlerCoordinator(ButlerConversation, ButlerResident):
                         kind="takeover" if decision.waiting and decision.waiting.kind == "user" else "information",
                     )
 
+                    needs_input = (
+                        decision.action == "ask" or decision.waiting is None or decision.waiting.kind == "user"
+                    )
+
                     def await_input(item: ButlerMatter) -> None:
                         item.constraints.update(decision.constraints)
                         item.coordination_suggestions = suggestions
-                        item.status = (
-                            MatterStatus.WAITING_INPUT if decision.action == "ask" else MatterStatus.WAITING_EVENT
-                        )
-                        item.interaction = (
-                            interaction
-                            if decision.action == "ask" or decision.waiting is None or decision.waiting.kind == "user"
-                            else None
-                        )
+                        item.status = MatterStatus.WAITING_INPUT if needs_input else MatterStatus.WAITING_EVENT
+                        item.interaction = interaction if needs_input else None
                         item.waiting = decision.waiting
                         item.progress = interaction.message
 

@@ -25,6 +25,7 @@ import threading
 import time
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 LOCAL_SECRET_DPAPI_PREFIX = "dpapi:"  # noqa: S105 - marker prefix, not a credential.
 LOCAL_SECRET_KEYRING_PREFIX = "keyring:"  # noqa: S105 - marker prefix, not a credential.
@@ -73,13 +74,42 @@ def keyring_available() -> bool:
     if os.name == "nt":
         return False
     try:
-        import keyring  # type: ignore[import-not-found]
-
-        backend = keyring.get_keyring()
+        return bool(_secure_keyring_backends())
     except _keyring_exception_types():
         return False
-    backend_module = backend.__class__.__module__.lower()
-    return "keyring.backends.fail" not in backend_module
+
+
+def _secure_keyring_backends() -> list[Any]:
+    import keyring  # type: ignore[import-not-found]
+    from keyring.backends.chainer import ChainerBackend
+    from keyring.backends.fail import Keyring as FailKeyring
+    from keyring.backends.null import Keyring as NullKeyring
+
+    unsafe_types: tuple[type, ...] = (FailKeyring, NullKeyring)
+    try:
+        from keyrings.alt.file import PlaintextKeyring
+    except ImportError:
+        pass
+    else:
+        unsafe_types = (*unsafe_types, PlaintextKeyring)
+
+    selected: list[Any] = []
+    visited: set[int] = set()
+
+    def visit(backend: Any) -> None:
+        if id(backend) in visited:
+            return
+        visited.add(id(backend))
+        if isinstance(backend, unsafe_types):
+            return
+        if isinstance(backend, ChainerBackend):
+            for candidate in backend.backends:
+                visit(candidate)
+        else:
+            selected.append(backend)
+
+    visit(keyring.get_keyring())
+    return selected
 
 
 def _dpapi_protect(value: str) -> str:
@@ -114,10 +144,17 @@ def _keyring_account(path: Path) -> str:
 
 def _keyring_store(path: Path, value: str) -> str:
     try:
-        import keyring  # type: ignore[import-not-found]
-
         account = _keyring_account(path)
-        keyring.set_password(_KEYRING_SERVICE, account, value)
+        for backend in _secure_keyring_backends():
+            try:
+                backend.set_password(_KEYRING_SERVICE, account, value)
+            except NotImplementedError:
+                continue
+            if backend.get_password(_KEYRING_SERVICE, account) != value:
+                raise RuntimeError("System keyring did not persist the local secret.")
+            break
+        else:
+            raise RuntimeError("No secure writable system keyring is available.")
     except _keyring_exception_types() as exc:
         raise RuntimeError("System keyring is unavailable for local secret storage.") from exc
     return LOCAL_SECRET_KEYRING_PREFIX + account
@@ -128,9 +165,11 @@ def _keyring_read(stored: str) -> str:
     if not account:
         raise RuntimeError("Local secret keyring reference is empty.")
     try:
-        import keyring  # type: ignore[import-not-found]
-
-        value = keyring.get_password(_KEYRING_SERVICE, account)
+        value = None
+        for backend in _secure_keyring_backends():
+            value = backend.get_password(_KEYRING_SERVICE, account)
+            if value is not None:
+                break
     except _keyring_exception_types() as exc:
         raise RuntimeError("System keyring is unavailable for local secret storage.") from exc
     if not value:

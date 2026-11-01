@@ -332,7 +332,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
 
   return (
     <SafeAreaView style={styles.safeArea} testID="pair-screen">
-      <StatusBar barStyle="dark-content" backgroundColor="#f7f9fb" />
+      <StatusBar barStyle="dark-content" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.screen}>
         <ScrollView
           contentContainerStyle={styles.content}
@@ -504,7 +504,7 @@ function PairingScanner({
   return (
     <Modal animationType="slide" onRequestClose={() => onClose()} presentationStyle="fullScreen" testID="pairing-scanner-modal" visible={visible}>
       <SafeAreaView accessibilityLabel="扫码配对" accessibilityViewIsModal style={styles.scannerScreen} testID="pairing-scanner-screen">
-        <StatusBar barStyle="light-content" backgroundColor="#101820" />
+        <StatusBar barStyle="light-content" />
         <View style={styles.scannerHeader}>
           <View accessibilityElementsHidden importantForAccessibility="no">
             <QrCode size={22} color="#ffffff" />

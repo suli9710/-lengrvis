@@ -716,7 +716,7 @@ export function RemoteScreen({
       style={styles.keyboardAvoiding}
     >
       <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#17222b" />
+      <StatusBar barStyle="light-content" />
       <View style={[styles.header, isCompactRemoteLayout && styles.headerCompact]}>
         <View style={styles.headerText}>
           <Text style={styles.kicker}>{remoteModeText}</Text>

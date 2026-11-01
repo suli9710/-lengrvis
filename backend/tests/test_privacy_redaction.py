@@ -312,3 +312,78 @@ def test_public_redaction_handles_repeated_extensionless_paths_in_linear_time():
 
     assert r"C:\Users\Alice" not in redacted
     assert elapsed < 0.4
+
+
+@pytest.mark.parametrize("root", ["workspace", "mnt", "opt", "srv", "custom-mount"])
+@pytest.mark.parametrize("quoted", [False, True])
+@pytest.mark.parametrize("suffix", ["/clip-secret.onnx", ""])
+def test_public_redaction_hides_arbitrary_posix_mount_paths(root, quoted, suffix):
+    path = f"/{root}/Private Workspace/private-models{suffix}"
+    rendered = f'"{path}"' if quoted else path
+    result = redact_public_text(f"could not load {rendered} with token=private-marker")
+    assert "[REDACTED_LOCAL_PATH]" in result
+    assert root not in result
+    assert "Private Workspace" not in result
+    assert "private-models" not in result
+    assert "clip-secret" not in result
+    assert "private-marker" not in result
+
+
+@pytest.mark.parametrize("url", ["https://example.com/workspace/model", "http://localhost:8000/api/health"])
+def test_public_posix_path_redaction_does_not_consume_urls(url):
+    assert redact_public_text(f"request failed at {url}") == f"request failed at {url}"
+
+
+@pytest.mark.parametrize("prefix", ["path:", "(", "[", "path="])
+def test_public_posix_path_redaction_handles_punctuation_boundaries(prefix):
+    result = redact_public_text(f"{prefix}/custom-mount/private-models/clip-secret.onnx")
+    assert "[REDACTED_LOCAL_PATH]" in result
+    assert "private-models" not in result
+    assert "custom-mount" not in result
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "file:///workspace/private/model.onnx",
+        "file:///tmp/private/model.onnx",
+        "file://localhost/workspace/private/model.onnx",
+        "file://fileserver/Private%20Share/model.onnx",
+        "file:///C:/Users/Private%20Person/model.onnx",
+        "file:///custom-mount/Private Directory",
+    ],
+)
+@pytest.mark.parametrize("quoted", [False, True])
+def test_public_redaction_hides_local_file_uris(uri, quoted):
+    rendered = f'"{uri}"' if quoted else uri
+    result = redact_public_text(f"could not load {rendered} with token=private-marker")
+    assert "[REDACTED_LOCAL_PATH]" in result
+    assert "file:" not in result
+    assert "model.onnx" not in result
+    assert "Private" not in result
+    assert "workspace" not in result
+    assert "private-marker" not in result
+
+
+@pytest.mark.parametrize("root", ["/workspace", "/tmp", "file:///workspace"])  # noqa: S108 - inert redaction input.
+def test_public_path_redaction_preserves_following_diagnostic_sentences(root):
+    path = f"{root}/project/.tmp/private workspace/missing-vendor"
+    text = (
+        f"CLI is unavailable at {path}. "
+        "Vendored dist/cli-node.js or dist/cli-bun.js is missing. "
+        "Build the vendored snapshot or set LENGRVIS_CODE_COMMAND explicitly."
+    )
+    result = redact_public_text(text)
+    assert "private workspace" not in result
+    assert "missing-vendor" not in result
+    assert ".tmp" not in result
+    assert "[REDACTED_LOCAL_PATH]. Vendored" in result
+    assert "Build the vendored snapshot or set LENGRVIS_CODE_COMMAND explicitly." in result
+
+
+def test_public_file_redaction_does_not_stop_at_dot_directory():
+    text = "load /workspace/project/.tmp/private-models/clip-secret.onnx with token=private-marker"
+    result = redact_public_text(text)
+    assert "private-models" not in result
+    assert "clip-secret" not in result
+    assert result.count("[REDACTED_LOCAL_PATH]") == 1

@@ -5,7 +5,7 @@
  * requires separate acknowledgement, and stores their versions and times.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type ComponentRef } from "react";
 import {
   Linking,
   Platform,
@@ -51,7 +51,7 @@ export function ConsentScreen({ onConsented }: ConsentScreenProps) {
   const [agreeing, setAgreeing] = useState(false);
   const [legalOpenError, setLegalOpenError] = useState("");
   const [saveError, setSaveError] = useState("");
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollViewRef = useRef<ComponentRef<typeof ScrollView>>(null);
 
   const handleScroll = useCallback((event: { nativeEvent: { layoutMeasurement: { height: number }; contentOffset: { y: number }; contentSize: { height: number } } }) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -85,7 +85,7 @@ export function ConsentScreen({ onConsented }: ConsentScreenProps) {
 
   return (
     <SafeAreaView style={styles.safeArea} testID="consent-screen">
-      <StatusBar barStyle="dark-content" backgroundColor="#f7f9fb" />
+      <StatusBar barStyle="dark-content" />
       <View style={styles.header}>
         <Text style={styles.headerTitle} accessibilityRole="header">
           使用条款与隐私政策

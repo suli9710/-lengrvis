@@ -11,7 +11,7 @@
     "build:android:preview": "npm run preflight:android-release && eas build --platform android --profile preview --non-interactive",
     "build:android:production": "npm run preflight:android-release && eas build --platform android --profile production --non-interactive",
     "gate:android-release": "powershell -ExecutionPolicy Bypass -File ../scripts/verify_android_release_gate.ps1",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "smoke:token": "node scripts/mobile-token-smoke.cjs",
     "smoke:consent": "node scripts/consent-smoke.cjs",
     "smoke:session-lifecycle": "node scripts/session-lifecycle-smoke.cjs",
@@ -28,49 +28,51 @@
     "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs",
     "smoke:eas-cli-compat": "node scripts/eas-cli-compat-smoke.cjs",
     "gate:android-instrumentation-compile": "node scripts/android-lan-tls-smoke.cjs --compile-instrumentation",
-    "gate:android-connected-lan-tls": "node scripts/android-lan-tls-smoke.cjs --connected"
+    "gate:android-connected-lan-tls": "node scripts/android-lan-tls-smoke.cjs --connected",
+    "smoke:companion-stream-lifecycle": "node scripts/companion-stream-lifecycle-smoke.cjs"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "3.1.1",
-    "expo": "58.0.17",
-    "expo-camera": "58.0.12",
-    "expo-constants": "58.0.13",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "58.0.22",
+    "expo-camera": "58.0.14",
+    "expo-constants": "58.0.14",
     "expo-device": "58.0.5",
-    "expo-linking": "58.0.14",
-    "expo-notifications": "58.1.6",
-    "expo-router": "58.0.25",
+    "expo-linking": "58.0.15",
+    "expo-notifications": "58.1.7",
+    "expo-router": "58.0.29",
     "expo-secure-store": "58.0.2",
     "lucide-react-native": "1.61.0",
-    "react": "19.3.1",
-    "react-dom": "19.3.1",
-    "react-native": "0.88.0",
-    "react-native-gesture-handler": "3.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-gesture-handler": "3.3.0",
     "react-native-reanimated": "4.7.1",
     "react-native-safe-area-context": "5.10.1",
-    "react-native-screens": "4.30.0",
+    "react-native-screens": "4.30.1",
     "react-native-svg": "15.16.0",
     "react-native-worklets": "0.13.0"
   },
   "devDependencies": {
     "@types/react": "19.3.0",
     "eas-cli": "25.3.0",
-    "typescript": "7.0.2"
+    "typescript": "6.0.3"
   },
   "overrides": {
     "ajv": "8.18.0",
     "diff": "8.0.3",
-    "eas-cli@22.2.0": {
+    "eas-cli@25.3.0": {
       "minimatch@5.1.2": "5.1.9",
       "ts-deepmerge@6.2.0": "8.0.0"
     },
-    "joi": "17.13.8",
+    "joi": "17.13.9",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "nanoid": "3.3.18",
-    "node-forge": "1.4.0",
+    "node-forge": "1.4.2",
     "tar": "7.5.22",
     "uuid": "11.1.1",
-    "yaml": "2.8.3"
+    "yaml": "2.8.3",
+    "fast-uri": "3.1.9"
   }
 }

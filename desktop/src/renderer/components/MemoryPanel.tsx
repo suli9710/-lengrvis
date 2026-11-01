@@ -149,7 +149,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
           <button
             className="button button--primary"
             type="button"
-            aria-label={editingMemory ? "保存记忆更正" : "保存记忆"}
+            aria-label={`${pendingAction === "save" ? "正在保存" : editingMemory ? "保存更正" : "记住这条"}，${editingMemory ? "保存记忆更正" : "保存记忆"}`}
             aria-busy={pendingAction === "save"}
             disabled={isMutating}
             onClick={() => void save()}
@@ -209,7 +209,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
                       <button
                         className="button button--ghost"
                         type="button"
-                        aria-label={`审核并启用记忆：${item.content.slice(0, 32)}`}
+                        aria-label={`${isPromoting ? "正在启用" : conflict === "conflicting" ? "解决冲突并启用" : "审核并启用"}记忆：${item.content.slice(0, 32)}`}
                         aria-busy={isPromoting}
                         disabled={isMutating}
                         onClick={() => void promote(item)}
@@ -222,7 +222,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
                       <button
                         className="button button--ghost"
                         type="button"
-                        aria-label={`撤销记忆：${item.content.slice(0, 32)}`}
+                        aria-label={`${isRevoking ? "正在撤销" : "撤销"}记忆：${item.content.slice(0, 32)}`}
                         aria-busy={isRevoking}
                         disabled={isMutating}
                         onClick={() => void revoke(item)}
@@ -234,7 +234,7 @@ export function MemoryPanel({ api }: MemoryPanelProps) {
                     <button
                       className="button button--ghost"
                       type="button"
-                      aria-label={`忘记记忆：${item.content.slice(0, 32)}`}
+                      aria-label={`${isForgetting ? "正在删除" : "忘记"}记忆：${item.content.slice(0, 32)}`}
                       aria-busy={isForgetting}
                       disabled={isMutating}
                       onClick={() => void forget(item)}

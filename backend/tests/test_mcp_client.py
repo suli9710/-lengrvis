@@ -215,6 +215,15 @@ def test_mcp_client_performs_lifecycle_and_propagates_negotiated_headers(monkeyp
         async def __aexit__(self, *_args):
             return None
 
+        def stream(self, method, url, **kwargs):
+            from contextlib import asynccontextmanager
+
+            @asynccontextmanager
+            async def response_context():
+                yield await (self.delete(url, **kwargs) if method == "DELETE" else self.post(url, **kwargs))
+
+            return response_context()
+
         async def post(self, url, *, json, headers, extensions):  # noqa: A002, ARG002
             requests.append({"method": json.get("method"), "id": json.get("id"), "headers": dict(headers)})
             response = responses.pop(0)

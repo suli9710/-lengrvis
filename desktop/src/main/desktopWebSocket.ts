@@ -42,7 +42,8 @@ export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManag
         return { ok: false, id: "", error: "Desktop WebSocket id is invalid" };
       }
 
-      closeDesktopSocket(sockets, socketId);
+      const socketKey = `${event.sender.id}:${socketId}`;
+      closeDesktopSocket(sockets, socketKey);
 
       try {
         const socket = createDesktopWebSocket(
@@ -50,14 +51,16 @@ export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManag
           backend.getDesktopApiToken()
         );
         const sender = event.sender;
-        const onSenderDestroyed = () => closeDesktopSocket(sockets, socketId);
-        sockets.set(socketId, { sender, socket, onSenderDestroyed });
+        const onSenderDestroyed = () => closeDesktopSocket(sockets, socketKey);
+        sockets.set(socketKey, { sender, socket, onSenderDestroyed });
         sender.once("destroyed", onSenderDestroyed);
 
         socket.addEventListener("open", () => {
+          if (sockets.get(socketKey)?.socket !== socket) return;
           sendDesktopWebSocketEvent(sender, { id: socketId, type: "open" });
         });
         socket.addEventListener("message", (message) => {
+          if (sockets.get(socketKey)?.socket !== socket) return;
           sendDesktopWebSocketEvent(sender, {
             id: socketId,
             type: "message",
@@ -65,14 +68,14 @@ export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManag
           });
         });
         socket.addEventListener("error", () => {
+          if (sockets.get(socketKey)?.socket !== socket) return;
           sendDesktopWebSocketEvent(sender, { id: socketId, type: "error", message: "Desktop WebSocket error" });
         });
         socket.addEventListener("close", (closeEvent) => {
-          const current = sockets.get(socketId);
-          if (current?.socket === socket) {
-            sockets.delete(socketId);
-            sender.removeListener("destroyed", current.onSenderDestroyed);
-          }
+          const current = sockets.get(socketKey);
+          if (current?.socket !== socket) return;
+          sockets.delete(socketKey);
+          sender.removeListener("destroyed", current.onSenderDestroyed);
           sendDesktopWebSocketEvent(sender, {
             id: socketId,
             type: "close",
@@ -95,7 +98,8 @@ export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManag
 
   ipcMain.handle(IPC_CHANNELS.desktopWebSocketClose, (event, socketId: unknown) => {
     assertTrustedRenderer(event);
-    closeDesktopSocket(sockets, validSocketId(socketId));
+    const id = validSocketId(socketId);
+    if (id) closeDesktopSocket(sockets, `${event.sender.id}:${id}`);
   });
 }
 

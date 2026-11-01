@@ -344,10 +344,11 @@ def test_read_only_manifest_api_exposes_hashes_without_capability_contents_or_se
         ),
     )
     app = create_app()
-    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/security/capability-manifest")
-
-    assert route.methods == {"GET"}
-    response = TestClient(app).get("/api/security/capability-manifest")
+    client = TestClient(app)
+    # Check the public routing contract; newer FastAPI versions defer included routers.
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        assert client.request(method, "/api/security/capability-manifest").status_code == 405
+    response = client.get("/api/security/capability-manifest")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     payload = response.json()

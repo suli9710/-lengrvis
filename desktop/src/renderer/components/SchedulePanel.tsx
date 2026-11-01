@@ -103,7 +103,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
           <button
             className="button button--primary schedule-form__submit"
             type="button"
-            aria-label="创建定时任务"
+            aria-label={pendingAction === "create" ? "正在创建定时任务" : "创建定时任务"}
             aria-busy={pendingAction === "create"}
             disabled={isMutating}
             onClick={() => void createSchedule()}
@@ -151,7 +151,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
                     <button
                       className="button button--secondary"
                       type="button"
-                      aria-label={`${toggleAction}定时任务：${item.goal}`}
+                      aria-label={`${isToggling ? "正在" : ""}${toggleAction}定时任务：${item.goal}`}
                       aria-busy={isToggling}
                       title={`${toggleAction}定时任务`}
                       disabled={isMutating}
@@ -167,7 +167,7 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
                     <button
                       className="button button--ghost"
                       type="button"
-                      aria-label={`删除定时任务：${item.goal}`}
+                      aria-label={`${isDeleting ? "正在删除" : "删除"}定时任务：${item.goal}`}
                       aria-busy={isDeleting}
                       disabled={isMutating}
                       onClick={() => void remove(item)}

@@ -1838,3 +1838,70 @@ def test_clean_machine_cross_checks_dist_artifact_sha256_when_path_present(tmp_p
     payload = _resign(payload)
     errors = clean_machine.validate_payload(payload, repo_root=tmp_path)
     assert any("does not match SHA256" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["signing.status", "checks.signature_verification", "checks.upgrade", "checks.rollback", "checks.uninstall"],
+)
+@pytest.mark.parametrize("replacement", [None, "skipped", "missing"])
+def test_distribution_missing_or_skipped_required_gate_fails_closed(tmp_path, monkeypatch, field, replacement):
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/installer.exe",
+        contents=b"test-distribution",
+    )
+    section, name = field.split(".")
+    if replacement is None:
+        payload[section].pop(name)
+    else:
+        payload[section][name] = replacement
+    errors = distribution.validate_payload(
+        _resign(payload), repo_root=tmp_path, expected_candidate_binding=_strict_candidate_binding()
+    )
+    assert any(field in error for error in errors)
+
+
+def test_distribution_cli_missing_binding_cannot_accept_otherwise_valid_evidence(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    for environment_name, _ in evidence_contracts.CANDIDATE_BINDING_ENVIRONMENT:
+        monkeypatch.delenv(environment_name, raising=False)
+    payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/installer.exe",
+        contents=b"test-distribution",
+    )
+    path = tmp_path / "reviewed.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(distribution, "__file__", str(tmp_path / "scripts" / "verifier.py"))
+    monkeypatch.setattr(sys, "argv", ["verifier", "--evidence", str(path), "--require-candidate-binding"])
+    assert distribution.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert any("required for strict candidate binding" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        {"passed": True, "status": "skipped"},
+        {"status": "passed", "result": "failed"},
+        {"status": "passed", "passed": False},
+        {"passed": True, "skipped": True},
+    ],
+)
+def test_distribution_contradictory_gate_cannot_be_signed_into_pass(tmp_path, monkeypatch, check):
+    monkeypatch.setenv(evidence_contracts.EVIDENCE_PUBLIC_KEY_ENV, TEST_EVIDENCE_PUBLIC_KEY)
+    payload = _with_dist_artifact(
+        _with_strict_candidate_binding(_distribution_sample()),
+        tmp_path,
+        rel_path="dist/installer.exe",
+        contents=b"test-distribution",
+    )
+    payload["checks"]["signature_verification"] = check
+    errors = distribution.validate_payload(
+        _resign(payload), repo_root=tmp_path, expected_candidate_binding=_strict_candidate_binding()
+    )
+    assert any("checks.signature_verification" in error for error in errors), errors

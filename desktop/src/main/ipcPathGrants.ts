@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "electron";
 import { existsSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { relative, sep, isAbsolute, resolve as resolvePath } from "node:path";
 
 import type { ApiResponse } from "../shared/types";
 import { ApiRequestValidationError, isPlainRecord, validateBridgePathValue } from "./ipcValidation";
@@ -122,7 +122,8 @@ export function showItemInFolder(
 }
 
 function normalizeGrantPath(filePath: string): string {
-  return resolvePath(filePath).toLowerCase();
+  const resolved = resolvePath(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function isRevealPathAuthorized(resolvedPath: string, grants: IpcPathGrantStores): boolean {
@@ -151,7 +152,6 @@ function safeElectronAppPath(name: "userData"): string {
 }
 
 function isSameOrNestedPath(rootPath: string, candidatePath: string): boolean {
-  const root = resolvePath(rootPath).toLowerCase().replace(/[\\/]+$/, "");
-  const candidate = resolvePath(candidatePath).toLowerCase();
-  return candidate === root || candidate.startsWith(`${root}\\`) || candidate.startsWith(`${root}/`);
+  const child = relative(normalizeGrantPath(rootPath), normalizeGrantPath(candidatePath));
+  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
 }

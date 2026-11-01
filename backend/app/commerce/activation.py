@@ -413,8 +413,8 @@ def activate_subscription_key(
         # the COUNT(*) check and each insert a row, busting max_devices
         # (TOCTOU). busy_timeout makes contenders wait instead of erroring.
         # isolation_level=None (autocommit) means the explicit BEGIN IMMEDIATE
-        # opens the transaction; we commit explicitly at the end of the block
-        # (the context manager also commits on success / rolls back on error).
+        # opens the transaction; the context manager commits only after signing
+        # and self-verification succeed, rolling back on any failure.
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("BEGIN IMMEDIATE")
         record = _load_subscription_record(conn, key_hash)
@@ -521,22 +521,21 @@ def activate_subscription_key(
                     app_version,
                 ),
             )
-        conn.commit()
-    token = _sign_activation_license(
-        record,
-        license_id=license_id,
-        device_id=device_id,
-        device_fingerprint=device_fingerprint,
-        device_profile=device_profile,
-        app_version=app_version,
-        nonce=nonce,
-        private_key=private_key,
-        private_key_password=private_key_password,
-        issuer=issuer,
-        now=moment,
-    )
-    public_key = _activation_public_key_for_self_check()
-    license_ = verify_license(token, public_key, now=moment) if public_key else None
+        token = _sign_activation_license(
+            record,
+            license_id=license_id,
+            device_id=device_id,
+            device_fingerprint=device_fingerprint,
+            device_profile=device_profile,
+            app_version=app_version,
+            nonce=nonce,
+            private_key=private_key,
+            private_key_password=private_key_password,
+            issuer=issuer,
+            now=moment,
+        )
+        public_key = _activation_public_key_for_self_check()
+        license_ = verify_license(token, public_key, now=moment) if public_key else None
     return ActivationResult(
         license_token=token,
         license=license_ if license_ is not None else License(plan=record.plan, license_id=license_id),
@@ -593,6 +592,8 @@ def refresh_subscription_license(
     with sqlite3.connect(path) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # Serialize authorization reads with admin revocation/unbind writes.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT id, key_hash, device_id, server_device_ref, device_fingerprint
@@ -608,7 +609,7 @@ def refresh_subscription_license(
                 status_code=402,
             )
         stored_device_id = str(row["device_id"] or "")
-        if not hmac.compare_digest(stored_device_id, device_id):
+        if not hmac.compare_digest(stored_device_id.encode("utf-8"), device_id.encode("utf-8")):
             raise ActivationError(
                 _activation_message_for_code("activation_device_mismatch"),
                 code="activation_device_mismatch",
@@ -631,7 +632,10 @@ def refresh_subscription_license(
                 code="activation_key_not_found",
                 status_code=402,
             )
-        if not hmac.compare_digest(record.subscription_id, current_license.subscription_id):
+        if not hmac.compare_digest(
+            record.subscription_id.encode("utf-8"),
+            current_license.subscription_id.encode("utf-8", errors="surrogatepass"),
+        ):
             raise ActivationError(
                 _activation_message_for_code("subscription_mismatch"),
                 code="subscription_mismatch",
@@ -670,20 +674,20 @@ def refresh_subscription_license(
             ),
         )
 
-    refreshed_token = _sign_activation_license(
-        record,
-        license_id=current_license.license_id,
-        device_id=device_id,
-        device_fingerprint=next_fingerprint,
-        device_profile=device_profile,
-        app_version=app_version,
-        nonce=nonce,
-        private_key=private_key,
-        private_key_password=private_key_password,
-        issuer=issuer,
-        now=moment,
-    )
-    refreshed_license = verify_license(refreshed_token, public_key, now=moment)
+        refreshed_token = _sign_activation_license(
+            record,
+            license_id=current_license.license_id,
+            device_id=device_id,
+            device_fingerprint=next_fingerprint,
+            device_profile=device_profile,
+            app_version=app_version,
+            nonce=nonce,
+            private_key=private_key,
+            private_key_password=private_key_password,
+            issuer=issuer,
+            now=moment,
+        )
+        refreshed_license = verify_license(refreshed_token, public_key, now=moment)
     return ActivationResult(
         license_token=refreshed_token,
         license=refreshed_license,
@@ -979,7 +983,9 @@ def write_activation_key_once(path: Path, activation_key: str) -> None:
             os.fsync(handle.fileno())
         if target.exists():
             raise FileExistsError(f"拒绝覆盖已有授权码交接文件：{target}")
-        os.replace(temp_path, target)
+        # Atomic no-clobber publication: another writer may create the target
+        # after exists() above. A hard link fails rather than overwriting it.
+        os.link(temp_path, target)
         try:
             os.chmod(target, 0o600)
         except OSError:
