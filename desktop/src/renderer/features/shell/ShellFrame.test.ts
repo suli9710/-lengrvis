@@ -6,8 +6,11 @@ import type { ConnectionState } from "../../store";
 
 vi.mock("../../lib/uiPreferences", () => ({ useUiPreferences: () => ({ effectiveMotion: "reduced" }) }));
 import { ShellFrame } from "./ShellFrame";
+const TEST_NOW = Date.parse("2030-01-01T12:00:00Z");
 let renderer: ReactTestRenderer | undefined;
 beforeEach(() => {
+  // Keep recent-activity fixtures independent of the calendar day running CI.
+  vi.spyOn(Date, "now").mockReturnValue(TEST_NOW);
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal("document", { documentElement: { style: {} }, body: { style: {} } });
 });
@@ -15,6 +18,7 @@ afterEach(async () => {
   if (renderer) await act(async () => renderer?.unmount());
   renderer = undefined;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 function text(node: ReactTestInstance | string): string {
   if (typeof node === "string") return node;
@@ -24,15 +28,18 @@ function text(node: ReactTestInstance | string): string {
 
 describe("activity center label in accessible name", () => {
   it.each([
-    ["online", false, undefined, "待命"],
-    ["online", true, undefined, "运行中"],
-    ["checking", false, undefined, "连接中"],
-    ["offline", false, undefined, "待连接"],
-    ["online", false, "completed", "已完成"],
-    ["online", false, "failed", "需关注"]
-  ] as const)("includes contiguous visible label for %s/%s/%s", async (connection, loading, state, label) => {
+    ["online", false, undefined, "待命", 0],
+    ["online", true, undefined, "运行中", 0],
+    ["checking", false, undefined, "连接中", 0],
+    ["offline", false, undefined, "待连接", 0],
+    ["online", false, "completed", "已完成", 12],
+    ["online", false, "failed", "需关注", 12],
+    ["online", false, "completed", "待命", 48],
+    ["online", false, "failed", "待命", 48]
+  ] as const)("includes contiguous visible label for %s/%s/%s (%s, age %s hours)", async (connection, loading, state, label, ageHours) => {
+    const taskTime = new Date(TEST_NOW - ageHours * 60 * 60 * 1000).toISOString();
     const tasks: TaskEvent[] = state ? [{ id: "task", title: "Task", description: "Task", state,
-      agent: "agent", createdAt: "2026-10-31T00:00:00Z", updatedAt: "2026-10-31T00:00:00Z" }] : [];
+      agent: "agent", createdAt: taskTime, updatedAt: taskTime }] : [];
     await act(async () => {
       renderer = create(createElement(ShellFrame, {
         activeView: "home", connectionState: connection as ConnectionState, isLoading: loading,
