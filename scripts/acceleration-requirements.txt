@@ -11,8 +11,8 @@
 
 # Common packages
 tokenizers==0.23.3
-transformers==5.20.2
-huggingface_hub==2.2.0
+transformers==5.22.0
+huggingface_hub==2.4.0
 numpy==2.5.4
 Pillow==13.0.0
 
@@ -29,5 +29,5 @@ onnxruntime-openvino==1.24.1
 openvino==2026.4.1
 
 # Runtime: cpu
-onnxruntime==1.31.0
+onnxruntime==1.31.1
 onnxruntime-genai==0.18.0
