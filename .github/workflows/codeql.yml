@@ -44,7 +44,7 @@ jobs:
 
       - name: Set up JDK 17 for the Android build
         if: ${{ matrix.android-build }}
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: "17"
@@ -53,7 +53,7 @@ jobs:
         if: ${{ matrix.android-build }}
         run: npm --prefix mobile ci
 
-      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           languages: ${{ matrix.languages }}
           build-mode: ${{ matrix.build-mode }}
@@ -64,6 +64,6 @@ jobs:
         working-directory: mobile/android
         run: bash ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --no-daemon --stacktrace
 
-      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           category: ${{ matrix.category }}
